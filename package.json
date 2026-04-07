@@ -1,0 +1,30 @@
+{
+  "name": "clippyai",
+  "version": "0.1.0",
+  "description": "AI-powered desktop buddy — ClippyAI",
+  "main": "out/main/index.js",
+  "author": "AmrDab <cloudanateam@gmail.com>",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "vendor": "node scripts/vendor-clawdcursor.js",
+    "pack": "npm run vendor && npm run build && electron-builder --dir",
+    "dist": "npm run vendor && npm run build && electron-builder",
+    "postinstall": "node scripts/copy-assets.js"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "clippyjs": "^0.1.0",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.0.0",
+    "electron-vite": "^2.0.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.4.0"
+  }
+}

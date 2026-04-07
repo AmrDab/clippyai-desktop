@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body class="clippy-window">
+  <!-- Speech bubble (above Clippy) -->
+  <div id="bubble" class="bubble hidden">
+    <div id="bubble-text"></div>
+    <div id="bubble-input-area" class="hidden">
+      <input id="bubble-input" type="text" placeholder="Type to Clippy..." />
+      <button id="bubble-send">&rarr;</button>
+    </div>
+    <div id="bubble-tail"></div>
+  </div>
+
+  <!-- Clippy character container -->
+  <div id="clippy-container">
+    <canvas id="clippy-canvas"></canvas>
+  </div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

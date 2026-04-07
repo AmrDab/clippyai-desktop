@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body class="settings-window">
+  <div class="settings-layout">
+    <nav class="settings-nav">
+      <button class="settings-nav-item active" data-section="general">General</button>
+      <button class="settings-nav-item" data-section="appearance">Appearance</button>
+      <button class="settings-nav-item" data-section="voice">Voice</button>
+      <button class="settings-nav-item" data-section="brain">Brain</button>
+      <button class="settings-nav-item" data-section="clawdcursor">ClawdCursor</button>
+      <button class="settings-nav-item" data-section="license">License</button>
+    </nav>
+
+    <div class="settings-content">
+      <!-- General -->
+      <div class="settings-section active" data-section="general">
+        <h2>General</h2>
+        <div class="settings-group">
+          <label for="setting-buddy-name">Buddy Name</label>
+          <input id="setting-buddy-name" type="text" maxlength="20" />
+        </div>
+        <div class="settings-toggle">
+          <label>Launch on startup</label>
+          <div class="toggle-switch">
+            <input type="checkbox" id="setting-launch-startup" />
+            <span class="toggle-slider"></span>
+          </div>
+        </div>
+        <div class="settings-group">
+          <label>Hotkey</label>
+          <input type="text" value="Ctrl+Shift+C" disabled style="background: #f5f5f5; color: #888;" />
+        </div>
+      </div>
+
+      <!-- Appearance -->
+      <div class="settings-section" data-section="appearance">
+        <h2>Appearance</h2>
+        <div class="settings-group">
+          <label for="setting-scale">Clippy Scale</label>
+          <select id="setting-scale">
+            <option value="small">Small (0.75x)</option>
+            <option value="medium" selected>Medium (1x)</option>
+            <option value="large">Large (1.5x)</option>
+          </select>
+        </div>
+        <div class="settings-toggle">
+          <label>Always on top</label>
+          <div class="toggle-switch">
+            <input type="checkbox" id="setting-always-top" checked />
+            <span class="toggle-slider"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Voice -->
+      <div class="settings-section" data-section="voice">
+        <h2>Voice</h2>
+        <div class="settings-toggle">
+          <label>Text-to-Speech</label>
+          <div class="toggle-switch">
+            <input type="checkbox" id="setting-tts-enabled" checked />
+            <span class="toggle-slider"></span>
+          </div>
+        </div>
+        <div class="settings-group">
+          <label for="setting-voice">Voice</label>
+          <select id="setting-voice"></select>
+        </div>
+        <div class="settings-group">
+          <label for="setting-speech-rate">Speech Rate</label>
+          <input id="setting-speech-rate" type="range" min="0.5" max="2" step="0.1" value="1.1" />
+          <span id="speech-rate-value" style="font-size: 12px; color: #888;">1.1x</span>
+        </div>
+      </div>
+
+      <!-- Brain -->
+      <div class="settings-section" data-section="brain">
+        <h2>Brain</h2>
+        <div class="settings-group">
+          <label for="setting-ai-endpoint">AI Endpoint URL</label>
+          <input id="setting-ai-endpoint" type="url" />
+        </div>
+        <div class="settings-group">
+          <label for="setting-proactive-interval">Proactive Interval</label>
+          <input id="setting-proactive-interval" type="range" min="10" max="300" step="5" value="30" />
+          <span id="proactive-interval-value" style="font-size: 12px; color: #888;">30s</span>
+        </div>
+        <div class="settings-toggle">
+          <label>Proactive Mode</label>
+          <div class="toggle-switch">
+            <input type="checkbox" id="setting-proactive" checked />
+            <span class="toggle-slider"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ClawdCursor -->
+      <div class="settings-section" data-section="clawdcursor">
+        <h2>ClawdCursor</h2>
+        <div class="settings-group">
+          <div class="connection-status">
+            <span class="status-dot disconnected" id="cc-status-dot"></span>
+            <span id="cc-status-text">Checking...</span>
+          </div>
+        </div>
+        <div class="settings-group">
+          <label>Port</label>
+          <input type="text" value="3847" disabled style="background: #f5f5f5; color: #888;" />
+        </div>
+        <button class="btn-test" id="btn-test-connection">Test Connection</button>
+      </div>
+
+      <!-- License -->
+      <div class="settings-section" data-section="license">
+        <h2>License</h2>
+        <div class="settings-group">
+          <label>License Key</label>
+          <div class="license-display" id="license-key-display"></div>
+        </div>
+        <div class="settings-group">
+          <label>Plan</label>
+          <span id="license-plan-display" style="font-size: 14px; text-transform: capitalize;"></span>
+        </div>
+        <a href="#" id="manage-subscription" style="font-size: 13px; color: #4CAF50;">Manage Subscription</a>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./settings.ts"></script>
+</body>
+</html>

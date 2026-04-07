@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body class="onboarding-window">
+  <div class="onboarding">
+    <div class="onboarding-header">
+      <h1>ClippyAI</h1>
+      <p class="tagline">Your AI desktop buddy is waiting</p>
+    </div>
+
+    <!-- Step 1: Welcome -->
+    <div class="onboarding-step active" data-step="1">
+      <h2>Welcome!</h2>
+      <p>ClippyAI is your personal AI desktop assistant. It watches your screen, helps proactively, and responds to your questions — all powered by the classic Clippy character you know and love.</p>
+      <p>Let's get you set up in just a moment.</p>
+    </div>
+
+    <!-- Step 2: License Key -->
+    <div class="onboarding-step" data-step="2">
+      <h2>Enter Your License Key</h2>
+      <p>Paste the license key from your purchase confirmation email.</p>
+      <div>
+        <label for="license-key">License Key</label>
+        <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+      </div>
+      <div class="onboarding-error" id="license-error"></div>
+    </div>
+
+    <!-- Step 3: Personalize -->
+    <div class="onboarding-step" data-step="3">
+      <h2>Personalize Your Buddy</h2>
+      <div>
+        <label for="buddy-name">Name your buddy</label>
+        <input id="buddy-name" type="text" value="Clippy" maxlength="20" />
+      </div>
+      <div>
+        <label for="voice-select">Choose a voice</label>
+        <select id="voice-select"></select>
+      </div>
+    </div>
+
+    <div class="onboarding-footer">
+      <button class="btn-secondary" id="btn-back" style="visibility: hidden;">Back</button>
+      <div class="progress-dots">
+        <span class="dot active" data-dot="1"></span>
+        <span class="dot" data-dot="2"></span>
+        <span class="dot" data-dot="3"></span>
+      </div>
+      <button class="btn-primary" id="btn-next">Get Started</button>
+    </div>
+  </div>
+
+  <script type="module" src="./onboarding.ts"></script>
+</body>
+</html>

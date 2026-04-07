@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "clippyai-web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-p", "8765", "C:/Users/amr_d/clippyai-web"],
+      "port": 8765
+    }
+  ]
+}

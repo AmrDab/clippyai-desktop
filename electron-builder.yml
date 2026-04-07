@@ -1,0 +1,35 @@
+appId: ai.cloudana.clippyai
+productName: ClippyAI
+win:
+  target: nsis
+  icon: build/icon.ico
+  signAndEditExecutable: false
+  signingHashAlgorithms: []
+  forceCodeSigning: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ClippyAI
+files:
+  - out/**/*
+  - assets/**/*
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,readme,README,*.d.ts,__tests__,test,tests,docs,doc}"
+  - "!**/node_modules/*/*.map"
+extraResources:
+  - from: vendor/clawdcursor
+    to: clawdcursor
+    filter:
+      - "**/*"
+      - "!**/__tests__/**"
+      - "!**/*.map"
+      - "!**/docs/**"
+      - "!**/*.d.ts"
+      - "!**/CHANGELOG.md"
+      - "!**/README.md"
+      - "!**/SKILL.md"
+directories:
+  output: release
+  buildResources: build
+publish: null
