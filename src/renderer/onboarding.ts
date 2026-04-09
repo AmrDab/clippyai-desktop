@@ -120,11 +120,16 @@ btnBack.addEventListener('click', () => {
   }
 });
 
-// Auto-uppercase license input
+// Auto-uppercase license input + hide trial section when typing
+const trialSection = document.getElementById('trial-section')!;
+
 licenseInput.addEventListener('input', () => {
   const pos = licenseInput.selectionStart;
   licenseInput.value = licenseInput.value.toUpperCase();
   licenseInput.setSelectionRange(pos, pos);
+
+  // Hide trial button once user has a key — they don't need it
+  trialSection.style.display = licenseInput.value.trim().length > 0 ? 'none' : '';
 });
 
 // ── Free trial button → opens Stripe checkout in browser ─────────────

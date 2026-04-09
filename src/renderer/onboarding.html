@@ -22,17 +22,19 @@
     <!-- Step 2: License Key -->
     <div class="onboarding-step" data-step="2">
       <h2>Activate ClippyAI</h2>
-      <p>Already have a license key? Paste it below.</p>
+      <p>Paste the license key from your email below.</p>
       <div>
         <label for="license-key">License Key</label>
         <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
       </div>
       <div class="onboarding-error" id="license-error"></div>
-      <div class="onboarding-divider"><span>or</span></div>
-      <button class="btn-trial" id="btn-start-trial">Start 7-Day Free Trial</button>
-      <p class="trial-hint" id="trial-hint" style="display: none;">
-        Stripe checkout opened in your browser. After signing up, check your email for the license key and paste it above.
-      </p>
+      <div id="trial-section">
+        <div class="onboarding-divider"><span>don't have a key?</span></div>
+        <button class="btn-trial" id="btn-start-trial">Get a Free Trial Key</button>
+        <p class="trial-hint" id="trial-hint" style="display: none;">
+          Checkout opened in your browser. After signing up, check your email (and spam folder) for the license key, then paste it above.
+        </p>
+      </div>
     </div>
 
     <!-- Step 3: Personalize -->
