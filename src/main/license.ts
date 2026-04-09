@@ -4,8 +4,7 @@ import os from 'os';
 import crypto from 'crypto';
 
 const API_BASE = 'https://api.clippyai.app';
-const GRACE_PERIOD_DAYS = 7;
-const TRIAL_DAYS = 7;
+const GRACE_PERIOD_DAYS = 1; // 24h grace when API is temporarily unreachable
 
 interface LicenseStore {
   licenseKey: string;
@@ -13,10 +12,8 @@ interface LicenseStore {
   buddyName: string;
   ttsVoice: string;
   validated: boolean;
-  graceExpiry: number; // timestamp
-  trialStartedAt: number; // timestamp when free trial started
-  trialKey: string; // the issued trial license key
-  isTrial: boolean; // true while in trial period
+  graceExpiry: number;      // timestamp — grace window when API unreachable
+  lastValidated: number;    // timestamp — when key was last confirmed with API
 }
 
 const store = new Store<LicenseStore>({
@@ -27,16 +24,12 @@ const store = new Store<LicenseStore>({
     ttsVoice: '',
     validated: false,
     graceExpiry: 0,
-    trialStartedAt: 0,
-    trialKey: '',
-    isTrial: false,
+    lastValidated: 0,
   },
 });
 
-/**
- * Get a stable machine fingerprint for trial activation.
- * Combines hostname + MAC addresses + username, hashed.
- */
+// ── Helpers ──────────────────────────────────────────────────────────
+
 function getMachineFingerprint(): string {
   try {
     const hostname = os.hostname();
@@ -59,6 +52,8 @@ function getMachineFingerprint(): string {
   }
 }
 
+// ── Getters ──────────────────────────────────────────────────────────
+
 export function getLicenseKey(): string {
   return store.get('licenseKey');
 }
@@ -75,17 +70,36 @@ export function getTtsVoice(): string {
   return store.get('ttsVoice');
 }
 
+export function getMachineId(): string {
+  return getMachineFingerprint();
+}
+
+export function isFirstRun(): boolean {
+  return !store.get('licenseKey');
+}
+
+// ── License checks ───────────────────────────────────────────────────
+
+const REVALIDATION_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
 export function isLicensed(): boolean {
   const key = store.get('licenseKey');
   if (!key) return false;
 
-  if (store.get('validated')) return true;
+  // Validated recently? Trust it.
+  if (store.get('validated')) {
+    const lastCheck = store.get('lastValidated');
+    if (lastCheck > 0 && Date.now() - lastCheck < REVALIDATION_INTERVAL) return true;
+  }
 
+  // Within grace period? (API was unreachable but had a valid key before)
   const graceExpiry = store.get('graceExpiry');
   if (graceExpiry > 0 && Date.now() < graceExpiry) return true;
 
   return false;
 }
+
+// ── Save / clear ─────────────────────────────────────────────────────
 
 export function saveLicense(key: string, plan: string, buddyName: string, ttsVoice: string): void {
   store.set('licenseKey', key);
@@ -93,12 +107,23 @@ export function saveLicense(key: string, plan: string, buddyName: string, ttsVoi
   store.set('buddyName', buddyName);
   store.set('ttsVoice', ttsVoice);
   store.set('validated', true);
+  store.set('lastValidated', Date.now());
+}
+
+export function clearLicense(): void {
+  store.set('licenseKey', '');
+  store.set('plan', '');
+  store.set('validated', false);
+  store.set('graceExpiry', 0);
+  store.set('lastValidated', 0);
 }
 
 export function setGracePeriod(): void {
   const expiry = Date.now() + GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
   store.set('graceExpiry', expiry);
 }
+
+// ── API validation ───────────────────────────────────────────────────
 
 export async function validateLicenseKey(key: string): Promise<{ valid: boolean; plan: string }> {
   return new Promise((resolve) => {
@@ -114,6 +139,11 @@ export async function validateLicenseKey(key: string): Promise<{ valid: boolean;
       response.on('end', () => {
         try {
           const result = JSON.parse(data) as { valid: boolean; plan: string };
+          if (result.valid) {
+            store.set('validated', true);
+            store.set('lastValidated', Date.now());
+            if (result.plan) store.set('plan', result.plan);
+          }
           resolve(result);
         } catch {
           resolve({ valid: false, plan: '' });
@@ -122,9 +152,14 @@ export async function validateLicenseKey(key: string): Promise<{ valid: boolean;
     });
 
     req.on('error', () => {
-      // API unreachable — grant grace period
-      setGracePeriod();
-      resolve({ valid: true, plan: 'grace' });
+      // API unreachable — only grant grace if a key already exists
+      const existingKey = store.get('licenseKey');
+      if (existingKey) {
+        setGracePeriod();
+        resolve({ valid: true, plan: store.get('plan') || 'grace' });
+      } else {
+        resolve({ valid: false, plan: '' });
+      }
     });
 
     req.write(JSON.stringify({ key }));
@@ -133,48 +168,24 @@ export async function validateLicenseKey(key: string): Promise<{ valid: boolean;
 }
 
 /**
- * Start a 7-day free trial — issues a local trial key and stores the start time.
- * The trial key is the test license key in dev; in production it would be
- * issued by the backend tied to the machine fingerprint.
+ * Revalidate the stored key with the API. Call at app startup.
+ * Returns true if still valid, false if key was revoked/expired.
  */
-export function startTrial(): { key: string; expiresAt: number } {
-  const expiresAt = Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000;
-  // For now we use the existing test license key.
-  // Production: POST /trial with machine fingerprint, backend returns a unique trial key.
-  const trialKey = 'CLIPPY-TEST-AMRD-2026';
+export async function revalidateIfNeeded(): Promise<boolean> {
+  const key = store.get('licenseKey');
+  if (!key) return false;
 
-  store.set('trialKey', trialKey);
-  store.set('licenseKey', trialKey);
-  store.set('plan', 'pro'); // trial gets Pro features
-  store.set('isTrial', true);
-  store.set('trialStartedAt', Date.now());
-  store.set('graceExpiry', expiresAt);
-  store.set('validated', true);
-  return { key: trialKey, expiresAt };
-}
+  const lastCheck = store.get('lastValidated');
+  if (lastCheck > 0 && Date.now() - lastCheck < REVALIDATION_INTERVAL) {
+    return true; // checked recently, skip network call
+  }
 
-export function getTrialStatus(): { isTrial: boolean; daysLeft: number; expired: boolean } {
-  const isTrial = store.get('isTrial');
-  if (!isTrial) return { isTrial: false, daysLeft: 0, expired: false };
+  const result = await validateLicenseKey(key);
+  if (result.valid) return true;
 
-  const startedAt = store.get('trialStartedAt');
-  if (!startedAt) return { isTrial: false, daysLeft: 0, expired: false };
-
-  const elapsed = Date.now() - startedAt;
-  const totalMs = TRIAL_DAYS * 24 * 60 * 60 * 1000;
-  const remainingMs = totalMs - elapsed;
-  const daysLeft = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
-  const expired = remainingMs <= 0;
-
-  return { isTrial: true, daysLeft, expired };
-}
-
-export function getMachineId(): string {
-  return getMachineFingerprint();
-}
-
-export function isFirstRun(): boolean {
-  return !store.get('licenseKey') && !store.get('trialStartedAt');
+  // Key is invalid — clear it so onboarding shows
+  clearLicense();
+  return false;
 }
 
 export { store };

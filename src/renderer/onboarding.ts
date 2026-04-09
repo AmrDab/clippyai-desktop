@@ -4,6 +4,8 @@ declare global {
       validateLicense: (key: string) => Promise<{ valid: boolean; plan: string }>;
       saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
       closeWindow: () => void;
+      openExternalUrl: (url: string) => Promise<boolean>;
+      onOnboardingComplete: () => void;
     };
   }
 }
@@ -103,6 +105,7 @@ btnNext.addEventListener('click', async () => {
 
     try {
       await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
+      window.clippy.onOnboardingComplete();
       window.close();
     } catch {
       btnNext.disabled = false;
@@ -122,4 +125,21 @@ licenseInput.addEventListener('input', () => {
   const pos = licenseInput.selectionStart;
   licenseInput.value = licenseInput.value.toUpperCase();
   licenseInput.setSelectionRange(pos, pos);
+});
+
+// ── Free trial button → opens Stripe checkout in browser ─────────────
+const STRIPE_PRO_TRIAL = 'https://buy.stripe.com/7sY6oGaAd2Pk71H2k6e3e02';
+const btnStartTrial = document.getElementById('btn-start-trial') as HTMLButtonElement;
+const trialHint = document.getElementById('trial-hint')!;
+
+btnStartTrial.addEventListener('click', async () => {
+  await window.clippy.openExternalUrl(STRIPE_PRO_TRIAL);
+  btnStartTrial.disabled = true;
+  btnStartTrial.textContent = 'Opening Stripe...';
+  trialHint.style.display = 'block';
+  licenseInput.focus();
+  setTimeout(() => {
+    btnStartTrial.disabled = false;
+    btnStartTrial.textContent = 'Start 7-Day Free Trial';
+  }, 3000);
 });

@@ -4,6 +4,8 @@ declare global {
       getConfig: () => Promise<Record<string, unknown>>;
       updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
       executeTool: (tool: string, params?: Record<string, unknown>) => Promise<unknown>;
+      clearLicense: () => Promise<boolean>;
+      openOnboarding: () => void;
     };
   }
 }
@@ -130,6 +132,16 @@ async function testConnection(): Promise<void> {
 }
 
 btnTestConnection.addEventListener('click', testConnection);
+
+// Change license key
+const btnChangeLicense = document.getElementById('btn-change-license');
+if (btnChangeLicense) {
+  btnChangeLicense.addEventListener('click', async () => {
+    await window.clippy.clearLicense();
+    window.clippy.openOnboarding();
+    window.close();
+  });
+}
 
 // Init
 loadConfig();

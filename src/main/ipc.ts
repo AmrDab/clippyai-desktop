@@ -1,16 +1,17 @@
-import { ipcMain, BrowserWindow, Menu, app } from 'electron';
+import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './clawdbridge';
 import {
   validateLicenseKey,
   saveLicense,
+  clearLicense,
   getLicenseKey,
   getPlan,
   getBuddyName,
   getTtsVoice,
   store as licenseStore,
 } from './license';
-import { setClickThrough, createSettingsWindow } from './window';
+import { setClickThrough, createSettingsWindow, createOnboardingWindow } from './window';
 
 export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): void {
   // User typed a message in the bubble
@@ -77,6 +78,44 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Open settings window
   ipcMain.on('open-settings', () => {
     createSettingsWindow();
+  });
+
+  // Open external URL (whitelisted domains only)
+  ipcMain.handle('open-external-url', async (_event, url: string) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname === 'buy.stripe.com' || parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app') {
+        await shell.openExternal(url);
+        return true;
+      }
+    } catch { /* invalid URL */ }
+    return false;
+  });
+
+  // Clear license (for re-entering a different key)
+  ipcMain.handle('clear-license', async () => {
+    clearLicense();
+    return true;
+  });
+
+  // Open onboarding window (from settings "Change License Key")
+  ipcMain.on('open-onboarding', () => {
+    createOnboardingWindow();
+  });
+
+  // Close onboarding window
+  ipcMain.on('close-onboarding', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && !win.isDestroyed()) win.close();
+  });
+
+  // Onboarding complete — show main window and activate
+  ipcMain.on('onboarding-complete', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      brain.setMode('awake');
+      mainWindow.webContents.send('mode-change', 'awake');
+    }
   });
 
   // Right-click context menu

@@ -63,4 +63,10 @@ contextBridge.exposeInMainWorld('clippy', {
   closeWindow: () => {
     ipcRenderer.send('close-onboarding');
   },
+
+  // License management
+  openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
+  clearLicense: () => ipcRenderer.invoke('clear-license'),
+  openOnboarding: () => ipcRenderer.send('open-onboarding'),
+  onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
 });
