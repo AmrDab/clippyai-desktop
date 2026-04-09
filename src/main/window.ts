@@ -166,3 +166,33 @@ export function createOnboardingWindow(): BrowserWindow {
   onboardingWindow.on('closed', () => { onboardingWindow = null; });
   return onboardingWindow;
 }
+
+let logWindow: BrowserWindow | null = null;
+
+export function createLogWindow(): BrowserWindow {
+  if (logWindow && !logWindow.isDestroyed()) {
+    logWindow.focus();
+    return logWindow;
+  }
+
+  logWindow = new BrowserWindow({
+    width: 700,
+    height: 500,
+    resizable: true,
+    title: 'ClippyAI Logs',
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    logWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/logs.html`);
+  } else {
+    logWindow.loadFile(path.join(__dirname, '../renderer/logs.html'));
+  }
+
+  logWindow.on('closed', () => { logWindow = null; });
+  return logWindow;
+}

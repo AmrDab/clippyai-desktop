@@ -6,6 +6,7 @@ declare global {
       executeTool: (tool: string, params?: Record<string, unknown>) => Promise<unknown>;
       clearLicense: () => Promise<boolean>;
       openOnboarding: () => void;
+      openExternalUrl: (url: string) => Promise<boolean>;
     };
   }
 }
@@ -72,7 +73,9 @@ async function loadConfig(): Promise<void> {
   // License
   const key = (config.licenseKey as string) || '';
   licenseKeyDisplay.textContent = key ? maskKey(key) : 'No key set';
-  licensePlanDisplay.textContent = (config.plan as string) || 'Unknown';
+  const planName = (config.plan as string) || 'Unknown';
+  licensePlanDisplay.textContent = planName;
+  showPlanFeatures(planName);
 }
 
 function maskKey(key: string): string {
@@ -141,6 +144,37 @@ if (btnChangeLicense) {
     window.clippy.openOnboarding();
     window.close();
   });
+}
+
+// Plan features display
+const PLAN_FEATURES_MAP: Record<string, string[]> = {
+  basic: ['Chat & questions', 'Web-grounded answers', '500K tokens/month'],
+  pro: ['Everything in Basic', 'Desktop automation', 'Browser control', '2M tokens/month'],
+  power: ['Everything in Pro', 'Multi-monitor', 'Custom personas', 'Priority support', '5M tokens/month'],
+};
+
+function showPlanFeatures(plan: string): void {
+  const el = document.getElementById('plan-features');
+  if (!el) return;
+  const lower = (plan || 'basic').toLowerCase();
+  const features = PLAN_FEATURES_MAP[lower] || PLAN_FEATURES_MAP.basic;
+  el.innerHTML = features.map(f => `✓ ${f}`).join('<br>');
+}
+
+// About links — open in default browser
+for (const [id, url] of [
+  ['link-website', 'https://clippyai.app'],
+  ['link-privacy', 'https://clippyai.app/privacy'],
+  ['link-terms', 'https://clippyai.app/terms'],
+  ['link-support', 'mailto:hello@clippyai.app'],
+] as const) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.clippy.openExternalUrl(url);
+    });
+  }
 }
 
 // Init

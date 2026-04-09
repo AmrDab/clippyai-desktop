@@ -7,7 +7,7 @@ import { registerIpcHandlers } from './ipc';
 import { initStartup } from './startup';
 import { isLicensed, revalidateIfNeeded } from './license';
 import { restartClawdCursor, isClawdCursorRunning } from './clawdbridge';
-import { createLogger } from './logger';
+import { createLogger, cleanOldLogs } from './logger';
 
 const log = createLogger('App');
 
@@ -15,8 +15,9 @@ let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
 
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.2.0' });
+  log.info('ClippyAI starting', { version: '0.3.0' });
   initStartup();
+  cleanOldLogs();
 
   // Auto-start ClawdCursor if not running
   const running = await isClawdCursorRunning();

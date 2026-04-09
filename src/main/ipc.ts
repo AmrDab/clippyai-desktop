@@ -11,7 +11,9 @@ import {
   getTtsVoice,
   store as licenseStore,
 } from './license';
-import { setClickThrough, createSettingsWindow, createOnboardingWindow } from './window';
+import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow } from './window';
+import fs from 'fs';
+import path from 'path';
 
 export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): void {
   // User typed a message in the bubble
@@ -109,6 +111,35 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (win && !win.isDestroyed()) win.close();
   });
 
+  // Log file operations
+  const logDir = path.join(app.getPath('home'), '.clippyai', 'logs');
+
+  ipcMain.handle('read-log-file', async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const logFile = path.join(logDir, `clippy-${today}.log`);
+      if (fs.existsSync(logFile)) {
+        return fs.readFileSync(logFile, 'utf-8');
+      }
+      // Try yesterday's if today's doesn't exist yet
+      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+      const yesterdayFile = path.join(logDir, `clippy-${yesterday}.log`);
+      if (fs.existsSync(yesterdayFile)) {
+        return fs.readFileSync(yesterdayFile, 'utf-8');
+      }
+      return null;
+    } catch { return null; }
+  });
+
+  ipcMain.handle('clear-log-file', async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const logFile = path.join(logDir, `clippy-${today}.log`);
+      if (fs.existsSync(logFile)) fs.writeFileSync(logFile, '');
+      return true;
+    } catch { return false; }
+  });
+
   // Onboarding complete — show main window and activate
   ipcMain.on('onboarding-complete', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -150,6 +181,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
         },
       },
       { type: 'separator' },
+      {
+        label: '📋 View Logs',
+        click: () => createLogWindow(),
+      },
       {
         label: '⚙️ Settings',
         click: () => createSettingsWindow(),

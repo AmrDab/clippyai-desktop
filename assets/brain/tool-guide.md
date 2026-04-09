@@ -2,12 +2,15 @@
 
 ## Available Tools & When to Use Them
 
-### Perception Tools (Read the screen)
+### Perception Tools (Read the screen — cheapest first)
 | Tool | Use When | Params |
 |------|----------|--------|
 | read_screen | FIRST ALWAYS — see UI elements | {} or {"filter":"interactive"} |
 | get_active_window | Quick check what app is focused | {} |
-| desktop_screenshot | Only when text methods fail | {} |
+| smart_read | OCR + accessibility text reading | {"scope":"window"} or {"target":"Search"} |
+| ocr_read_screen | Fast OCR for all visible text | {} |
+| desktop_screenshot_region | Zoomed inspection of small area | {"x":100,"y":200,"width":300,"height":200} |
+| desktop_screenshot | LAST RESORT — full screen capture | {} |
 
 ### Action Tools (Do things)
 | Tool | Use When | Params |
@@ -19,6 +22,9 @@
 | mouse_click | Click specific coordinates | {"x":500,"y":300} |
 | mouse_drag | Draw or drag | {"startX":300,"startY":400,"endX":500,"endY":400} |
 | mouse_scroll | Scroll up/down | {"x":640,"y":400,"direction":"down"} |
+| mouse_right_click | Open context menus | {"x":500,"y":300} |
+| invoke_element | Direct UIA action (faster than click) | {"action":"click","name":"Save"} |
+| find_element | Search for UI element by name/type | {"name":"Submit","controlType":"ControlType.Button"} |
 
 ### App Management
 | Tool | Use When | Params |

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+  <title>ClippyAI Logs</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Consolas', 'Courier New', monospace;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      background: #2d2d2d;
+      border-bottom: 1px solid #444;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 10;
+    }
+    .toolbar select, .toolbar button {
+      font-family: inherit;
+      font-size: 12px;
+      padding: 4px 8px;
+      background: #3c3c3c;
+      color: #d4d4d4;
+      border: 1px solid #555;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .toolbar button:hover { background: #505050; }
+    .toolbar .spacer { flex: 1; }
+    .toolbar .status { font-size: 11px; color: #888; }
+    #log-container {
+      padding: 8px 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-line { padding: 1px 0; }
+    .log-info { color: #4ec9b0; }
+    .log-warn { color: #dcdcaa; }
+    .log-error { color: #f44747; }
+    .log-debug { color: #808080; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <select id="filter-level">
+      <option value="all">All Levels</option>
+      <option value="info">Info+</option>
+      <option value="warn">Warn+</option>
+      <option value="error">Errors Only</option>
+    </select>
+    <button id="btn-refresh">Refresh</button>
+    <button id="btn-clear">Clear Log</button>
+    <div class="spacer"></div>
+    <span class="status" id="status">Loading...</span>
+  </div>
+  <div id="log-container"></div>
+
+  <script>
+    const container = document.getElementById('log-container');
+    const filterLevel = document.getElementById('filter-level');
+    const status = document.getElementById('status');
+    let autoScroll = true;
+
+    function colorize(line) {
+      if (line.includes('[ERROR]')) return 'log-error';
+      if (line.includes('[WARN]')) return 'log-warn';
+      if (line.includes('[INFO]')) return 'log-info';
+      if (line.includes('[DEBUG]')) return 'log-debug';
+      return '';
+    }
+
+    function shouldShow(line) {
+      const level = filterLevel.value;
+      if (level === 'all') return true;
+      if (level === 'error') return line.includes('[ERROR]');
+      if (level === 'warn') return line.includes('[ERROR]') || line.includes('[WARN]');
+      if (level === 'info') return !line.includes('[DEBUG]');
+      return true;
+    }
+
+    async function loadLogs() {
+      try {
+        const content = await window.clippy.readLogFile();
+        if (!content) {
+          container.textContent = 'No log file found.';
+          status.textContent = 'No logs';
+          return;
+        }
+        const lines = content.split('\n');
+        container.innerHTML = '';
+        let shown = 0;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (!shouldShow(line)) continue;
+          const div = document.createElement('div');
+          div.className = `log-line ${colorize(line)}`;
+          div.textContent = line;
+          container.appendChild(div);
+          shown++;
+        }
+        status.textContent = `${shown} lines`;
+        if (autoScroll) window.scrollTo(0, document.body.scrollHeight);
+      } catch (err) {
+        container.textContent = `Error reading logs: ${err}`;
+      }
+    }
+
+    filterLevel.addEventListener('change', loadLogs);
+    document.getElementById('btn-refresh').addEventListener('click', loadLogs);
+    document.getElementById('btn-clear').addEventListener('click', async () => {
+      await window.clippy.clearLogFile();
+      loadLogs();
+    });
+
+    // Auto-refresh every 3 seconds
+    loadLogs();
+    setInterval(loadLogs, 3000);
+
+    // Detect manual scroll → pause auto-scroll
+    window.addEventListener('scroll', () => {
+      const atBottom = (window.innerHeight + window.scrollY) >= document.body.offsetHeight - 50;
+      autoScroll = atBottom;
+    });
+  </script>
+</body>
+</html>

@@ -202,17 +202,60 @@ export class Brain {
     return similarity > 0.5;
   }
 
+  // ── Animation picker ────────────────────────────────────────────
+  private pickAnimation(context: 'question_processing' | 'question_answered' | 'action_start' | 'action_typing' | 'action_complete' | 'error' | 'proactive' | 'upgrade' | 'greeting'): string {
+    switch (context) {
+      case 'question_processing': return 'Thinking';
+      case 'question_answered': return 'Wave';
+      case 'action_start': return 'Searching';
+      case 'action_typing': return 'Writing';
+      case 'action_complete': return 'Congratulate';
+      case 'error': return 'Alert';
+      case 'proactive': return 'Suggest';
+      case 'upgrade': return 'GetAttention';
+      case 'greeting': return 'Wave';
+      default: return 'Wave';
+    }
+  }
+
+  // ── Web-knowledge detector ────────────────────────────────────
+  private isWebKnowledgeQuery(text: string): boolean {
+    const lower = text.toLowerCase();
+    const webTopics = [
+      'weather', 'temperature', 'forecast',
+      'stock', 'market', 'price of',
+      'news', 'latest', 'headline',
+      'define', 'definition', 'meaning of',
+      'translate', 'translation',
+      'calculate', 'convert', 'how much is',
+      'what time', 'time zone', 'time in',
+      'who is', 'who was', 'what is', 'what was', 'what are',
+      'when is', 'when was', 'when did',
+      'where is', 'where was',
+      'how many', 'how old', 'how far', 'how long',
+      'population', 'capital of', 'president',
+      'score', 'results', 'standings',
+      'exchange rate', 'currency',
+      'recipe', 'ingredients',
+    ];
+    return webTopics.some(topic => lower.includes(topic));
+  }
+
   private isQuestionNotAction(text: string): boolean {
     const lower = text.toLowerCase().trim();
+
+    // Web-knowledge queries are ALWAYS questions, even if they contain "search"
+    if (this.isWebKnowledgeQuery(lower)) return true;
 
     // Explicit action verbs ANYWHERE in the message → NOT a question
     const actionVerbs = [
       'open', 'click', 'type', 'scroll', 'save', 'close', 'navigate',
-      'go to', 'search for', 'draw', 'send', 'write in', 'focus',
+      'go to', 'draw', 'send', 'write in', 'focus',
       'switch to', 'minimize', 'maximize', 'drag', 'paste', 'copy',
       'press', 'run', 'launch', 'start', 'stop', 'create', 'delete',
     ];
-    // Check if ANY action verb appears anywhere in the text
+    // NOTE: "search for" removed from action verbs — it's ambiguous and
+    // now handled by the web-knowledge check above
     for (const verb of actionVerbs) {
       if (lower.includes(verb)) return false;
     }
@@ -227,7 +270,7 @@ export class Brain {
     }
 
     // Default: if short and no clear action verb, treat as question
-    if (lower.split(' ').length <= 5 && !actionVerbs.some(v => lower.includes(v))) {
+    if (lower.split(' ').length <= 5) {
       return true;
     }
 
@@ -256,6 +299,11 @@ export class Brain {
       log.warn('Could not get screen context');
     }
 
+    // Show thinking animation for questions while waiting for API
+    if (isQuestion) {
+      this.emitToRenderer('clippy-speak', { text: '', animate: this.pickAnimation('question_processing') });
+    }
+
     // Use different prompts for questions vs actions
     const systemPrompt = isQuestion
       ? QUESTION_SYSTEM_PROMPT.replace('{CONTEXT}', screenContext)
@@ -266,8 +314,7 @@ export class Brain {
       context: screenContext,
       system: systemPrompt,
       history: this.conversationHistory.slice(-10),
-      // webSearch disabled — googleSearchRetrieval not supported on current Gemini plan
-      // webSearch: isQuestion,
+      webSearch: isQuestion && this.isWebKnowledgeQuery(text),
     });
 
     // For questions, NEVER execute actions even if AI includes them
@@ -304,12 +351,12 @@ export class Brain {
         await restartClawdCursor();
         const retryRunning = await isClawdCursorRunning();
         if (!retryRunning) {
-          this.emitToRenderer('clippy-speak', { text: "My tools aren't responding right now.", animate: 'Alert' });
+          this.emitToRenderer('clippy-speak', { text: "My tools aren't responding right now.", animate: this.pickAnimation('error') });
           return;
         }
       }
 
-      this.emitToRenderer('clippy-speak', { text: 'On it!', animate: 'Searching' });
+      this.emitToRenderer('clippy-speak', { text: 'On it!', animate: this.pickAnimation('action_start') });
 
       const history: Array<{ action: string; params: Record<string, unknown>; result: string }> = [];
       const MAX_AGENT_STEPS = 8;
@@ -339,7 +386,7 @@ export class Brain {
         const agentResponse = await this.callAgentApi(userRequest, screenText, history, step);
 
         if (!agentResponse) {
-          this.emitToRenderer('clippy-speak', { text: "Lost connection to my brain.", animate: 'Alert' });
+          this.emitToRenderer('clippy-speak', { text: "Lost connection to my brain.", animate: this.pickAnimation('error') });
           break;
         }
 
@@ -347,8 +394,8 @@ export class Brain {
         if ((agentResponse as any)._error === 'feature_locked') {
           log.warn('Desktop actions locked for current plan');
           this.emitToRenderer('clippy-speak', {
-            text: "Desktop automation needs Pro! 📎 Upgrade at clippyai.app/pricing to unlock me.",
-            animate: 'Alert',
+            text: "That's a Pro feature! I can chat all day, but to control your desktop you'd need to upgrade at clippyai.app 📎",
+            animate: this.pickAnimation('upgrade'),
           });
           break;
         }
@@ -361,14 +408,18 @@ export class Brain {
 
         // 3. Show status to user
         if (agentResponse.message) {
-          this.emitToRenderer('clippy-speak', { text: agentResponse.message, animate: 'Searching' });
+                    // Pick animation based on what the agent is doing
+          const stepAnim = (agentResponse.action === 'type_text' || agentResponse.action === 'smart_type')
+            ? this.pickAnimation('action_typing')
+            : this.pickAnimation('action_start');
+          this.emitToRenderer('clippy-speak', { text: agentResponse.message, animate: stepAnim });
         }
 
         // 4. If done, finish
         if (agentResponse.done || !agentResponse.action) {
           this.emitToRenderer('clippy-speak', {
             text: agentResponse.message || 'Done! ✨',
-            animate: 'Congratulate',
+            animate: this.pickAnimation('action_complete'),
           });
           break;
         }
@@ -381,7 +432,7 @@ export class Brain {
             log.warn(`Loop detected: ${signature} repeated — breaking`);
             this.emitToRenderer('clippy-speak', {
               text: "I'm stuck. Try giving me a more specific instruction!",
-              animate: 'Alert',
+              animate: this.pickAnimation('error'),
             });
             break;
           }
@@ -395,7 +446,7 @@ export class Brain {
           log.warn(`Action ${agentResponse.action} has failed 2+ times — breaking`);
           this.emitToRenderer('clippy-speak', {
             text: `${agentResponse.action} keeps failing. I'll stop here.`,
-            animate: 'Alert',
+            animate: this.pickAnimation('error'),
           });
           break;
         }
@@ -425,7 +476,7 @@ export class Brain {
         await new Promise((r) => setTimeout(r, 800));
 
         if (step === MAX_AGENT_STEPS) {
-          this.emitToRenderer('clippy-speak', { text: "That's a complex task! I've done what I can.", animate: 'Wave' });
+          this.emitToRenderer('clippy-speak', { text: "That's a complex task! I've done what I can.", animate: this.pickAnimation('action_complete') });
         }
       }
     } catch (err) {
@@ -534,9 +585,9 @@ export class Brain {
         return;
       }
 
-      // Always take screenshot — Clippy sees everything
-      const [screenshot, activeWin] = await Promise.allSettled([
-        takeScreenshot(),
+      // Cheaper perception: read text first, only screenshot as fallback
+      const [screenText, activeWin] = await Promise.allSettled([
+        executeTool('smart_read', { scope: 'window' }),
         getActiveWindow(),
       ]);
 
@@ -544,15 +595,25 @@ export class Brain {
         ? `User is working in: ${activeWin.value.text}`
         : 'Unknown application';
 
-      const screenshotData = screenshot.status === 'fulfilled'
-        ? screenshot.value.image?.data
-        : undefined;
+      // Use text-based context when available, fall back to screenshot only if text is empty
+      const textData = screenText.status === 'fulfilled' ? screenText.value.text : '';
+      let screenshotData: string | undefined;
+      if (!textData || textData.length < 30) {
+        try {
+          const ss = await takeScreenshot();
+          screenshotData = ss.image?.data;
+        } catch { /* screenshot failed, continue with text only */ }
+      }
 
-      const message = await this.callProactive(context, screenshotData);
+      const fullContext = textData
+        ? `${context}\nScreen text: ${textData.substring(0, 800)}`
+        : context;
+
+      const message = await this.callProactive(fullContext, screenshotData);
 
       if (message && message.trim() && !this.isSimilarToLast(message)) {
         this.lastMessage = message;
-        this.emitToRenderer('clippy-speak', { text: message, animate: 'Suggest' });
+        this.emitToRenderer('clippy-speak', { text: message, animate: this.pickAnimation('proactive') });
         // After speaking, wait at least 2 minutes before next proactive message
         this.noRepeatUntil = Date.now() + 120_000;
       }

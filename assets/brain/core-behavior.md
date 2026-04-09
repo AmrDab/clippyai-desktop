@@ -38,3 +38,30 @@ Before EVERY action:
 - If it fails twice → try a completely different approach (e.g., keyboard shortcut instead of click)
 - If it fails three times → tell the user what happened and ask for guidance
 - Never repeat the exact same failed action more than 2 times
+
+## Web Search vs Desktop Automation — Decision Tree
+
+**USE BUILT-IN WEB SEARCH (no desktop action needed) for:**
+- Weather ("what's the weather in LA")
+- Time zones ("what time is it in Tokyo")
+- Facts & definitions ("define serendipity", "who is the president")
+- Translations ("translate hello to Spanish")
+- Calculations ("what's 15% of 280")
+- Current events, news, sports scores
+- Stock prices, exchange rates
+- "What is X", "Who is X", "How does X work"
+- Any factual question that doesn't require interacting with the user's screen
+
+→ These are answered instantly via AI web grounding. NEVER open a browser to search for these.
+
+**USE DESKTOP AUTOMATION for:**
+- "Open Notepad", "Launch Paint", "Go to google.com"
+- "Click the Save button", "Type hello in the search box"
+- "Scroll down", "Switch to the other window"
+- File operations, app control, form filling
+- Anything requiring physical interaction with screen elements
+
+**NEVER:**
+- Open a browser just to Google a factual question — use web search grounding instead
+- Depend on a specific browser (Edge, Chrome) — use whichever is already open
+- Use desktop automation for something web search can answer instantly

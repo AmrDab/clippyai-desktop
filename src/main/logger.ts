@@ -124,5 +124,38 @@ export function getLogDir(): string {
   return LOG_DIR;
 }
 
+/**
+ * Delete log files older than 24 hours. Call at app startup.
+ */
+export function cleanOldLogs(): void {
+  ensureLogDir();
+  try {
+    const files = fs.readdirSync(LOG_DIR);
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const file of files) {
+      if (!file.startsWith('clippy-') || !file.endsWith('.log')) continue;
+      const fullPath = path.join(LOG_DIR, file);
+      try {
+        const stats = fs.statSync(fullPath);
+        if (stats.mtimeMs < cutoff) {
+          fs.unlinkSync(fullPath);
+        }
+      } catch { /* skip files we can't stat */ }
+    }
+    // Also clean rotated files (.log.1, .log.2, etc.)
+    for (const file of files) {
+      if (/\.log\.\d+$/.test(file)) {
+        const fullPath = path.join(LOG_DIR, file);
+        try {
+          const stats = fs.statSync(fullPath);
+          if (stats.mtimeMs < cutoff) {
+            fs.unlinkSync(fullPath);
+          }
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* log dir might not exist yet */ }
+}
+
 // Initialize on import
 ensureLogDir();

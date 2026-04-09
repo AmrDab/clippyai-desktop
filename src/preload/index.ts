@@ -69,4 +69,8 @@ contextBridge.exposeInMainWorld('clippy', {
   clearLicense: () => ipcRenderer.invoke('clear-license'),
   openOnboarding: () => ipcRenderer.send('open-onboarding'),
   onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
+
+  // Log viewer
+  readLogFile: () => ipcRenderer.invoke('read-log-file'),
+  clearLogFile: () => ipcRenderer.invoke('clear-log-file'),
 });
