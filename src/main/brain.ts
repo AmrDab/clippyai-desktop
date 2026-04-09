@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 const log = createLogger('Brain');
-const API_BASE = 'https://clippyai-api.amraldabbas19.workers.dev';
+const API_BASE = 'https://api.clippyai.app';
 
 // ========== Load Behavioral Guidance ==========
 

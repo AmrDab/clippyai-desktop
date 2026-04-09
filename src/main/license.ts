@@ -3,7 +3,7 @@ import { net } from 'electron';
 import os from 'os';
 import crypto from 'crypto';
 
-const API_BASE = 'https://clippyai-api.amraldabbas19.workers.dev';
+const API_BASE = 'https://api.clippyai.app';
 const GRACE_PERIOD_DAYS = 7;
 const TRIAL_DAYS = 7;
 

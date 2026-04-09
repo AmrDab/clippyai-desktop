@@ -1,9 +1,15 @@
 {
   "name": "clippyai",
   "version": "0.1.0",
-  "description": "AI-powered desktop buddy — ClippyAI",
+  "productName": "ClippyAI",
+  "description": "ClippyAI — Your AI desktop buddy",
+  "homepage": "https://clippyai.app",
   "main": "out/main/index.js",
-  "author": "AmrDab <cloudanateam@gmail.com>",
+  "author": {
+    "name": "Cloudana",
+    "email": "hello@clippyai.app",
+    "url": "https://clippyai.app"
+  },
   "license": "UNLICENSED",
   "private": true,
   "scripts": {

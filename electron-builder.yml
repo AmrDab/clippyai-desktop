@@ -1,22 +1,61 @@
 appId: ai.cloudana.clippyai
 productName: ClippyAI
+copyright: Copyright © 2026 Cloudana · ClippyAI
+# Shown in the "File description" field of Properties → Details
+buildVersion: 0.1.0
+extraMetadata:
+  description: ClippyAI — Your AI desktop buddy
+  author:
+    name: Cloudana
+    email: hello@clippyai.app
+
 win:
-  target: nsis
+  target:
+    - target: nsis
+      arch: x64
   icon: build/icon.ico
+  # Embedded in the .exe as the Windows "verified publisher" string
+  publisherName: Cloudana
+  # Used for VERSIONINFO resource (file description / product name)
+  legalTrademarks: ClippyAI is a trademark of Cloudana.
+  requestedExecutionLevel: asInvoker
+  # File naming — clean, no spaces
+  artifactName: ClippyAI-Setup-${version}.${ext}
+  # We're not code signing yet — skip rcedit steps that require winCodeSign
   signAndEditExecutable: false
   signingHashAlgorithms: []
   forceCodeSigning: false
+
 nsis:
   oneClick: false
+  perMachine: false
+  allowElevation: true
   allowToChangeInstallationDirectory: true
-  createDesktopShortcut: true
+  createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: ClippyAI
+  # Custom installer/uninstaller icons (same as app icon for brand consistency)
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  # How the app shows in "Add or Remove Programs"
+  uninstallDisplayName: ClippyAI — AI Desktop Buddy
+  # Run the app automatically after install finishes (checkbox, default on)
+  runAfterFinish: true
+  # License page — skip for now (can add later)
+  # license: build/LICENSE.txt
+  # Branded names
+  displayLanguageSelector: false
+  menuCategory: ClippyAI
+  # Preserve user data (like license key, trial state) across reinstalls
+  deleteAppDataOnUninstall: false
+
 files:
   - out/**/*
   - assets/**/*
   - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,readme,README,*.d.ts,__tests__,test,tests,docs,doc}"
   - "!**/node_modules/*/*.map"
+
 extraResources:
   - from: vendor/clawdcursor
     to: clawdcursor
@@ -29,7 +68,9 @@ extraResources:
       - "!**/CHANGELOG.md"
       - "!**/README.md"
       - "!**/SKILL.md"
+
 directories:
   output: release
   buildResources: build
+
 publish: null

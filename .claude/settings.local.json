@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__clawd-cursor__navigate_browser",
+      "mcp__clawd-cursor__cdp_connect",
+      "mcp__clawd-cursor__cdp_switch_tab"
+    ]
+  }
+}
