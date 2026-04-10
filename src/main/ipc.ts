@@ -13,7 +13,7 @@ import {
 } from './license';
 import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow } from './window';
-import { installUpdate } from './updater';
+import { installUpdate, downloadUpdate } from './updater';
 import fs from 'fs';
 import path from 'path';
 
@@ -124,7 +124,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (win && !win.isDestroyed()) win.close();
   });
 
-  // Auto-update: install downloaded update
+  // Auto-update
+  ipcMain.handle('download-update', async () => {
+    downloadUpdate();
+    return true;
+  });
   ipcMain.handle('install-update', async () => {
     installUpdate();
     return true;

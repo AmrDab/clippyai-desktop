@@ -71,7 +71,11 @@ contextBridge.exposeInMainWorld('clippy', {
   onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
 
   // Auto-update
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateAvailable: (cb: (version: string) => void) => {
+    ipcRenderer.on('update-available', (_e, version) => cb(version));
+  },
   onUpdateReady: (cb: (version: string) => void) => {
     ipcRenderer.on('update-ready', (_e, version) => cb(version));
   },

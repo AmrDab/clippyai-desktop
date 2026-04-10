@@ -22,7 +22,9 @@ declare global {
       expandWindow: () => void;
       collapseWindow: () => void;
       closeWindow: () => void;
+      downloadUpdate: () => Promise<boolean>;
       installUpdate: () => Promise<boolean>;
+      onUpdateAvailable: (cb: (version: string) => void) => void;
       onUpdateReady: (cb: (version: string) => void) => void;
     };
   }
@@ -93,19 +95,29 @@ async function init(): Promise<void> {
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 
-  // === Auto-update notification ===
+  // === Auto-update (optional, user-driven) ===
+  window.clippy.onUpdateAvailable((version) => {
+    clippyCtrl.playNamed('Suggest');
+    bubbleCtrl.speak(`v${version} is available! Click me to download it. 📎`);
+
+    // Click Clippy → start download
+    setTimeout(() => canvas.addEventListener('click', function downloadHandler() {
+      canvas.removeEventListener('click', downloadHandler);
+      bubbleCtrl.speak('Downloading update...');
+      clippyCtrl.playNamed('Searching');
+      window.clippy.downloadUpdate();
+    }, { once: true }), 2000);
+  });
+
   window.clippy.onUpdateReady((version) => {
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`Update v${version} is ready! Click me to restart and update. 📎`);
-    tts.speak(`An update is ready!`);
+    bubbleCtrl.speak(`v${version} is ready! Click me to restart and update. 📎`);
+    tts.speak('Update ready!');
 
-    // Next click on canvas triggers update install
-    const handler = () => {
-      canvas.removeEventListener('click', handler);
+    setTimeout(() => canvas.addEventListener('click', function installHandler() {
+      canvas.removeEventListener('click', installHandler);
       window.clippy.installUpdate();
-    };
-    // Delay adding click handler so current click doesn't trigger it
-    setTimeout(() => canvas.addEventListener('click', handler, { once: true }), 2000);
+    }, { once: true }), 2000);
   });
 
   // === Drag + Click handling ===
