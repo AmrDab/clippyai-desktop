@@ -8,6 +8,7 @@ import { initStartup } from './startup';
 import { isLicensed, revalidateIfNeeded } from './license';
 import { restartClawdCursor, isClawdCursorRunning } from './clawdbridge';
 import { createLogger, cleanOldLogs } from './logger';
+import { initUpdater, checkForUpdates } from './updater';
 
 const log = createLogger('App');
 
@@ -53,6 +54,10 @@ function launchMainApp(): void {
 
   brain.setMode('awake');
   mainWindow.webContents.send('mode-change', 'awake');
+
+  // Check for updates 10 seconds after launch (don't slow startup)
+  initUpdater(mainWindow);
+  setTimeout(() => checkForUpdates(), 10_000);
 
   log.info('ClippyAI ready');
 }

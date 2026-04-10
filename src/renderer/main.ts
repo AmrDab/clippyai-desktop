@@ -22,6 +22,8 @@ declare global {
       expandWindow: () => void;
       collapseWindow: () => void;
       closeWindow: () => void;
+      installUpdate: () => Promise<boolean>;
+      onUpdateReady: (cb: (version: string) => void) => void;
     };
   }
 }
@@ -90,6 +92,21 @@ async function init(): Promise<void> {
   window.clippy.onTtsToggle((enabled) => tts.setEnabled(enabled));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
+
+  // === Auto-update notification ===
+  window.clippy.onUpdateReady((version) => {
+    clippyCtrl.playNamed('GetAttention');
+    bubbleCtrl.speak(`Update v${version} is ready! Click me to restart and update. 📎`);
+    tts.speak(`An update is ready!`);
+
+    // Next click on canvas triggers update install
+    const handler = () => {
+      canvas.removeEventListener('click', handler);
+      window.clippy.installUpdate();
+    };
+    // Delay adding click handler so current click doesn't trigger it
+    setTimeout(() => canvas.addEventListener('click', handler, { once: true }), 2000);
+  });
 
   // === Drag + Click handling ===
   // Distinguish between drag (move window) and click (open bubble)

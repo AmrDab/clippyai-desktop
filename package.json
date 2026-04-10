@@ -22,7 +22,8 @@
     "postinstall": "node scripts/copy-assets.js"
   },
   "dependencies": {
-    "electron-store": "^8.2.0"
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.3"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -13,6 +13,7 @@ import {
 } from './license';
 import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow } from './window';
+import { installUpdate } from './updater';
 import fs from 'fs';
 import path from 'path';
 
@@ -121,6 +122,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   ipcMain.on('close-onboarding', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && !win.isDestroyed()) win.close();
+  });
+
+  // Auto-update: install downloaded update
+  ipcMain.handle('install-update', async () => {
+    installUpdate();
+    return true;
   });
 
   // User profile

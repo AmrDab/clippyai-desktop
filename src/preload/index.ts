@@ -70,6 +70,12 @@ contextBridge.exposeInMainWorld('clippy', {
   openOnboarding: () => ipcRenderer.send('open-onboarding'),
   onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
 
+  // Auto-update
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  onUpdateReady: (cb: (version: string) => void) => {
+    ipcRenderer.on('update-ready', (_e, version) => cb(version));
+  },
+
   // User profile
   getUserProfile: () => ipcRenderer.invoke('get-user-profile'),
   saveUserProfile: (data: Record<string, string>) => ipcRenderer.invoke('save-user-profile', data),
