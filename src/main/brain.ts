@@ -537,10 +537,18 @@ export class Brain {
       req.setHeader('Content-Type', 'application/json');
       req.setHeader('Authorization', `Bearer ${licenseKey}`);
 
+      // Timeout: abort after 60 seconds
+      const timeout = setTimeout(() => {
+        log.error('Agent API timeout (60s)');
+        req.abort();
+        resolve(null);
+      }, 60_000);
+
       req.on('response', (response) => {
         let data = '';
         response.on('data', (chunk) => { data += chunk.toString(); });
         response.on('end', () => {
+          clearTimeout(timeout);
           const elapsed = Date.now() - startTime;
           log.debug(`Agent API response (${elapsed}ms)`, data.substring(0, 300));
 
@@ -548,7 +556,6 @@ export class Brain {
             const result = JSON.parse(data);
             if (result.error) {
               log.warn('Agent API error', result.error);
-              // Pass error info back so the loop can show a useful message
               resolve({
                 action: null,
                 params: {},
@@ -567,6 +574,7 @@ export class Brain {
       });
 
       req.on('error', (err) => {
+        clearTimeout(timeout);
         log.error('Agent API network error', String(err));
         resolve(null);
       });
@@ -601,8 +609,8 @@ export class Brain {
     try {
       const running = await isClawdCursorRunning();
       if (!running) {
-        // Auto-restart ClawdCursor
-        restartClawdCursor();
+        // Auto-restart ClawdCursor (await so it's ready before next tick)
+        await restartClawdCursor();
         if (!this.greetedOnWake) {
           this.greetedOnWake = true;
           this.emitToRenderer('clippy-speak', {
@@ -682,10 +690,18 @@ export class Brain {
       req.setHeader('Content-Type', 'application/json');
       req.setHeader('Authorization', `Bearer ${licenseKey}`);
 
+      // Timeout: abort after 30 seconds
+      const timeout = setTimeout(() => {
+        log.error(`${logPrefix} API timeout (30s)`);
+        req.abort();
+        resolve("Took too long — try again!");
+      }, 30_000);
+
       req.on('response', (response) => {
         let data = '';
         response.on('data', (chunk) => { data += chunk.toString(); });
         response.on('end', () => {
+          clearTimeout(timeout);
           const elapsed = Date.now() - startTime;
           log.debug(`${logPrefix} API response (${elapsed}ms)`, data.substring(0, 300));
 
@@ -713,6 +729,7 @@ export class Brain {
       });
 
       req.on('error', (err) => {
+        clearTimeout(timeout);
         log.error(`${logPrefix} network error`, String(err));
         resolve("Can't reach my brain. Try again!");
       });
