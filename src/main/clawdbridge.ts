@@ -117,12 +117,15 @@ export async function isClawdCursorRunning(): Promise<boolean> {
  */
 function resolveClawdCursor(): { command: string; args: string[]; useElectronAsNode: boolean } {
   // Production: bundled under resources/clawdcursor/dist/index.js
+  // Use -e eval with argv override because commander chokes when
+  // Electron passes the script path as an argv element.
   const bundled = path.join(process.resourcesPath || '', 'clawdcursor', 'dist', 'index.js');
   if (fs.existsSync(bundled)) {
     log.info('Using bundled ClawdCursor', bundled);
+    const escaped = bundled.replace(/\\/g, '\\\\');
     return {
       command: process.execPath,
-      args: [bundled, 'serve'],
+      args: ['-e', `process.argv=['node','serve'];require('${escaped}')`],
       useElectronAsNode: true,
     };
   }
