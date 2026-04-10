@@ -73,9 +73,13 @@ async function init(): Promise<void> {
 
   // === IPC Event Listeners ===
   window.clippy.onSpeak(({ text, animate }) => {
-    bubbleCtrl.speak(text);
-    tts.speak(text);
-    clippyCtrl.playNamed(animate);
+    // Never display undefined/null/empty in the bubble
+    const safeText = text || '';
+    if (safeText) {
+      bubbleCtrl.speak(safeText);
+      tts.speak(safeText);
+    }
+    if (animate) clippyCtrl.playNamed(animate);
   });
 
   window.clippy.onModeChange((mode) => {

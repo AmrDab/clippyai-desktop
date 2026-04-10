@@ -466,7 +466,9 @@ export class Brain {
           const stepAnim = (agentResponse.action === 'type_text' || agentResponse.action === 'smart_type')
             ? this.pickAnimation('action_typing')
             : this.pickAnimation('action_start');
-          this.emitToRenderer('clippy-speak', { text: agentResponse.message, animate: stepAnim });
+          if (agentResponse.message) {
+            this.emitToRenderer('clippy-speak', { text: agentResponse.message, animate: stepAnim });
+          }
         }
 
         // 4. If done, finish
@@ -674,9 +676,9 @@ export class Brain {
 
       const message = await this.callProactive(fullContext, screenshotData);
 
-      if (message && message.trim() && !this.isSimilarToLast(message)) {
+      if (message && typeof message === 'string' && message.trim() && !this.isSimilarToLast(message)) {
         this.lastMessage = message;
-        this.emitToRenderer('clippy-speak', { text: message, animate: this.pickAnimation('proactive') });
+        this.emitToRenderer('clippy-speak', { text: message.trim(), animate: this.pickAnimation('proactive') });
         // After speaking, wait at least 2 minutes before next proactive message
         this.noRepeatUntil = Date.now() + 120_000;
       }
