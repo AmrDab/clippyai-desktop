@@ -13,11 +13,39 @@ import { initUpdater, checkForUpdates } from './updater';
 
 const log = createLogger('App');
 
+// ── Single instance lock ─────────────────────────────────────────
+// Prevents multiple Clippy instances from opening
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  log.info('Another instance is already running — quitting');
+  app.quit();
+}
+
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
 
+// When user tries to launch a second instance, focus the existing one
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
+
+// Suppress uncaught EPIPE errors (ClawdCursor pipe breaks) — log, don't show dialog
+process.on('uncaughtException', (err) => {
+  if (err.message?.includes('EPIPE') || err.message?.includes('broken pipe')) {
+    log.warn('Suppressed EPIPE error (ClawdCursor pipe break)', err.message);
+    return; // Don't show error dialog
+  }
+  log.error('Uncaught exception', err.message);
+  // Re-throw non-EPIPE errors so Electron's default handler shows them
+  throw err;
+});
+
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.3.2' });
+  log.info('ClippyAI starting', { version: '0.3.3' });
   initStartup();
   cleanOldLogs();
 
