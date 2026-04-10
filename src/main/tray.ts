@@ -6,18 +6,9 @@ import { getBuddyName } from './license';
 
 let tray: Tray | null = null;
 
-function createTrayIcon(awake: boolean): Electron.NativeImage {
-  // 16x16 circle as a data URI PNG — green for awake, grey for sleep
-  // Pre-encoded tiny PNGs to avoid buffer format issues on Windows
-  const greenCircle = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQVR4nGNgoAXwWR/wHxumSDNRhhDSjNcQYjVjNYRUzRiGjBpABQMojkaqJCRiDcGrmZAhRGkmFQAAAJ9lKE8XC1oAAAAASUVORK5CYII=';
-  const greyCircle = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAO0lEQVR4nGNgoAWYN2/ef2yYIs1EGUJIM15DiNWM1RBSNWMYMmoAFQygOBqpkpCINQSvZkKGEKWZVAAAOiC8THLi6UwAAAAASUVORK5CYII=';
-
-  try {
-    return nativeImage.createFromDataURL(awake ? greenCircle : greyCircle);
-  } catch {
-    // Fallback: use the build icon
-    return nativeImage.createFromPath(path.join(__dirname, '../../build/icon.ico'));
-  }
+function createTrayIcon(_awake: boolean): Electron.NativeImage {
+  // Use the actual paperclip app icon for the system tray
+  return nativeImage.createFromPath(path.join(__dirname, '../../build/icon.ico')).resize({ width: 16, height: 16 });
 }
 
 export function setupTray(win: BrowserWindow, brain: Brain): Tray {

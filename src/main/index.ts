@@ -17,7 +17,7 @@ let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
 
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.3.1' });
+  log.info('ClippyAI starting', { version: '0.3.2' });
   initStartup();
   cleanOldLogs();
 
