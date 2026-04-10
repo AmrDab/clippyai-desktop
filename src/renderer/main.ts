@@ -6,7 +6,6 @@ declare global {
   interface Window {
     clippy: {
       sendMessage: (text: string) => Promise<string>;
-      executeTool: (tool: string, params?: Record<string, unknown>) => Promise<unknown>;
       validateLicense: (key: string) => Promise<{ valid: boolean; plan: string }>;
       saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
       getConfig: () => Promise<Record<string, unknown>>;

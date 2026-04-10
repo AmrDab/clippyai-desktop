@@ -1,10 +1,11 @@
 import { BrowserWindow, net } from 'electron';
 import { takeScreenshot, getActiveWindow, isClawdCursorRunning, executeTool, restartClawdCursor } from './clawdbridge';
-import { getLicenseKey } from './license';
+import { getLicenseKey, getPlan } from './license';
 import Store from 'electron-store';
 import { createLogger } from './logger';
 import fs from 'fs';
 import path from 'path';
+import { app } from 'electron';
 
 const log = createLogger('Brain');
 const API_BASE = 'https://api.clippyai.app';
@@ -13,7 +14,7 @@ const API_BASE = 'https://api.clippyai.app';
 
 function loadGuidance(): string {
   const brainDir = path.join(__dirname, '../../assets/brain');
-  const files = ['identity.md', 'core-behavior.md', 'tool-guide.md', 'app-knowledge.md', 'safety-rules.md'];
+  const files = ['identity.md', 'core-behavior.md', 'tool-guide.md', 'app-knowledge.md', 'safety-rules.md', 'conversation-style.md'];
   const sections: string[] = [];
 
   for (const file of files) {
@@ -31,11 +32,65 @@ function loadGuidance(): string {
 const GUIDANCE = loadGuidance();
 log.info('Loaded guidance files', { length: GUIDANCE.length });
 
+// ========== User Profile ==========
+
+function getUserProfilePath(): string {
+  return path.join(app.getPath('userData'), 'user.md');
+}
+
+function loadUserProfile(): string {
+  try {
+    const profilePath = getUserProfilePath();
+    if (fs.existsSync(profilePath)) {
+      return fs.readFileSync(profilePath, 'utf-8');
+    }
+  } catch (err) {
+    log.warn('Could not load user profile', err);
+  }
+  return '';
+}
+
+export function saveUserProfile(data: Record<string, string>): void {
+  const lines = ['# User Profile', ''];
+  for (const [key, value] of Object.entries(data)) {
+    if (value) lines.push(`- **${key}:** ${value}`);
+  }
+  try {
+    fs.writeFileSync(getUserProfilePath(), lines.join('\n'), 'utf-8');
+    log.info('User profile saved');
+  } catch (err) {
+    log.error('Failed to save user profile', err);
+  }
+}
+
+export function getUserProfile(): Record<string, string> {
+  const content = loadUserProfile();
+  const profile: Record<string, string> = {};
+  const regex = /- \*\*(.+?):\*\* (.+)/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    profile[match[1]] = match[2];
+  }
+  return profile;
+}
+
+export function isProfileSetUp(): boolean {
+  const profile = getUserProfile();
+  return !!profile['Name'];
+}
+
 // ========== System Prompts ==========
 
-const CHAT_SYSTEM_PROMPT = `You are Clippy — 📎 the AI desktop buddy. You are NOT Copilot, ChatGPT, Gemini, or any other AI.
+function buildChatPrompt(): string {
+  const profile = loadUserProfile();
+  const profileSection = profile ? `\nUser profile:\n${profile}\n` : '';
+  const plan = getPlan() || 'unknown';
+
+  return `You are Clippy — 📎 the AI desktop buddy. You are NOT Copilot, ChatGPT, Gemini, or any other AI.
 
 PERSONALITY: Witty, charming, concise (1-2 sentences max). Like a smart coworker.
+${profileSection}
+User's plan: ${plan}
 
 You CAN see the user's screen and you CAN take actions on their computer (open apps, click, type, draw, browse, etc).
 
@@ -49,10 +104,20 @@ When the user asks a QUESTION:
 
 Current screen context:
 {CONTEXT}`;
+}
 
-const QUESTION_SYSTEM_PROMPT = `You are Clippy — the AI desktop buddy. 📎 You are NOT Copilot, ChatGPT, Gemini, or any other AI. You are Clippy.
+// Legacy constant aliases (for proactive + question prompts)
+
+function buildQuestionPrompt(): string {
+  const profile = loadUserProfile();
+  const profileSection = profile ? `\nUser profile:\n${profile}\n` : '';
+  const plan = getPlan() || 'unknown';
+
+  return `You are Clippy — the AI desktop buddy. 📎 You are NOT Copilot, ChatGPT, Gemini, or any other AI. You are Clippy.
 
 PERSONALITY: Witty, charming, concise (1-3 sentences max). Casual like a coworker.
+${profileSection}
+User's plan: ${plan}
 
 The user is asking you a QUESTION. Answer it naturally. Be helpful and concise.
 
@@ -63,9 +128,11 @@ DO NOT use any [[ACTION:]] tags for questions. Just answer with text.
 
 If asked "can you see my screen?" → "Of course! I can see everything on your screen. Right now you're in {app name}."
 If asked "who are you?" → "I'm Clippy, your AI desktop buddy! 📎"
+If asked "what's my name?" → use the name from the user profile above.
 
 Current screen context:
 {CONTEXT}`;
+}
 
 const PROACTIVE_SYSTEM_PROMPT = `You are Clippy — 📎 the AI desktop buddy. You can see the user's screen.
 
@@ -108,52 +175,9 @@ const settingsStore = new Store<BrainSettings>({
 
 // ========== Parsing ==========
 
+// Used to strip legacy action tags from AI responses
 const ACTION_REGEX = /\[\[ACTION:\s*(\w+)\(([^)]*)\)\s*\]\]/;
 const DONE_MARKER = '[[DONE]]';
-const MAX_STEPS = 5; // Keep tasks short and safe
-
-function parseActionParam(toolName: string, raw: string): Record<string, unknown> {
-  const trimmed = raw.trim();
-  if (!trimmed) return {};
-
-  // JSON object
-  if (trimmed.startsWith('{')) {
-    try { return JSON.parse(trimmed); } catch { /* fall through */ }
-  }
-
-  // Clean quotes
-  const cleaned = trimmed.replace(/^["']|["']$/g, '');
-  const parts = cleaned.split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
-
-  // Numeric pairs → coordinates
-  if (parts.length === 2 && !isNaN(Number(parts[0])) && !isNaN(Number(parts[1]))) {
-    return { x: Number(parts[0]), y: Number(parts[1]) };
-  }
-  if (parts.length === 4 && !isNaN(Number(parts[0]))) {
-    return { startX: Number(parts[0]), startY: Number(parts[1]), endX: Number(parts[2]), endY: Number(parts[3]) };
-  }
-  if (parts.length === 3 && !isNaN(Number(parts[0]))) {
-    // mouse_scroll: x, y, direction
-    return { x: Number(parts[0]), y: Number(parts[1]), direction: parts[2] };
-  }
-  if (!isNaN(Number(cleaned))) {
-    return { seconds: Number(cleaned) };
-  }
-
-  // Map single string param to the right key per tool
-  const paramKeyMap: Record<string, string> = {
-    open_app: 'name',
-    smart_click: 'target',
-    smart_type: 'target', // first param is target
-    type_text: 'text',
-    key_press: 'key',
-    navigate_browser: 'url',
-    focus_window: 'title',
-  };
-
-  const key = paramKeyMap[toolName] || 'target';
-  return { [key]: cleaned };
-}
 
 // ========== Brain Class ==========
 
@@ -162,6 +186,7 @@ export class Brain {
   private intervalId: NodeJS.Timeout | null = null;
   private mode: 'awake' | 'sleep' = 'sleep';
   private conversationHistory: Array<{ role: string; content: string }> = [];
+  private static readonly MAX_HISTORY = 50;
   private lastMessage: string = '';
   private noRepeatUntil: number = 0;
   private greetedOnWake: boolean = false;
@@ -280,6 +305,10 @@ export class Brain {
   async handleUserMessage(text: string): Promise<string> {
     log.info('User message received', text);
     this.conversationHistory.push({ role: 'user', content: text });
+    // Cap history to prevent memory growth
+    if (this.conversationHistory.length > Brain.MAX_HISTORY) {
+      this.conversationHistory = this.conversationHistory.slice(-Brain.MAX_HISTORY);
+    }
 
     // Detect if this is a QUESTION or an ACTION REQUEST
     const isQuestion = this.isQuestionNotAction(text);
@@ -306,8 +335,8 @@ export class Brain {
 
     // Use different prompts for questions vs actions
     const systemPrompt = isQuestion
-      ? QUESTION_SYSTEM_PROMPT.replace('{CONTEXT}', screenContext)
-      : CHAT_SYSTEM_PROMPT.replace('{CONTEXT}', screenContext);
+      ? buildQuestionPrompt().replace('{CONTEXT}', screenContext)
+      : buildChatPrompt().replace('{CONTEXT}', screenContext);
 
     const response = await this.callApi({
       message: text,

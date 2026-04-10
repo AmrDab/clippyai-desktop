@@ -3,8 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('clippy', {
   sendMessage: (text: string) => ipcRenderer.invoke('user-message', text),
 
-  executeTool: (tool: string, params?: Record<string, unknown>) =>
-    ipcRenderer.invoke('execute-tool', tool, params ?? {}),
+  // executeTool removed from preload — only brain.ts (main process) should call it directly
+  testClawdCursor: () => ipcRenderer.invoke('test-clawdcursor'),
 
   validateLicense: (key: string) => ipcRenderer.invoke('validate-license', key),
 
@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld('clippy', {
   clearLicense: () => ipcRenderer.invoke('clear-license'),
   openOnboarding: () => ipcRenderer.send('open-onboarding'),
   onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
+
+  // User profile
+  getUserProfile: () => ipcRenderer.invoke('get-user-profile'),
+  saveUserProfile: (data: Record<string, string>) => ipcRenderer.invoke('save-user-profile', data),
+  isProfileSetUp: () => ipcRenderer.invoke('is-profile-set-up'),
 
   // Log viewer
   readLogFile: () => ipcRenderer.invoke('read-log-file'),

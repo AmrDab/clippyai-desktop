@@ -11,19 +11,28 @@ import {
   getTtsVoice,
   store as licenseStore,
 } from './license';
+import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow } from './window';
 import fs from 'fs';
 import path from 'path';
 
 export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): void {
-  // User typed a message in the bubble
-  ipcMain.handle('user-message', async (_event, text: string) => {
-    return brain.handleUserMessage(text);
+  // User typed a message in the bubble (with input validation)
+  ipcMain.handle('user-message', async (_event, text: unknown) => {
+    if (typeof text !== 'string') return 'Invalid input.';
+    const trimmed = text.trim().substring(0, 4096); // Max 4KB
+    if (!trimmed) return '';
+    return brain.handleUserMessage(trimmed);
   });
 
-  // Execute a ClawdCursor tool directly
-  ipcMain.handle('execute-tool', async (_event, tool: string, params: Record<string, unknown>) => {
-    return executeTool(tool, params);
+  // Test ClawdCursor connection (safe, read-only)
+  ipcMain.handle('test-clawdcursor', async () => {
+    try {
+      await executeTool('get_active_window', {});
+      return true;
+    } catch {
+      return false;
+    }
   });
 
   // Mode change from renderer
@@ -36,12 +45,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     setClickThrough(mainWindow, enabled);
   });
 
-  // Window drag movement
-  ipcMain.on('move-window', (_event, deltaX: number, deltaY: number) => {
-    if (mainWindow.isDestroyed()) return;
-    const [x, y] = mainWindow.getPosition();
-    mainWindow.setPosition(x + deltaX, y + deltaY);
-  });
+  // Window drag movement — handled in window.ts with bounds checking
+  // (removed duplicate handler here that lacked bounds checks)
 
   // License validation
   ipcMain.handle('validate-license', async (_event, key: string) => {
@@ -67,13 +72,20 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     };
   });
 
-  // Update settings
+  // Update settings (with validation)
   ipcMain.handle('update-settings', async (_event, settings: Record<string, unknown>) => {
-    if (settings.buddyName !== undefined) licenseStore.set('buddyName', settings.buddyName as string);
-    if (settings.ttsVoice !== undefined) licenseStore.set('ttsVoice', settings.ttsVoice as string);
-    if (settings.proactiveInterval !== undefined) brainSettingsStore.set('proactiveInterval', settings.proactiveInterval as number);
-    if (settings.proactiveEnabled !== undefined) brainSettingsStore.set('proactiveEnabled', settings.proactiveEnabled as boolean);
-    if (settings.aiEndpoint !== undefined) brainSettingsStore.set('aiEndpoint', settings.aiEndpoint as string);
+    if (settings.buddyName !== undefined) {
+      const name = String(settings.buddyName).trim().substring(0, 20);
+      if (name) licenseStore.set('buddyName', name);
+    }
+    if (settings.ttsVoice !== undefined) licenseStore.set('ttsVoice', String(settings.ttsVoice));
+    if (settings.proactiveInterval !== undefined) {
+      const interval = Math.max(5000, Math.min(300000, Number(settings.proactiveInterval) || 30000));
+      brainSettingsStore.set('proactiveInterval', interval);
+    }
+    if (settings.proactiveEnabled !== undefined) brainSettingsStore.set('proactiveEnabled', Boolean(settings.proactiveEnabled));
+    // aiEndpoint is LOCKED to the official API — cannot be changed from settings
+    // if (settings.aiEndpoint !== undefined) brainSettingsStore.set('aiEndpoint', settings.aiEndpoint as string);
     return true;
   });
 
@@ -110,6 +122,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && !win.isDestroyed()) win.close();
   });
+
+  // User profile
+  ipcMain.handle('get-user-profile', async () => getUserProfile());
+  ipcMain.handle('save-user-profile', async (_event, data: Record<string, string>) => {
+    saveUserProfile(data);
+    return true;
+  });
+  ipcMain.handle('is-profile-set-up', async () => isProfileSetUp());
 
   // Log file operations
   const logDir = path.join(app.getPath('home'), '.clippyai', 'logs');

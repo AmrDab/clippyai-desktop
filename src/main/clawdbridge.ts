@@ -9,10 +9,19 @@ const log = createLogger('ClawdBridge');
 const BASE_URL = 'http://127.0.0.1:3847';
 const TOKEN_PATH = path.join(os.homedir(), '.clawdcursor', 'token');
 
-// Read token fresh every time — never cache
+// Cache token for 30 seconds to avoid sync I/O on every tool call
+let cachedToken = '';
+let tokenCacheTime = 0;
+const TOKEN_CACHE_TTL = 30_000;
+
 function getToken(): string {
+  if (cachedToken && Date.now() - tokenCacheTime < TOKEN_CACHE_TTL) {
+    return cachedToken;
+  }
   try {
-    return fs.readFileSync(TOKEN_PATH, 'utf-8').trim();
+    cachedToken = fs.readFileSync(TOKEN_PATH, 'utf-8').trim();
+    tokenCacheTime = Date.now();
+    return cachedToken;
   } catch {
     log.warn('Could not read ClawdCursor token', TOKEN_PATH);
     return '';

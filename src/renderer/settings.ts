@@ -3,7 +3,7 @@ declare global {
     clippy: {
       getConfig: () => Promise<Record<string, unknown>>;
       updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
-      executeTool: (tool: string, params?: Record<string, unknown>) => Promise<unknown>;
+      testClawdCursor: () => Promise<boolean>;
       clearLicense: () => Promise<boolean>;
       openOnboarding: () => void;
       openExternalUrl: (url: string) => Promise<boolean>;
@@ -124,11 +124,11 @@ speechRateRange.addEventListener('input', () => {
 async function testConnection(): Promise<void> {
   ccStatusText.textContent = 'Testing...';
   ccStatusDot.className = 'status-dot disconnected';
-  try {
-    await window.clippy.executeTool('get_active_window');
+  const connected = await window.clippy.testClawdCursor();
+  if (connected) {
     ccStatusDot.className = 'status-dot connected';
     ccStatusText.textContent = 'Connected';
-  } catch {
+  } else {
     ccStatusDot.className = 'status-dot disconnected';
     ccStatusText.textContent = 'Not connected';
   }
