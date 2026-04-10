@@ -45,16 +45,20 @@ process.on('uncaughtException', (err) => {
 });
 
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.3.5' });
+  log.info('ClippyAI starting', { version: '0.3.6' });
   initStartup();
   cleanOldLogs();
 
-  // Auto-start ClawdCursor if not running
-  const running = await isClawdCursorRunning();
-  if (!running) {
-    await restartClawdCursor();
-  } else {
-    log.info('ClawdCursor already running');
+  // Auto-start ClawdCursor if not running (non-blocking — chat works without it)
+  try {
+    const running = await isClawdCursorRunning();
+    if (!running) {
+      await restartClawdCursor();
+    } else {
+      log.info('ClawdCursor already running');
+    }
+  } catch (err) {
+    log.warn('ClawdCursor failed to start — desktop automation disabled, chat still works', String(err));
   }
 
   if (isLicensed()) {
