@@ -150,6 +150,26 @@ function resolveClawdCursor(): { command: string; args: string[]; useElectronAsN
   return { command: 'clawdcursor', args: ['serve'], useElectronAsNode: false };
 }
 
+// Track child process for cleanup
+let clawdProcess: ReturnType<typeof spawn> | null = null;
+
+/** Kill any existing ClawdCursor process before spawning a new one */
+function killExistingClawdCursor(): void {
+  // Kill tracked child process
+  if (clawdProcess && !clawdProcess.killed) {
+    try {
+      clawdProcess.kill();
+      log.info('Killed tracked ClawdCursor process');
+    } catch { /* already dead */ }
+    clawdProcess = null;
+  }
+}
+
+/** Call on app quit to clean up child processes */
+export function cleanupClawdCursor(): void {
+  killExistingClawdCursor();
+}
+
 // Single restart function — prevents multiple instances
 let isRestarting = false;
 export async function restartClawdCursor(): Promise<void> {
@@ -158,6 +178,9 @@ export async function restartClawdCursor(): Promise<void> {
 
   log.info('Restarting ClawdCursor serve...');
   try {
+    // Kill existing before spawning new
+    killExistingClawdCursor();
+
     const resolved = resolveClawdCursor();
     const env: NodeJS.ProcessEnv = { ...process.env };
     if (resolved.useElectronAsNode) {
@@ -166,14 +189,18 @@ export async function restartClawdCursor(): Promise<void> {
       delete env.ELECTRON_RUN_AS_NODE;
     }
     const proc = spawn(resolved.command, resolved.args, {
-      detached: true,
+      detached: false, // Don't detach — we want to track and kill it on quit
       stdio: 'ignore',
-      // shell: true is needed for the global PATH lookup; node/electron paths are absolute
       shell: resolved.command === 'clawdcursor',
       windowsHide: true,
       env,
     });
-    proc.unref();
+    clawdProcess = proc;
+    proc.on('error', (err) => log.warn('ClawdCursor process error', String(err)));
+    proc.on('exit', (code) => {
+      log.info('ClawdCursor process exited', { code });
+      if (clawdProcess === proc) clawdProcess = null;
+    });
     log.info('ClawdCursor process spawned', { pid: proc.pid, command: resolved.command });
 
     // Wait for it to be ready (poll health endpoint)

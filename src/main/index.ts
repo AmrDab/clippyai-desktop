@@ -7,7 +7,7 @@ import { registerIpcHandlers } from './ipc';
 import { initStartup } from './startup';
 import { isLicensed, revalidateIfNeeded } from './license';
 import { isProfileSetUp } from './brain';
-import { restartClawdCursor, isClawdCursorRunning } from './clawdbridge';
+import { restartClawdCursor, isClawdCursorRunning, cleanupClawdCursor } from './clawdbridge';
 import { createLogger, cleanOldLogs } from './logger';
 import { initUpdater, checkForUpdates } from './updater';
 
@@ -45,7 +45,7 @@ process.on('uncaughtException', (err) => {
 });
 
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.3.3' });
+  log.info('ClippyAI starting', { version: '0.3.4' });
   initStartup();
   cleanOldLogs();
 
@@ -120,6 +120,8 @@ function launchWithOnboarding(): void {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  cleanupClawdCursor();
+  log.info('ClippyAI shutting down — cleaned up child processes');
 });
 
 app.on('window-all-closed', () => {
