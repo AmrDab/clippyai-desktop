@@ -1,5 +1,5 @@
 import { BrowserWindow, net } from 'electron';
-import { takeScreenshot, getActiveWindow, isClawdCursorRunning, executeTool, restartClawdCursor } from './clawdbridge';
+import { executeTool } from './tools';
 import { getLicenseKey, getPlan } from './license';
 import Store from 'electron-store';
 import { createLogger } from './logger';
@@ -326,7 +326,7 @@ export class Brain {
     // Get screen context (lightweight for questions, full for actions)
     let screenContext = '';
     try {
-      const activeWin = await getActiveWindow();
+      const activeWin = await executeTool('get_active_window', {});
       screenContext = `Active window: ${activeWin.text}`;
       if (!isQuestion) {
         // Full screen read only for action requests
@@ -398,18 +398,7 @@ export class Brain {
     this.isExecutingTask = true;
 
     try {
-      // Check ClawdCursor
-      const running = await isClawdCursorRunning();
-      if (!running) {
-        log.error('ClawdCursor not running — restarting');
-        await restartClawdCursor();
-        const retryRunning = await isClawdCursorRunning();
-        if (!retryRunning) {
-          this.emitToRenderer('clippy-speak', { text: "My tools aren't responding right now.", animate: this.pickAnimation('error') });
-          return;
-        }
-      }
-
+      // Tools are in-process — always available, no server to check
       this.emitToRenderer('clippy-speak', { text: 'On it!', animate: this.pickAnimation('action_start') });
 
       const history: Array<{ action: string; params: Record<string, unknown>; result: string }> = [];
@@ -635,39 +624,33 @@ export class Brain {
     if (this.isExecutingTask) return; // Don't interrupt active tasks
 
     try {
-      const running = await isClawdCursorRunning();
-      if (!running) {
-        // Auto-restart ClawdCursor (await so it's ready before next tick)
-        await restartClawdCursor();
-        if (!this.greetedOnWake) {
-          this.greetedOnWake = true;
-          this.emitToRenderer('clippy-speak', {
-            text: "Hi! Click me to chat. I can help with whatever you're working on!",
-            animate: 'Wave',
-          });
-          this.noRepeatUntil = Date.now() + 120_000;
-        }
+      if (!this.greetedOnWake) {
+        this.greetedOnWake = true;
+        this.emitToRenderer('clippy-speak', {
+          text: "Hi! Click me to chat. I can help with whatever you're working on!",
+          animate: 'Wave',
+        });
+        this.noRepeatUntil = Date.now() + 120_000;
         return;
       }
 
-      // Cheaper perception: read text first, only screenshot as fallback
+      // Read screen context for proactive tips
       const [screenText, activeWin] = await Promise.allSettled([
-        executeTool('smart_read', { scope: 'window' }),
-        getActiveWindow(),
+        executeTool('read_screen', {}),
+        executeTool('get_active_window', {}),
       ]);
 
       const context = activeWin.status === 'fulfilled'
         ? `User is working in: ${activeWin.value.text}`
         : 'Unknown application';
 
-      // Use text-based context when available, fall back to screenshot only if text is empty
       const textData = screenText.status === 'fulfilled' ? screenText.value.text : '';
       let screenshotData: string | undefined;
       if (!textData || textData.length < 30) {
         try {
-          const ss = await takeScreenshot();
+          const ss = await executeTool('desktop_screenshot', {});
           screenshotData = ss.image?.data;
-        } catch { /* screenshot failed, continue with text only */ }
+        } catch { /* continue without screenshot */ }
       }
 
       const fullContext = textData

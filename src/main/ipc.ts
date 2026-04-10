@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
-import { executeTool } from './clawdbridge';
+import { executeTool } from './tools';
 import {
   validateLicenseKey,
   saveLicense,
