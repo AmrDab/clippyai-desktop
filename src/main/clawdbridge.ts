@@ -172,13 +172,27 @@ export function cleanupClawdCursor(): void {
 
 // Single restart function — prevents multiple instances
 let isRestarting = false;
+let restartAttempts = 0;
+const MAX_RESTART_ATTEMPTS = 3; // Stop trying after 3 failures
+
+export function resetRestartAttempts(): void {
+  restartAttempts = 0;
+}
+
 export async function restartClawdCursor(): Promise<void> {
   if (isRestarting) return;
-  isRestarting = true;
 
-  log.info('Restarting ClawdCursor serve...');
+  // Stop retrying after too many failures — ClawdCursor is broken on this machine
+  if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+    log.warn(`ClawdCursor failed ${MAX_RESTART_ATTEMPTS} times — giving up. Desktop automation unavailable.`);
+    return;
+  }
+
+  isRestarting = true;
+  restartAttempts++;
+
+  log.info(`Restarting ClawdCursor serve... (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})`);
   try {
-    // Kill existing before spawning new
     killExistingClawdCursor();
 
     const resolved = resolveClawdCursor();
@@ -189,13 +203,26 @@ export async function restartClawdCursor(): Promise<void> {
       delete env.ELECTRON_RUN_AS_NODE;
     }
     const proc = spawn(resolved.command, resolved.args, {
-      detached: false, // Don't detach — we want to track and kill it on quit
-      stdio: 'ignore',
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout/stderr to diagnose crashes
       shell: resolved.command === 'clawdcursor',
       windowsHide: true,
       env,
     });
     clawdProcess = proc;
+
+    // Log stderr to diagnose crash reasons
+    if (proc.stderr) {
+      let stderrData = '';
+      proc.stderr.on('data', (chunk) => { stderrData += chunk.toString(); });
+      proc.stderr.on('end', () => {
+        if (stderrData.trim()) log.error('ClawdCursor stderr', stderrData.substring(0, 500));
+      });
+    }
+    if (proc.stdout) {
+      proc.stdout.on('data', () => {}); // drain to prevent backpressure
+    }
+
     proc.on('error', (err) => log.warn('ClawdCursor process error', String(err)));
     proc.on('exit', (code) => {
       log.info('ClawdCursor process exited', { code });

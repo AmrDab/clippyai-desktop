@@ -339,7 +339,7 @@ export class Brain {
 
     // Show thinking animation for questions while waiting for API
     if (isQuestion) {
-      this.emitToRenderer('clippy-speak', { text: '', animate: this.pickAnimation('question_processing') });
+      this.mainWindow.webContents.send('play-animation', this.pickAnimation('question_processing'));
     }
 
     // Use different prompts for questions vs actions
