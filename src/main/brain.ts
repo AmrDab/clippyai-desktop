@@ -346,6 +346,17 @@ export class Brain {
       webSearch: isQuestion && this.isWebKnowledgeQuery(text),
     });
 
+    // Auto-detect name introduction and save to profile
+    if (!isProfileSetUp()) {
+      const nameMatch = text.match(/(?:my name is|i'm|call me|i am)\s+([A-Z][a-z]+)/i)
+        || text.match(/^([A-Z][a-z]{1,20})$/); // Just a single capitalized word
+      if (nameMatch) {
+        const name = nameMatch[1].trim();
+        saveUserProfile({ Name: name });
+        log.info('User introduced themselves', { name });
+      }
+    }
+
     // For questions, NEVER execute actions even if AI includes them
     if (isQuestion) {
       const cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
@@ -526,7 +537,8 @@ export class Brain {
     history: Array<{ action: string; params: Record<string, unknown>; result: string }>,
     step: number,
   ): Promise<{ action: string | null; params: Record<string, unknown>; message: string; done: boolean } | null> {
-    const endpoint = settingsStore.get('aiEndpoint').replace('/chat', '/agent');
+    // Always use hardcoded API — never trust stored value (could be stale/wrong)
+    const endpoint = `${API_BASE}/agent`;
     const licenseKey = getLicenseKey();
 
     log.debug('Agent API request', { task: task.substring(0, 80), step, historyLength: history.length });
@@ -673,7 +685,8 @@ export class Brain {
   // ========== API Call ==========
 
   private callApi(payload: Record<string, unknown>): Promise<string> {
-    const endpoint = settingsStore.get('aiEndpoint');
+    // Always use hardcoded API — never trust stored value (could be stale/wrong)
+    const endpoint = `${API_BASE}/chat`;
     const licenseKey = getLicenseKey();
     const isProactive = payload.message === '__PROACTIVE_CHECK__';
     const logPrefix = isProactive ? 'Proactive' : 'Chat';

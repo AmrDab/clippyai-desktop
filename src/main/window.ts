@@ -19,11 +19,14 @@ export function createWindow(): BrowserWindow {
 
   console.log(`[Window] Screen: ${screenW}x${screenH}, Position: ${xPos},${yPos}, Size: ${CLIPPY_WIDTH}x${CLIPPY_HEIGHT}`);
 
+  const iconPath = path.join(__dirname, '../../build/icon.ico');
+
   const win = new BrowserWindow({
     width: CLIPPY_WIDTH,
     height: CLIPPY_HEIGHT,
     x: xPos,
     y: yPos,
+    icon: iconPath,
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -115,6 +118,7 @@ export function createSettingsWindow(): BrowserWindow {
   settingsWindow = new BrowserWindow({
     width: 480,
     height: 600,
+    icon: path.join(__dirname, '../../build/icon.ico'),
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -145,6 +149,7 @@ export function createOnboardingWindow(): BrowserWindow {
   onboardingWindow = new BrowserWindow({
     width: 400,
     height: 500,
+    icon: path.join(__dirname, '../../build/icon.ico'),
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -178,6 +183,7 @@ export function createLogWindow(): BrowserWindow {
   logWindow = new BrowserWindow({
     width: 700,
     height: 500,
+    icon: path.join(__dirname, '../../build/icon.ico'),
     resizable: true,
     title: 'ClippyAI Logs',
     webPreferences: {

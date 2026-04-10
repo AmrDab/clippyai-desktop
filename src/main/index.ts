@@ -6,6 +6,7 @@ import { Brain } from './brain';
 import { registerIpcHandlers } from './ipc';
 import { initStartup } from './startup';
 import { isLicensed, revalidateIfNeeded } from './license';
+import { isProfileSetUp } from './brain';
 import { restartClawdCursor, isClawdCursorRunning } from './clawdbridge';
 import { createLogger, cleanOldLogs } from './logger';
 import { initUpdater, checkForUpdates } from './updater';
@@ -16,7 +17,7 @@ let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
 
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.3.0' });
+  log.info('ClippyAI starting', { version: '0.3.1' });
   initStartup();
   cleanOldLogs();
 
@@ -58,6 +59,16 @@ function launchMainApp(): void {
   // Check for updates 10 seconds after launch (don't slow startup)
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
+
+  // If user profile not set up (e.g. reinstall skipped onboarding), ask for name
+  if (!isProfileSetUp()) {
+    setTimeout(() => {
+      mainWindow?.webContents.send('clippy-speak', {
+        text: "Hey! I don't think we've met yet. What should I call you? Just type your name! 📎",
+        animate: 'Wave',
+      });
+    }, 3000);
+  }
 
   log.info('ClippyAI ready');
 }
