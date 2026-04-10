@@ -21,9 +21,15 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // User typed a message in the bubble (with input validation)
   ipcMain.handle('user-message', async (_event, text: unknown) => {
     if (typeof text !== 'string') return 'Invalid input.';
-    const trimmed = text.trim().substring(0, 4096); // Max 4KB
+    const trimmed = text.trim().substring(0, 4096);
     if (!trimmed) return '';
-    return brain.handleUserMessage(trimmed);
+    try {
+      const response = await brain.handleUserMessage(trimmed);
+      return response || "Hmm, try again! 📎";
+    } catch (err) {
+      log.error('handleUserMessage threw', String(err));
+      return "Something went wrong — try again! 📎";
+    }
   });
 
   // Test ClawdCursor connection (safe, read-only)

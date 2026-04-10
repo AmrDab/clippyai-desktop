@@ -338,13 +338,18 @@ export class Brain {
       ? buildQuestionPrompt().replace('{CONTEXT}', screenContext)
       : buildChatPrompt().replace('{CONTEXT}', screenContext);
 
-    const response = await this.callApi({
+    let response = await this.callApi({
       message: text,
       context: screenContext,
       system: systemPrompt,
       history: this.conversationHistory.slice(-10),
       webSearch: isQuestion && this.isWebKnowledgeQuery(text),
     });
+
+    // Safety net — never let undefined/null/empty reach the user
+    if (!response || response === 'undefined' || response === 'null') {
+      response = "Hmm, my brain glitched. Try asking again! 📎";
+    }
 
     // Auto-detect name introduction and save to profile
     if (!isProfileSetUp()) {
