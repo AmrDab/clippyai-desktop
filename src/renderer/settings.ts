@@ -8,6 +8,10 @@ declare global {
       openOnboarding: () => void;
       openExternalUrl: (url: string) => Promise<boolean>;
       checkForUpdates: () => Promise<boolean>;
+      downloadUpdate: () => Promise<boolean>;
+      installUpdate: () => Promise<boolean>;
+      onUpdateAvailable: (cb: (version: string) => void) => void;
+      onUpdateReady: (cb: (version: string) => void) => void;
     };
   }
 }
@@ -183,11 +187,38 @@ const btnCheckUpdate = document.getElementById('btn-check-update');
 const updateStatus = document.getElementById('update-status');
 if (btnCheckUpdate) {
   btnCheckUpdate.addEventListener('click', async () => {
-    if (updateStatus) updateStatus.textContent = 'Checking...';
+    if (updateStatus) updateStatus.textContent = 'Checking for updates...';
+    btnCheckUpdate.disabled = true;
     await window.clippy.checkForUpdates();
-    if (updateStatus) updateStatus.textContent = 'Check triggered — Clippy will notify you if an update is available.';
+    // Wait a moment for the updater to respond
+    setTimeout(() => {
+      btnCheckUpdate.disabled = false;
+      if (updateStatus && updateStatus.textContent === 'Checking for updates...') {
+        updateStatus.textContent = 'You\'re on the latest version!';
+      }
+    }, 5000);
   });
 }
+
+// Listen for update notifications in settings too
+window.clippy.onUpdateAvailable((version: string) => {
+  if (updateStatus) {
+    updateStatus.innerHTML = `<strong>v${version} available!</strong> <button id="btn-download-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`;
+    document.getElementById('btn-download-update')?.addEventListener('click', () => {
+      if (updateStatus) updateStatus.textContent = 'Downloading...';
+      window.clippy.downloadUpdate();
+    });
+  }
+});
+
+window.clippy.onUpdateReady((version: string) => {
+  if (updateStatus) {
+    updateStatus.innerHTML = `<strong>v${version} ready!</strong> <button id="btn-install-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;background:#4CAF50;color:white;border:none;border-radius:3px;">Restart & Update</button>`;
+    document.getElementById('btn-install-update')?.addEventListener('click', () => {
+      window.clippy.installUpdate();
+    });
+  }
+});
 
 // Init
 loadConfig();
