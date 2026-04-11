@@ -194,16 +194,27 @@ async function getWindows(): Promise<ToolResult> {
 
 async function focusWindow(params: Record<string, unknown>): Promise<ToolResult> {
   const { processName, processId, title } = params;
+  // Must have at least one identifier
+  if (!processName && !processId && !title) {
+    return { text: '(focus_window needs processName, processId, or title)' };
+  }
   try {
+    // Try PowerShell script first
     const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(getScriptsDir(), 'focus-window.ps1')];
-    if (processName) args.push('-ProcessName', String(processName));
-    if (processId) args.push('-ProcessId', String(processId));
     if (title) args.push('-Title', String(title));
+    else if (processName) args.push('-Title', String(processName)); // use processName as title search
+    else if (processId) args.push('-ProcessId', String(processId));
     const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 5000 });
     return { text: stdout.trim() || 'Focused' };
   } catch (err) {
-    return { text: `(focus_window error: ${err instanceof Error ? err.message : ''})` };
+    // Fallback: try alt+tab
+    try {
+      await keyPress({ key: 'alt+tab' });
+      return { text: 'Switched window via alt+tab' };
+    } catch {
+      return { text: `(focus_window error: ${err instanceof Error ? err.message : ''})` };
+    }
   }
 }
 
