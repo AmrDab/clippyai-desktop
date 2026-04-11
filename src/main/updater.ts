@@ -74,5 +74,6 @@ export function installUpdate(): void {
     return;
   }
   log.info('User requested update install — quitting and installing');
-  autoUpdater.quitAndInstall(false, true);
+  // isSilent=true so installer doesn't show UI, isForceRunAfter=true to relaunch after
+  autoUpdater.quitAndInstall(true, true);
 }
