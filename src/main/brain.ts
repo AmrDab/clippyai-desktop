@@ -264,7 +264,8 @@ export class Brain {
   private isWebKnowledgeQuery(text: string): boolean {
     const lower = text.toLowerCase();
     const webTopics = [
-      'weather', 'temperature', 'forecast',
+      'weather', 'weathe', 'wetahe', 'weaher', 'wheather', // common typos
+      'temperature', 'forecast',
       'stock', 'market', 'price of',
       'news', 'latest', 'headline',
       'define', 'definition', 'meaning of',
@@ -280,7 +281,12 @@ export class Brain {
       'exchange rate', 'currency',
       'recipe', 'ingredients',
     ];
-    return webTopics.some(topic => lower.includes(topic));
+    if (webTopics.some(topic => lower.includes(topic))) return true;
+
+    // Fuzzy match: if the message is short and contains "like" + location pattern → probably weather
+    if (/(?:like|in|at)\s+(?:la|nyc|sf|london|tokyo|paris|chicago|miami|seattle|boston|dallas)/i.test(lower)) return true;
+
+    return false;
   }
 
   private isQuestionNotAction(text: string): boolean {

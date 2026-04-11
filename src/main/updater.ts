@@ -14,6 +14,7 @@ export function initUpdater(win: BrowserWindow): void {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
 
+
   autoUpdater.on('checking-for-update', () => {
     log.info('Checking for updates...');
   });
