@@ -14,7 +14,7 @@ const API_BASE = 'https://api.clippyai.app';
 
 function loadGuidance(): string {
   const brainDir = path.join(__dirname, '../../assets/brain');
-  const files = ['identity.md', 'core-behavior.md', 'tool-guide.md', 'app-knowledge.md', 'safety-rules.md', 'conversation-style.md'];
+  const files = ['identity.md', 'core-behavior.md', 'tool-guide.md', 'app-knowledge.md', 'safety-rules.md'];
   const sections: string[] = [];
 
   for (const file of files) {
@@ -81,51 +81,27 @@ export function isProfileSetUp(): boolean {
 
 // ========== System Prompts ==========
 
-function buildChatPrompt(): string {
+function buildPrompt(mode: 'chat' | 'question'): string {
   const profile = loadUserProfile();
-  const profileSection = profile ? `\n--- USER PROFILE ---\n${profile}\n` : '';
+  const profileSection = profile ? `\n${profile}\n` : '';
   const plan = getPlan() || 'unknown';
 
+  const modeInstruction = mode === 'question'
+    ? 'The user is asking a QUESTION. Answer directly. No tools. No browser. Just answer.'
+    : 'The user wants you to DO something. Confirm briefly, then your tools handle it.';
+
   return `${GUIDANCE}
-
---- CURRENT SESSION ---
 ${profileSection}
-User's plan: ${plan}
+Plan: ${plan}
 
-When the user asks you to DO something → short confirmation ("On it!"), then your tools handle it.
-When the user asks a QUESTION → answer directly from your knowledge. NEVER open a browser for questions.
+${modeInstruction}
 
-Current screen context:
-{CONTEXT}`;
+Screen: {CONTEXT}`;
 }
 
 // Legacy constant aliases (for proactive + question prompts)
 
-function buildQuestionPrompt(): string {
-  const profile = loadUserProfile();
-  const profileSection = profile ? `\n--- USER PROFILE ---\n${profile}\n` : '';
-  const plan = getPlan() || 'unknown';
-
-  return `${GUIDANCE}
-
---- CURRENT SESSION ---
-${profileSection}
-User's plan: ${plan}
-
-MODE: QUESTION — The user is asking a question. Answer it directly.
-
-CRITICAL RULES FOR QUESTIONS:
-- Answer from your knowledge. You KNOW weather, facts, definitions, news, math, translations.
-- NEVER open a browser, app, or website to answer a question.
-- NEVER say "I don't have access to weather" or "I can't check" — just give your best answer.
-- NEVER use [[ACTION:]] tags. Just answer with plain text.
-- If asked "who are you?" → "I'm Clippy, your AI desktop buddy! 📎"
-- If asked "what's my name?" → use the name from the user profile.
-- Keep answers to 1-3 sentences. Your speech bubble is small.
-
-Current screen context:
-{CONTEXT}`;
-}
+// buildQuestionPrompt removed — unified into buildPrompt('question')
 
 const PROACTIVE_SYSTEM_PROMPT = `You are Clippy — 📎 the AI desktop buddy. You can see the user's screen.
 
@@ -350,9 +326,7 @@ export class Brain {
     }
 
     // Use different prompts for questions vs actions
-    const systemPrompt = isQuestion
-      ? buildQuestionPrompt().replace('{CONTEXT}', screenContext)
-      : buildChatPrompt().replace('{CONTEXT}', screenContext);
+    const systemPrompt = buildPrompt(isQuestion ? 'question' : 'chat').replace('{CONTEXT}', screenContext);
 
     let response = await this.callApi({
       message: text,
