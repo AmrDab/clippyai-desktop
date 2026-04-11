@@ -12,7 +12,7 @@
       <button class="settings-nav-item" data-section="appearance">Appearance</button>
       <button class="settings-nav-item" data-section="voice">Voice</button>
       <button class="settings-nav-item" data-section="brain">Brain</button>
-      <button class="settings-nav-item" data-section="clawdcursor">ClawdCursor</button>
+      <button class="settings-nav-item" data-section="tools">Tools</button>
       <button class="settings-nav-item" data-section="license">License</button>
       <button class="settings-nav-item" data-section="about">About</button>
     </nav>
@@ -100,20 +100,22 @@
         </div>
       </div>
 
-      <!-- ClawdCursor -->
-      <div class="settings-section" data-section="clawdcursor">
-        <h2>ClawdCursor</h2>
+      <!-- Desktop Tools -->
+      <div class="settings-section" data-section="tools">
+        <h2>Desktop Tools</h2>
+        <div class="settings-group">
+          <p style="font-size: 13px; color: #666; line-height: 1.6;">
+            Desktop tools run directly inside ClippyAI — no external services needed.
+            Tools include: screen reading, mouse control, keyboard input, and app management.
+          </p>
+        </div>
         <div class="settings-group">
           <div class="connection-status">
-            <span class="status-dot disconnected" id="cc-status-dot"></span>
-            <span id="cc-status-text">Checking...</span>
+            <span class="status-dot connected" id="cc-status-dot"></span>
+            <span id="cc-status-text">Tools ready</span>
           </div>
         </div>
-        <div class="settings-group">
-          <label>Port</label>
-          <input type="text" value="3847" disabled style="background: #f5f5f5; color: #888;" />
-        </div>
-        <button class="btn-test" id="btn-test-connection">Test Connection</button>
+        <button class="btn-test" id="btn-test-connection">Test Tools</button>
       </div>
 
       <!-- License -->
@@ -142,7 +144,7 @@
       <div class="settings-section" data-section="about">
         <h2>About ClippyAI</h2>
         <div class="settings-group">
-          <p style="font-size: 14px; margin-bottom: 12px;"><strong>ClippyAI v0.4.0</strong></p>
+          <p style="font-size: 14px; margin-bottom: 12px;"><strong>ClippyAI v0.4.1</strong></p>
           <p style="font-size: 13px; color: #666; line-height: 1.7;">
             Your AI desktop buddy — the modern reincarnation of the classic Microsoft Office Assistant, now with real AI superpowers.
           </p>
