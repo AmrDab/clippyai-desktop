@@ -261,56 +261,23 @@ export class Brain {
   }
 
   // ── Web-knowledge detector ────────────────────────────────────
-  // Simple Levenshtein distance for fuzzy matching
-  private static levenshtein(a: string, b: string): number {
-    const m = a.length, n = b.length;
-    const dp: number[][] = Array.from({ length: m + 1 }, (_, i) => {
-      const row = new Array(n + 1).fill(0);
-      row[0] = i;
-      return row;
-    });
-    for (let j = 0; j <= n; j++) dp[0][j] = j;
-    for (let i = 1; i <= m; i++)
-      for (let j = 1; j <= n; j++)
-        dp[i][j] = Math.min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + (a[i-1] !== b[j-1] ? 1 : 0));
-    return dp[m][n];
-  }
-
+  // Check if query is about web knowledge (enables web search grounding on API)
   private isWebKnowledgeQuery(text: string): boolean {
     const lower = text.toLowerCase();
     const webTopics = [
       'weather', 'temperature', 'forecast',
-      'stock', 'market', 'price of',
-      'news', 'latest', 'headline',
-      'define', 'definition', 'meaning of',
+      'stock', 'market', 'price',
+      'news', 'headline',
+      'define', 'definition', 'meaning',
       'translate', 'translation',
-      'calculate', 'convert', 'how much is',
-      'what time', 'time zone', 'time in',
-      'who is', 'who was', 'what is', 'what was', 'what are',
-      'when is', 'when was', 'when did',
-      'where is', 'where was',
-      'how many', 'how old', 'how far', 'how long',
-      'population', 'capital of', 'president',
-      'score', 'results', 'standings',
+      'calculate', 'convert',
+      'what time', 'time zone',
+      'population', 'capital', 'president',
+      'score', 'standings',
       'exchange rate', 'currency',
-      'recipe', 'ingredients',
+      'recipe',
     ];
-
-    // Exact match first
-    if (webTopics.some(topic => lower.includes(topic))) return true;
-
-    // Fuzzy match: check each word against topics (tolerance: 2 edits for words ≥5 chars)
-    const words = lower.split(/\s+/);
-    for (const word of words) {
-      if (word.length < 4) continue;
-      for (const topic of webTopics) {
-        if (topic.length < 4) continue;
-        const maxDist = topic.length >= 6 ? 2 : 1;
-        if (Brain.levenshtein(word, topic) <= maxDist) return true;
-      }
-    }
-
-    return false;
+    return webTopics.some(topic => lower.includes(topic));
   }
 
   private isQuestionNotAction(text: string): boolean {
@@ -341,12 +308,9 @@ export class Brain {
       if (pattern.test(lower)) return true;
     }
 
-    // Default: if short and no clear action verb, treat as question
-    if (lower.split(' ').length <= 5) {
-      return true;
-    }
-
-    return false;
+    // Default: treat as question. Only action verbs trigger action mode.
+    // Gemini handles typos, ambiguity, and intent natively — don't second-guess it.
+    return true;
   }
 
   async handleUserMessage(text: string): Promise<string> {
