@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.5.0
+buildVersion: 0.5.1
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -14,8 +14,8 @@ win:
     - target: nsis
       arch: x64
   icon: build/icon.ico
-  # Embedded in the .exe as the Windows "verified publisher" string
-  publisherName: Cloudana
+  # publisherName removed — causes auto-update signature check failures without code signing cert
+  # Re-add when we have an EV code signing certificate
   # Used for VERSIONINFO resource (file description / product name)
   legalTrademarks: ClippyAI is a trademark of Cloudana.
   requestedExecutionLevel: asInvoker
