@@ -7,6 +7,7 @@ declare global {
       clearLicense: () => Promise<boolean>;
       openOnboarding: () => void;
       openExternalUrl: (url: string) => Promise<boolean>;
+      checkForUpdates: () => Promise<boolean>;
     };
   }
 }
@@ -175,6 +176,17 @@ for (const [id, url] of [
       window.clippy.openExternalUrl(url);
     });
   }
+}
+
+// Check for updates button
+const btnCheckUpdate = document.getElementById('btn-check-update');
+const updateStatus = document.getElementById('update-status');
+if (btnCheckUpdate) {
+  btnCheckUpdate.addEventListener('click', async () => {
+    if (updateStatus) updateStatus.textContent = 'Checking...';
+    await window.clippy.checkForUpdates();
+    if (updateStatus) updateStatus.textContent = 'Check triggered — Clippy will notify you if an update is available.';
+  });
 }
 
 // Init

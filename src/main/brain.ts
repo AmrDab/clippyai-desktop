@@ -252,6 +252,30 @@ export class Brain {
     }
   }
 
+  // ── Answer animation picker ────────────────────────────────────
+  private pickAnswerAnimation(userText: string, reply: string): string {
+    const lower = userText.toLowerCase();
+    const replyLower = reply.toLowerCase();
+
+    // Playful requests → fun animations
+    if (/trick|dance|entertain|show me|cool|funny|surprise|perform/.test(lower)) {
+      const funAnims = ['Congratulate', 'Wave', 'GetAttention', 'IdleAtom', 'IdleRopePile'];
+      return funAnims[Math.floor(Math.random() * funAnims.length)];
+    }
+    // Greeting → Wave
+    if (/^(hi|hey|hello|sup|yo|what'?s up|howdy)/i.test(lower)) return 'Wave';
+    // Error/sorry in reply → Alert
+    if (/sorry|error|can't|couldn't|failed|wrong/.test(replyLower)) return 'Alert';
+    // Success/celebration → Congratulate
+    if (/done|success|great|perfect|awesome|ta-da|congratul/.test(replyLower)) return 'Congratulate';
+    // Advice/tip → Suggest
+    if (/tip|suggest|recommend|try |you could|you should/.test(replyLower)) return 'Suggest';
+    // Thinking/pondering → Thinking
+    if (/hmm|let me think|interesting|good question/.test(replyLower)) return 'Thinking';
+
+    return 'Wave'; // default
+  }
+
   // ── Web-knowledge detector ────────────────────────────────────
   private isWebKnowledgeQuery(text: string): boolean {
     const lower = text.toLowerCase();
@@ -376,6 +400,13 @@ export class Brain {
       const cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
       log.info('Question answered (actions stripped)', cleanText?.substring(0, 100));
       this.conversationHistory.push({ role: 'assistant', content: cleanText });
+
+      // Pick a contextual animation for the answer
+      const answerAnim = this.pickAnswerAnimation(text, cleanText);
+      if (answerAnim !== 'Wave') {
+        this.mainWindow.webContents.send('play-animation', answerAnim);
+      }
+
       return cleanText || "I'm not sure about that.";
     }
 

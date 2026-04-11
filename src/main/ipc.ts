@@ -131,6 +131,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
 
   // Auto-update
+  ipcMain.handle('check-for-updates', async () => {
+    const { checkForUpdates } = await import('./updater');
+    checkForUpdates();
+    return true;
+  });
   ipcMain.handle('download-update', async () => {
     downloadUpdate();
     return true;

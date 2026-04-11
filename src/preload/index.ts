@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('clippy', {
   onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
 
   // Auto-update
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   onUpdateAvailable: (cb: (version: string) => void) => {
