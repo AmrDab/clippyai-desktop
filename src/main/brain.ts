@@ -261,11 +261,25 @@ export class Brain {
   }
 
   // ── Web-knowledge detector ────────────────────────────────────
+  // Simple Levenshtein distance for fuzzy matching
+  private static levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, (_, i) => {
+      const row = new Array(n + 1).fill(0);
+      row[0] = i;
+      return row;
+    });
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++)
+      for (let j = 1; j <= n; j++)
+        dp[i][j] = Math.min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + (a[i-1] !== b[j-1] ? 1 : 0));
+    return dp[m][n];
+  }
+
   private isWebKnowledgeQuery(text: string): boolean {
     const lower = text.toLowerCase();
     const webTopics = [
-      'weather', 'weathe', 'wetahe', 'weaher', 'wheather', // common typos
-      'temperature', 'forecast',
+      'weather', 'temperature', 'forecast',
       'stock', 'market', 'price of',
       'news', 'latest', 'headline',
       'define', 'definition', 'meaning of',
@@ -281,10 +295,20 @@ export class Brain {
       'exchange rate', 'currency',
       'recipe', 'ingredients',
     ];
+
+    // Exact match first
     if (webTopics.some(topic => lower.includes(topic))) return true;
 
-    // Fuzzy match: if the message is short and contains "like" + location pattern → probably weather
-    if (/(?:like|in|at)\s+(?:la|nyc|sf|london|tokyo|paris|chicago|miami|seattle|boston|dallas)/i.test(lower)) return true;
+    // Fuzzy match: check each word against topics (tolerance: 2 edits for words ≥5 chars)
+    const words = lower.split(/\s+/);
+    for (const word of words) {
+      if (word.length < 4) continue;
+      for (const topic of webTopics) {
+        if (topic.length < 4) continue;
+        const maxDist = topic.length >= 6 ? 2 : 1;
+        if (Brain.levenshtein(word, topic) <= maxDist) return true;
+      }
+    }
 
     return false;
   }
