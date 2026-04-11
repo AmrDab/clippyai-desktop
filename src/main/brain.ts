@@ -321,12 +321,13 @@ export class Brain {
     }
 
     // Show thinking animation for questions while waiting for API
-    if (isQuestion) {
-      this.mainWindow.webContents.send('play-animation', this.pickAnimation('question_processing'));
+    if (isQuestion && this.mainWindow && !this.mainWindow.isDestroyed()) {
+      try { this.mainWindow.webContents.send('play-animation', this.pickAnimation('question_processing')); } catch {}
     }
 
-    // Use different prompts for questions vs actions
-    const systemPrompt = buildPrompt(isQuestion ? 'question' : 'chat').replace('{CONTEXT}', screenContext);
+    // Build prompt and call API
+    const systemPrompt = buildPrompt(isQuestion ? 'question' : 'chat').replace('{CONTEXT}', screenContext || '(no screen data)');
+    log.debug('Calling API', { messageLength: text.length, promptLength: systemPrompt.length, isQuestion });
 
     let response = await this.callApi({
       message: text,
