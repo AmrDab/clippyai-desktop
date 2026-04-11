@@ -321,8 +321,8 @@ export class Brain {
     }
 
     // Show thinking animation for questions while waiting for API
-    if (isQuestion && this.mainWindow && !this.mainWindow.isDestroyed()) {
-      try { this.mainWindow.webContents.send('play-animation', this.pickAnimation('question_processing')); } catch {}
+    if (isQuestion && this.win && !this.win.isDestroyed()) {
+      try { this.win.webContents.send('play-animation', this.pickAnimation('question_processing')); } catch {}
     }
 
     // Build prompt and call API
@@ -370,7 +370,7 @@ export class Brain {
       // Pick a contextual animation for the answer
       const answerAnim = this.pickAnswerAnimation(text, cleanText);
       if (answerAnim !== 'Wave') {
-        this.mainWindow.webContents.send('play-animation', answerAnim);
+        this.win.webContents.send('play-animation', answerAnim);
       }
 
       const finalAnswer = cleanText || "I'm not sure about that.";
