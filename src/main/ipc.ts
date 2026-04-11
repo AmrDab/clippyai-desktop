@@ -182,6 +182,19 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch { return false; }
   });
 
+  // Report logs to backend
+  ipcMain.handle('report-logs', async (_event, content: string) => {
+    try {
+      const { net } = await import('electron');
+      const licenseKey = getLicenseKey();
+      const req = net.request({ url: 'https://api.clippyai.app/report', method: 'POST' });
+      req.setHeader('Content-Type', 'application/json');
+      req.write(JSON.stringify({ key: licenseKey, logs: content, version: app.getVersion() }));
+      req.end();
+      return true;
+    } catch { return false; }
+  });
+
   // Onboarding complete — show main window and activate
   ipcMain.on('onboarding-complete', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {

@@ -59,6 +59,7 @@
     </select>
     <button id="btn-refresh">Refresh</button>
     <button id="btn-clear">Clear Log</button>
+    <button id="btn-report" style="background:#e65100;border-color:#bf360c;">Report Issue</button>
     <div class="spacer"></div>
     <span class="status" id="status">Loading...</span>
   </div>
@@ -119,6 +120,25 @@
     document.getElementById('btn-clear').addEventListener('click', async () => {
       await window.clippy.clearLogFile();
       loadLogs();
+    });
+
+    document.getElementById('btn-report').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-report');
+      btn.textContent = 'Sending...';
+      btn.disabled = true;
+      try {
+        const content = await window.clippy.readLogFile();
+        if (content) {
+          await window.clippy.reportLogs(content);
+          status.textContent = 'Report sent! Our team will review it.';
+        } else {
+          status.textContent = 'No logs to report.';
+        }
+      } catch (err) {
+        status.textContent = 'Failed to send report.';
+      }
+      btn.textContent = 'Report Issue';
+      btn.disabled = false;
     });
 
     // Auto-refresh every 3 seconds

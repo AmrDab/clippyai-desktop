@@ -89,4 +89,5 @@ contextBridge.exposeInMainWorld('clippy', {
   // Log viewer
   readLogFile: () => ipcRenderer.invoke('read-log-file'),
   clearLogFile: () => ipcRenderer.invoke('clear-log-file'),
+  reportLogs: (content: string) => ipcRenderer.invoke('report-logs', content),
 });

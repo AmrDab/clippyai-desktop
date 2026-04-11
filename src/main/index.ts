@@ -42,7 +42,7 @@ process.on('uncaughtException', (err) => {
 });
 
 app.whenReady().then(async () => {
-  log.info('ClippyAI starting', { version: '0.4.2' });
+  log.info('ClippyAI starting', { version: '0.4.3' });
   initStartup();
   cleanOldLogs();
 

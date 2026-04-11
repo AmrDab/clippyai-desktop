@@ -347,16 +347,21 @@ export class Brain {
     const isQuestion = this.isQuestionNotAction(text);
     log.info(`Message classified as: ${isQuestion ? 'QUESTION' : 'ACTION REQUEST'}`);
 
-    // Get screen context (lightweight for questions, full for actions)
+    // Get screen context (with timeout so questions aren't blocked by slow tools)
     let screenContext = '';
     try {
-      const activeWin = await executeTool('get_active_window', {});
-      screenContext = `Active window: ${activeWin.text}`;
-      if (!isQuestion) {
-        // Full screen read only for action requests
-        const screenData = await executeTool('read_screen', {});
-        screenContext += `\nScreen elements: ${screenData.text?.substring(0, 500) || ''}`;
-      }
+      const contextPromise = (async () => {
+        const activeWin = await executeTool('get_active_window', {});
+        let ctx = `Active window: ${activeWin.text}`;
+        if (!isQuestion) {
+          const screenData = await executeTool('read_screen', {});
+          ctx += `\nScreen elements: ${screenData.text?.substring(0, 500) || ''}`;
+        }
+        return ctx;
+      })();
+      // Don't let screen reading block questions for more than 3 seconds
+      const timeout = new Promise<string>((resolve) => setTimeout(() => resolve(''), isQuestion ? 3000 : 8000));
+      screenContext = await Promise.race([contextPromise, timeout]);
     } catch {
       log.warn('Could not get screen context');
     }
@@ -379,8 +384,12 @@ export class Brain {
       webSearch: isQuestion && this.isWebKnowledgeQuery(text),
     });
 
+    // Log Clippy's raw response for debugging
+    log.info('Clippy raw response', { isQuestion, responseLength: response?.length, response: response?.substring(0, 200) });
+
     // Safety net — never let undefined/null/empty reach the user
     if (!response || response === 'undefined' || response === 'null') {
+      log.warn('Empty/undefined response from API — using fallback');
       response = "Hmm, my brain glitched. Try asking again! 📎";
     }
 
@@ -407,16 +416,18 @@ export class Brain {
         this.mainWindow.webContents.send('play-animation', answerAnim);
       }
 
-      return cleanText || "I'm not sure about that.";
+      const finalAnswer = cleanText || "I'm not sure about that.";
+      log.info('Clippy says (question)', finalAnswer.substring(0, 150));
+      return finalAnswer;
     }
 
-    // For actions: delegate to ClawdCursor's agent (proper vision-based desktop agent)
+    // For actions: delegate to agent
     // GPT-4o decides what to do, ClawdCursor's agent actually does it
     const cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
     const spokenText = cleanText || 'On it!';
     this.conversationHistory.push({ role: 'assistant', content: spokenText });
 
-    log.info('Action request — delegating to ClawdCursor agent', { userRequest: text });
+    log.info('Clippy says (action)', spokenText.substring(0, 150));
     this.delegateToAgent(text);
     return spokenText;
   }
