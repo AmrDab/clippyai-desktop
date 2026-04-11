@@ -30,7 +30,6 @@ navItems.forEach((item) => {
 
 // Elements
 const buddyNameInput = document.getElementById('setting-buddy-name') as HTMLInputElement;
-const aiEndpointInput = document.getElementById('setting-ai-endpoint') as HTMLInputElement;
 const proactiveIntervalRange = document.getElementById('setting-proactive-interval') as HTMLInputElement;
 const proactiveIntervalValue = document.getElementById('proactive-interval-value')!;
 const proactiveToggle = document.getElementById('setting-proactive') as HTMLInputElement;
@@ -64,7 +63,6 @@ populateVoices();
 async function loadConfig(): Promise<void> {
   const config = await window.clippy.getConfig();
   buddyNameInput.value = (config.buddyName as string) || 'Clippy';
-  aiEndpointInput.value = (config.aiEndpoint as string) || '';
   proactiveToggle.checked = config.proactiveEnabled as boolean;
 
   const intervalSec = Math.round((config.proactiveInterval as number) / 1000);
@@ -182,42 +180,49 @@ for (const [id, url] of [
   }
 }
 
-// Check for updates button
-const btnCheckUpdate = document.getElementById('btn-check-update');
-const updateStatus = document.getElementById('update-status');
-if (btnCheckUpdate) {
-  btnCheckUpdate.addEventListener('click', async () => {
-    if (updateStatus) updateStatus.textContent = 'Checking for updates...';
-    btnCheckUpdate.disabled = true;
+// Check for updates — wire both Tools tab and About tab buttons
+function wireUpdateButton(btnId: string, statusId: string): void {
+  const btn = document.getElementById(btnId) as HTMLButtonElement | null;
+  const status = document.getElementById(statusId);
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (status) status.textContent = 'Searching for updates...';
+    btn.disabled = true;
     await window.clippy.checkForUpdates();
-    // Wait a moment for the updater to respond
     setTimeout(() => {
-      btnCheckUpdate.disabled = false;
-      if (updateStatus && updateStatus.textContent === 'Checking for updates...') {
-        updateStatus.textContent = 'You\'re on the latest version!';
+      btn.disabled = false;
+      if (status && status.textContent === 'Searching for updates...') {
+        status.textContent = 'You\'re on the latest version!';
       }
     }, 5000);
   });
 }
+wireUpdateButton('btn-check-update', 'update-status');
+wireUpdateButton('btn-check-update-about', 'update-status-about');
 
-// Listen for update notifications in settings too
+// Listen for update notifications — update all status elements
+function setAllUpdateStatus(html: string): void {
+  for (const id of ['update-status', 'update-status-about']) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  }
+}
+
 window.clippy.onUpdateAvailable((version: string) => {
-  if (updateStatus) {
-    updateStatus.innerHTML = `<strong>v${version} available!</strong> <button id="btn-download-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`;
-    document.getElementById('btn-download-update')?.addEventListener('click', () => {
-      if (updateStatus) updateStatus.textContent = 'Downloading...';
+  setAllUpdateStatus(`<strong>v${version} available!</strong> <button class="btn-dl-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`);
+  document.querySelectorAll('.btn-dl-update').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setAllUpdateStatus('Downloading...');
       window.clippy.downloadUpdate();
     });
-  }
+  });
 });
 
 window.clippy.onUpdateReady((version: string) => {
-  if (updateStatus) {
-    updateStatus.innerHTML = `<strong>v${version} ready!</strong> <button id="btn-install-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;background:#4CAF50;color:white;border:none;border-radius:3px;">Restart & Update</button>`;
-    document.getElementById('btn-install-update')?.addEventListener('click', () => {
-      window.clippy.installUpdate();
-    });
-  }
+  setAllUpdateStatus(`<strong>v${version} ready!</strong> <button class="btn-inst-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;background:#4CAF50;color:white;border:none;border-radius:3px;">Restart & Update</button>`);
+  document.querySelectorAll('.btn-inst-update').forEach((btn) => {
+    btn.addEventListener('click', () => window.clippy.installUpdate());
+  });
 });
 
 // Init

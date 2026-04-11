@@ -42,19 +42,15 @@
       <div class="settings-section" data-section="appearance">
         <h2>Appearance</h2>
         <div class="settings-group">
-          <label for="setting-scale">Clippy Scale</label>
-          <select id="setting-scale">
-            <option value="small">Small (0.75x)</option>
-            <option value="medium" selected>Medium (1x)</option>
-            <option value="large">Large (1.5x)</option>
-          </select>
+          <p style="font-size: 13px; color: #666;">Clippy's appearance is fixed in this version. Custom sizes and themes coming soon!</p>
         </div>
         <div class="settings-toggle">
           <label>Always on top</label>
           <div class="toggle-switch">
-            <input type="checkbox" id="setting-always-top" checked />
+            <input type="checkbox" id="setting-always-top" checked disabled />
             <span class="toggle-slider"></span>
           </div>
+          <p style="font-size: 11px; color: #aaa; margin-top: 4px;">Always enabled — Clippy stays visible on your desktop.</p>
         </div>
       </div>
 
@@ -82,10 +78,6 @@
       <!-- Brain -->
       <div class="settings-section" data-section="brain">
         <h2>Brain</h2>
-        <div class="settings-group">
-          <label for="setting-ai-endpoint">AI Endpoint URL</label>
-          <input id="setting-ai-endpoint" type="url" />
-        </div>
         <div class="settings-group">
           <label for="setting-proactive-interval">Proactive Interval</label>
           <input id="setting-proactive-interval" type="range" min="10" max="300" step="5" value="30" />
@@ -149,11 +141,20 @@
       <div class="settings-section" data-section="about">
         <h2>About ClippyAI</h2>
         <div class="settings-group">
-          <p style="font-size: 14px; margin-bottom: 12px;"><strong>ClippyAI v0.4.4</strong></p>
+          <p style="font-size: 14px; margin-bottom: 12px;"><strong>ClippyAI v0.4.5</strong></p>
           <p style="font-size: 13px; color: #666; line-height: 1.7;">
             Your AI desktop buddy — the modern reincarnation of the classic Microsoft Office Assistant, now with real AI superpowers.
           </p>
         </div>
+
+        <div class="settings-group" style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee;">
+          <label>Updates</label>
+          <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+            <button class="btn-secondary" id="btn-check-update-about">Search for Updates</button>
+          </div>
+          <p id="update-status-about" style="font-size: 12px; color: #888; margin-top: 6px;"></p>
+        </div>
+
         <div class="settings-group" style="margin-top: 12px;">
           <p style="font-size: 13px; line-height: 2;">
             <a href="#" id="link-website" style="color: #4CAF50;">clippyai.app</a><br>
