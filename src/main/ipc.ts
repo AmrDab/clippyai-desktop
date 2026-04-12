@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
+import { checkForUpdates, downloadUpdate, installUpdate } from './updater';
 import {
   validateLicenseKey,
   saveLicense,
@@ -13,7 +14,7 @@ import {
 } from './license';
 import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow } from './window';
-import { installUpdate, downloadUpdate } from './updater';
+// updater imports moved to top of file
 import fs from 'fs';
 import path from 'path';
 
@@ -132,7 +133,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
   // Auto-update
   ipcMain.handle('check-for-updates', async () => {
-    const { checkForUpdates } = await import('./updater');
     checkForUpdates();
     return true;
   });
