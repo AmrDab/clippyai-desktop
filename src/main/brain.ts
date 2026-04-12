@@ -217,9 +217,9 @@ export class Brain {
     const lower = userText.toLowerCase();
     const replyLower = reply.toLowerCase();
 
-    // Playful requests → fun animations
-    if (/trick|dance|entertain|show me|cool|funny|surprise|perform/.test(lower)) {
-      const funAnims = ['Congratulate', 'Wave', 'GetAttention', 'IdleAtom', 'IdleRopePile'];
+    // Playful requests → fun animations (never Wave — that's the default skip)
+    if (/trick|dance|entertain|show me|cool|funny|surprise|perform|animat/.test(lower)) {
+      const funAnims = ['Congratulate', 'GetAttention', 'IdleAtom', 'IdleRopePile', 'IdleSideToSide', 'IdleEyeBrowRaise'];
       return funAnims[Math.floor(Math.random() * funAnims.length)];
     }
     // Greeting → Wave
@@ -367,11 +367,9 @@ export class Brain {
       log.info('Question answered (actions stripped)', cleanText?.substring(0, 100));
       this.conversationHistory.push({ role: 'assistant', content: cleanText });
 
-      // Pick a contextual animation for the answer
+      // Pick and play contextual animation for the answer
       const answerAnim = this.pickAnswerAnimation(text, cleanText);
-      if (answerAnim !== 'Wave') {
-        this.win.webContents.send('play-animation', answerAnim);
-      }
+      try { this.win.webContents.send('play-animation', answerAnim); } catch {}
 
       const finalAnswer = cleanText || "I'm not sure about that.";
       log.info('Clippy says (question)', finalAnswer.substring(0, 150));

@@ -64,10 +64,10 @@ async function init(): Promise<void> {
       const response = await window.clippy.sendMessage(userText);
       bubbleCtrl.speak(response);
       tts.speak(response);
-      clippyCtrl.suggest();
+      // Don't override animation here — brain sends play-animation with the right one
     } catch {
       bubbleCtrl.speak("Sorry, I couldn't connect right now.");
-      clippyCtrl.idle();
+      clippyCtrl.alert();
     }
   });
 
