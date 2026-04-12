@@ -379,8 +379,12 @@ export class Brain {
     }
 
     // For actions: delegate to agent
-    // GPT-4o decides what to do, ClawdCursor's agent actually does it
-    const cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
+    // Strip any JSON that bled into the spoken text (Gemini sometimes mixes text + JSON)
+    let cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
+    // Remove JSON objects from the text (e.g. {"action":"open_app",...})
+    cleanText = cleanText.replace(/\{[^{}]*"action"[^{}]*\}/g, '').trim();
+    // Remove any remaining orphaned JSON fragments
+    cleanText = cleanText.replace(/\{[^{}]*\}/g, '').trim();
     const spokenText = cleanText || 'On it!';
     this.conversationHistory.push({ role: 'assistant', content: spokenText });
 
