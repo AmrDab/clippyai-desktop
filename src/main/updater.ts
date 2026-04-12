@@ -75,5 +75,6 @@ export function installUpdate(): void {
   }
   log.info('User requested update install — quitting and installing');
   // isSilent=true so installer doesn't show UI, isForceRunAfter=true to relaunch after
-  autoUpdater.quitAndInstall(true, true);
+  // NOT silent — SmartScreen needs to show "More info → Run anyway" dialog for unsigned exe
+  autoUpdater.quitAndInstall(false, true);
 }
