@@ -76,7 +76,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       ttsVoice: getTtsVoice(),
       proactiveInterval: brainSettingsStore.get('proactiveInterval'),
       proactiveEnabled: brainSettingsStore.get('proactiveEnabled'),
-      aiEndpoint: brainSettingsStore.get('aiEndpoint'),
+      appVersion: app.getVersion(),
     };
   });
 

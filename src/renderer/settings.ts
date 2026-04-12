@@ -65,6 +65,12 @@ async function loadConfig(): Promise<void> {
   buddyNameInput.value = (config.buddyName as string) || 'Clippy';
   proactiveToggle.checked = config.proactiveEnabled as boolean;
 
+  // Dynamic version from app
+  const versionEl = document.getElementById('app-version');
+  if (versionEl && config.appVersion) {
+    versionEl.textContent = `ClippyAI v${config.appVersion}`;
+  }
+
   const intervalSec = Math.round((config.proactiveInterval as number) / 1000);
   proactiveIntervalRange.value = String(intervalSec);
   proactiveIntervalValue.textContent = `${intervalSec}s`;
