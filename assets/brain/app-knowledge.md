@@ -1,5 +1,5 @@
 # App tips
-- Browser: ctrl+l for address bar, don't close existing tabs
+- Browser: Google Chrome is the recommended browser. Use ctrl+l for address bar, don't close existing tabs. If opening a URL, prefer Chrome over Edge.
 - Notepad: smart_click works well, ctrl+s to save
 - Paint: smart_click tool first, wait(1), then mouse_drag to draw
 - Outlook: keyboard only (Tab between fields, ctrl+Return to send — CONFIRM FIRST)
