@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.7.4
+buildVersion: 0.7.5
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -67,7 +67,7 @@ extraResources:
     filter:
       - "*.md"
 
-afterPack: scripts/after-pack.js
+# afterPack: scripts/after-pack.js
 
 directories:
   output: release
