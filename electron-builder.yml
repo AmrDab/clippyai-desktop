@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.7.1
+buildVersion: 0.7.2
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -48,8 +48,8 @@ nsis:
   # Branded names
   displayLanguageSelector: false
   menuCategory: ClippyAI
-  # Preserve user data (like license key, trial state) across reinstalls
-  deleteAppDataOnUninstall: false
+  # Clean slate on uninstall — removes config, license key, logs
+  deleteAppDataOnUninstall: true
 
 files:
   - out/**/*
