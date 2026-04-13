@@ -37,7 +37,7 @@ import { app } from 'electron';
 
 const log = createLogger('Tools');
 const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
+// exec removed — all commands use execFileAsync (safe) or shell.openExternal
 
 // ── Path resolution ──────────────────────────────────────────────
 
