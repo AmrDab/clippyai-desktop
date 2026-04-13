@@ -7,12 +7,32 @@
  * No separate process, no HTTP, no port 3847, no startup failures.
  */
 
-import { execFile, exec, ChildProcess } from 'child_process';
+import { execFile, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { shell } from 'electron';
 import { createLogger } from './logger';
+
+// ── Input sanitization (prevent PowerShell injection) ─────────────
+function sanitizeAppName(name: string): string {
+  // Only allow alphanumeric, spaces, dots, hyphens, underscores
+  return name.replace(/[^a-zA-Z0-9\s.\-_]/g, '').substring(0, 50);
+}
+
+function sanitizeForSendKeys(str: string): string {
+  // Only allow known SendKeys tokens
+  const allowed = /^[a-zA-Z0-9\^%+{}\(\)~ ]*$/;
+  if (!allowed.test(str)) return '';
+  return str.substring(0, 50);
+}
+
+function sanitizeNumber(val: unknown): number {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n);
+}
 import { app } from 'electron';
 
 const log = createLogger('Tools');
@@ -219,11 +239,12 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
 }
 
 async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
-  const name = String(params.name || '');
+  const name = sanitizeAppName(String(params.name || ''));
   if (!name) return { text: '(no app name provided)' };
   try {
+    // Use -ArgumentList to prevent injection — name is a separate argument, not in -Command string
     await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command', `Start-Process "${name}"`,
+      '-NoProfile', '-Command', 'Start-Process', '-FilePath', name,
     ], { timeout: 10000 });
     return { text: `Launched ${name}` };
   } catch (err) {
@@ -234,13 +255,17 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
 async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
   const text = String(params.text || '');
   if (!text) return { text: '(no text provided)' };
-  // Use PowerShell clipboard paste — most reliable on Windows
   try {
+    // Write text to temp file to avoid PowerShell injection
+    const tmpFile = path.join(os.tmpdir(), `clippy-type-${Date.now()}.txt`);
+    fs.writeFileSync(tmpFile, text, 'utf-8');
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
-      `Set-Clipboard -Value '${text.replace(/'/g, "''")}'; ` +
-      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')`,
+      `Set-Clipboard -Path '${tmpFile.replace(/'/g, "''")}'; ` +
+      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v'); ` +
+      `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
     ], { timeout: 5000 });
+    try { fs.unlinkSync(tmpFile); } catch {} // cleanup fallback
     return { text: `Typed: ${text.substring(0, 50)}` };
   } catch (err) {
     return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
@@ -279,9 +304,11 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
       sendKeysStr = keyMap[key] || key;
     }
 
+    const safeSendKeys = sanitizeForSendKeys(sendKeysStr);
+    if (!safeSendKeys) return { text: `(invalid key: ${key})` };
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${sendKeysStr.replace(/'/g, "''")}')`,
+      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${safeSendKeys}')`,
     ], { timeout: 5000 });
     return { text: `Pressed: ${key}` };
   } catch (err) {
@@ -290,8 +317,8 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
 }
 
 async function mouseClick(params: Record<string, unknown>): Promise<ToolResult> {
-  const x = Math.round(Number(params.x || 0) * screenScale);
-  const y = Math.round(Number(params.y || 0) * screenScale);
+  const x = sanitizeNumber(params.x) * Math.round(screenScale);
+  const y = sanitizeNumber(params.y) * Math.round(screenScale);
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -390,8 +417,8 @@ async function navigateBrowser(params: Record<string, unknown>): Promise<ToolRes
   const url = String(params.url || '');
   if (!url) return { text: '(no URL provided)' };
   try {
-    // Open in default browser
-    await execAsync(`start "" "${url}"`, { timeout: 5000 });
+    // Use Electron's shell.openExternal — safe, validates URLs, no shell injection
+    await shell.openExternal(url);
     return { text: `Opened ${url}` };
   } catch (err) {
     return { text: `(navigate_browser error: ${err instanceof Error ? err.message : ''})` };

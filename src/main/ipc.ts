@@ -2,6 +2,9 @@ import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
 import { checkForUpdates, downloadUpdate, installUpdate } from './updater';
+import { createLogger } from './logger';
+
+const log = createLogger('IPC');
 import {
   validateLicenseKey,
   saveLicense,

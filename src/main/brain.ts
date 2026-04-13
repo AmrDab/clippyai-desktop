@@ -13,7 +13,10 @@ const API_BASE = 'https://api.clippyai.app';
 // ========== Load Behavioral Guidance ==========
 
 function loadGuidance(): string {
-  const brainDir = path.join(__dirname, '../../assets/brain');
+  // Production: resources/brain/ (extraResources), Dev: assets/brain/
+  const bundled = path.join(process.resourcesPath || '', 'brain');
+  const dev = path.join(app.getAppPath(), 'assets', 'brain');
+  const brainDir = fs.existsSync(bundled) ? bundled : (fs.existsSync(dev) ? dev : path.join(__dirname, '../../assets/brain'));
   const files = ['identity.md', 'core-behavior.md', 'tool-guide.md', 'app-knowledge.md', 'safety-rules.md'];
   const sections: string[] = [];
 
@@ -348,8 +351,8 @@ export class Brain {
 
     // Auto-detect name introduction and save to profile
     if (!isProfileSetUp()) {
-      const nameMatch = text.match(/(?:my name is|i'm|i am|call me|it's|its|this is|hey i'm|yo i'm|name's)\s+([A-Za-z]{2,20})/i)
-        || text.match(/^([A-Z][a-z]{1,20})$/); // Just a single capitalized word like "Amr"
+      // Only match explicit name introductions — avoid false positives on common words
+      const nameMatch = text.match(/(?:my name is|call me|i'm called|name's)\s+([A-Za-z]{2,20})/i);
       if (nameMatch) {
         const name = nameMatch[1].trim();
         const capitalized = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
@@ -474,7 +477,7 @@ export class Brain {
         const signature = `${agentResponse.action}:${JSON.stringify(agentResponse.params)}`;
         if (signature === lastSignature) {
           repeatCount++;
-          if (repeatCount >= 1) {
+          if (repeatCount >= 2) {
             log.warn(`Loop detected: ${signature} repeated — breaking`);
             this.emitToRenderer('clippy-speak', {
               text: "I'm stuck. Try giving me a more specific instruction!",

@@ -107,9 +107,7 @@ buddyNameInput.addEventListener('input', () => {
   debounceSave({ buddyName: buddyNameInput.value.trim() });
 });
 
-aiEndpointInput.addEventListener('input', () => {
-  debounceSave({ aiEndpoint: aiEndpointInput.value.trim() });
-});
+// aiEndpoint field removed — locked to official API
 
 proactiveIntervalRange.addEventListener('input', () => {
   const sec = Number(proactiveIntervalRange.value);
