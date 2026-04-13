@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.7.3
+buildVersion: 0.7.4
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -21,7 +21,7 @@ win:
   requestedExecutionLevel: asInvoker
   # File naming — clean, no spaces
   artifactName: ClippyAI-Setup-${version}.${ext}
-  # We're not code signing yet — skip rcedit steps that require winCodeSign
+  # rcedit embeds icon + product name into exe (works without code signing)
   signAndEditExecutable: false
   signingHashAlgorithms: []
   forceCodeSigning: false
@@ -66,6 +66,8 @@ extraResources:
     to: brain
     filter:
       - "*.md"
+
+afterPack: scripts/after-pack.js
 
 directories:
   output: release

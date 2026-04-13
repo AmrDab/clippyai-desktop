@@ -1,6 +1,6 @@
 {
   "name": "clippyai",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "productName": "ClippyAI",
   "description": "ClippyAI — Your AI desktop buddy",
   "homepage": "https://clippyai.app",
@@ -32,6 +32,7 @@
     "electron-builder": "^24.0.0",
     "electron-vite": "^2.0.0",
     "pngjs": "^7.0.0",
+    "rcedit": "^5.0.2",
     "typescript": "^5.4.0"
   }
 }
