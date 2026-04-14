@@ -93,9 +93,14 @@ function buildPrompt(mode: 'chat' | 'question'): string {
     ? 'The user is asking a QUESTION. Answer directly. No tools. No browser. Just answer.'
     : 'The user wants you to DO something. Confirm briefly, then your tools handle it.';
 
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
   return `${GUIDANCE}
 ${profileSection}
 Plan: ${plan}
+Today: ${dateStr}, ${timeStr}
 
 ${modeInstruction}
 
