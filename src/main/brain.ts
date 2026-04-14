@@ -91,7 +91,7 @@ function buildPrompt(mode: 'chat' | 'question'): string {
 
   const modeInstruction = mode === 'question'
     ? 'The user is asking a QUESTION. Answer directly. No tools. No browser. Just answer.'
-    : 'The user wants you to DO something. Confirm briefly, then your tools handle it.';
+    : 'The user wants you to DO something. Reply with ONLY a short 1-sentence confirmation like "On it!" or "Opening that now!". Do NOT output any JSON, tool calls, or action objects. Just the confirmation text. A separate system handles the actual execution.';
 
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -385,12 +385,16 @@ export class Brain {
     }
 
     // For actions: delegate to agent
-    // Strip any JSON that bled into the spoken text (Gemini sometimes mixes text + JSON)
-    let cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
-    // Remove JSON objects from the text (e.g. {"action":"open_app",...})
-    cleanText = cleanText.replace(/\{[^{}]*"action"[^{}]*\}/g, '').trim();
-    // Remove any remaining orphaned JSON fragments
-    cleanText = cleanText.replace(/\{[^{}]*\}/g, '').trim();
+    // Strip ALL JSON from the spoken text — Gemini often mixes prose + JSON
+    let cleanText = response;
+    // Remove multi-line JSON blocks (handles newlines inside braces)
+    cleanText = cleanText.replace(/\{[\s\S]*?"action"[\s\S]*?\}/g, '').trim();
+    // Remove legacy action tags
+    cleanText = cleanText.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
+    // Remove any remaining JSON fragments
+    cleanText = cleanText.replace(/\{[\s\S]*?\}/g, '').trim();
+    // Clean up leftover whitespace
+    cleanText = cleanText.replace(/\n{2,}/g, '\n').trim();
     const spokenText = cleanText || 'On it!';
     this.conversationHistory.push({ role: 'assistant', content: spokenText });
 
