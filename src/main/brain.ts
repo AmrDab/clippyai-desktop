@@ -22,6 +22,28 @@ const log = createLogger('Brain');
 const API_BASE = 'https://api.clippyai.app';
 const TURN_ENDPOINT = `${API_BASE}/v1/turn`;
 
+/**
+ * Tools that modify the screen state. After these fire, we inject a fresh
+ * read_screen into the tool's functionResponse so the model sees what
+ * actually happened, not what it hoped happened. Fixes the "blind after
+ * step 1" problem that caused multi-step tasks to drift.
+ */
+const UI_MODIFYING_TOOLS = new Set([
+  'open_app',
+  'focus_window',
+  'smart_click',
+  'smart_type',
+  'type_text',
+  'key_press',
+  'mouse_click',
+  'mouse_double_click',
+  'mouse_right_click',
+  'mouse_drag',
+  'mouse_scroll',
+  'navigate_browser',
+  'write_clipboard',
+]);
+
 // ========== Gemini content shape (local types — no runtime SDK dep) ==========
 
 type TextPart = { text: string };
@@ -194,8 +216,10 @@ export class Brain {
       const profile = getUserProfile();
       const userProfile = profile.Name ? `Name: ${profile.Name}` : undefined;
 
-      const MAX_STEPS = 10;
+      // 15 gives room for verification interleaved with real work.
+      const MAX_STEPS = 15;
       let finalSpoken = '';
+      let taskCompleted = false;
 
       for (let step = 0; step < MAX_STEPS; step++) {
         if (!this.win.isDestroyed()) this.win.setAlwaysOnTop(true, 'screen-saver');
@@ -221,7 +245,22 @@ export class Brain {
           finalSpoken = spoken;
         }
 
-        // End of conversation turn
+        // === SENTINEL: task_complete ===
+        // Gemini signals task end by calling task_complete(summary=...). This
+        // replaces the unreliable "empty tool calls = done" heuristic that
+        // caused silent exits mid-task.
+        const completeCall = calls.find((c) => c.name === 'task_complete');
+        if (completeCall) {
+          const summary = String(
+            (completeCall.args as { summary?: string }).summary || 'Done!',
+          );
+          this.emit('clippy-speak', { text: summary, animate: 'Congratulate' });
+          finalSpoken = summary;
+          taskCompleted = true;
+          break;
+        }
+
+        // Fallback: no tool calls → done (or ambiguous)
         if (calls.length === 0 || resp.done) {
           if (calls.length === 0 && !spoken) {
             finalSpoken = "I'm not sure what to do — can you rephrase?";
@@ -240,10 +279,28 @@ export class Brain {
           try {
             const result = await executeTool(call.name, call.args);
             const resultText = result.text || JSON.stringify(result).substring(0, 500);
+
+            // === VERIFICATION: inject fresh screen state after UI-modifying tools ===
+            // Gemini used to go blind after step 1 (screen only captured at start).
+            // Now every UI-modifying tool gets paired with a fresh screen snapshot
+            // so the model can verify what actually happened.
+            let screenAfter: string | undefined;
+            if (UI_MODIFYING_TOOLS.has(call.name)) {
+              try {
+                const screen = await executeTool('read_screen', {});
+                if (screen.text) screenAfter = screen.text.substring(0, 1500);
+              } catch {
+                /* best effort — don't fail the task over a missed verification */
+              }
+            }
+
             responseParts.push({
               functionResponse: {
                 name: call.name,
-                response: { result: resultText.substring(0, 2000) },
+                response: {
+                  result: resultText.substring(0, 800),
+                  ...(screenAfter ? { screen_after: screenAfter } : {}),
+                },
               },
             });
           } catch (err) {
@@ -261,7 +318,7 @@ export class Brain {
         contents.push({ role: 'user', parts: responseParts });
         await new Promise((r) => setTimeout(r, 300));
 
-        if (step === MAX_STEPS - 1) {
+        if (step === MAX_STEPS - 1 && !taskCompleted) {
           const capMsg = "That's a long task — stopping here for now!";
           this.emit('clippy-speak', { text: capMsg, animate: 'Congratulate' });
           finalSpoken = capMsg;
@@ -355,7 +412,9 @@ export class Brain {
         const activeText = active.status === 'fulfilled' ? active.value.text : '';
         const screenText = screen.status === 'fulfilled' ? screen.value.text : '';
         if (!activeText && !screenText) return '';
-        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 800)}`;
+        // 3000 chars gives Gemini enough to see meaningful UI structure
+        // (was 800 — too small for modern apps, Gemini was blind).
+        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 3000)}`;
       })();
       const timeout = new Promise<string>((r) => setTimeout(() => r(''), timeoutMs));
       return await Promise.race([promise, timeout]);

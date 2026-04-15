@@ -454,12 +454,121 @@ async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
   return { text: `Waited ${seconds}s` };
 }
 
+// ── Clipboard ────────────────────────────────────────────────────
+
+async function readClipboard(): Promise<ToolResult> {
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command', 'Get-Clipboard -Raw',
+    ], { timeout: 5000 });
+    const text = stdout.trim();
+    return { text: text ? `Clipboard: ${text.substring(0, 2000)}` : '(clipboard empty)' };
+  } catch (err) {
+    return { text: `(read_clipboard error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+async function writeClipboard(params: Record<string, unknown>): Promise<ToolResult> {
+  const text = String(params.text || '');
+  if (!text) return { text: '(no text provided)' };
+  try {
+    // Write via temp file to avoid shell-escaping issues with arbitrary text
+    const tmpFile = path.join(os.tmpdir(), `clippy-clip-${Date.now()}.txt`);
+    fs.writeFileSync(tmpFile, text, 'utf-8');
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Set-Clipboard -Value (Get-Content -Raw -LiteralPath '${tmpFile.replace(/'/g, "''")}')`,
+    ], { timeout: 5000 });
+    try { fs.unlinkSync(tmpFile); } catch { /* cleanup fallback */ }
+    return { text: `Wrote ${text.length} chars to clipboard` };
+  } catch (err) {
+    return { text: `(write_clipboard error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+// ── Mouse variants ───────────────────────────────────────────────
+
+async function mouseDoubleClick(params: Record<string, unknown>): Promise<ToolResult> {
+  const x = sanitizeNumber(params.x) * Math.round(screenScale);
+  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  try {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Add-Type -AssemblyName System.Windows.Forms; ` +
+      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+      `Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
+      `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0); ` +
+      `Start-Sleep -Milliseconds 50; ` +
+      `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
+    ], { timeout: 5000 });
+    return { text: `Double-clicked at (${params.x},${params.y})` };
+  } catch (err) {
+    return { text: `(mouse_double_click error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+async function mouseRightClick(params: Record<string, unknown>): Promise<ToolResult> {
+  const x = sanitizeNumber(params.x) * Math.round(screenScale);
+  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  try {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Add-Type -AssemblyName System.Windows.Forms; ` +
+      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+      `Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
+      // 0x0008 = RIGHTDOWN, 0x0010 = RIGHTUP
+      `[API.Win32]::mouse_event(8,0,0,0,0); [API.Win32]::mouse_event(16,0,0,0,0)`,
+    ], { timeout: 5000 });
+    return { text: `Right-clicked at (${params.x},${params.y})` };
+  } catch (err) {
+    return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+async function mouseHover(params: Record<string, unknown>): Promise<ToolResult> {
+  const x = sanitizeNumber(params.x) * Math.round(screenScale);
+  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  try {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Add-Type -AssemblyName System.Windows.Forms; ` +
+      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y})`,
+    ], { timeout: 5000 });
+    return { text: `Hovering at (${params.x},${params.y})` };
+  } catch (err) {
+    return { text: `(mouse_hover error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+// ── Focused element inspection ───────────────────────────────────
+
+async function getFocusedElement(): Promise<ToolResult> {
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Add-Type -AssemblyName UIAutomationClient; ` +
+      `$el = [System.Windows.Automation.AutomationElement]::FocusedElement; ` +
+      `if ($el) { ` +
+        `$name = $el.Current.Name; ` +
+        `$type = $el.Current.LocalizedControlType; ` +
+        `$auto = $el.Current.AutomationId; ` +
+        `$b = $el.Current.BoundingRectangle; ` +
+        `"name=$name | type=$type | id=$auto | bounds=$($b.X),$($b.Y),$($b.Width),$($b.Height)" ` +
+      `} else { "(no focused element)" }`,
+    ], { timeout: 5000 });
+    return { text: stdout.trim() || '(no focused element)' };
+  } catch (err) {
+    return { text: `(get_focused_element error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
 // ── Tool Registry ────────────────────────────────────────────────
 
 const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<ToolResult>> = {
   read_screen: readScreen,
   get_active_window: getActiveWindow,
   get_windows: getWindows,
+  get_focused_element: getFocusedElement,
   focus_window: focusWindow,
   open_app: openApp,
   desktop_screenshot: desktopScreenshot,
@@ -468,9 +577,14 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   type_text: typeText,
   key_press: keyPress,
   mouse_click: mouseClick,
+  mouse_double_click: mouseDoubleClick,
+  mouse_right_click: mouseRightClick,
+  mouse_hover: mouseHover,
   mouse_drag: mouseDrag,
   mouse_scroll: mouseScroll,
   navigate_browser: navigateBrowser,
+  read_clipboard: readClipboard,
+  write_clipboard: writeClipboard,
   wait: waitTool,
   // Aliases
   smart_read: readScreen,
