@@ -1,39 +1,64 @@
-import { BrowserWindow, net } from 'electron';
+/**
+ * Brain — ClippyAI's agent loop on the client side.
+ *
+ * Calls the unified /v1/turn backend endpoint which runs Gemini with native
+ * function calling. No JSON-in-text. No regex parsing of model output.
+ * Tool calls come back as structured `functionCall` parts; we execute them
+ * locally via tools.ts and feed results back as `functionResponse` parts.
+ *
+ * The server owns the system prompt (identity, date, plan, tool schema).
+ * The client owns the conversation loop and local tool execution.
+ */
+
+import { BrowserWindow, net, app } from 'electron';
 import { executeTool } from './tools';
-import { getLicenseKey, getPlan } from './license';
+import { getLicenseKey } from './license';
 import Store from 'electron-store';
 import { createLogger } from './logger';
 import fs from 'fs';
 import path from 'path';
-import { app } from 'electron';
 
 const log = createLogger('Brain');
 const API_BASE = 'https://api.clippyai.app';
+const TURN_ENDPOINT = `${API_BASE}/v1/turn`;
 
-// ========== Load Behavioral Guidance ==========
+// ========== Gemini content shape (local types — no runtime SDK dep) ==========
 
-function loadGuidance(): string {
-  // Production: resources/brain/ (extraResources), Dev: assets/brain/
-  const bundled = path.join(process.resourcesPath || '', 'brain');
-  const dev = path.join(app.getAppPath(), 'assets', 'brain');
-  const brainDir = fs.existsSync(bundled) ? bundled : (fs.existsSync(dev) ? dev : path.join(__dirname, '../../assets/brain'));
-  const files = ['identity.md', 'core-behavior.md', 'tool-guide.md', 'app-knowledge.md', 'safety-rules.md'];
-  const sections: string[] = [];
+type TextPart = { text: string };
+type FunctionCallPart = { functionCall: { name: string; args: Record<string, unknown> } };
+type FunctionResponsePart = {
+  functionResponse: { name: string; response: Record<string, unknown> };
+};
+type InlineDataPart = { inlineData: { mimeType: string; data: string } };
+type Part = TextPart | FunctionCallPart | FunctionResponsePart | InlineDataPart;
 
-  for (const file of files) {
-    try {
-      const content = fs.readFileSync(path.join(brainDir, file), 'utf-8');
-      sections.push(content);
-    } catch (err) {
-      log.warn(`Could not load guidance file: ${file}`, err);
-    }
-  }
+type Content = {
+  role: 'user' | 'model';
+  parts: Part[];
+};
 
-  return sections.join('\n\n---\n\n');
+type TurnSuccess = {
+  parts: Part[];
+  done: boolean;
+  finish_reason: string;
+  tokens_used: number;
+  tokens_remaining: number;
+};
+
+type TurnError = { error: string; detail?: string; message?: string };
+type TurnResponse = TurnSuccess | TurnError;
+
+function isError(r: TurnResponse): r is TurnError {
+  return 'error' in r;
 }
 
-const GUIDANCE = loadGuidance();
-log.info('Loaded guidance files', { length: GUIDANCE.length });
+function isFunctionCall(p: Part): p is FunctionCallPart {
+  return 'functionCall' in p && !!p.functionCall;
+}
+
+function isText(p: Part): p is TextPart {
+  return 'text' in p && !!p.text;
+}
 
 // ========== User Profile ==========
 
@@ -43,10 +68,8 @@ function getUserProfilePath(): string {
 
 function loadUserProfile(): string {
   try {
-    const profilePath = getUserProfilePath();
-    if (fs.existsSync(profilePath)) {
-      return fs.readFileSync(profilePath, 'utf-8');
-    }
+    const p = getUserProfilePath();
+    if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
   } catch (err) {
     log.warn('Could not load user profile', err);
   }
@@ -55,9 +78,7 @@ function loadUserProfile(): string {
 
 export function saveUserProfile(data: Record<string, string>): void {
   const lines = ['# User Profile', ''];
-  for (const [key, value] of Object.entries(data)) {
-    if (value) lines.push(`- **${key}:** ${value}`);
-  }
+  for (const [k, v] of Object.entries(data)) if (v) lines.push(`- **${k}:** ${v}`);
   try {
     fs.writeFileSync(getUserProfilePath(), lines.join('\n'), 'utf-8');
     log.info('User profile saved');
@@ -70,75 +91,20 @@ export function getUserProfile(): Record<string, string> {
   const content = loadUserProfile();
   const profile: Record<string, string> = {};
   const regex = /- \*\*(.+?):\*\* (.+)/g;
-  let match;
-  while ((match = regex.exec(content)) !== null) {
-    profile[match[1]] = match[2];
-  }
+  let m;
+  while ((m = regex.exec(content)) !== null) profile[m[1]] = m[2];
   return profile;
 }
 
 export function isProfileSetUp(): boolean {
-  const profile = getUserProfile();
-  return !!profile['Name'];
+  return !!getUserProfile()['Name'];
 }
-
-// ========== System Prompts ==========
-
-function buildPrompt(mode: 'chat' | 'question'): string {
-  const profile = loadUserProfile();
-  const profileSection = profile ? `\n${profile}\n` : '';
-  const plan = getPlan() || 'unknown';
-
-  const modeInstruction = mode === 'question'
-    ? 'The user is asking a QUESTION. Answer directly. No tools. No browser. Just answer.'
-    : 'The user wants you to DO something. Reply with ONLY a short 1-sentence confirmation like "On it!" or "Opening that now!". Do NOT output any JSON, tool calls, or action objects. Just the confirmation text. A separate system handles the actual execution.';
-
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-
-  return `${GUIDANCE}
-${profileSection}
-Plan: ${plan}
-Today: ${dateStr}, ${timeStr}
-
-${modeInstruction}
-
-Screen: {CONTEXT}`;
-}
-
-// Legacy constant aliases (for proactive + question prompts)
-
-// buildQuestionPrompt removed — unified into buildPrompt('question')
-
-const PROACTIVE_SYSTEM_PROMPT = `You are Clippy — 📎 the AI desktop buddy. You can see the user's screen.
-
-Glance at what they're doing. Only speak if you have a genuinely useful TIP or OBSERVATION.
-
-RULES:
-- Max 1 sentence. Be brief.
-- NEVER say "I'll click that for you" or "Let me do that" — you're just OBSERVING here, not acting
-- NEVER offer to perform actions — just give tips, observations, or encouragement
-- If nothing useful to say, reply EXACTLY: __SILENT__
-- Prefer __SILENT__ over repeating similar observations
-- Don't comment on cookie banners, login screens, or routine UI elements
-- Don't repeat advice about the same topic you already mentioned`;
-
-const CONTINUE_PROMPT = `You just performed: {ACTION}
-Result: {RESULT}
-Current screen state: {SCREEN_STATE}
-
-Original user request: "{USER_REQUEST}"
-
-What's the next step? Reply with ONE action [[ACTION: ...]] or [[DONE]] if the task is complete.
-Keep speech to 1 sentence max — or no speech, just the action.`;
 
 // ========== Settings ==========
 
 interface BrainSettings {
   proactiveInterval: number;
   proactiveEnabled: boolean;
-  aiEndpoint: string;
 }
 
 const settingsStore = new Store<BrainSettings>({
@@ -146,28 +112,22 @@ const settingsStore = new Store<BrainSettings>({
   defaults: {
     proactiveInterval: 30000,
     proactiveEnabled: true,
-    aiEndpoint: `${API_BASE}/chat`,
   },
 });
 
-// ========== Parsing ==========
-
-// Used to strip legacy action tags from AI responses
-const ACTION_REGEX = /\[\[ACTION:\s*(\w+)\(([^)]*)\)\s*\]\]/;
-const DONE_MARKER = '[[DONE]]';
-
-// ========== Brain Class ==========
+// ========== Brain class ==========
 
 export class Brain {
   private win: BrowserWindow;
   private intervalId: NodeJS.Timeout | null = null;
   private mode: 'awake' | 'sleep' = 'sleep';
-  private conversationHistory: Array<{ role: string; content: string }> = [];
-  private static readonly MAX_HISTORY = 50;
-  private lastMessage: string = '';
-  private noRepeatUntil: number = 0;
-  private greetedOnWake: boolean = false;
-  private isExecutingTask: boolean = false;
+  /** Collapsed conversation history (text-only) across user turns. */
+  private history: Content[] = [];
+  private static readonly MAX_HISTORY = 20;
+  private lastProactiveMessage = '';
+  private noRepeatUntil = 0;
+  private greetedOnWake = false;
+  private isExecuting = false;
 
   constructor(win: BrowserWindow) {
     this.win = win;
@@ -188,433 +148,141 @@ export class Brain {
     return this.mode;
   }
 
-  private isSimilarToLast(message: string): boolean {
-    if (!this.lastMessage) return false;
-    // Extract key words (3+ chars, lowercase) and compare overlap
-    const getWords = (s: string) => new Set(s.toLowerCase().match(/\b\w{3,}\b/g) || []);
-    const currentWords = getWords(message);
-    const lastWords = getWords(this.lastMessage);
-    if (currentWords.size === 0 || lastWords.size === 0) return false;
-    let overlap = 0;
-    for (const word of currentWords) {
-      if (lastWords.has(word)) overlap++;
-    }
-    // If more than 50% of words overlap, it's too similar
-    const similarity = overlap / Math.min(currentWords.size, lastWords.size);
-    return similarity > 0.5;
-  }
-
-  // ── Animation picker ────────────────────────────────────────────
-  private pickAnimation(context: 'question_processing' | 'question_answered' | 'action_start' | 'action_typing' | 'action_complete' | 'error' | 'proactive' | 'upgrade' | 'greeting'): string {
-    switch (context) {
-      case 'question_processing': return 'Thinking';
-      case 'question_answered': return 'Wave';
-      case 'action_start': return 'Searching';
-      case 'action_typing': return 'Writing';
-      case 'action_complete': return 'Congratulate';
-      case 'error': return 'Alert';
-      case 'proactive': return 'Suggest';
-      case 'upgrade': return 'GetAttention';
-      case 'greeting': return 'Wave';
-      default: return 'Wave';
-    }
-  }
-
-  // ── Answer animation picker ────────────────────────────────────
-  private pickAnswerAnimation(userText: string, reply: string): string {
-    const lower = userText.toLowerCase();
-    const replyLower = reply.toLowerCase();
-
-    // Playful requests → fun animations (never Wave — that's the default skip)
-    if (/trick|dance|entertain|show me|cool|funny|surprise|perform|animat/.test(lower)) {
-      const funAnims = ['Congratulate', 'GetAttention', 'IdleAtom', 'IdleRopePile', 'IdleSideToSide', 'IdleEyeBrowRaise'];
-      return funAnims[Math.floor(Math.random() * funAnims.length)];
-    }
-    // Greeting → Wave
-    if (/^(hi|hey|hello|sup|yo|what'?s up|howdy)/i.test(lower)) return 'Wave';
-    // Error/sorry in reply → Alert
-    if (/sorry|error|can't|couldn't|failed|wrong/.test(replyLower)) return 'Alert';
-    // Success/celebration → Congratulate
-    if (/done|success|great|perfect|awesome|ta-da|congratul/.test(replyLower)) return 'Congratulate';
-    // Advice/tip → Suggest
-    if (/tip|suggest|recommend|try |you could|you should/.test(replyLower)) return 'Suggest';
-    // Thinking/pondering → Thinking
-    if (/hmm|let me think|interesting|good question/.test(replyLower)) return 'Thinking';
-
-    return 'Wave'; // default
-  }
-
-  // ── Web-knowledge detector ────────────────────────────────────
-  // Check if query is about web knowledge (enables web search grounding on API)
-  private isWebKnowledgeQuery(text: string): boolean {
-    const lower = text.toLowerCase();
-    const webTopics = [
-      'weather', 'temperature', 'forecast',
-      'stock', 'market', 'price',
-      'news', 'headline',
-      'define', 'definition', 'meaning',
-      'translate', 'translation',
-      'calculate', 'convert',
-      'what time', 'time zone',
-      'population', 'capital', 'president',
-      'score', 'standings',
-      'exchange rate', 'currency',
-      'recipe',
-    ];
-    return webTopics.some(topic => lower.includes(topic));
-  }
-
-  private isQuestionNotAction(text: string): boolean {
-    const lower = text.toLowerCase().trim();
-
-    // Web-knowledge queries are ALWAYS questions, even if they contain "search"
-    if (this.isWebKnowledgeQuery(lower)) return true;
-
-    // Explicit action verbs ANYWHERE in the message → NOT a question
-    const actionVerbs = [
-      'open', 'click', 'type', 'scroll', 'save', 'close', 'navigate',
-      'go to', 'draw', 'send', 'write in', 'focus',
-      'switch to', 'minimize', 'maximize', 'drag', 'paste', 'copy',
-      'press', 'run', 'launch', 'start', 'stop', 'create', 'delete',
-    ];
-    // NOTE: "search for" removed from action verbs — it's ambiguous and
-    // now handled by the web-knowledge check above
-    for (const verb of actionVerbs) {
-      if (lower.includes(verb)) return false;
-    }
-
-    // Question indicators → IS a question
-    const questionPatterns = [
-      /^(what|who|why|how|when|where|which|can you explain|tell me|describe|explain|help me|do you know|is there|are there|could you|would you)/,
-      /\?$/,  // Ends with question mark
-    ];
-    for (const pattern of questionPatterns) {
-      if (pattern.test(lower)) return true;
-    }
-
-    // Default: treat as question. Only action verbs trigger action mode.
-    // Gemini handles typos, ambiguity, and intent natively — don't second-guess it.
-    return true;
-  }
+  // ========== Public entry ==========
 
   async handleUserMessage(text: string): Promise<string> {
-    log.info('User message received', text);
-    this.conversationHistory.push({ role: 'user', content: text });
-    // Cap history to prevent memory growth
-    if (this.conversationHistory.length > Brain.MAX_HISTORY) {
-      this.conversationHistory = this.conversationHistory.slice(-Brain.MAX_HISTORY);
-    }
+    log.info('User message', text.substring(0, 120));
 
-    // Detect if this is a QUESTION or an ACTION REQUEST
-    const isQuestion = this.isQuestionNotAction(text);
-    log.info(`Message classified as: ${isQuestion ? 'QUESTION' : 'ACTION REQUEST'}`);
-
-    // Get screen context (with timeout so questions aren't blocked by slow tools)
-    let screenContext = '';
-    try {
-      const contextPromise = (async () => {
-        const activeWin = await executeTool('get_active_window', {});
-        let ctx = `Active window: ${activeWin.text}`;
-        if (!isQuestion) {
-          const screenData = await executeTool('read_screen', {});
-          ctx += `\nScreen elements: ${screenData.text?.substring(0, 500) || ''}`;
-        }
-        return ctx;
-      })();
-      // Don't let screen reading block questions for more than 3 seconds
-      const timeout = new Promise<string>((resolve) => setTimeout(() => resolve(''), isQuestion ? 3000 : 8000));
-      screenContext = await Promise.race([contextPromise, timeout]);
-    } catch {
-      log.warn('Could not get screen context');
-    }
-
-    // Show thinking animation for questions while waiting for API
-    if (isQuestion && this.win && !this.win.isDestroyed()) {
-      try { this.win.webContents.send('play-animation', this.pickAnimation('question_processing')); } catch {}
-    }
-
-    // Build prompt and call API
-    const systemPrompt = buildPrompt(isQuestion ? 'question' : 'chat').replace('{CONTEXT}', screenContext || '(no screen data)');
-    log.debug('Calling API', { messageLength: text.length, promptLength: systemPrompt.length, isQuestion });
-
-    let response = await this.callApi({
-      message: text,
-      context: screenContext,
-      system: systemPrompt,
-      history: this.conversationHistory.slice(-10),
-      webSearch: isQuestion && this.isWebKnowledgeQuery(text),
-    });
-
-    // Log Clippy's raw response for debugging
-    log.info('Clippy raw response', { isQuestion, responseLength: response?.length, response: response?.substring(0, 200) });
-
-    // Safety net — never let undefined/null/empty reach the user
-    if (!response || response === 'undefined' || response === 'null') {
-      log.warn('Empty/undefined response from API — using fallback');
-      response = "Hmm, my brain glitched. Try asking again! 📎";
-    }
-
-    // Auto-detect name introduction and save to profile
+    // Name introduction — handled client-side for deterministic UX
     if (!isProfileSetUp()) {
-      // Only match explicit name introductions — avoid false positives on common words
-      const nameMatch = text.match(/(?:my name is|call me|i'm called|name's)\s+([A-Za-z]{2,20})/i);
-      if (nameMatch) {
-        const name = nameMatch[1].trim();
-        const capitalized = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
-        saveUserProfile({ Name: capitalized });
-        log.info('User introduced themselves', { name: capitalized });
-        // Override the AI response with a personalized greeting
-        this.conversationHistory.push({ role: 'assistant', content: `Nice to meet you, ${capitalized}! 📎` });
-        return `Nice to meet you, ${capitalized}! I'll remember that. How can I help? 📎`;
+      const match = text.match(/(?:my name is|call me|i'm called|name's)\s+([A-Za-z]{2,20})/i);
+      if (match) {
+        const name = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
+        saveUserProfile({ Name: name });
+        const greeting = `Nice to meet you, ${name}! I'll remember that. How can I help? 📎`;
+        this.pushHistory({ role: 'user', parts: [{ text }] });
+        this.pushHistory({ role: 'model', parts: [{ text: greeting }] });
+        this.emit('clippy-speak', { text: greeting, animate: 'Wave' });
+        return greeting;
       }
     }
 
-    // For questions, NEVER execute actions even if AI includes them
-    if (isQuestion) {
-      const cleanText = response.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
-      log.info('Question answered (actions stripped)', cleanText?.substring(0, 100));
-      this.conversationHistory.push({ role: 'assistant', content: cleanText });
-
-      // Pick and play contextual animation for the answer
-      const answerAnim = this.pickAnswerAnimation(text, cleanText);
-      try { this.win.webContents.send('play-animation', answerAnim); } catch {}
-
-      const finalAnswer = cleanText || "I'm not sure about that.";
-      log.info('Clippy says (question)', finalAnswer.substring(0, 150));
-      return finalAnswer;
+    if (this.isExecuting) {
+      log.warn('Already executing — dropping new message');
+      return "I'm still working on the last thing — hang on!";
     }
-
-    // For actions: delegate to agent
-    // Strip ALL JSON from the spoken text — Gemini often mixes prose + JSON
-    let cleanText = response;
-    // Remove multi-line JSON blocks (handles newlines inside braces)
-    cleanText = cleanText.replace(/\{[\s\S]*?"action"[\s\S]*?\}/g, '').trim();
-    // Remove legacy action tags
-    cleanText = cleanText.replace(new RegExp(ACTION_REGEX.source, 'g'), '').replace(DONE_MARKER, '').trim();
-    // Remove any remaining JSON fragments
-    cleanText = cleanText.replace(/\{[\s\S]*?\}/g, '').trim();
-    // Clean up leftover whitespace
-    cleanText = cleanText.replace(/\n{2,}/g, '\n').trim();
-    const spokenText = cleanText || 'On it!';
-    this.conversationHistory.push({ role: 'assistant', content: spokenText });
-
-    log.info('Clippy says (action)', spokenText.substring(0, 150));
-    this.delegateToAgent(text);
-    return spokenText;
-  }
-
-  private async delegateToAgent(userRequest: string): Promise<void> {
-    if (this.isExecutingTask) {
-      log.warn('Already executing a task — skipping');
-      return;
-    }
-    this.isExecutingTask = true;
+    this.isExecuting = true;
 
     try {
-      // Tools are in-process — always available, no server to check
-      this.emitToRenderer('clippy-speak', { text: 'On it!', animate: this.pickAnimation('action_start') });
+      this.emit('play-animation', 'Thinking');
 
-      const history: Array<{ action: string; params: Record<string, unknown>; result: string }> = [];
-      const MAX_AGENT_STEPS = 8;
-      let lastSignature = '';
-      let repeatCount = 0;
-      const failedActions: Record<string, number> = {};
+      // Build initial user message — add screen context if we can grab it fast
+      const screenContext = await this.captureScreenContext(2500);
+      const initialText = screenContext
+        ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
+        : text;
 
-      for (let step = 1; step <= MAX_AGENT_STEPS; step++) {
-        log.info(`Agent step ${step}/${MAX_AGENT_STEPS}`);
+      // Working contents for this turn's function-call loop
+      const contents: Content[] = [
+        ...this.history,
+        { role: 'user', parts: [{ text: initialText }] },
+      ];
 
-        // Keep Clippy on top during long tasks
-        if (!this.win.isDestroyed()) {
-          this.win.setAlwaysOnTop(true, 'screen-saver');
-        }
+      // Persist the unaugmented user text to history
+      this.pushHistory({ role: 'user', parts: [{ text }] });
 
-        // 1. Read screen as text (no images)
-        let screenText = '';
-        try {
-          const screen = await executeTool('read_screen', {});
-          screenText = screen.text || '';
-        } catch (err) {
-          log.error('Failed to read screen', err);
-          screenText = 'Could not read screen';
-        }
+      const profile = getUserProfile();
+      const userProfile = profile.Name ? `Name: ${profile.Name}` : undefined;
 
-        // 2. Send to /agent endpoint
-        const agentResponse = await this.callAgentApi(userRequest, screenText, history, step);
+      const MAX_STEPS = 10;
+      let finalSpoken = '';
 
-        if (!agentResponse) {
-          this.emitToRenderer('clippy-speak', { text: "Lost connection to my brain.", animate: this.pickAnimation('error') });
+      for (let step = 0; step < MAX_STEPS; step++) {
+        if (!this.win.isDestroyed()) this.win.setAlwaysOnTop(true, 'screen-saver');
+
+        const resp = await this.callTurn(contents, { user_profile: userProfile });
+
+        if (isError(resp)) {
+          const msg = this.errorMessage(resp.error, resp.detail || resp.message);
+          this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+          finalSpoken = msg;
           break;
         }
 
-        // Handle feature_locked (Basic plan trying to use desktop actions)
-        if ((agentResponse as any)._error === 'feature_locked') {
-          log.warn('Desktop actions locked for current plan');
-          this.emitToRenderer('clippy-speak', {
-            text: "That's a Pro feature! I can chat all day, but to control your desktop you'd need to upgrade at clippyai.app 📎",
-            animate: this.pickAnimation('upgrade'),
-          });
-          break;
+        // Separate text and function-call parts
+        const texts = resp.parts.filter(isText).map((p) => p.text);
+        const calls = resp.parts.filter(isFunctionCall).map((p) => p.functionCall);
+        const spoken = texts.join(' ').trim();
+
+        // Emit text to bubble — structured, clean, no stripping needed
+        if (spoken) {
+          const anim = this.pickAnimation(text, spoken, calls.length > 0);
+          this.emit('clippy-speak', { text: spoken, animate: anim });
+          finalSpoken = spoken;
         }
 
-        log.info(`Agent step ${step} response`, {
-          action: agentResponse.action,
-          message: agentResponse.message,
-          done: agentResponse.done,
-        });
-
-        // 3. Show status to user
-        if (agentResponse.message) {
-                    // Pick animation based on what the agent is doing
-          const stepAnim = (agentResponse.action === 'type_text' || agentResponse.action === 'smart_type')
-            ? this.pickAnimation('action_typing')
-            : this.pickAnimation('action_start');
-          if (agentResponse.message) {
-            this.emitToRenderer('clippy-speak', { text: agentResponse.message, animate: stepAnim });
+        // End of conversation turn
+        if (calls.length === 0 || resp.done) {
+          if (calls.length === 0 && !spoken) {
+            finalSpoken = "I'm not sure what to do — can you rephrase?";
+            this.emit('clippy-speak', { text: finalSpoken, animate: 'Alert' });
           }
-        }
-
-        // 4. If done, finish
-        if (agentResponse.done || !agentResponse.action) {
-          this.emitToRenderer('clippy-speak', {
-            text: agentResponse.message || 'Done! ✨',
-            animate: this.pickAnimation('action_complete'),
-          });
           break;
         }
 
-        // 5. Loop detection — break if same action+params repeated
-        const signature = `${agentResponse.action}:${JSON.stringify(agentResponse.params)}`;
-        if (signature === lastSignature) {
-          repeatCount++;
-          if (repeatCount >= 2) {
-            log.warn(`Loop detected: ${signature} repeated — breaking`);
-            this.emitToRenderer('clippy-speak', {
-              text: "I'm stuck. Try giving me a more specific instruction!",
-              animate: this.pickAnimation('error'),
+        // Append model turn to working contents
+        contents.push({ role: 'model', parts: resp.parts });
+
+        // Execute each function call, collect responses
+        const responseParts: FunctionResponsePart[] = [];
+        for (const call of calls) {
+          log.info(`Tool[${step + 1}] ${call.name}`, JSON.stringify(call.args).substring(0, 200));
+          try {
+            const result = await executeTool(call.name, call.args);
+            const resultText = result.text || JSON.stringify(result).substring(0, 500);
+            responseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: { result: resultText.substring(0, 2000) },
+              },
             });
-            break;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error(`Tool ${call.name} failed`, msg);
+            responseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: { error: msg.substring(0, 300) },
+              },
+            });
           }
-        } else {
-          repeatCount = 0;
-        }
-        lastSignature = signature;
-
-        // Check if this action has already failed multiple times
-        if ((failedActions[agentResponse.action] || 0) >= 2) {
-          log.warn(`Action ${agentResponse.action} has failed 2+ times — breaking`);
-          this.emitToRenderer('clippy-speak', {
-            text: `${agentResponse.action} keeps failing. I'll stop here.`,
-            animate: this.pickAnimation('error'),
-          });
-          break;
         }
 
-        // 6. Execute the action
-        try {
-          const result = await executeTool(agentResponse.action, agentResponse.params);
-          const resultText = result.text || 'Done';
-          log.info(`Agent step ${step} executed: ${agentResponse.action}`, resultText.substring(0, 200));
-          history.push({
-            action: agentResponse.action,
-            params: agentResponse.params,
-            result: resultText,
-          });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          log.error(`Agent step ${step} action failed: ${agentResponse.action}`, errMsg);
-          failedActions[agentResponse.action] = (failedActions[agentResponse.action] || 0) + 1;
-          history.push({
-            action: agentResponse.action,
-            params: agentResponse.params,
-            result: `ERROR: ${errMsg.substring(0, 200)}`,
-          });
-        }
+        contents.push({ role: 'user', parts: responseParts });
+        await new Promise((r) => setTimeout(r, 300));
 
-        // Wait briefly for UI to settle
-        await new Promise((r) => setTimeout(r, 800));
-
-        if (step === MAX_AGENT_STEPS) {
-          this.emitToRenderer('clippy-speak', { text: "That's a complex task! I've done what I can.", animate: this.pickAnimation('action_complete') });
+        if (step === MAX_STEPS - 1) {
+          const capMsg = "That's a long task — stopping here for now!";
+          this.emit('clippy-speak', { text: capMsg, animate: 'Congratulate' });
+          finalSpoken = capMsg;
         }
       }
+
+      if (finalSpoken) {
+        this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
+      }
+      return finalSpoken || "I'm not sure what to say.";
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      log.error('Agent loop failed', errMsg);
-      this.emitToRenderer('clippy-speak', { text: `Hmm, that didn't work. ${errMsg.substring(0, 60)}`, animate: 'Alert' });
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('handleUserMessage threw', msg);
+      this.emit('clippy-speak', { text: "Hmm, that didn't work. Try again!", animate: 'Alert' });
+      return 'Something went wrong.';
     } finally {
-      this.isExecutingTask = false;
-      if (!this.win.isDestroyed()) {
-        this.win.setAlwaysOnTop(true, 'screen-saver');
-      }
+      this.isExecuting = false;
     }
   }
 
-  private callAgentApi(
-    task: string,
-    screenText: string,
-    history: Array<{ action: string; params: Record<string, unknown>; result: string }>,
-    step: number,
-  ): Promise<{ action: string | null; params: Record<string, unknown>; message: string; done: boolean } | null> {
-    // Always use hardcoded API — never trust stored value (could be stale/wrong)
-    const endpoint = `${API_BASE}/agent`;
-    const licenseKey = getLicenseKey();
-
-    log.debug('Agent API request', { task: task.substring(0, 80), step, historyLength: history.length });
-    const startTime = Date.now();
-
-    return new Promise((resolve) => {
-      const req = net.request({ url: endpoint, method: 'POST' });
-      req.setHeader('Content-Type', 'application/json');
-      req.setHeader('Authorization', `Bearer ${licenseKey}`);
-
-      // Timeout: abort after 60 seconds
-      const timeout = setTimeout(() => {
-        log.error('Agent API timeout (60s)');
-        req.abort();
-        resolve(null);
-      }, 60_000);
-
-      req.on('response', (response) => {
-        let data = '';
-        response.on('data', (chunk) => { data += chunk.toString(); });
-        response.on('end', () => {
-          clearTimeout(timeout);
-          const elapsed = Date.now() - startTime;
-          log.debug(`Agent API response (${elapsed}ms)`, data.substring(0, 300));
-
-          try {
-            const result = JSON.parse(data);
-            if (result.error) {
-              log.warn('Agent API error', result.error);
-              resolve({
-                action: null,
-                params: {},
-                message: result.message || result.error,
-                done: true,
-                _error: result.error,
-              } as any);
-              return;
-            }
-            resolve(result);
-          } catch (err) {
-            log.error('Agent API parse error', String(err));
-            resolve(null);
-          }
-        });
-      });
-
-      req.on('error', (err) => {
-        clearTimeout(timeout);
-        log.error('Agent API network error', String(err));
-        resolve(null);
-      });
-
-      req.write(JSON.stringify({ task, screenText, history, step }));
-      req.end();
-    });
-  }
-
-  // ========== Proactive Loop ==========
+  // ========== Proactive loop ==========
 
   private startLoop(): void {
     this.stopLoop();
@@ -634,12 +302,12 @@ export class Brain {
     if (this.mode !== 'awake') return;
     if (!settingsStore.get('proactiveEnabled')) return;
     if (Date.now() < this.noRepeatUntil) return;
-    if (this.isExecutingTask) return; // Don't interrupt active tasks
+    if (this.isExecuting) return;
 
     try {
       if (!this.greetedOnWake) {
         this.greetedOnWake = true;
-        this.emitToRenderer('clippy-speak', {
+        this.emit('clippy-speak', {
           text: "Hi! Click me to chat. I can help with whatever you're working on!",
           animate: 'Wave',
         });
@@ -647,127 +315,158 @@ export class Brain {
         return;
       }
 
-      // Read screen context for proactive tips
-      const [screenText, activeWin] = await Promise.allSettled([
-        executeTool('read_screen', {}),
-        executeTool('get_active_window', {}),
-      ]);
+      const context = await this.captureScreenContext(3000);
+      if (!context) return;
 
-      const context = activeWin.status === 'fulfilled'
-        ? `User is working in: ${activeWin.value.text}`
-        : 'Unknown application';
+      const resp = await this.callTurn(
+        [{ role: 'user', parts: [{ text: `Current screen:\n${context}` }] }],
+        { proactive: true, max_tokens: 120 },
+      );
 
-      const textData = screenText.status === 'fulfilled' ? screenText.value.text : '';
-      let screenshotData: string | undefined;
-      if (!textData || textData.length < 30) {
-        try {
-          const ss = await executeTool('desktop_screenshot', {});
-          screenshotData = ss.image?.data;
-        } catch { /* continue without screenshot */ }
-      }
+      if (isError(resp)) return;
 
-      const fullContext = textData
-        ? `${context}\nScreen text: ${textData.substring(0, 800)}`
-        : context;
+      const reply = resp.parts
+        .filter(isText)
+        .map((p) => p.text)
+        .join(' ')
+        .trim();
 
-      const message = await this.callProactive(fullContext, screenshotData);
+      if (!reply || reply.includes('__SILENT__')) return;
+      if (this.isSimilarToLast(reply)) return;
 
-      if (message && typeof message === 'string' && message.trim() && !this.isSimilarToLast(message)) {
-        this.lastMessage = message;
-        this.emitToRenderer('clippy-speak', { text: message.trim(), animate: this.pickAnimation('proactive') });
-        // After speaking, wait at least 2 minutes before next proactive message
-        this.noRepeatUntil = Date.now() + 120_000;
-      }
+      this.lastProactiveMessage = reply;
+      this.emit('clippy-speak', { text: reply, animate: 'Suggest' });
+      this.noRepeatUntil = Date.now() + 120_000;
     } catch (err) {
-      log.error('Proactive check failed', err);
+      log.error('proactiveCheck failed', err);
       this.noRepeatUntil = Date.now() + 120_000;
     }
   }
 
-  private callProactive(context: string, screenshotBase64?: string): Promise<string> {
-    return this.callApi({
-      message: '__PROACTIVE_CHECK__',
-      context,
-      screenshot: screenshotBase64,
-      system: PROACTIVE_SYSTEM_PROMPT,
-      history: this.conversationHistory.slice(-6),
-    }).then((reply) => (reply === '__SILENT__' ? '' : reply));
+  // ========== Helpers ==========
+
+  private async captureScreenContext(timeoutMs: number): Promise<string> {
+    try {
+      const promise = (async () => {
+        const [active, screen] = await Promise.allSettled([
+          executeTool('get_active_window', {}),
+          executeTool('read_screen', {}),
+        ]);
+        const activeText = active.status === 'fulfilled' ? active.value.text : '';
+        const screenText = screen.status === 'fulfilled' ? screen.value.text : '';
+        if (!activeText && !screenText) return '';
+        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 800)}`;
+      })();
+      const timeout = new Promise<string>((r) => setTimeout(() => r(''), timeoutMs));
+      return await Promise.race([promise, timeout]);
+    } catch {
+      return '';
+    }
   }
 
-  // ========== API Call ==========
+  private pickAnimation(userText: string, reply: string, hasTools: boolean): string {
+    const u = userText.toLowerCase();
+    const r = reply.toLowerCase();
+    if (hasTools) {
+      if (/type|write|draft|compose/.test(u)) return 'Writing';
+      return 'Searching';
+    }
+    if (/trick|dance|entertain|show me|funny|perform|animat/.test(u)) {
+      const fun = ['Congratulate', 'GetAttention', 'IdleAtom', 'IdleRopePile', 'IdleSideToSide'];
+      return fun[Math.floor(Math.random() * fun.length)];
+    }
+    if (/^(hi|hey|hello|sup|yo|howdy|what's up)/i.test(u)) return 'Wave';
+    if (/sorry|error|can't|couldn't|failed|wrong/.test(r)) return 'Alert';
+    if (/done|success|great|perfect|awesome|ta-da|congratul/.test(r)) return 'Congratulate';
+    if (/tip|suggest|recommend|try |you could|you should/.test(r)) return 'Suggest';
+    if (/hmm|let me think|interesting|good question/.test(r)) return 'Thinking';
+    return 'Wave';
+  }
 
-  private callApi(payload: Record<string, unknown>): Promise<string> {
-    // Always use hardcoded API — never trust stored value (could be stale/wrong)
-    const endpoint = `${API_BASE}/chat`;
+  private isSimilarToLast(message: string): boolean {
+    if (!this.lastProactiveMessage) return false;
+    const words = (s: string) => new Set(s.toLowerCase().match(/\b\w{3,}\b/g) || []);
+    const a = words(message);
+    const b = words(this.lastProactiveMessage);
+    if (a.size === 0 || b.size === 0) return false;
+    let overlap = 0;
+    for (const w of a) if (b.has(w)) overlap++;
+    return overlap / Math.min(a.size, b.size) > 0.5;
+  }
+
+  private pushHistory(msg: Content): void {
+    this.history.push(msg);
+    if (this.history.length > Brain.MAX_HISTORY) {
+      this.history = this.history.slice(-Brain.MAX_HISTORY);
+    }
+  }
+
+  private errorMessage(error: string, detail?: string): string {
+    const map: Record<string, string> = {
+      limit_reached: 'Monthly quota used up! Upgrade for more.',
+      invalid_key: 'License key invalid.',
+      subscription_inactive: 'Subscription inactive.',
+      feature_locked: "That's a Pro feature! I can chat all day — for desktop control, upgrade at clippyai.app 📎",
+      ai_error: 'Brain hiccup! Try again.',
+      timeout: 'Took too long — try again!',
+      network: "Can't reach my brain. Check your internet.",
+      parse_error: 'Got a garbled response. Try again!',
+    };
+    return map[error] || detail || 'Something went wrong.';
+  }
+
+  private emit(channel: string, payload: unknown): void {
+    if (!this.win.isDestroyed()) this.win.webContents.send(channel, payload);
+  }
+
+  // ========== API call ==========
+
+  private callTurn(
+    contents: Content[],
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number } = {},
+  ): Promise<TurnResponse> {
     const licenseKey = getLicenseKey();
-    const isProactive = payload.message === '__PROACTIVE_CHECK__';
-    const logPrefix = isProactive ? 'Proactive' : 'Chat';
-
-    log.debug(`${logPrefix} API request`, {
-      message: typeof payload.message === 'string' ? payload.message.substring(0, 100) : '',
-      hasScreenshot: !!payload.screenshot,
-    });
-
     const startTime = Date.now();
 
     return new Promise((resolve) => {
-      const req = net.request({ url: endpoint, method: 'POST' });
+      const req = net.request({ url: TURN_ENDPOINT, method: 'POST' });
       req.setHeader('Content-Type', 'application/json');
       req.setHeader('Authorization', `Bearer ${licenseKey}`);
 
-      // Timeout: abort after 30 seconds
       const timeout = setTimeout(() => {
-        log.error(`${logPrefix} API timeout (30s)`);
+        log.error('Turn API timeout (60s)');
         req.abort();
-        resolve("Took too long — try again!");
-      }, 30_000);
+        resolve({ error: 'timeout' });
+      }, 60_000);
 
       req.on('response', (response) => {
         let data = '';
-        response.on('data', (chunk) => { data += chunk.toString(); });
+        response.on('data', (chunk) => {
+          data += chunk.toString();
+        });
         response.on('end', () => {
           clearTimeout(timeout);
           const elapsed = Date.now() - startTime;
-          log.debug(`${logPrefix} API response (${elapsed}ms)`, data.substring(0, 300));
-
           try {
-            const result = JSON.parse(data) as Record<string, string>;
-            if (result.error) {
-              log.warn(`${logPrefix} API error: ${result.error}`);
-              const errorMessages: Record<string, string> = {
-                limit_reached: "Monthly quota used up! Upgrade for more.",
-                invalid_key: 'License key invalid.',
-                subscription_inactive: 'Subscription inactive.',
-                ai_error: 'Brain hiccup! Try again.',
-              };
-              resolve(errorMessages[result.error] || `Error: ${result.error}`);
-            } else {
-              const reply = result.reply || result.message || result.text;
-              log.info(`${logPrefix} reply (${elapsed}ms)`, reply?.substring(0, 200));
-              resolve(reply || "Hmm, nothing to say.");
-            }
-          } catch {
-            log.error(`${logPrefix} parse error`, data.substring(0, 200));
-            resolve("Trouble connecting. Try again!");
+            const parsed = JSON.parse(data) as TurnResponse;
+            log.debug(`Turn response (${elapsed}ms)`, data.substring(0, 250));
+            resolve(parsed);
+          } catch (err) {
+            log.error('Turn parse error', String(err));
+            resolve({ error: 'parse_error' });
           }
         });
       });
 
       req.on('error', (err) => {
         clearTimeout(timeout);
-        log.error(`${logPrefix} network error`, String(err));
-        resolve("Can't reach my brain. Try again!");
+        log.error('Turn network error', String(err));
+        resolve({ error: 'network' });
       });
 
-      req.write(JSON.stringify(payload));
+      req.write(JSON.stringify({ contents, ...opts }));
       req.end();
     });
-  }
-
-  private emitToRenderer(channel: string, payload: unknown): void {
-    if (!this.win.isDestroyed()) {
-      this.win.webContents.send(channel, payload);
-    }
   }
 }
 
