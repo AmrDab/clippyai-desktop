@@ -364,23 +364,71 @@ export class Brain {
     }
   }
 
+  /**
+   * Pick a Clippy animation based on user intent + reply content.
+   * Clippy has 43 animations in the sprite — this picker uses ~30 of them with
+   * randomness inside each category so the character feels alive, not robotic.
+   * Full list: Alert, CheckingSomething, Congratulate, EmptyTrash, Explain,
+   * GestureDown/Left/Right/Up, GetArtsy, GetAttention, GetTechy, GetWizardy,
+   * GoodBye, Greeting, Hearing_1, Idle*, LookDown*, LookLeft, LookRight,
+   * LookUp*, Print, Processing, RestPose, Save, Searching, SendMail, Thinking,
+   * Wave, Writing.
+   */
   private pickAnimation(userText: string, reply: string, hasTools: boolean): string {
     const u = userText.toLowerCase();
     const r = reply.toLowerCase();
+    const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+    // ACTION PHASE — Clippy is doing something
     if (hasTools) {
-      if (/type|write|draft|compose/.test(u)) return 'Writing';
-      return 'Searching';
+      if (/type|write|draft|compose|email|message|letter/.test(u)) {
+        return pick(['Writing', 'SendMail']);
+      }
+      if (/save|download/.test(u)) return 'Save';
+      if (/print/.test(u)) return 'Print';
+      if (/delete|remove|trash|empty/.test(u)) return 'EmptyTrash';
+      if (/search|find|look|browse/.test(u)) return pick(['Searching', 'CheckingSomething']);
+      if (/design|draw|paint|art|creat/.test(u)) return pick(['GetArtsy', 'Writing']);
+      if (/code|program|script|compile|debug/.test(u)) return 'GetTechy';
+      if (/magic|wizard|automate|bulk/.test(u)) return 'GetWizardy';
+      return pick(['Searching', 'Processing', 'CheckingSomething']);
     }
-    if (/trick|dance|entertain|show me|funny|perform|animat/.test(u)) {
-      const fun = ['Congratulate', 'GetAttention', 'IdleAtom', 'IdleRopePile', 'IdleSideToSide'];
-      return fun[Math.floor(Math.random() * fun.length)];
+
+    // REPLY PHASE — Clippy is responding with text
+    // Playful / entertainment
+    if (/trick|dance|entertain|show me|funny|perform|animat|cool|surprise/.test(u)) {
+      return pick([
+        'Congratulate', 'GetAttention', 'GetArtsy', 'GetWizardy',
+        'IdleAtom', 'IdleRopePile', 'IdleSideToSide', 'IdleEyeBrowRaise',
+        'IdleFingerTap', 'IdleHeadScratch',
+      ]);
     }
-    if (/^(hi|hey|hello|sup|yo|howdy|what's up)/i.test(u)) return 'Wave';
-    if (/sorry|error|can't|couldn't|failed|wrong/.test(r)) return 'Alert';
-    if (/done|success|great|perfect|awesome|ta-da|congratul/.test(r)) return 'Congratulate';
-    if (/tip|suggest|recommend|try |you could|you should/.test(r)) return 'Suggest';
-    if (/hmm|let me think|interesting|good question/.test(r)) return 'Thinking';
-    return 'Wave';
+    // Greetings / goodbyes
+    if (/^(hi|hey|hello|sup|yo|howdy|what'?s up|good morning|good afternoon)/i.test(u)) {
+      return pick(['Wave', 'Greeting']);
+    }
+    if (/^(bye|goodbye|see you|later|cya)/i.test(u)) return 'GoodBye';
+
+    // Question topics → gesture directions feel natural for explanations
+    if (/what|how|why|when|where|which|explain|tell me/.test(u)) {
+      return pick(['Explain', 'GestureUp', 'GestureLeft', 'GestureRight', 'Hearing_1']);
+    }
+
+    // Reply content-based
+    if (/sorry|error|can'?t|couldn'?t|failed|wrong|oops|hmm,? that/.test(r)) return 'Alert';
+    if (/done|success|great|perfect|awesome|ta-?da|congratul|finished|complete/.test(r)) {
+      return pick(['Congratulate', 'GetAttention']);
+    }
+    if (/tip|suggest|recommend|try |you could|you should|maybe/.test(r)) return 'Suggest';
+    if (/hmm|let me think|interesting|good question|not sure/.test(r)) {
+      return pick(['Thinking', 'CheckingSomething', 'LookUp', 'LookUpLeft', 'LookUpRight']);
+    }
+    if (/look|see|check|here|there/.test(r)) {
+      return pick(['LookLeft', 'LookRight', 'LookDown', 'LookDownLeft', 'LookDownRight']);
+    }
+
+    // Default: a small wave/greeting or a subtle idle gesture
+    return pick(['Wave', 'Greeting', 'GestureUp', 'Explain']);
   }
 
   private isSimilarToLast(message: string): boolean {

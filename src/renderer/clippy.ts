@@ -181,24 +181,20 @@ export class ClippyController {
   write(): void { this.playAction('Writing'); }
   search(): void { this.playAction('Searching'); }
 
+  /**
+   * Play any named animation from the sprite (43+ available).
+   * Previously this had a 10-entry whitelist that silently fell back to Idle1_1
+   * for any unknown animation — which meant brain.ts could only ever use ~10
+   * of Clippy's animations. Now any name from agentData.animations works;
+   * play() falls back to Idle1_1 for truly unknown names with a warning.
+   */
   playNamed(name: string): void {
-    const map: Record<string, string> = {
-      Wave: 'Wave',
-      Suggest: 'Suggest',
-      Think: 'Thinking',
-      Thinking: 'Thinking',
-      Idle: 'Idle1_1',
-      GetAttention: 'GetAttention',
-      Congratulate: 'Congratulate',
-      Alert: 'Alert',
-      Writing: 'Writing',
-      Searching: 'Searching',
-    };
-    const anim = map[name] ?? 'Idle1_1';
-    if (anim === 'Idle1_1') {
-      this.play(anim);
+    if (!name) return;
+    // Idles cycle passively; non-idles are "actions" that stop the idle loop.
+    if (name.startsWith('Idle') || name === 'RestPose') {
+      this.play(name);
     } else {
-      this.playAction(anim);
+      this.playAction(name);
     }
   }
 }
