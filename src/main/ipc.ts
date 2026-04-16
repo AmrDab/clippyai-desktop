@@ -79,6 +79,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       ttsVoice: getTtsVoice(),
       proactiveInterval: brainSettingsStore.get('proactiveInterval'),
       proactiveEnabled: brainSettingsStore.get('proactiveEnabled'),
+      ttsEnabled: licenseStore.get('ttsEnabled', true),
+      speechRate: licenseStore.get('speechRate', 1.1),
+      launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
     };
   });
@@ -95,8 +98,16 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       brainSettingsStore.set('proactiveInterval', interval);
     }
     if (settings.proactiveEnabled !== undefined) brainSettingsStore.set('proactiveEnabled', Boolean(settings.proactiveEnabled));
-    // aiEndpoint is LOCKED to the official API — cannot be changed from settings
-    // if (settings.aiEndpoint !== undefined) brainSettingsStore.set('aiEndpoint', settings.aiEndpoint as string);
+    // TTS toggle + speech rate — saved in licenseStore, broadcast to main window
+    if (settings.ttsEnabled !== undefined) {
+      licenseStore.set('ttsEnabled', Boolean(settings.ttsEnabled));
+      mainWindow.webContents.send('tts-toggle', Boolean(settings.ttsEnabled));
+    }
+    if (settings.speechRate !== undefined) {
+      const rate = Math.max(0.5, Math.min(2.0, Number(settings.speechRate) || 1.1));
+      licenseStore.set('speechRate', rate);
+      mainWindow.webContents.send('speech-rate', rate);
+    }
     return true;
   });
 
@@ -185,15 +196,40 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch { return false; }
   });
 
-  // Report logs to backend
-  ipcMain.handle('report-logs', async (_event, content: string) => {
+  // Report logs to backend (with optional user description)
+  ipcMain.handle('report-logs', async (_event, content: string, description?: string) => {
     try {
       const { net } = await import('electron');
       const licenseKey = getLicenseKey();
       const req = net.request({ url: 'https://api.clippyai.app/report', method: 'POST' });
       req.setHeader('Content-Type', 'application/json');
-      req.write(JSON.stringify({ key: licenseKey, logs: content, version: app.getVersion() }));
+      req.write(JSON.stringify({
+        key: licenseKey,
+        logs: content,
+        description: (description || '').substring(0, 4000),
+        version: app.getVersion(),
+      }));
       req.end();
+      return true;
+    } catch { return false; }
+  });
+
+  // Launch on startup (uses Electron's native login item API)
+  ipcMain.handle('get-launch-on-startup', async () => {
+    return app.getLoginItemSettings().openAtLogin;
+  });
+
+  ipcMain.handle('set-launch-on-startup', async (_event, enabled: boolean) => {
+    app.setLoginItemSettings({ openAtLogin: enabled });
+    return true;
+  });
+
+  // Open Stripe customer portal (Manage Subscription)
+  ipcMain.handle('open-subscription-portal', async () => {
+    const key = getLicenseKey();
+    if (!key) return false;
+    try {
+      await shell.openExternal(`https://api.clippyai.app/portal?key=${encodeURIComponent(key)}`);
       return true;
     } catch { return false; }
   });

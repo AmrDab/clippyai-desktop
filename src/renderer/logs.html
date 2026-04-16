@@ -42,6 +42,75 @@
       white-space: pre-wrap;
       word-break: break-all;
     }
+    /* Report dialog overlay */
+    .report-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .report-overlay.visible { display: flex; }
+    .report-dialog {
+      background: #2d2d2d;
+      border: 1px solid #555;
+      border-radius: 6px;
+      width: min(520px, 90vw);
+      padding: 18px 20px;
+      color: #d4d4d4;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    }
+    .report-dialog h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .report-dialog p {
+      margin: 0 0 12px;
+      font-size: 12px;
+      color: #aaa;
+      line-height: 1.5;
+    }
+    .report-dialog textarea {
+      width: 100%;
+      min-height: 120px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border: 1px solid #555;
+      border-radius: 3px;
+      padding: 8px;
+      font-family: inherit;
+      font-size: 12px;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    .report-dialog textarea:focus { outline: 1px solid #4CAF50; border-color: #4CAF50; }
+    .report-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .report-actions button {
+      font-family: inherit;
+      font-size: 12px;
+      padding: 6px 14px;
+      background: #3c3c3c;
+      color: #d4d4d4;
+      border: 1px solid #555;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .report-actions button.primary {
+      background: #e65100;
+      border-color: #bf360c;
+      color: white;
+    }
+    .report-actions button:hover { background: #505050; }
+    .report-actions button.primary:hover { background: #f57c00; }
+    .report-counter { font-size: 11px; color: #888; margin-top: 4px; text-align: right; }
     .log-line { padding: 1px 0; }
     .log-info { color: #4ec9b0; }
     .log-warn { color: #dcdcaa; }
@@ -64,6 +133,23 @@
     <span class="status" id="status">Loading...</span>
   </div>
   <div id="log-container"></div>
+
+  <!-- Report dialog -->
+  <div class="report-overlay" id="report-overlay">
+    <div class="report-dialog">
+      <h3>Report an issue</h3>
+      <p>Tell us what happened — what you asked Clippy to do, what went wrong, and when. The more detail, the faster we can fix it. Your logs are attached automatically.</p>
+      <textarea
+        id="report-description"
+        placeholder="Example: Asked Clippy to open Paint and draw a square. Paint opened but nothing was drawn. Happened around 2pm."
+        maxlength="4000"></textarea>
+      <div class="report-counter"><span id="report-chars">0</span> / 4000</div>
+      <div class="report-actions">
+        <button id="btn-report-cancel">Cancel</button>
+        <button id="btn-report-send" class="primary">Send Report</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const container = document.getElementById('log-container');
@@ -122,23 +208,60 @@
       loadLogs();
     });
 
-    document.getElementById('btn-report').addEventListener('click', async () => {
-      const btn = document.getElementById('btn-report');
-      btn.textContent = 'Sending...';
-      btn.disabled = true;
+    // Report dialog — open it, let user describe the issue, then submit
+    const reportOverlay = document.getElementById('report-overlay');
+    const reportDescription = document.getElementById('report-description');
+    const reportChars = document.getElementById('report-chars');
+    const btnReport = document.getElementById('btn-report');
+    const btnReportSend = document.getElementById('btn-report-send');
+    const btnReportCancel = document.getElementById('btn-report-cancel');
+
+    function openReport() {
+      reportDescription.value = '';
+      reportChars.textContent = '0';
+      reportOverlay.classList.add('visible');
+      setTimeout(() => reportDescription.focus(), 50);
+    }
+    function closeReport() {
+      reportOverlay.classList.remove('visible');
+    }
+
+    btnReport.addEventListener('click', openReport);
+    btnReportCancel.addEventListener('click', closeReport);
+    reportDescription.addEventListener('input', () => {
+      reportChars.textContent = reportDescription.value.length;
+    });
+    reportOverlay.addEventListener('click', (e) => {
+      if (e.target === reportOverlay) closeReport();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && reportOverlay.classList.contains('visible')) {
+        closeReport();
+      }
+    });
+
+    btnReportSend.addEventListener('click', async () => {
+      btnReportSend.textContent = 'Sending...';
+      btnReportSend.disabled = true;
+      btnReportCancel.disabled = true;
+      const description = reportDescription.value.trim();
       try {
         const content = await window.clippy.readLogFile();
         if (content) {
-          await window.clippy.reportLogs(content);
-          status.textContent = 'Report sent! Our team will review it.';
+          await window.clippy.reportLogs(content, description);
+          status.textContent = description
+            ? 'Report sent with your description! Our team will review it.'
+            : 'Report sent! Our team will review it.';
+          closeReport();
         } else {
           status.textContent = 'No logs to report.';
         }
       } catch (err) {
         status.textContent = 'Failed to send report.';
       }
-      btn.textContent = 'Report Issue';
-      btn.disabled = false;
+      btnReportSend.textContent = 'Send Report';
+      btnReportSend.disabled = false;
+      btnReportCancel.disabled = false;
     });
 
     // Auto-refresh every 3 seconds

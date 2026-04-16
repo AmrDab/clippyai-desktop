@@ -1,6 +1,7 @@
 export class TTS {
   private synth: SpeechSynthesis;
   private enabled: boolean = true;
+  private rate: number = 1.1;
   private voice: SpeechSynthesisVoice | null = null;
   private preferredVoiceName: string = '';
 
@@ -36,11 +37,15 @@ export class TTS {
     if (!this.enabled || !text.trim()) return;
     this.synth.cancel();
     const utt = new SpeechSynthesisUtterance(text);
-    utt.rate = 1.1;
+    utt.rate = this.rate;
     utt.pitch = 1.0;
     utt.volume = 0.9;
     if (this.voice) utt.voice = this.voice;
     this.synth.speak(utt);
+  }
+
+  setRate(rate: number): void {
+    this.rate = Math.max(0.5, Math.min(2.0, rate));
   }
 
   setEnabled(enabled: boolean): void {

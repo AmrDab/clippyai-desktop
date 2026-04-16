@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('tts-toggle', (_e, enabled) => cb(enabled));
   },
 
+  onSpeechRate: (cb: (rate: number) => void) => {
+    ipcRenderer.on('speech-rate', (_e, rate) => cb(rate));
+  },
+
   onProactiveToggle: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('proactive-toggle', (_e, enabled) => cb(enabled));
   },
@@ -89,5 +93,13 @@ contextBridge.exposeInMainWorld('clippy', {
   // Log viewer
   readLogFile: () => ipcRenderer.invoke('read-log-file'),
   clearLogFile: () => ipcRenderer.invoke('clear-log-file'),
-  reportLogs: (content: string) => ipcRenderer.invoke('report-logs', content),
+  reportLogs: (content: string, description?: string) =>
+    ipcRenderer.invoke('report-logs', content, description ?? ''),
+
+  // Launch-on-startup (wired in settings)
+  getLaunchOnStartup: () => ipcRenderer.invoke('get-launch-on-startup'),
+  setLaunchOnStartup: (enabled: boolean) => ipcRenderer.invoke('set-launch-on-startup', enabled),
+
+  // Stripe customer portal (Manage Subscription link)
+  openSubscriptionPortal: () => ipcRenderer.invoke('open-subscription-portal'),
 });

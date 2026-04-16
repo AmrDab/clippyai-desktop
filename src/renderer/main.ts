@@ -56,6 +56,8 @@ async function init(): Promise<void> {
   try {
     const config = await window.clippy.getConfig();
     if (config.ttsVoice) tts.setPreferredVoice(config.ttsVoice as string);
+    if (config.speechRate) tts.setRate(config.speechRate as number);
+    if (config.ttsEnabled === false) tts.setEnabled(false);
   } catch {}
 
   const bubbleCtrl = new BubbleController(async (userText) => {
@@ -96,6 +98,7 @@ async function init(): Promise<void> {
   });
 
   window.clippy.onTtsToggle((enabled) => tts.setEnabled(enabled));
+  window.clippy.onSpeechRate((rate) => tts.setRate(rate));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 

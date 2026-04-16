@@ -12,6 +12,9 @@ declare global {
       installUpdate: () => Promise<boolean>;
       onUpdateAvailable: (cb: (version: string) => void) => void;
       onUpdateReady: (cb: (version: string) => void) => void;
+      getLaunchOnStartup: () => Promise<boolean>;
+      setLaunchOnStartup: (enabled: boolean) => Promise<boolean>;
+      openSubscriptionPortal: () => Promise<boolean>;
     };
   }
 }
@@ -79,6 +82,18 @@ async function loadConfig(): Promise<void> {
     voiceSelect.value = config.ttsVoice as string;
   }
 
+  // TTS enabled toggle + speech rate
+  const ttsEl = document.getElementById('setting-tts-enabled') as HTMLInputElement;
+  if (ttsEl) ttsEl.checked = config.ttsEnabled !== false; // default true
+  if (config.speechRate) {
+    speechRateRange.value = String(config.speechRate);
+    speechRateValue.textContent = `${config.speechRate}x`;
+  }
+
+  // Launch on startup
+  const launchEl = document.getElementById('setting-launch-startup') as HTMLInputElement;
+  if (launchEl) launchEl.checked = Boolean(config.launchOnStartup);
+
   // License
   const key = (config.licenseKey as string) || '';
   licenseKeyDisplay.textContent = key ? maskKey(key) : 'No key set';
@@ -125,7 +140,33 @@ voiceSelect.addEventListener('change', () => {
 
 speechRateRange.addEventListener('input', () => {
   speechRateValue.textContent = `${speechRateRange.value}x`;
+  debounceSave({ speechRate: Number(speechRateRange.value) });
 });
+
+// TTS Enable toggle — this IS the "AI voice toggle" the user sees in Voice tab
+const ttsToggle = document.getElementById('setting-tts-enabled') as HTMLInputElement;
+if (ttsToggle) {
+  ttsToggle.addEventListener('change', () => {
+    window.clippy.updateSettings({ ttsEnabled: ttsToggle.checked });
+  });
+}
+
+// Launch on startup toggle
+const launchToggle = document.getElementById('setting-launch-startup') as HTMLInputElement;
+if (launchToggle) {
+  launchToggle.addEventListener('change', () => {
+    window.clippy.setLaunchOnStartup(launchToggle.checked);
+  });
+}
+
+// Manage Subscription link
+const manageSubLink = document.getElementById('manage-subscription');
+if (manageSubLink) {
+  manageSubLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.clippy.openSubscriptionPortal();
+  });
+}
 
 // Test ClawdCursor connection
 async function testConnection(): Promise<void> {
