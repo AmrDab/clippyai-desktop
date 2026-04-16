@@ -70,10 +70,24 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
 
-  // Get stored config
+  // Get stored config.
+  // SECURITY: license key is NEVER returned raw to the renderer — only a
+  // masked display string. The main process owns the key for API calls.
+  // If the renderer ever needs to prove a key is present, use
+  // `licenseKeyPresent: !!getLicenseKey()`.
   ipcMain.handle('get-config', async () => {
+    const key = getLicenseKey();
+    const masked = key
+      ? (() => {
+          const parts = key.split('-');
+          return parts.length >= 4
+            ? `${parts[0]}-****-****-${parts[parts.length - 1]}`
+            : '****';
+        })()
+      : '';
     return {
-      licenseKey: getLicenseKey(),
+      licenseKey: masked,
+      licenseKeyPresent: !!key,
       plan: getPlan(),
       buddyName: getBuddyName(),
       ttsVoice: getTtsVoice(),
@@ -93,11 +107,19 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       if (name) licenseStore.set('buddyName', name);
     }
     if (settings.ttsVoice !== undefined) licenseStore.set('ttsVoice', String(settings.ttsVoice));
+    // Proactive interval + on/off both require restarting the brain loop so
+    // the change takes effect immediately (not on next sleep/wake cycle).
+    let proactiveChanged = false;
     if (settings.proactiveInterval !== undefined) {
       const interval = Math.max(5000, Math.min(300000, Number(settings.proactiveInterval) || 30000));
       brainSettingsStore.set('proactiveInterval', interval);
+      proactiveChanged = true;
     }
-    if (settings.proactiveEnabled !== undefined) brainSettingsStore.set('proactiveEnabled', Boolean(settings.proactiveEnabled));
+    if (settings.proactiveEnabled !== undefined) {
+      brainSettingsStore.set('proactiveEnabled', Boolean(settings.proactiveEnabled));
+      proactiveChanged = true;
+    }
+    if (proactiveChanged) brain.restartProactiveLoop();
     // TTS toggle + speech rate — saved in licenseStore, broadcast to main window
     if (settings.ttsEnabled !== undefined) {
       licenseStore.set('ttsEnabled', Boolean(settings.ttsEnabled));
@@ -224,12 +246,37 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
 
-  // Open Stripe customer portal (Manage Subscription)
+  // Open Stripe customer portal (Manage Subscription).
+  // POST the license key as a Bearer token (never in URL) and open the
+  // returned Stripe portal URL externally. Prevents the key from leaking
+  // into browser history, referrer headers, or HTTP access logs.
   ipcMain.handle('open-subscription-portal', async () => {
     const key = getLicenseKey();
     if (!key) return false;
     try {
-      await shell.openExternal(`https://api.clippyai.app/portal?key=${encodeURIComponent(key)}`);
+      const { net } = await import('electron');
+      const url = await new Promise<string | null>((resolve) => {
+        const req = net.request({ url: 'https://api.clippyai.app/portal', method: 'POST' });
+        req.setHeader('Content-Type', 'application/json');
+        req.setHeader('Authorization', `Bearer ${key}`);
+        const timeout = setTimeout(() => { req.abort(); resolve(null); }, 15_000);
+        req.on('response', (response) => {
+          let data = '';
+          response.on('data', (chunk) => { data += chunk.toString(); });
+          response.on('end', () => {
+            clearTimeout(timeout);
+            try {
+              const parsed = JSON.parse(data) as { url?: string; error?: string };
+              resolve(parsed.url || null);
+            } catch { resolve(null); }
+          });
+        });
+        req.on('error', () => { clearTimeout(timeout); resolve(null); });
+        req.write('{}');
+        req.end();
+      });
+      if (!url) return false;
+      await shell.openExternal(url);
       return true;
     } catch { return false; }
   });

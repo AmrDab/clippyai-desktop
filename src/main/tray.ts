@@ -1,6 +1,6 @@
 import { Tray, Menu, nativeImage, BrowserWindow, app } from 'electron';
 import path from 'path';
-import { Brain } from './brain';
+import { Brain, brainSettingsStore } from './brain';
 import { createSettingsWindow } from './window';
 import { getBuddyName } from './license';
 
@@ -16,7 +16,6 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
   tray.setToolTip('ClippyAI');
 
   let muteVoice = false;
-  let proactiveMode = true;
 
   function updateMenu(): void {
     const isAwake = brain.getMode() === 'awake';
@@ -57,10 +56,13 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       {
         label: 'Proactive Mode',
         type: 'checkbox',
-        checked: proactiveMode,
+        // Read live from the store so this reflects what Settings shows.
+        checked: brainSettingsStore.get('proactiveEnabled'),
         click: (item) => {
-          proactiveMode = item.checked;
-          win.webContents.send('proactive-toggle', proactiveMode);
+          brainSettingsStore.set('proactiveEnabled', item.checked);
+          brain.restartProactiveLoop();
+          win.webContents.send('proactive-toggle', item.checked);
+          updateMenu();
         },
       },
       { type: 'separator' },

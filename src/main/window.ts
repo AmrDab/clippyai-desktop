@@ -1,5 +1,8 @@
 import { BrowserWindow, screen, ipcMain } from 'electron';
 import path from 'path';
+import { createLogger } from './logger';
+
+const log = createLogger('Window');
 
 let settingsWindow: BrowserWindow | null = null;
 let onboardingWindow: BrowserWindow | null = null;
@@ -17,7 +20,7 @@ export function createWindow(): BrowserWindow {
   const xPos = Math.max(0, screenW - CLIPPY_WIDTH - 10);
   const yPos = Math.max(0, screenH - CLIPPY_HEIGHT - 10);
 
-  console.log(`[Window] Screen: ${screenW}x${screenH}, Position: ${xPos},${yPos}, Size: ${CLIPPY_WIDTH}x${CLIPPY_HEIGHT}`);
+  log.debug('Screen geometry', { screenW, screenH, xPos, yPos, width: CLIPPY_WIDTH, height: CLIPPY_HEIGHT });
 
   const iconPath = path.join(__dirname, '../../build/icon.ico');
 
@@ -53,7 +56,7 @@ export function createWindow(): BrowserWindow {
   }
 
   win.webContents.on('did-finish-load', () => {
-    console.log('[Window] Renderer loaded successfully');
+    log.debug('Renderer loaded');
   });
 
   // Expand/collapse window when bubble shows/hides

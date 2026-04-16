@@ -127,6 +127,10 @@ export function isProfileSetUp(): boolean {
 interface BrainSettings {
   proactiveInterval: number;
   proactiveEnabled: boolean;
+  /** TTS voice on/off (wired from settings UI → broadcast to main renderer). */
+  ttsEnabled: boolean;
+  /** Utterance rate 0.5–2.0 (default 1.1). */
+  speechRate: number;
 }
 
 const settingsStore = new Store<BrainSettings>({
@@ -134,6 +138,8 @@ const settingsStore = new Store<BrainSettings>({
   defaults: {
     proactiveInterval: 30000,
     proactiveEnabled: true,
+    ttsEnabled: true,
+    speechRate: 1.1,
   },
 });
 
@@ -168,6 +174,18 @@ export class Brain {
 
   getMode(): 'awake' | 'sleep' {
     return this.mode;
+  }
+
+  /**
+   * Restart the proactive loop so a settings change (interval or on/off)
+   * takes effect immediately instead of waiting for the next sleep/wake cycle.
+   * Safe to call even when Clippy is sleeping — it's a no-op then.
+   */
+  restartProactiveLoop(): void {
+    if (this.mode === 'awake') {
+      log.info('Proactive loop restarted (settings changed)');
+      this.startLoop();
+    }
   }
 
   // ========== Public entry ==========
@@ -392,6 +410,7 @@ export class Brain {
       if (this.isSimilarToLast(reply)) return;
 
       this.lastProactiveMessage = reply;
+      log.info(`Proactive tip: ${reply.substring(0, 80)}`);
       this.emit('clippy-speak', { text: reply, animate: 'Suggest' });
       this.noRepeatUntil = Date.now() + 120_000;
     } catch (err) {
