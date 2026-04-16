@@ -631,9 +631,26 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   }
 }
 
+/**
+ * Cleanup on app quit. Must kill PSBridge FORCEFULLY and SYNCHRONOUSLY — if
+ * we just send SIGTERM and return, the PowerShell subprocess (and anything
+ * it spawned) can linger, holding file handles on our install directory.
+ * During auto-update that means the NSIS installer can't replace ClippyAI.exe
+ * and the whole update fails silently.
+ *
+ * Uses taskkill /T /F on Windows which kills the process + entire tree
+ * immediately. Synchronous child_process.spawnSync so this blocks until the
+ * OS confirms the kill before we hand control back to app.quit.
+ */
 export function cleanupTools(): void {
-  if (psBridge && !psBridge.killed) {
-    try { psBridge.kill(); } catch { /* already dead */ }
+  if (psBridge && !psBridge.killed && psBridge.pid) {
+    try {
+      const { spawnSync } = require('child_process') as typeof import('child_process');
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(psBridge.pid)], { timeout: 3000 });
+    } catch {
+      // Fallback: normal kill. Won't handle children, but better than nothing.
+      try { psBridge.kill('SIGKILL'); } catch { /* already dead */ }
+    }
     psBridge = null;
   }
 }

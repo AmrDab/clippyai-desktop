@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.9.3
+buildVersion: 0.9.4
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -50,6 +50,9 @@ nsis:
   menuCategory: ClippyAI
   # Clean slate on uninstall — removes config, license key, logs
   deleteAppDataOnUninstall: true
+  # Custom NSIS macros: taskkill ClippyAI + PSBridge before install/uninstall
+  # so auto-update never races with a still-alive process holding file locks.
+  include: build/installer.nsh
 
 files:
   - out/**/*

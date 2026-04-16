@@ -14,10 +14,17 @@ import { initUpdater, checkForUpdates } from './updater';
 const log = createLogger('App');
 
 // ── Single instance lock ─────────────────────────────────────────
+// BUG FIX: `app.quit()` is async — it queues a quit for the next tick but
+// execution continues. If we didn't early-return here, the rest of this file
+// (whenReady handler, window creation, etc.) would still run in parallel with
+// the quit, racing against the primary instance. That's how we'd get "Clippy
+// refuses to open after update" — the new process launches as a second
+// instance, tries to initialize, and crashes half-initialized.
+// Using app.exit(0) for synchronous immediate shutdown.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   log.info('Another instance is already running — quitting');
-  app.quit();
+  app.exit(0);
 }
 
 let mainWindow: BrowserWindow | null = null;
