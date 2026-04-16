@@ -218,17 +218,50 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch { return false; }
   });
 
-  // Report logs to backend (with optional user description)
+  // Report logs to backend (with optional user description).
+  // Also includes: the boot log (if the app has recently crashed on startup)
+  // and a list of any crash dump filenames so we can follow up asking for
+  // the actual .dmp file.
   ipcMain.handle('report-logs', async (_event, content: string, description?: string) => {
     try {
       const { net } = await import('electron');
       const licenseKey = getLicenseKey();
+
+      // Boot log tells us the LAST successful startup phase — gold for
+      // diagnosing pre-whenReady crashes.
+      let bootLogContent = '';
+      try {
+        const bootLogPath = path.join(app.getPath('appData'), 'ClippyAI', 'boot.log');
+        if (fs.existsSync(bootLogPath)) {
+          bootLogContent = fs.readFileSync(bootLogPath, 'utf-8').slice(-4000);
+        }
+      } catch { /* boot log optional */ }
+
+      // Crash dump filenames (not the dumps themselves — they can be MB).
+      let crashDumpList: string[] = [];
+      try {
+        const dumpsDir = app.getPath('crashDumps');
+        if (fs.existsSync(dumpsDir)) {
+          crashDumpList = fs.readdirSync(dumpsDir)
+            .filter((f) => f.endsWith('.dmp'))
+            .slice(-5);
+        }
+      } catch { /* crash dumps optional */ }
+
+      const fullLogs = bootLogContent
+        ? `=== boot.log (last 4KB) ===\n${bootLogContent}\n\n=== clippy.log ===\n${content}`
+        : content;
+
+      const fullDescription = crashDumpList.length > 0
+        ? `${description || ''}\n\n[System] ${crashDumpList.length} crash dump(s) on disk: ${crashDumpList.join(', ')}`
+        : (description || '');
+
       const req = net.request({ url: 'https://api.clippyai.app/report', method: 'POST' });
       req.setHeader('Content-Type', 'application/json');
       req.write(JSON.stringify({
         key: licenseKey,
-        logs: content,
-        description: (description || '').substring(0, 4000),
+        logs: fullLogs,
+        description: fullDescription.substring(0, 4000),
         version: app.getVersion(),
       }));
       req.end();
