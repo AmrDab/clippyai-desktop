@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.9.2
+buildVersion: 0.9.3
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -67,7 +67,13 @@ extraResources:
     filter:
       - "*.md"
 
-# afterPack: scripts/after-pack.js
+# rcedit embeds the Clippy icon + ProductName/FileDescription into the inner
+# ClippyAI.exe after electron-builder packs it. Without this the exe shows the
+# default Electron icon and "Electron" in Windows taskbar/Alt-Tab. Disabled in
+# v0.7.5 as a red-herring diagnostic; re-enabled here because the actual
+# install failures were NSIS integrity / antivirus / browser cache issues
+# unrelated to rcedit.
+afterPack: scripts/after-pack.js
 
 directories:
   output: release
