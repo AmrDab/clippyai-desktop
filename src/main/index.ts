@@ -72,7 +72,7 @@ import { isLicensed, revalidateIfNeeded } from './license';
 import { isProfileSetUp } from './brain';
 import { initTools, cleanupTools } from './tools';
 import { createLogger, cleanOldLogs } from './logger';
-import { initUpdater, checkForUpdates } from './updater';
+import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater';
 
 bootLog('IMPORTS_LOADED');
 
@@ -170,6 +170,7 @@ function launchMainApp(): void {
 
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
+  startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
 
   if (!isProfileSetUp()) {
     setTimeout(() => {

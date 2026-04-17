@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.9.5
+buildVersion: 0.9.6
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -65,10 +65,9 @@ extraResources:
     to: scripts
     filter:
       - "*.ps1"
-  - from: assets/brain
-    to: brain
-    filter:
-      - "*.md"
+  # brain/*.md removed from extraResources — GUIDANCE prompt assembly was
+  # deleted in v0.8.0 when we moved identity/prompts server-side. The .md
+  # files remain in the repo as documentation but are NOT bundled anymore.
 
 # rcedit embeds the Clippy icon + ProductName/FileDescription into the inner
 # ClippyAI.exe after electron-builder packs it. Without this the exe shows the

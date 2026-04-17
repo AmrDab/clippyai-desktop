@@ -7,3 +7,9 @@ vendor/
 .DS_Store
 .env
 .env.local
+
+# Internal operator/planning docs — not for public repos
+ADMIN.md
+DEV-GUIDE.md
+tasks/
+.claude/

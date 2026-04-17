@@ -59,6 +59,20 @@ export function checkForUpdates(): void {
   });
 }
 
+/**
+ * Start a background timer that re-checks for updates every 24 hours.
+ * Previously we only checked once at startup (+10s). If the app stays
+ * running for days, users would never learn about new versions.
+ */
+const UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+export function startPeriodicUpdateChecks(): void {
+  setInterval(() => {
+    log.debug('Periodic update check (24h)');
+    checkForUpdates();
+  }, UPDATE_CHECK_INTERVAL);
+}
+
 /** User chose to download + install the update */
 export function downloadUpdate(): void {
   log.info('User accepted update — downloading');
