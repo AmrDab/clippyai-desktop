@@ -51,8 +51,13 @@
       align-items: center;
       justify-content: center;
       z-index: 100;
+      /* Let clicks pass through the dark backdrop to the dialog below.
+         The dialog itself re-enables pointer-events so its textarea,
+         buttons, etc. are interactive. Without this, the overlay
+         captures focus and the textarea becomes untypeable. */
+      pointer-events: none;
     }
-    .report-overlay.visible { display: flex; }
+    .report-overlay.visible { display: flex; pointer-events: auto; }
     .report-dialog {
       background: #2d2d2d;
       border: 1px solid #555;
@@ -61,6 +66,12 @@
       padding: 18px 20px;
       color: #d4d4d4;
       box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+      /* Re-enable pointer events inside the dialog so textarea, buttons
+         etc. all work. The overlay's pointer-events:none only affects
+         the backdrop area outside this box. */
+      pointer-events: auto;
+      position: relative;
+      z-index: 101;
     }
     .report-dialog h3 {
       margin: 0 0 8px;
@@ -220,7 +231,13 @@
       reportDescription.value = '';
       reportChars.textContent = '0';
       reportOverlay.classList.add('visible');
-      setTimeout(() => reportDescription.focus(), 50);
+      // Delay focus to let the overlay render first. Without this the
+      // textarea can lose focus to the overlay on some Electron versions.
+      setTimeout(() => {
+        reportDescription.focus();
+        // Belt-and-suspenders: some Electron builds need a click too
+        reportDescription.click();
+      }, 150);
     }
     function closeReport() {
       reportOverlay.classList.remove('visible');
@@ -230,6 +247,12 @@
     btnReportCancel.addEventListener('click', closeReport);
     reportDescription.addEventListener('input', () => {
       reportChars.textContent = reportDescription.value.length;
+    });
+    // Stop clicks INSIDE the dialog from bubbling to the overlay's
+    // click-to-close handler. This prevents the overlay from stealing
+    // focus away from the textarea during interaction.
+    document.querySelector('.report-dialog').addEventListener('click', (e) => {
+      e.stopPropagation();
     });
     reportOverlay.addEventListener('click', (e) => {
       if (e.target === reportOverlay) closeReport();
