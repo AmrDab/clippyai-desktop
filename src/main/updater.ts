@@ -29,6 +29,12 @@ export function initUpdater(win: BrowserWindow): void {
 
   autoUpdater.on('update-not-available', () => {
     log.debug('No update available');
+    // Notify the renderer so the "Searching..." text can update to
+    // "You're on the latest version!" — only when we ACTUALLY confirmed
+    // it with the server, not on a blind timeout.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-not-available');
+    }
   });
 
   autoUpdater.on('download-progress', (progress) => {

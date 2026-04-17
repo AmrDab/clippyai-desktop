@@ -11,6 +11,7 @@ declare global {
       downloadUpdate: () => Promise<boolean>;
       installUpdate: () => Promise<boolean>;
       onUpdateAvailable: (cb: (version: string) => void) => void;
+      onUpdateNotAvailable: (cb: () => void) => void;
       onUpdateReady: (cb: (version: string) => void) => void;
       getLaunchOnStartup: () => Promise<boolean>;
       setLaunchOnStartup: (enabled: boolean) => Promise<boolean>;
@@ -234,12 +235,18 @@ function wireUpdateButton(btnId: string, statusId: string): void {
     if (status) status.textContent = 'Searching for updates...';
     btn.disabled = true;
     await window.clippy.checkForUpdates();
+    // OLD: 5s timeout falsely declared "latest version" before the async
+    // GitHub check completed. Customers on slow networks saw "latest" and
+    // closed the dialog before the real result arrived.
+    // NEW: 30s timeout with honest "couldn't check" fallback. The real
+    // result (update-available or update-not-available) fires via IPC
+    // and overrides this text before the timeout in most cases.
     setTimeout(() => {
       btn.disabled = false;
       if (status && status.textContent === 'Searching for updates...') {
-        status.textContent = 'You\'re on the latest version!';
+        status.textContent = 'Couldn\'t reach the update server — try again later.';
       }
-    }, 5000);
+    }, 30000);
   });
 }
 wireUpdateButton('btn-check-update', 'update-status');
@@ -252,6 +259,16 @@ function setAllUpdateStatus(html: string): void {
     if (el) el.innerHTML = html;
   }
 }
+
+// Server confirmed: no newer version exists. Only NOW can we say "latest."
+window.clippy.onUpdateNotAvailable(() => {
+  setAllUpdateStatus('You\'re on the latest version!');
+  // Re-enable the buttons
+  for (const id of ['btn-check-update', 'btn-check-update-about']) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (btn) btn.disabled = false;
+  }
+});
 
 window.clippy.onUpdateAvailable((version: string) => {
   setAllUpdateStatus(`<strong>v${version} available!</strong> <button class="btn-dl-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`);

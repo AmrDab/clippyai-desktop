@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld('clippy', {
   onUpdateAvailable: (cb: (version: string) => void) => {
     ipcRenderer.on('update-available', (_e, version) => cb(version));
   },
+  onUpdateNotAvailable: (cb: () => void) => {
+    ipcRenderer.on('update-not-available', () => cb());
+  },
   onUpdateReady: (cb: (version: string) => void) => {
     ipcRenderer.on('update-ready', (_e, version) => cb(version));
   },
