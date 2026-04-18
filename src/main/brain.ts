@@ -240,7 +240,18 @@ export class Brain {
       let taskCompleted = false;
 
       for (let step = 0; step < MAX_STEPS; step++) {
-        if (!this.win.isDestroyed()) this.win.setAlwaysOnTop(true, 'screen-saver');
+        // CRITICAL: Do NOT call setAlwaysOnTop at the start of each step.
+        // The old code here (`this.win.setAlwaysOnTop(true, 'screen-saver')`)
+        // was stealing focus from the target app (Notepad, Paint, etc.) before
+        // tools could execute. This caused type_text/smart_click to land on
+        // ClippyAI's own window instead of the intended target.
+        //
+        // We LOWER ClippyAI during tool execution and re-assert only after
+        // the full agent loop completes (in the finally block below).
+        if (step === 0 && !this.win.isDestroyed()) {
+          // Lower ourselves so target apps can hold focus during the loop.
+          this.win.setAlwaysOnTop(false);
+        }
 
         const resp = await this.callTurn(contents, { user_profile: userProfile });
 
@@ -354,6 +365,12 @@ export class Brain {
       return 'Something went wrong.';
     } finally {
       this.isExecuting = false;
+      // Re-assert always-on-top now that the agent loop is done and all
+      // tools have finished executing. During the loop we lowered ourselves
+      // so target apps (Notepad, Paint, etc.) could hold focus.
+      if (!this.win.isDestroyed()) {
+        this.win.setAlwaysOnTop(true, 'screen-saver');
+      }
     }
   }
 

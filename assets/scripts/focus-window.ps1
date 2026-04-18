@@ -81,26 +81,57 @@ try {
         # WindowPattern may not be available
     }
 
-    # Set focus
-    try {
-        $targetWindow.SetFocus()
-    } catch {
-        # Fallback: try using Win32 SetForegroundWindow
-        Add-Type @"
-            using System;
-            using System.Runtime.InteropServices;
-            public class Win32Focus {
-                [DllImport("user32.dll")]
-                public static extern bool SetForegroundWindow(IntPtr hWnd);
-                [DllImport("user32.dll")]
-                public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    # Set focus — uses the Alt-key workaround to bypass Windows' restriction
+    # on SetForegroundWindow from background processes. Without this, Windows
+    # silently blocks the call and the target window stays behind ClippyAI.
+    # This is THE fix for the "typed hello world but nothing appeared" bug.
+    Add-Type @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class ForceFocus {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, int dwFlags, int dwExtraInfo);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+            [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+            [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+            public static bool ForceForeground(IntPtr hwnd) {
+                IntPtr foreWnd = GetForegroundWindow();
+                uint foreThread = GetWindowThreadProcessId(foreWnd, IntPtr.Zero);
+                uint curThread = GetCurrentThreadId();
+
+                // Attach to foreground thread so Windows allows us to set foreground
+                if (foreThread != curThread) {
+                    AttachThreadInput(foreThread, curThread, true);
+                }
+
+                // Simulate Alt key to bypass foreground lock
+                keybd_event(0x12, 0, 0, 0);   // VK_MENU (Alt) down
+
+                ShowWindow(hwnd, 9);           // SW_RESTORE
+                bool result = SetForegroundWindow(hwnd);
+
+                keybd_event(0x12, 0, 2, 0);   // VK_MENU up (KEYEVENTF_KEYUP)
+
+                if (foreThread != curThread) {
+                    AttachThreadInput(foreThread, curThread, false);
+                }
+
+                return result;
             }
+        }
 "@
-        $hwnd = [IntPtr]$targetWindow.Current.NativeWindowHandle
-        [Win32Focus]::ShowWindow($hwnd, 9) | Out-Null # SW_RESTORE
-        Start-Sleep -Milliseconds 100
-        [Win32Focus]::SetForegroundWindow($hwnd) | Out-Null
+    $hwnd = [IntPtr]$targetWindow.Current.NativeWindowHandle
+    $result = [ForceFocus]::ForceForeground($hwnd)
+
+    if (-not $result) {
+        # Last resort: UIA SetFocus
+        try { $targetWindow.SetFocus() } catch {}
     }
+
+    Start-Sleep -Milliseconds 200
 
     $c = $targetWindow.Current
     [Console]::Out.Write((@{
