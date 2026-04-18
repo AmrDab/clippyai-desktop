@@ -219,12 +219,32 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
     return { text: '(focus_window needs processName, processId, or title)' };
   }
   try {
-    // Try PowerShell script first
     const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(getScriptsDir(), 'focus-window.ps1')];
-    if (title) args.push('-Title', String(title));
-    else if (processName) args.push('-Title', String(processName)); // use processName as title search
-    else if (processId) args.push('-ProcessId', String(processId));
+    if (title) {
+      args.push('-Title', String(title));
+    } else if (processName) {
+      // Look up PID by process name first — using processName as a title
+      // search fails because e.g. "msedge" doesn't appear in Edge's
+      // window title ("...Microsoft Edge"). Resolving to PID is reliable.
+      try {
+        const { stdout: pidOut } = await execFileAsync('powershell.exe', [
+          '-NoProfile', '-Command',
+          `(Get-Process -Name '${sanitizeAppName(String(processName))}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id`,
+        ], { timeout: 3000 });
+        const pid = parseInt(pidOut.trim());
+        if (pid > 0) {
+          args.push('-ProcessId', String(pid));
+        } else {
+          // Fallback: try as title substring
+          args.push('-Title', String(processName));
+        }
+      } catch {
+        args.push('-Title', String(processName));
+      }
+    } else if (processId) {
+      args.push('-ProcessId', String(processId));
+    }
     const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 5000 });
     return { text: stdout.trim() || 'Focused' };
   } catch (err) {

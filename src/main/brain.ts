@@ -240,18 +240,17 @@ export class Brain {
       let taskCompleted = false;
 
       for (let step = 0; step < MAX_STEPS; step++) {
-        // CRITICAL: Do NOT call setAlwaysOnTop at the start of each step.
-        // The old code here (`this.win.setAlwaysOnTop(true, 'screen-saver')`)
-        // was stealing focus from the target app (Notepad, Paint, etc.) before
-        // tools could execute. This caused type_text/smart_click to land on
-        // ClippyAI's own window instead of the intended target.
+        // Clippy stays always-on-top (visible in corner) throughout the loop.
+        // We do NOT lower ourselves — the user should see Clippy's bubble and
+        // animations while tasks execute. The focus_window tool uses
+        // AttachThreadInput + Alt-key to give KEYBOARD FOCUS to the target app
+        // without changing z-order, so SendKeys goes to Notepad/Paint/etc.
+        // while Clippy's sprite remains visible on screen.
         //
-        // We LOWER ClippyAI during tool execution and re-assert only after
-        // the full agent loop completes (in the finally block below).
-        if (step === 0 && !this.win.isDestroyed()) {
-          // Lower ourselves so target apps can hold focus during the loop.
-          this.win.setAlwaysOnTop(false);
-        }
+        // The old v0.9.9 code lowered Clippy here (setAlwaysOnTop(false)),
+        // which hid Clippy during tasks. The even older code re-asserted
+        // alwaysOnTop here, which stole keyboard focus. Both were wrong.
+        // Correct: leave z-order alone, let focus_window handle focus.
 
         const resp = await this.callTurn(contents, { user_profile: userProfile });
 
@@ -365,12 +364,8 @@ export class Brain {
       return 'Something went wrong.';
     } finally {
       this.isExecuting = false;
-      // Re-assert always-on-top now that the agent loop is done and all
-      // tools have finished executing. During the loop we lowered ourselves
-      // so target apps (Notepad, Paint, etc.) could hold focus.
-      if (!this.win.isDestroyed()) {
-        this.win.setAlwaysOnTop(true, 'screen-saver');
-      }
+      // Clippy stays always-on-top throughout — no re-assert needed.
+      // The window was never lowered during the loop.
     }
   }
 
