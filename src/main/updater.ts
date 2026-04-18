@@ -94,7 +94,11 @@ export function installUpdate(): void {
     return;
   }
   log.info('User requested update install — quitting and installing');
-  // isSilent=true so installer doesn't show UI, isForceRunAfter=true to relaunch after
-  // NOT silent — SmartScreen needs to show "More info → Run anyway" dialog for unsigned exe
-  autoUpdater.quitAndInstall(false, true);
+  // isSilent=true: NSIS runs without a wizard. The user ALREADY approved
+  // the exe during the initial install — auto-updates from the same path
+  // don't re-trigger SmartScreen. The old code used isSilent=false which
+  // showed a wizard the user had to click through; if they missed it or
+  // cancelled, the update never installed and they got stuck in a loop.
+  // isForceRunAfter=true: relaunch the app after silent install.
+  autoUpdater.quitAndInstall(true, true);
 }
