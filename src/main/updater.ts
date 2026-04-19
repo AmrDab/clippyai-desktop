@@ -1,6 +1,7 @@
 import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow } from 'electron';
 import { createLogger } from './logger';
+import { cleanupTools } from './tools';
 
 const log = createLogger('Updater');
 
@@ -10,10 +11,12 @@ let updateDownloaded = false;
 export function initUpdater(win: BrowserWindow): void {
   mainWindow = win;
 
-  // Don't auto-download — just notify the user, let them decide
+  // Don't auto-download — notify user, let them decide
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-
+  // DO install on natural quit if an update is downloaded. This is the
+  // fallback if the explicit quitAndInstall path fails or the user quits
+  // normally with a pending update.
+  autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on('checking-for-update', () => {
     log.info('Checking for updates...');
@@ -21,7 +24,6 @@ export function initUpdater(win: BrowserWindow): void {
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     log.info('Update available', { version: info.version });
-    // Notify the renderer — Clippy tells the user an update exists
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('update-available', info.version);
     }
@@ -29,9 +31,6 @@ export function initUpdater(win: BrowserWindow): void {
 
   autoUpdater.on('update-not-available', () => {
     log.debug('No update available');
-    // Notify the renderer so the "Searching..." text can update to
-    // "You're on the latest version!" — only when we ACTUALLY confirmed
-    // it with the server, not on a blind timeout.
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('update-not-available');
     }
@@ -65,12 +64,7 @@ export function checkForUpdates(): void {
   });
 }
 
-/**
- * Start a background timer that re-checks for updates every 24 hours.
- * Previously we only checked once at startup (+10s). If the app stays
- * running for days, users would never learn about new versions.
- */
-const UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+const UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 
 export function startPeriodicUpdateChecks(): void {
   setInterval(() => {
@@ -79,7 +73,6 @@ export function startPeriodicUpdateChecks(): void {
   }, UPDATE_CHECK_INTERVAL);
 }
 
-/** User chose to download + install the update */
 export function downloadUpdate(): void {
   log.info('User accepted update — downloading');
   autoUpdater.downloadUpdate().catch((err) => {
@@ -87,18 +80,43 @@ export function downloadUpdate(): void {
   });
 }
 
-/** User chose to install the already-downloaded update */
+/**
+ * Install the already-downloaded update.
+ *
+ * CRITICAL: Kill PSBridge and all child processes BEFORE calling
+ * quitAndInstall. The old code relied on the `will-quit` handler to
+ * run cleanupTools(), but that races with the NSIS installer:
+ *
+ *   OLD (broken):
+ *     quitAndInstall() → app.quit() → will-quit → cleanupTools()
+ *     ↑ NSIS spawned here but files still locked by PSBridge
+ *
+ *   NEW (fixed):
+ *     cleanupTools() → wait 1.5s → quitAndInstall()
+ *     ↑ PSBridge dead, files released, NSIS can replace exe
+ *
+ * The 1.5s delay matches the NSIS customInit Sleep and gives Windows
+ * time to release file handles after taskkill.
+ */
 export function installUpdate(): void {
   if (!updateDownloaded) {
     log.warn('installUpdate called but no update downloaded');
     return;
   }
-  log.info('User requested update install — quitting and installing');
-  // isSilent=true: NSIS runs without a wizard. The user ALREADY approved
-  // the exe during the initial install — auto-updates from the same path
-  // don't re-trigger SmartScreen. The old code used isSilent=false which
-  // showed a wizard the user had to click through; if they missed it or
-  // cancelled, the update never installed and they got stuck in a loop.
-  // isForceRunAfter=true: relaunch the app after silent install.
-  autoUpdater.quitAndInstall(true, true);
+  log.info('Pre-update cleanup — killing PSBridge before NSIS install');
+
+  // Step 1: Kill PSBridge + children synchronously
+  try {
+    cleanupTools();
+  } catch (err) {
+    log.warn('cleanupTools error (non-fatal)', String(err));
+  }
+
+  // Step 2: Wait for Windows to release file handles, then install
+  setTimeout(() => {
+    log.info('Calling quitAndInstall (silent=true, forceRunAfter=true)');
+    // isSilent=true: no NSIS wizard
+    // isForceRunAfter=true: relaunch after install
+    autoUpdater.quitAndInstall(true, true);
+  }, 1500);
 }
