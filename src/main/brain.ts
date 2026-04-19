@@ -152,7 +152,8 @@ export class Brain {
   /** Collapsed conversation history (text-only) across user turns. */
   private history: Content[] = [];
   private static readonly MAX_HISTORY = 20;
-  private lastProactiveMessage = '';
+  private recentProactiveMessages: string[] = [];
+  private static readonly MAX_PROACTIVE_HISTORY = 8;
   private noRepeatUntil = 0;
   private greetedOnWake = false;
   private isExecuting = false;
@@ -445,12 +446,19 @@ export class Brain {
         .trim();
 
       if (!reply || reply.includes('__SILENT__')) return;
-      if (this.isSimilarToLast(reply)) return;
+      if (this.isSimilarToRecent(reply)) {
+        log.debug('Proactive tip suppressed (too similar to recent)');
+        return;
+      }
 
-      this.lastProactiveMessage = reply;
+      this.recentProactiveMessages.push(reply);
+      if (this.recentProactiveMessages.length > Brain.MAX_PROACTIVE_HISTORY) {
+        this.recentProactiveMessages.shift();
+      }
       log.info(`Proactive tip: ${reply.substring(0, 80)}`);
       this.emit('clippy-speak', { text: reply, animate: 'Suggest' });
-      this.noRepeatUntil = Date.now() + 120_000;
+      // 5 min cooldown after showing a tip — was 2min, too frequent
+      this.noRepeatUntil = Date.now() + 300_000;
     } catch (err) {
       log.error('proactiveCheck failed', err);
       this.noRepeatUntil = Date.now() + 120_000;
@@ -547,15 +555,24 @@ export class Brain {
     return pick(['Wave', 'Greeting', 'GestureUp', 'Explain']);
   }
 
-  private isSimilarToLast(message: string): boolean {
-    if (!this.lastProactiveMessage) return false;
+  /**
+   * Check similarity against ALL recent proactive messages, not just the last one.
+   * Uses 35% word overlap threshold (was 50% against single message). This catches
+   * the "model rewords same observation" pattern that plagued earlier versions.
+   */
+  private isSimilarToRecent(message: string): boolean {
+    if (this.recentProactiveMessages.length === 0) return false;
     const words = (s: string) => new Set(s.toLowerCase().match(/\b\w{3,}\b/g) || []);
     const a = words(message);
-    const b = words(this.lastProactiveMessage);
-    if (a.size === 0 || b.size === 0) return false;
-    let overlap = 0;
-    for (const w of a) if (b.has(w)) overlap++;
-    return overlap / Math.min(a.size, b.size) > 0.5;
+    if (a.size === 0) return false;
+    for (const prev of this.recentProactiveMessages) {
+      const b = words(prev);
+      if (b.size === 0) continue;
+      let overlap = 0;
+      for (const w of a) if (b.has(w)) overlap++;
+      if (overlap / Math.min(a.size, b.size) > 0.35) return true;
+    }
+    return false;
   }
 
   private pushHistory(msg: Content): void {
@@ -566,12 +583,16 @@ export class Brain {
   }
 
   private errorMessage(error: string, detail?: string): string {
+    if (error === 'ai_error' && detail) {
+      // Show a simplified version of the actual error so user has context
+      return `Oops — ${detail.substring(0, 80)}. Try again!`;
+    }
     const map: Record<string, string> = {
       limit_reached: 'Monthly quota used up! Upgrade for more.',
       invalid_key: 'License key invalid.',
       subscription_inactive: 'Subscription inactive.',
       feature_locked: "That's a Pro feature! I can chat all day — for desktop control, upgrade at clippyai.app 📎",
-      ai_error: 'Brain hiccup! Try again.',
+      ai_error: "Couldn't think straight — try again!",
       timeout: 'Took too long — try again!',
       network: "Can't reach my brain. Check your internet.",
       parse_error: 'Got a garbled response. Try again!',
