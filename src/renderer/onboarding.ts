@@ -106,7 +106,7 @@ btnNext.addEventListener('click', async () => {
 
     try {
       await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
-      window.clippy.onOnboardingComplete();
+      await window.clippy.onOnboardingComplete();
       window.close();
     } catch {
       btnNext.disabled = false;

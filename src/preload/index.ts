@@ -72,7 +72,7 @@ contextBridge.exposeInMainWorld('clippy', {
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
   clearLicense: () => ipcRenderer.invoke('clear-license'),
   openOnboarding: () => ipcRenderer.send('open-onboarding'),
-  onOnboardingComplete: () => ipcRenderer.send('onboarding-complete'),
+  onOnboardingComplete: () => ipcRenderer.invoke('onboarding-complete'),
 
   // Auto-update
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),

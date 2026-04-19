@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
-import { checkForUpdates, downloadUpdate, installUpdate } from './updater';
+import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks } from './updater';
 import { createLogger } from './logger';
 
 const log = createLogger('IPC');
@@ -314,13 +314,46 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch { return false; }
   });
 
-  // Onboarding complete — show main window and activate
-  ipcMain.on('onboarding-complete', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+  // Onboarding complete — show main window, activate brain, start updater.
+  // Uses .handle() so the onboarding renderer can AWAIT completion before
+  // closing its window. The old .on() (fire-and-forget) caused a race:
+  // onboarding closed before the main window was ready, leaving Clippy
+  // in a half-initialized state.
+  ipcMain.handle('onboarding-complete', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+
+    // Wait for the renderer to be ready before sending events
+    if (!mainWindow.webContents.isLoading()) {
       mainWindow.show();
-      brain.setMode('awake');
-      mainWindow.webContents.send('mode-change', 'awake');
+    } else {
+      await new Promise<void>((resolve) => {
+        mainWindow!.webContents.once('did-finish-load', () => {
+          mainWindow!.show();
+          resolve();
+        });
+      });
     }
+
+    // Activate brain
+    brain.setMode('awake');
+    mainWindow.webContents.send('mode-change', 'awake');
+
+    // Initialize updater (launchMainApp does this but onboarding path skipped it)
+    initUpdater(mainWindow);
+    setTimeout(() => checkForUpdates(), 10_000);
+    startPeriodicUpdateChecks();
+
+    // Clippy asks for the user's name (removed from onboarding form)
+    if (!isProfileSetUp()) {
+      setTimeout(() => {
+        mainWindow?.webContents.send('clippy-speak', {
+          text: "Hey! I don't think we've met yet. What should I call you? Just type your name! 📎",
+          animate: 'Wave',
+        });
+      }, 3000);
+    }
+
+    return true;
   });
 
   // Right-click context menu
