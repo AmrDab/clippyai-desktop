@@ -340,6 +340,23 @@ export class Brain {
                 },
               },
             });
+
+            // === VISION: pass screenshot images to the model ===
+            // When desktop_screenshot returns an image, include it as an
+            // inlineData part so the vision-capable model (Kimi K2) can
+            // actually SEE the screen. This is the fundamental shift from
+            // "blind agent reading UIA trees" to "sighted agent with eyes."
+            // Without this, the model draws blindly, clicks blindly, and
+            // can never verify visual results.
+            if (result.image?.data && result.image?.mimeType) {
+              log.info(`Tool[${step + 1}] Including screenshot image for vision (${Math.round(result.image.data.length / 1024)}KB)`);
+              responseParts.push({
+                inlineData: {
+                  mimeType: result.image.mimeType,
+                  data: result.image.data,
+                },
+              } as any);
+            }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             log.error(`Tool ${call.name} failed`, msg);
