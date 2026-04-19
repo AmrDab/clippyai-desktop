@@ -308,17 +308,26 @@ export class Brain {
             const result = await executeTool(call.name, call.args);
             const resultText = result.text || JSON.stringify(result).substring(0, 500);
 
-            // === VERIFICATION: inject fresh screen state after UI-modifying tools ===
-            // Gemini used to go blind after step 1 (screen only captured at start).
-            // Now every UI-modifying tool gets paired with a fresh screen snapshot
-            // so the model can verify what actually happened.
+            // === RE-ASSERT CLIPPY'S Z-ORDER ===
+            // When open_app or navigate_browser launches a new window, it
+            // takes the foreground and Clippy visually disappears behind it.
+            // Re-asserting alwaysOnTop brings Clippy's sprite back on top
+            // so the user sees the bubble + animations during the task.
+            if (
+              (call.name === 'open_app' || call.name === 'navigate_browser') &&
+              !this.win.isDestroyed()
+            ) {
+              this.win.setAlwaysOnTop(true, 'screen-saver');
+            }
+
+            // === VERIFICATION: inject fresh screen state ===
             let screenAfter: string | undefined;
             if (UI_MODIFYING_TOOLS.has(call.name)) {
               try {
                 const screen = await executeTool('read_screen', {});
                 if (screen.text) screenAfter = screen.text.substring(0, 1500);
               } catch {
-                /* best effort — don't fail the task over a missed verification */
+                /* best effort */
               }
             }
 

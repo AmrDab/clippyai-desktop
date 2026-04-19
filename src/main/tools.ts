@@ -397,13 +397,15 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
   const target = String(params.target || '');
   if (!target) return { text: '(no target provided)' };
+  // 15s timeout — customer machines with slow UIA (PSBridge 12s startup)
+  // need more time for find-element searches in complex ribbon UIs like Paint.
+  // The old 8s timeout caused frequent smart_click failures.
   try {
     const { stdout } = await execFileAsync('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(getScriptsDir(), 'find-element.ps1'),
       '-Name', target,
-    ], { timeout: 8000 });
-    // Parse element position from output and click it
+    ], { timeout: 15000 });
     const match = stdout.match(/X:(\d+)\s+Y:(\d+)/i) || stdout.match(/(\d+),(\d+)/);
     if (match) {
       const ex = parseInt(match[1]);
@@ -411,12 +413,12 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       await mouseClick({ x: ex, y: ey });
       return { text: `Clicked "${target}" at (${ex},${ey})` };
     }
-    // Fallback: try invoke-element
+    // Fallback: try invoke-element (UIA Invoke pattern)
     const { stdout: invokeOut } = await execFileAsync('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(getScriptsDir(), 'invoke-element.ps1'),
       '-Name', target, '-Action', 'click',
-    ], { timeout: 8000 });
+    ], { timeout: 15000 });
     return { text: invokeOut.trim() || `Clicked "${target}"` };
   } catch (err) {
     return { text: `(smart_click error for "${target}": ${err instanceof Error ? err.message : ''})` };
