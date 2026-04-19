@@ -258,11 +258,34 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
   }
 }
 
+/**
+ * Idempotent open_app: focus an existing window first, only launch new if
+ * none found. Ported from ClawdCursor v0.8.3 — prevents N duplicate windows
+ * stacking up during retry loops. Match order: processName exact →
+ * processName substring → title substring.
+ */
 async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   const name = sanitizeAppName(String(params.name || ''));
   if (!name) return { text: '(no app name provided)' };
+
+  // Step 1: Check if a window for this app already exists
   try {
-    // Use -ArgumentList to prevent injection — name is a separate argument, not in -Command string
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `$p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | ` +
+      `Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; ` +
+      `if ($p) { $p.Id } else { '' }`,
+    ], { timeout: 3000 });
+    const existingPid = parseInt(stdout.trim());
+    if (existingPid > 0) {
+      // Focus the existing window instead of launching a new one
+      await focusWindow({ processName: name });
+      return { text: `Focused existing ${name} (pid ${existingPid})` };
+    }
+  } catch { /* no existing window — launch new */ }
+
+  // Step 2: Launch new
+  try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command', 'Start-Process', '-FilePath', name,
     ], { timeout: 10000 });

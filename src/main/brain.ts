@@ -303,6 +303,28 @@ export class Brain {
         // Append model turn to working contents
         contents.push({ role: 'model', parts: resp.parts });
 
+        // === RUNAWAY GUARD (from ClawdCursor v0.8.3) ===
+        // If the model calls the same tool with identical args 3+ times in
+        // the last 6 steps, it's stuck. Break the loop instead of burning
+        // tokens on the same failing action.
+        for (const call of calls) {
+          const sig = `${call.name}::${JSON.stringify(call.args)}`;
+          const recent = contents.slice(-12) // last 6 turn pairs
+            .filter((c) => c.role === 'model')
+            .flatMap((c) => c.parts.filter(isFunctionCall).map((p) => `${p.functionCall.name}::${JSON.stringify(p.functionCall.args)}`));
+          const repeatCount = recent.filter((s) => s === sig).length;
+          if (repeatCount >= 2) { // already called twice + this would be 3rd
+            log.warn('Runaway guard', { tool: call.name, repeats: repeatCount + 1 });
+            const msg = `I'm stuck repeating ${call.name} — stopping. Try rephrasing or a different approach.`;
+            log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'runaway_guard' });
+            this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+            finalSpoken = msg;
+            taskCompleted = true;
+            break;
+          }
+        }
+        if (taskCompleted) break;
+
         // Execute each function call, collect responses
         const responseParts: FunctionResponsePart[] = [];
         for (const call of calls) {
