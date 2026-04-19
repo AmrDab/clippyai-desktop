@@ -470,6 +470,67 @@ async function desktopScreenshot(): Promise<ToolResult> {
   }
 }
 
+async function ocrReadScreen(): Promise<ToolResult> {
+  const scriptPath = path.join(getScriptsDir(), 'ocr-recognize.ps1');
+  if (!fs.existsSync(scriptPath)) {
+    return { text: '(ocr-recognize.ps1 not found — OCR unavailable)' };
+  }
+  // Capture screenshot to temp file, run OCR on it, return text + positions
+  const tmpPng = path.join(os.tmpdir(), `clippy-ocr-${Date.now()}.png`);
+  try {
+    // Step 1: capture screenshot to temp PNG
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
+      `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+      `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
+      `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
+      `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
+      `$bmp.Save('${tmpPng.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
+      `$g.Dispose(); $bmp.Dispose()`,
+    ], { timeout: 10000 });
+
+    // Step 2: run OCR on the temp PNG
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+      '-ImagePath', tmpPng,
+    ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
+
+    const raw = stdout.trim();
+    if (!raw) return { text: '(OCR returned no output)' };
+
+    // Step 3: parse and format
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.error) return { text: `(OCR error: ${parsed.error})` };
+      // Format: return full text first, then element positions for coordinate-based clicking
+      let result = `=== OCR TEXT ===\n${parsed.fullText || '(no text detected)'}\n`;
+      if (parsed.elements && parsed.elements.length > 0) {
+        result += `\n=== TEXT POSITIONS (for mouse_click targets) ===\n`;
+        // Group by line for readability
+        let currentLine = -1;
+        for (const el of parsed.elements) {
+          if (el.line !== currentLine) {
+            currentLine = el.line;
+            result += `\n[Line ${currentLine}]\n`;
+          }
+          const cx = Math.round(el.x + el.width / 2);
+          const cy = Math.round(el.y + el.height / 2);
+          result += `  "${el.text}" → center(${cx}, ${cy})  rect(${el.x},${el.y},${el.width}x${el.height})\n`;
+        }
+      }
+      return { text: result };
+    } catch {
+      // Couldn't parse JSON — return raw output
+      return { text: raw };
+    }
+  } catch (err) {
+    return { text: `(ocr_read_screen error: ${err instanceof Error ? err.message : String(err)})` };
+  } finally {
+    try { fs.unlinkSync(tmpPng); } catch { /* cleanup */ }
+  }
+}
+
 async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
   const seconds = Math.min(30, Math.max(0.1, Number(params.seconds || 1)));
   await new Promise(r => setTimeout(r, seconds * 1000));
@@ -608,6 +669,7 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   read_clipboard: readClipboard,
   write_clipboard: writeClipboard,
   wait: waitTool,
+  ocr_read_screen: ocrReadScreen,
   // Aliases
   smart_read: readScreen,
 };
