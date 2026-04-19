@@ -201,6 +201,7 @@ export class Brain {
         const name = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
         saveUserProfile({ Name: name });
         const greeting = `Nice to meet you, ${name}! I'll remember that. How can I help? 📎`;
+        log.info('Clippy.say', { text: greeting, animation: 'Wave', trigger: 'name_intro', userName: name });
         this.pushHistory({ role: 'user', parts: [{ text }] });
         this.pushHistory({ role: 'model', parts: [{ text: greeting }] });
         this.emit('clippy-speak', { text: greeting, animate: 'Wave' });
@@ -257,6 +258,7 @@ export class Brain {
 
         if (isError(resp)) {
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
+          log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'error', error: resp.error });
           this.emit('clippy-speak', { text: msg, animate: 'Alert' });
           finalSpoken = msg;
           break;
@@ -270,19 +272,18 @@ export class Brain {
         // Emit text to bubble — structured, clean, no stripping needed
         if (spoken) {
           const anim = this.pickAnimation(text, spoken, calls.length > 0);
+          log.info('Clippy.say', { text: spoken, animation: anim, trigger: 'reply', step: step + 1 });
           this.emit('clippy-speak', { text: spoken, animate: anim });
           finalSpoken = spoken;
         }
 
         // === SENTINEL: task_complete ===
-        // Gemini signals task end by calling task_complete(summary=...). This
-        // replaces the unreliable "empty tool calls = done" heuristic that
-        // caused silent exits mid-task.
         const completeCall = calls.find((c) => c.name === 'task_complete');
         if (completeCall) {
           const summary = String(
             (completeCall.args as { summary?: string }).summary || 'Done!',
           );
+          log.info('Clippy.say', { text: summary, animation: 'Congratulate', trigger: 'task_complete', step: step + 1 });
           this.emit('clippy-speak', { text: summary, animate: 'Congratulate' });
           finalSpoken = summary;
           taskCompleted = true;
@@ -293,6 +294,7 @@ export class Brain {
         if (calls.length === 0 || resp.done) {
           if (calls.length === 0 && !spoken) {
             finalSpoken = "I'm not sure what to do — can you rephrase?";
+            log.info('Clippy.say', { text: finalSpoken, animation: 'Alert', trigger: 'no_tools' });
             this.emit('clippy-speak', { text: finalSpoken, animate: 'Alert' });
           }
           break;
@@ -304,10 +306,19 @@ export class Brain {
         // Execute each function call, collect responses
         const responseParts: FunctionResponsePart[] = [];
         for (const call of calls) {
-          log.info(`Tool[${step + 1}] ${call.name}`, JSON.stringify(call.args).substring(0, 200));
+          const toolStart = Date.now();
+          log.info('Tool.call', { step: step + 1, tool: call.name, args: call.args });
           try {
             const result = await executeTool(call.name, call.args);
+            const toolElapsed = Date.now() - toolStart;
             const resultText = result.text || JSON.stringify(result).substring(0, 500);
+            log.info('Tool.result', {
+              step: step + 1,
+              tool: call.name,
+              elapsed_ms: toolElapsed,
+              output: resultText.substring(0, 300),
+              has_image: !!(result.image?.data),
+            });
 
             // === RE-ASSERT CLIPPY'S Z-ORDER ===
             // When open_app or navigate_browser launches a new window, it
@@ -350,7 +361,7 @@ export class Brain {
             // Without this, the model draws blindly, clicks blindly, and
             // can never verify visual results.
             if (result.image?.data && result.image?.mimeType) {
-              log.info(`Tool[${step + 1}] Including screenshot image for vision (${Math.round(result.image.data.length / 1024)}KB)`);
+              log.info('Tool.vision', { step: step + 1, tool: call.name, size_kb: Math.round(result.image.data.length / 1024) });
               responseParts.push({
                 inlineData: {
                   mimeType: result.image.mimeType,
@@ -360,7 +371,8 @@ export class Brain {
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            log.error(`Tool ${call.name} failed`, msg);
+            const toolElapsed = Date.now() - toolStart;
+            log.error('Tool.error', { step: step + 1, tool: call.name, elapsed_ms: toolElapsed, error: msg });
             responseParts.push({
               functionResponse: {
                 name: call.name,
@@ -375,6 +387,7 @@ export class Brain {
 
         if (step === MAX_STEPS - 1 && !taskCompleted) {
           const capMsg = "That's a long task — stopping here for now!";
+          log.warn('Clippy.say', { text: capMsg, animation: 'Congratulate', trigger: 'max_steps', steps_used: MAX_STEPS });
           this.emit('clippy-speak', { text: capMsg, animate: 'Congratulate' });
           finalSpoken = capMsg;
         }
@@ -421,6 +434,7 @@ export class Brain {
     try {
       if (!this.greetedOnWake) {
         this.greetedOnWake = true;
+        log.info('Clippy.say', { text: "Hi! Click me to chat. I can help with whatever you're working on!", animation: 'Wave', trigger: 'wake_greeting' });
         this.emit('clippy-speak', {
           text: "Hi! Click me to chat. I can help with whatever you're working on!",
           animate: 'Wave',
@@ -455,7 +469,7 @@ export class Brain {
       if (this.recentProactiveMessages.length > Brain.MAX_PROACTIVE_HISTORY) {
         this.recentProactiveMessages.shift();
       }
-      log.info(`Proactive tip: ${reply.substring(0, 80)}`);
+      log.info('Clippy.say', { text: reply, animation: 'Suggest', trigger: 'proactive' });
       this.emit('clippy-speak', { text: reply, animate: 'Suggest' });
       // 5 min cooldown after showing a tip — was 2min, too frequent
       this.noRepeatUntil = Date.now() + 300_000;

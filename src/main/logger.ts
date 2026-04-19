@@ -8,7 +8,7 @@ type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 const LOG_DIR = path.join(os.homedir(), '.clippyai', 'logs');
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB per file
 const MAX_LOG_FILES = 5;
-const MAX_DATA_LENGTH = 500;
+const MAX_DATA_LENGTH = 1000;
 
 let logStream: fs.WriteStream | null = null;
 let currentLogPath = '';
