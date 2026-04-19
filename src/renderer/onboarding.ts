@@ -97,7 +97,6 @@ btnNext.addEventListener('click', async () => {
   }
 
   if (currentStep === 3) {
-    const userName = (document.getElementById('user-name') as HTMLInputElement).value.trim();
     const buddyName = buddyNameInput.value.trim() || 'Clippy';
     const ttsVoice = voiceSelect.value;
     const key = licenseInput.value.trim().toUpperCase();
@@ -107,9 +106,6 @@ btnNext.addEventListener('click', async () => {
 
     try {
       await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
-      if (userName) {
-        await window.clippy.saveUserProfile({ Name: userName });
-      }
       window.clippy.onOnboardingComplete();
       window.close();
     } catch {

@@ -9,12 +9,19 @@
   ; helper processes). Silent errors — if nothing is running, taskkill exits
   ; with code 128 which is fine.
   nsExec::ExecToLog 'taskkill /f /t /im ClippyAI.exe'
+  ; Also kill any orphaned PSBridge powershell processes left by a bad exit
+  nsExec::ExecToLog 'powershell.exe -NoProfile -Command "Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq '''' } | Stop-Process -Force -ErrorAction SilentlyContinue"'
   ; Give Windows a moment to release the file handles.
   Sleep 1500
 !macroend
 
 !macro customUnInit
-  ; Same on uninstall — make sure no running instance blocks removal.
+  ; Kill running instance + child processes
   nsExec::ExecToLog 'taskkill /f /t /im ClippyAI.exe'
+  ; Kill orphaned PSBridge
+  nsExec::ExecToLog 'powershell.exe -NoProfile -Command "Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq '''' } | Stop-Process -Force -ErrorAction SilentlyContinue"'
   Sleep 1000
+  ; Clean up logs directory (~/.clippyai/) — not in %APPDATA% so
+  ; deleteAppDataOnUninstall won't reach it
+  RMDir /r "$PROFILE\.clippyai"
 !macroend

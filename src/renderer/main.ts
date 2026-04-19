@@ -14,6 +14,7 @@ declare global {
       onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
       onTtsToggle: (cb: (enabled: boolean) => void) => void;
       onProactiveToggle: (cb: (enabled: boolean) => void) => void;
+      onSpeechRate: (cb: (rate: number) => void) => void;
       setClickThrough: (enabled: boolean) => void;
       openSettings: () => void;
       showContextMenu: () => void;
@@ -66,7 +67,6 @@ async function init(): Promise<void> {
       const response = await window.clippy.sendMessage(userText);
       bubbleCtrl.speak(response);
       tts.speak(response);
-      // Don't override animation here — brain sends play-animation with the right one
     } catch {
       bubbleCtrl.speak("Sorry, I couldn't connect right now.");
       clippyCtrl.alert();
@@ -75,7 +75,6 @@ async function init(): Promise<void> {
 
   // === IPC Event Listeners ===
   window.clippy.onSpeak(({ text, animate }) => {
-    // Never display undefined/null/empty in the bubble
     const safeText = text || '';
     if (safeText) {
       bubbleCtrl.speak(safeText);
@@ -87,11 +86,11 @@ async function init(): Promise<void> {
   window.clippy.onModeChange((mode) => {
     if (mode === 'sleep') {
       bubbleCtrl.hide();
-      clippyCtrl.sleep(); // GoodBye transition → snooze idle cycle
+      clippyCtrl.sleep();
       tts.setEnabled(false);
     } else {
       tts.setEnabled(true);
-      clippyCtrl.wake(); // Show/Greeting transition → awake idle cycle
+      clippyCtrl.wake();
       bubbleCtrl.speak("I'm awake and ready to help!");
       tts.speak("I'm awake and ready to help!");
     }
@@ -102,33 +101,30 @@ async function init(): Promise<void> {
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 
-  // === Auto-update (optional, user-driven) ===
+  // === Auto-update (state-based, NO canvas click hijacking) ===
+  // Previous bug: addEventListener('click') on canvas for updates would
+  // fire alongside normal click handling → clicking Clippy would quit the
+  // app to install an update the user didn't know about. Now we use a flag
+  // checked inside the single mouseup handler below.
+  let pendingUpdate: 'download' | 'install' | null = null;
+  let pendingUpdateVersion = '';
+
   window.clippy.onUpdateAvailable((version) => {
+    pendingUpdate = 'download';
+    pendingUpdateVersion = version;
     clippyCtrl.playNamed('Suggest');
     bubbleCtrl.speak(`v${version} is available! Click me to download it. 📎`);
-
-    // Click Clippy → start download
-    setTimeout(() => canvas.addEventListener('click', function downloadHandler() {
-      canvas.removeEventListener('click', downloadHandler);
-      bubbleCtrl.speak('Downloading update...');
-      clippyCtrl.playNamed('Searching');
-      window.clippy.downloadUpdate();
-    }, { once: true }), 2000);
   });
 
   window.clippy.onUpdateReady((version) => {
+    pendingUpdate = 'install';
+    pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
     bubbleCtrl.speak(`v${version} is ready! Click me to restart and update. 📎`);
     tts.speak('Update ready!');
-
-    setTimeout(() => canvas.addEventListener('click', function installHandler() {
-      canvas.removeEventListener('click', installHandler);
-      window.clippy.installUpdate();
-    }, { once: true }), 2000);
   });
 
   // === Drag + Click handling ===
-  // Distinguish between drag (move window) and click (open bubble)
   let isDragging = false;
   let dragStartX = 0;
   let dragStartY = 0;
@@ -157,10 +153,25 @@ async function init(): Promise<void> {
 
   document.addEventListener('mouseup', () => {
     if (isDragging && !hasMoved) {
-      // Was a click, not a drag
+      // Single click on Clippy
       console.log('[Main] Clippy clicked!');
-      bubbleCtrl.speak('What can I help you with?');
-      clippyCtrl.wave();
+
+      if (pendingUpdate === 'download') {
+        // User explicitly clicked after seeing "click me to download"
+        pendingUpdate = null;
+        bubbleCtrl.speak('Downloading update...');
+        clippyCtrl.playNamed('Searching');
+        window.clippy.downloadUpdate();
+      } else if (pendingUpdate === 'install') {
+        // User explicitly clicked after seeing "click me to restart"
+        pendingUpdate = null;
+        bubbleCtrl.speak('Installing update, restarting...');
+        window.clippy.installUpdate();
+      } else {
+        // Normal click — open chat bubble
+        bubbleCtrl.speak('What can I help you with?');
+        clippyCtrl.wave();
+      }
     }
     isDragging = false;
     canvas.style.cursor = 'pointer';
@@ -171,8 +182,6 @@ async function init(): Promise<void> {
     e.stopPropagation();
     window.clippy.showContextMenu();
   });
-
-  // No click-through needed — window is sized to Clippy only
 
   console.log('[Main] ClippyAI renderer initialized successfully');
 }
