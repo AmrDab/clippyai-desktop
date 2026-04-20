@@ -8,9 +8,14 @@
   ; Kill the main process + entire child tree (PSBridge, Electron helpers).
   ; /t = kill children, /f = force. If nothing is running, taskkill exits
   ; with code 128 — that's fine.
+  ; First kill — catches the main process
   nsExec::ExecToLog 'taskkill /f /t /im ClippyAI.exe'
-  ; Give Windows a moment to release the file handles.
-  Sleep 1500
+  Sleep 2000
+  ; Second kill — catches any child processes that respawned or were slow to die
+  nsExec::ExecToLog 'taskkill /f /t /im ClippyAI.exe'
+  ; Long sleep — Windows needs time to release NTFS file locks after process death.
+  ; 1500ms was too short on many machines (the old v0.9.x update loop bug).
+  Sleep 3000
 !macroend
 
 !macro customUnInit
