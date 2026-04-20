@@ -488,6 +488,10 @@ export class Brain {
         .trim();
 
       if (!reply || reply.includes('__SILENT__')) return;
+      // Guard: discard verbose responses (model hallucinating essays)
+      if (reply.length > 120) return;
+      // Guard: discard narration ("I see you're using", "You have X open")
+      if (/\b(i see you|you have .+ open|you're (using|looking|working))\b/i.test(reply)) return;
       if (this.isSimilarToRecent(reply)) {
         log.debug('Proactive tip suppressed (too similar to recent)');
         return;
@@ -644,9 +648,39 @@ export class Brain {
     if (!this.win.isDestroyed()) this.win.webContents.send(channel, payload);
   }
 
-  // ========== API call ==========
+  // ========== API call with retry (NanoClaw pattern) ==========
 
-  private callTurn(
+  /**
+   * Exponential backoff retry for transient failures (network, 502, rate limit).
+   * Non-retryable errors (auth, quota, parse) return immediately.
+   */
+  private async callTurn(
+    contents: Content[],
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number } = {},
+  ): Promise<TurnResponse> {
+    const MAX_RETRIES = 2;
+    const BASE_DELAY_MS = 1500;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const result = await this.callTurnOnce(contents, opts);
+      // Don't retry non-transient errors
+      if (!isError(result)) return result;
+      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'feature_locked', 'parse_error'].includes(result.error)) {
+        return result;
+      }
+      // Retry transient errors (ai_error, network, timeout, rate_limited)
+      if (attempt < MAX_RETRIES) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+        log.warn('Turn retry', { attempt: attempt + 1, error: result.error, delay_ms: delay });
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        return result;
+      }
+    }
+    return { error: 'network' }; // unreachable but satisfies TS
+  }
+
+  private callTurnOnce(
     contents: Content[],
     opts: { user_profile?: string; proactive?: boolean; max_tokens?: number } = {},
   ): Promise<TurnResponse> {
