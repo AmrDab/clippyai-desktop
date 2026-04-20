@@ -10,8 +10,8 @@ let onboardingWindow: BrowserWindow | null = null;
 // Small window sized to Clippy sprite — expands when bubble shows
 const CLIPPY_WIDTH = 140;
 const CLIPPY_HEIGHT = 110;
-const EXPANDED_WIDTH = 220;
-const EXPANDED_HEIGHT = 320;
+const EXPANDED_WIDTH = 320;
+const EXPANDED_HEIGHT = 380;
 
 export function createWindow(): BrowserWindow {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;

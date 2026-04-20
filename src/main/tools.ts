@@ -174,6 +174,14 @@ interface ToolResult {
 }
 
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
+  const mode = String(params.mode || 'accessibility');
+
+  if (mode === 'ocr') {
+    // Dispatch to OCR tool
+    return ocrReadScreen();
+  }
+
+  // Default: accessibility tree
   const scriptPath = path.join(getScriptsDir(), 'get-screen-context.ps1');
   try {
     const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath];

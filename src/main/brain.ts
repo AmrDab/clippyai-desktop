@@ -136,7 +136,7 @@ interface BrainSettings {
 const settingsStore = new Store<BrainSettings>({
   name: 'brain-settings',
   defaults: {
-    proactiveInterval: 30000,
+    proactiveInterval: 300000, // 5 minutes — was 30s, way too frequent
     proactiveEnabled: true,
     ttsEnabled: true,
     speechRate: 1.1,
@@ -151,10 +151,11 @@ export class Brain {
   private mode: 'awake' | 'sleep' = 'sleep';
   /** Collapsed conversation history (text-only) across user turns. */
   private history: Content[] = [];
-  private static readonly MAX_HISTORY = 20;
+  private static readonly MAX_HISTORY = 8;
   private recentProactiveMessages: string[] = [];
   private static readonly MAX_PROACTIVE_HISTORY = 8;
   private noRepeatUntil = 0;
+  private lastScreenFingerprint = '';
   private greetedOnWake = false;
   private isExecuting = false;
 
@@ -468,6 +469,11 @@ export class Brain {
       const context = await this.captureScreenContext(3000);
       if (!context) return;
 
+      // Screen fingerprint — skip API call if nothing changed
+      const fingerprint = context.substring(0, 200); // active window + first elements
+      if (fingerprint === this.lastScreenFingerprint) return;
+      this.lastScreenFingerprint = fingerprint;
+
       const resp = await this.callTurn(
         [{ role: 'user', parts: [{ text: `Current screen:\n${context}` }] }],
         { proactive: true, max_tokens: 120 },
@@ -493,8 +499,8 @@ export class Brain {
       }
       log.info('Clippy.say', { text: reply, animation: 'Suggest', trigger: 'proactive' });
       this.emit('clippy-speak', { text: reply, animate: 'Suggest' });
-      // 5 min cooldown after showing a tip — was 2min, too frequent
-      this.noRepeatUntil = Date.now() + 300_000;
+      // 10 min cooldown after speaking — silence is better than noise
+      this.noRepeatUntil = Date.now() + 600_000;
     } catch (err) {
       log.error('proactiveCheck failed', err);
       this.noRepeatUntil = Date.now() + 120_000;
@@ -513,9 +519,7 @@ export class Brain {
         const activeText = active.status === 'fulfilled' ? active.value.text : '';
         const screenText = screen.status === 'fulfilled' ? screen.value.text : '';
         if (!activeText && !screenText) return '';
-        // 3000 chars gives Gemini enough to see meaningful UI structure
-        // (was 800 — too small for modern apps, Gemini was blind).
-        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 3000)}`;
+        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 2000)}`;
       })();
       const timeout = new Promise<string>((r) => setTimeout(() => r(''), timeoutMs));
       return await Promise.race([promise, timeout]);
