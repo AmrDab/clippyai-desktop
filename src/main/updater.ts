@@ -170,7 +170,27 @@ export function installUpdate(): void {
     log.warn('cleanupTools error (non-fatal)', String(err));
   }
 
-  // Phase 2: Wait for handle release
+  // Phase 2: Nuke the stale installer.exe from the updater cache.
+  // electron-updater downloads to pending/ then copies to installer.exe,
+  // then runs installer.exe. If the copy FAILS silently (locked file,
+  // permissions), it runs the OLD installer.exe from a previous version.
+  // This was the root cause of the update loop on v0.11.1.
+  // Deleting installer.exe forces electron-updater to use the fresh file.
+  try {
+    const cacheDir = path.join(
+      process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local'),
+      'clippyai-updater',
+    );
+    const staleInstaller = path.join(cacheDir, 'installer.exe');
+    if (fs.existsSync(staleInstaller)) {
+      fs.unlinkSync(staleInstaller);
+      log.info('Install.cacheClean', { deleted: staleInstaller });
+    }
+  } catch (err) {
+    log.warn('Install.cacheClean failed (non-fatal)', String(err));
+  }
+
+  // Phase 3: Wait for handle release, then install
   setTimeout(() => {
     log.info('Install.exec', { action: 'quitAndInstall', silent: true, forceRunAfter: true });
     autoUpdater.quitAndInstall(true, true);

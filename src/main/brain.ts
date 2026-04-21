@@ -729,6 +729,7 @@ export class Brain {
       const req = net.request({ url: TURN_ENDPOINT, method: 'POST' });
       req.setHeader('Content-Type', 'application/json');
       req.setHeader('Authorization', `Bearer ${licenseKey}`);
+      req.setHeader('X-Client-Version', app.getVersion());
 
       const timeout = setTimeout(() => {
         log.error('Turn API timeout (60s)');
