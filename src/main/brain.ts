@@ -195,9 +195,12 @@ export class Brain {
   async handleUserMessage(text: string): Promise<string> {
     log.info('User message', text.substring(0, 120));
 
-    // Name introduction — handled client-side for deterministic UX
+    // Name introduction — handled client-side for deterministic UX.
+    // Matches "my name is X", "call me X", "I'm X", or just a bare name
+    // (user responding to "What should I call you? Just type your name!")
     if (!isProfileSetUp()) {
-      const match = text.match(/(?:my name is|call me|i'm called|name's)\s+([A-Za-z]{2,20})/i);
+      const match = text.match(/(?:my name is|call me|i'm called|name's|i'm|im)\s+([A-Za-z]{2,20})/i)
+        || text.match(/^([A-Za-z]{2,20})$/); // bare name like "Amr"
       if (match) {
         const name = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
         saveUserProfile({ Name: name });
@@ -255,6 +258,8 @@ export class Brain {
         // alwaysOnTop here, which stole keyboard focus. Both were wrong.
         // Correct: leave z-order alone, let focus_window handle focus.
 
+        // Show thinking animation while waiting for API response
+        if (step > 0) this.emit('play-animation', 'Thinking');
         const resp = await this.callTurn(contents, { user_profile: userProfile });
 
         if (isError(resp)) {
