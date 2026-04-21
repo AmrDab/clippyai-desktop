@@ -164,6 +164,7 @@ export class Brain {
   }
 
   setMode(mode: 'awake' | 'sleep'): void {
+    log.info('Brain.mode', { from: this.mode, to: mode });
     this.mode = mode;
     if (mode === 'awake') {
       this.greetedOnWake = false;
@@ -193,7 +194,7 @@ export class Brain {
   // ========== Public entry ==========
 
   async handleUserMessage(text: string): Promise<string> {
-    log.info('User message', text.substring(0, 120));
+    log.info('User.message', { text: text.substring(0, 200), length: text.length });
 
     // Name introduction — handled client-side for deterministic UX.
     // Matches "my name is X", "call me X", "I'm X", or just a bare name
@@ -224,6 +225,11 @@ export class Brain {
 
       // Build initial user message — add screen context if we can grab it fast
       const screenContext = await this.captureScreenContext(2500);
+      log.info('Task.start', {
+        hasScreenContext: !!screenContext,
+        screenContextLen: screenContext?.length || 0,
+        historyMessages: this.history.length,
+      });
       const initialText = screenContext
         ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
         : text;
@@ -260,9 +266,12 @@ export class Brain {
 
         // Show thinking animation while waiting for API response
         if (step > 0) this.emit('play-animation', 'Thinking');
+        const turnStart = Date.now();
         const resp = await this.callTurn(contents, { user_profile: userProfile });
+        const turnMs = Date.now() - turnStart;
 
         if (isError(resp)) {
+          log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
           log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'error', error: resp.error });
           this.emit('clippy-speak', { text: msg, animate: 'Alert' });
@@ -274,6 +283,20 @@ export class Brain {
         const texts = resp.parts.filter(isText).map((p) => p.text);
         const calls = resp.parts.filter(isFunctionCall).map((p) => p.functionCall);
         const spoken = texts.join(' ').trim();
+
+        // Structured API response log — the missing piece for diagnosing performance
+        log.info('Turn.ok', {
+          step: step + 1,
+          elapsed_ms: turnMs,
+          tokens_used: (resp as TurnSuccess).tokens_used,
+          tokens_remaining: (resp as TurnSuccess).tokens_remaining,
+          provider: (resp as any).provider,
+          finish_reason: (resp as TurnSuccess).finish_reason,
+          has_text: !!spoken,
+          text_preview: spoken ? spoken.substring(0, 100) : null,
+          tool_calls: calls.map((c) => c.name),
+          context_messages: contents.length,
+        });
 
         // Emit text to bubble — structured, clean, no stripping needed
         if (spoken) {
@@ -369,6 +392,12 @@ export class Brain {
               } catch {
                 /* best effort */
               }
+              log.info('Tool.verify', {
+                step: step + 1,
+                tool: call.name,
+                screen_after_len: screenAfter?.length || 0,
+                screen_after_preview: screenAfter?.substring(0, 150) || '(empty)',
+              });
             }
 
             responseParts.push({
@@ -421,6 +450,12 @@ export class Brain {
         }
       }
 
+      log.info('Task.end', {
+        finalText: finalSpoken?.substring(0, 200) || '(none)',
+        taskCompleted,
+        stepsUsed: contents.length - this.history.length, // rough step count
+      });
+
       if (finalSpoken) {
         this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
       }
@@ -472,11 +507,11 @@ export class Brain {
       }
 
       const context = await this.captureScreenContext(3000);
-      if (!context) return;
+      if (!context) { log.debug('Proactive.skip', { reason: 'no_context' }); return; }
 
       // Screen fingerprint — skip API call if nothing changed
-      const fingerprint = context.substring(0, 200); // active window + first elements
-      if (fingerprint === this.lastScreenFingerprint) return;
+      const fingerprint = context.substring(0, 200);
+      if (fingerprint === this.lastScreenFingerprint) { log.debug('Proactive.skip', { reason: 'screen_unchanged' }); return; }
       this.lastScreenFingerprint = fingerprint;
 
       const resp = await this.callTurn(
@@ -484,7 +519,7 @@ export class Brain {
         { proactive: true, max_tokens: 120 },
       );
 
-      if (isError(resp)) return;
+      if (isError(resp)) { log.info('Proactive.error', { error: (resp as TurnError).error }); return; }
 
       const reply = resp.parts
         .filter(isText)
@@ -492,13 +527,11 @@ export class Brain {
         .join(' ')
         .trim();
 
-      if (!reply || reply.includes('__SILENT__')) return;
-      // Guard: discard verbose responses (model hallucinating essays)
-      if (reply.length > 120) return;
-      // Guard: discard narration ("I see you're using", "You have X open")
-      if (/\b(i see you|you have .+ open|you're (using|looking|working))\b/i.test(reply)) return;
+      if (!reply || reply.includes('__SILENT__')) { log.debug('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
+      if (reply.length > 120) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
+      if (/\b(i see you|you have .+ open|you're (using|looking|working))\b/i.test(reply)) { log.debug('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
       if (this.isSimilarToRecent(reply)) {
-        log.debug('Proactive tip suppressed (too similar to recent)');
+        log.debug('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
         return;
       }
 

@@ -30,7 +30,7 @@ export function initUpdater(win: BrowserWindow): void {
   });
 
   autoUpdater.on('update-not-available', () => {
-    log.debug('No update available');
+    log.info('No update available');
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('update-not-available');
     }
