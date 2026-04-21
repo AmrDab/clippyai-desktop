@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.11.3
+buildVersion: 0.11.4
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -28,30 +28,22 @@ win:
   verifyUpdateCodeSignature: false
 
 nsis:
-  oneClick: false
+  # oneClick MUST be true for reliable auto-updates. The update loop bug:
+  # oneClick:false + allowToChangeInstallationDirectory meant the NSIS
+  # silent update (/S --updated) couldn't find the install path → installed
+  # to a different directory → relaunched the OLD exe → loop.
+  # VS Code, Slack, Discord all use oneClick for this exact reason.
+  oneClick: true
   perMachine: false
-  allowElevation: true
-  allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: ClippyAI
-  # Custom installer/uninstaller icons (same as app icon for brand consistency)
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
-  # How the app shows in "Add or Remove Programs"
   uninstallDisplayName: ClippyAI — AI Desktop Buddy
-  # Run the app automatically after install finishes (checkbox, default on)
   runAfterFinish: true
-  # License page — skip for now (can add later)
-  # license: build/LICENSE.txt
-  # Branded names
-  displayLanguageSelector: false
-  menuCategory: ClippyAI
-  # Clean slate on uninstall — removes config, license key, logs
   deleteAppDataOnUninstall: true
-  # Custom NSIS macros: taskkill ClippyAI + PSBridge before install/uninstall
-  # so auto-update never races with a still-alive process holding file locks.
   include: build/installer.nsh
 
 files:

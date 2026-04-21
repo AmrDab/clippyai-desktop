@@ -2,35 +2,40 @@ import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow } from 'electron';
 import { createLogger } from './logger';
 import { cleanupTools } from './tools';
+import fs from 'fs';
+import path from 'path';
 
 const log = createLogger('Updater');
 
 let mainWindow: BrowserWindow | null = null;
 let updateDownloaded = false;
+let expectedVersion = '';
 
 export function initUpdater(win: BrowserWindow): void {
   mainWindow = win;
 
-  // Don't auto-download — notify user, let them decide
   autoUpdater.autoDownload = false;
-  // DO install on natural quit if an update is downloaded. This is the
-  // fallback if the explicit quitAndInstall path fails or the user quits
-  // normally with a pending update.
   autoUpdater.autoInstallOnAppQuit = true;
+
+  // ── Startup self-healing ────────────────────────────────────────
+  // If a previous update failed (stale installer in cache from a
+  // different version), clear it so we get a clean download next time.
+  // This prevents the "downloads update but installs old version" loop.
+  clearStalePendingUpdates();
 
   autoUpdater.on('checking-for-update', () => {
     log.info('Checking for updates...');
   });
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
-    log.info('Update available', { version: info.version });
+    log.info('Update available', { version: info.version, currentVersion: app.getVersion() });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('update-available', info.version);
     }
   });
 
   autoUpdater.on('update-not-available', () => {
-    log.info('No update available');
+    log.info('No update available', { currentVersion: app.getVersion() });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('update-not-available');
     }
@@ -41,16 +46,67 @@ export function initUpdater(win: BrowserWindow): void {
   });
 
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
-    log.info('Update downloaded', { version: info.version });
+    log.info('Update downloaded', {
+      version: info.version,
+      currentVersion: app.getVersion(),
+      // Log the actual file path electron-updater will run
+      installerPath: (autoUpdater as any).downloadedUpdateHelper?.file || '(unknown)',
+    });
     updateDownloaded = true;
+    expectedVersion = info.version;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('update-ready', info.version);
     }
   });
 
   autoUpdater.on('error', (err) => {
-    log.warn('Auto-update error (non-fatal)', String(err).substring(0, 200));
+    log.warn('Auto-update error', String(err).substring(0, 300));
   });
+}
+
+/**
+ * Clear stale pending updates from the electron-updater cache.
+ * If the app starts and finds a pending update for a version OTHER than
+ * the current one, the previous install failed. Clear it so the next
+ * checkForUpdates gets a clean download.
+ */
+function clearStalePendingUpdates(): void {
+  try {
+    const cacheDir = path.join(
+      app.getPath('userData').replace(/[/\\]ClippyAI$/, ''),
+      '..', 'Local', 'clippyai-updater',
+    );
+    const pendingDir = path.join(cacheDir, 'pending');
+
+    if (fs.existsSync(pendingDir)) {
+      const files = fs.readdirSync(pendingDir);
+      if (files.length > 0) {
+        log.warn('Stale pending update found — clearing cache', {
+          files,
+          currentVersion: app.getVersion(),
+        });
+        for (const file of files) {
+          try { fs.unlinkSync(path.join(pendingDir, file)); } catch { /* best effort */ }
+        }
+      }
+    }
+
+    // Also check if installer.exe in the cache root is stale
+    const installerPath = path.join(cacheDir, 'installer.exe');
+    if (fs.existsSync(installerPath)) {
+      const stats = fs.statSync(installerPath);
+      const ageHours = (Date.now() - stats.mtimeMs) / (1000 * 60 * 60);
+      if (ageHours > 48) {
+        log.warn('Stale installer.exe in cache (>48h old) — deleting', {
+          ageHours: Math.round(ageHours),
+          size: stats.size,
+        });
+        try { fs.unlinkSync(installerPath); } catch { /* best effort */ }
+      }
+    }
+  } catch (err) {
+    log.debug('Cache cleanup skipped', String(err));
+  }
 }
 
 export function checkForUpdates(): void {
@@ -60,7 +116,7 @@ export function checkForUpdates(): void {
   }
 
   autoUpdater.checkForUpdates().catch((err) => {
-    log.warn('Update check failed (non-fatal)', String(err).substring(0, 200));
+    log.warn('Update check failed', String(err).substring(0, 200));
   });
 }
 
@@ -83,40 +139,40 @@ export function downloadUpdate(): void {
 /**
  * Install the already-downloaded update.
  *
- * CRITICAL: Kill PSBridge and all child processes BEFORE calling
- * quitAndInstall. The old code relied on the `will-quit` handler to
- * run cleanupTools(), but that races with the NSIS installer:
+ * Three-phase approach to prevent the update loop:
+ * 1. Kill all child processes (PSBridge) so no file handles block NSIS
+ * 2. Wait for Windows to release handles
+ * 3. Call quitAndInstall — NSIS installs to fixed path (oneClick:true)
  *
- *   OLD (broken):
- *     quitAndInstall() → app.quit() → will-quit → cleanupTools()
- *     ↑ NSIS spawned here but files still locked by PSBridge
- *
- *   NEW (fixed):
- *     cleanupTools() → wait 1.5s → quitAndInstall()
- *     ↑ PSBridge dead, files released, NSIS can replace exe
- *
- * The 1.5s delay matches the NSIS customInit Sleep and gives Windows
- * time to release file handles after taskkill.
+ * History of update loop bugs and their fixes:
+ * - v0.9.9: cleanupTools ran in will-quit AFTER quitAndInstall → file locks
+ * - v0.10.9: cleanupTools moved BEFORE quitAndInstall → fixed locks
+ * - v0.11.1: NSIS oneClick:false couldn't find install dir → wrong path
+ * - v0.11.4: Switched to oneClick:true → fixed path, no registry lookup
+ * - v0.11.4: Added stale cache cleanup on startup → self-healing
  */
 export function installUpdate(): void {
   if (!updateDownloaded) {
     log.warn('installUpdate called but no update downloaded');
     return;
   }
-  log.info('Pre-update cleanup — killing PSBridge before NSIS install');
 
-  // Step 1: Kill PSBridge + children synchronously
+  log.info('Install.start', {
+    currentVersion: app.getVersion(),
+    targetVersion: expectedVersion,
+    installerPath: (autoUpdater as any).downloadedUpdateHelper?.file || '(unknown)',
+  });
+
+  // Phase 1: Kill child processes
   try {
     cleanupTools();
   } catch (err) {
     log.warn('cleanupTools error (non-fatal)', String(err));
   }
 
-  // Step 2: Wait for Windows to release file handles, then install
+  // Phase 2: Wait for handle release
   setTimeout(() => {
-    log.info('Calling quitAndInstall (silent=true, forceRunAfter=true)');
-    // isSilent=true: no NSIS wizard
-    // isForceRunAfter=true: relaunch after install
+    log.info('Install.exec', { action: 'quitAndInstall', silent: true, forceRunAfter: true });
     autoUpdater.quitAndInstall(true, true);
   }, 1500);
 }
