@@ -174,10 +174,11 @@ function launchMainApp(): void {
 
   if (!isProfileSetUp()) {
     setTimeout(() => {
-      mainWindow?.webContents.send('clippy-speak', {
-        text: "Hey! I don't think we've met yet. What should I call you? Just type your name! 📎",
-        animate: 'Wave',
-      });
+      // D9: log direct webContents.send so the audit trail matches what
+      // the user actually saw on screen.
+      const text = "Hey! I don't think we've met yet. What should I call you? Just type your name! 📎";
+      log.info('Clippy.say', { text, animation: 'Wave', trigger: 'name_prompt' });
+      mainWindow?.webContents.send('clippy-speak', { text, animate: 'Wave' });
     }, 3000);
   }
 

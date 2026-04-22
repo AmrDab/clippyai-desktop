@@ -173,6 +173,30 @@ interface ToolResult {
   image?: { data: string; mimeType: string };
 }
 
+/**
+ * Strip Clippy's own window(s) from a read_screen result so the brain
+ * doesn't see itself at the top of the list and misinterpret focus_window
+ * as having failed. Works for both JSON accessibility output ({"windows":[...]})
+ * and OCR-formatted output (JSON element list or text positions).
+ *
+ * Generic — never hardcode other process names. Only our own name is removed.
+ */
+function stripOwnWindowFromScreen(raw: string): string {
+  if (!raw) return raw;
+  const OWN_PROCESS_NAMES = new Set(['ClippyAI', 'clippyai']);
+  // Try accessibility-tree JSON shape first
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.windows)) {
+      parsed.windows = parsed.windows.filter((w: { processName?: string }) =>
+        !w.processName || !OWN_PROCESS_NAMES.has(w.processName),
+      );
+      return JSON.stringify(parsed);
+    }
+  } catch { /* not JSON — fall through */ }
+  return raw;
+}
+
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
   const mode = String(params.mode || 'accessibility');
 
@@ -190,7 +214,8 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
       timeout: 10000,
       maxBuffer: 5 * 1024 * 1024,
     });
-    return { text: stdout.trim() || '(empty screen context)' };
+    const filtered = stripOwnWindowFromScreen(stdout.trim());
+    return { text: filtered || '(empty screen context)' };
   } catch (err) {
     return { text: `(read_screen error: ${err instanceof Error ? err.message : String(err)})` };
   }
@@ -466,12 +491,63 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
   return typeText({ text });
 }
 
+/**
+ * Resolve the user's default HTTPS browser process name by reading the
+ * Windows UserChoice ProgID. Returns e.g. "chrome", "msedge", "firefox",
+ * "brave", "opera". App-agnostic — works for any registered browser. Returns
+ * empty string if the lookup fails (never throws).
+ *
+ * ProgID mapping is necessarily a short allowlist (the ProgID format is not
+ * standardized). Unknown ProgIDs fall through to the foreground-window
+ * heuristic in navigateBrowser.
+ */
+async function getDefaultBrowserProcessName(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice' -ErrorAction SilentlyContinue).ProgId",
+    ], { timeout: 3000 });
+    const progId = stdout.trim();
+    if (!progId) return '';
+    // Map common ProgIDs to process names. Pattern-match so future versions
+    // (e.g. "ChromeHTML.Foo") still resolve correctly.
+    const p = progId.toLowerCase();
+    if (p.includes('chrome'))  return 'chrome';
+    if (p.includes('msedge') || p.includes('edgehtm') || p.startsWith('appx')) return 'msedge';
+    if (p.includes('firefox')) return 'firefox';
+    if (p.includes('brave'))   return 'brave';
+    if (p.includes('opera'))   return 'opera';
+    if (p.includes('arc'))     return 'arc';
+    if (p.includes('vivaldi')) return 'vivaldi';
+    return '';
+  } catch {
+    return '';
+  }
+}
+
 async function navigateBrowser(params: Record<string, unknown>): Promise<ToolResult> {
   const url = String(params.url || '');
   if (!url) return { text: '(no URL provided)' };
   try {
-    // Use Electron's shell.openExternal — safe, validates URLs, no shell injection
+    // Use Electron's shell.openExternal — safe, validates URLs, no shell injection.
     await shell.openExternal(url);
+
+    // On Windows, openExternal hands the URL to the default browser but does
+    // NOT foreground that browser's window if it was already running (common
+    // case: browser open in background with other tabs). The new URL opens
+    // as a background tab and the user sees nothing. Auto-focus the default
+    // browser so the page is visible — saves the agent a step and prevents
+    // downstream read_screen from reading the wrong window.
+    //
+    // Best-effort: lookup default browser, give it ~500ms to receive the URL,
+    // then focus it. If lookup fails we just skip — openExternal already fired.
+    const browserName = await getDefaultBrowserProcessName();
+    if (browserName) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        await focusWindow({ processName: browserName });
+      } catch { /* best-effort foreground; ignore failures */ }
+    }
     return { text: `Opened ${url}` };
   } catch (err) {
     return { text: `(navigate_browser error: ${err instanceof Error ? err.message : ''})` };
@@ -717,11 +793,14 @@ export async function initTools(): Promise<void> {
   } catch (err) {
     log.warn('Screen scale detection failed', String(err));
   }
-  try {
-    await startPSBridge();
-  } catch (err) {
+  // PSBridge warmup is SLOW (~12s on fresh Windows installs) and blocking
+  // it here makes Clippy show nothing for ~12s after click-to-launch. Start
+  // it in the background and let psCommand() fall back to one-off PowerShell
+  // calls until the bridge reports READY. Users get a responsive app now;
+  // per-call overhead of one-off PS is ~100-500ms until warmup completes.
+  startPSBridge().catch((err) => {
     log.warn('PSBridge startup failed — using fallback one-off PowerShell calls', String(err));
-  }
+  });
   initialized = true;
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
 }

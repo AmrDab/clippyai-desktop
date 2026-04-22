@@ -250,8 +250,12 @@ export class Brain {
       const MAX_STEPS = 15;
       let finalSpoken = '';
       let taskCompleted = false;
+      // D5/D8: track step count and abort reason accurately.
+      let lastStep = 0;
+      let abortReason: string | null = null;
 
       for (let step = 0; step < MAX_STEPS; step++) {
+        lastStep = step + 1;
         // Clippy stays always-on-top (visible in corner) throughout the loop.
         // We do NOT lower ourselves — the user should see Clippy's bubble and
         // animations while tasks execute. The focus_window tool uses
@@ -348,11 +352,15 @@ export class Brain {
             log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'runaway_guard' });
             this.emit('clippy-speak', { text: msg, animate: 'Alert' });
             finalSpoken = msg;
-            taskCompleted = true;
+            // D5: the task DID NOT complete — it was aborted. We previously
+            // set taskCompleted=true here, which lied to success-rate metrics.
+            // Record the abort reason explicitly for Task.end and use that
+            // signal to break the outer loop instead of taskCompleted.
+            abortReason = 'runaway_guard';
             break;
           }
         }
-        if (taskCompleted) break;
+        if (abortReason) break;
 
         // Execute each function call, collect responses
         const responseParts: FunctionResponsePart[] = [];
@@ -447,13 +455,18 @@ export class Brain {
           log.warn('Clippy.say', { text: capMsg, animation: 'Congratulate', trigger: 'max_steps', steps_used: MAX_STEPS });
           this.emit('clippy-speak', { text: capMsg, animate: 'Congratulate' });
           finalSpoken = capMsg;
+          abortReason = 'max_steps';
         }
       }
 
+      // D8: stepsUsed used to be `contents.length - history.length` which is
+      // a message-count proxy, not a step count. It showed 0 for simple text
+      // replies and 22 for a 12-step task. Use the actual loop counter.
       log.info('Task.end', {
         finalText: finalSpoken?.substring(0, 200) || '(none)',
         taskCompleted,
-        stepsUsed: contents.length - this.history.length, // rough step count
+        abortReason,
+        stepsUsed: lastStep,
       });
 
       if (finalSpoken) {
@@ -514,9 +527,12 @@ export class Brain {
       if (fingerprint === this.lastScreenFingerprint) { log.debug('Proactive.skip', { reason: 'screen_unchanged' }); return; }
       this.lastScreenFingerprint = fingerprint;
 
+      // D2: max_tokens was 120 which truncated legitimate one-sentence tips
+      // mid-word (e.g. "...Useful tips for" cut off at token 120). Bumped
+      // to 200. The 200-char reply-length cap below still enforces brevity.
       const resp = await this.callTurn(
         [{ role: 'user', parts: [{ text: `Current screen:\n${context}` }] }],
-        { proactive: true, max_tokens: 120 },
+        { proactive: true, max_tokens: 200 },
       );
 
       if (isError(resp)) { log.info('Proactive.error', { error: (resp as TurnError).error }); return; }
@@ -528,8 +544,13 @@ export class Brain {
         .trim();
 
       if (!reply || reply.includes('__SILENT__')) { log.debug('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
-      if (reply.length > 120) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
-      if (/\b(i see you|you have .+ open|you're (using|looking|working))\b/i.test(reply)) { log.debug('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
+      if (reply.length > 200) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
+      // D2: extra-tight narration filter. Past logs showed replies like
+      // "Since Paint is the active window, I should provide a tip relevant to…"
+      // — the model thinking out loud. Catch meta-commentary patterns so
+      // nothing-to-say moments stay silent instead of leaking reasoning.
+      const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) provide|useful tips? for|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|for (paint|chrome|edge|firefox|notepad|word|excel|\w+ing))\b/i;
+      if (NARRATION_RE.test(reply)) { log.debug('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
       if (this.isSimilarToRecent(reply)) {
         log.debug('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
         return;
