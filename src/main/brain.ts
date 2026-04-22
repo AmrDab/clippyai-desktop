@@ -346,8 +346,14 @@ export class Brain {
             .filter((c) => c.role === 'model')
             .flatMap((c) => c.parts.filter(isFunctionCall).map((p) => `${p.functionCall.name}::${JSON.stringify(p.functionCall.args)}`));
           const repeatCount = recent.filter((s) => s === sig).length;
-          if (repeatCount >= 2) { // already called twice + this would be 3rd
-            log.warn('Runaway guard', { tool: call.name, repeats: repeatCount + 1 });
+          // #3: threshold used to be `>= 2` with a `+1` in the log, which
+          // meant the guard fired at the *2nd* identical call but logged it
+          // as "repeats:3" — aborting legitimate `focus → read → re-focus
+          // → read` patterns. Now fires only on the *3rd* identical call
+          // (recent already includes the current call via contents.push
+          // above, so repeatCount == 3 means 3 total identical calls).
+          if (repeatCount >= 3) {
+            log.warn('Runaway guard', { tool: call.name, repeats: repeatCount });
             const msg = `I'm stuck repeating ${call.name} — stopping. Try rephrasing or a different approach.`;
             log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'runaway_guard' });
             this.emit('clippy-speak', { text: msg, animate: 'Alert' });
@@ -380,14 +386,15 @@ export class Brain {
             });
 
             // === RE-ASSERT CLIPPY'S Z-ORDER ===
-            // When open_app or navigate_browser launches a new window, it
-            // takes the foreground and Clippy visually disappears behind it.
-            // Re-asserting alwaysOnTop brings Clippy's sprite back on top
-            // so the user sees the bubble + animations during the task.
-            if (
-              (call.name === 'open_app' || call.name === 'navigate_browser') &&
-              !this.win.isDestroyed()
-            ) {
+            // Any tool that hands foreground to another app — open_app,
+            // navigate_browser, focus_window, mouse_click, mouse_drag,
+            // key_press (alt+tab!), smart_click, smart_type — can knock
+            // Clippy off topmost. setAlwaysOnTop is idempotent and ~free
+            // on Windows, so just re-assert after every tool call. The
+            // prior open_app/navigate_browser-only filter meant Clippy
+            // disappeared any time the agent used focus_window or
+            // clicked another window.
+            if (!this.win.isDestroyed()) {
               this.win.setAlwaysOnTop(true, 'screen-saver');
             }
 
