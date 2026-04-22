@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
-import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks } from './updater';
+import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage } from './updater';
 import { createLogger } from './logger';
 
 const log = createLogger('IPC');
@@ -178,6 +178,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
   ipcMain.handle('install-update', async () => {
     installUpdate();
+    return true;
+  });
+  ipcMain.handle('open-manual-update', async () => {
+    openManualUpdatePage();
     return true;
   });
 

@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('clippy', {
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  openManualUpdate: () => ipcRenderer.invoke('open-manual-update'),
   onUpdateAvailable: (cb: (version: string) => void) => {
     ipcRenderer.on('update-available', (_e, version) => cb(version));
   },
@@ -86,6 +87,9 @@ contextBridge.exposeInMainWorld('clippy', {
   },
   onUpdateReady: (cb: (version: string) => void) => {
     ipcRenderer.on('update-ready', (_e, version) => cb(version));
+  },
+  onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => {
+    ipcRenderer.on('update-failed', (_e, payload) => cb(payload));
   },
 
   // User profile

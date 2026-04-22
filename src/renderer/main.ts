@@ -25,8 +25,10 @@ declare global {
       closeWindow: () => void;
       downloadUpdate: () => Promise<boolean>;
       installUpdate: () => Promise<boolean>;
+      openManualUpdate: () => Promise<boolean>;
       onUpdateAvailable: (cb: (version: string) => void) => void;
       onUpdateReady: (cb: (version: string) => void) => void;
+      onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => void;
     };
   }
 }
@@ -106,7 +108,7 @@ async function init(): Promise<void> {
   // fire alongside normal click handling → clicking Clippy would quit the
   // app to install an update the user didn't know about. Now we use a flag
   // checked inside the single mouseup handler below.
-  let pendingUpdate: 'download' | 'install' | null = null;
+  let pendingUpdate: 'download' | 'install' | 'manual' | null = null;
   let pendingUpdateVersion = '';
 
   window.clippy.onUpdateAvailable((version) => {
@@ -122,6 +124,17 @@ async function init(): Promise<void> {
     clippyCtrl.playNamed('GetAttention');
     bubbleCtrl.speak(`v${version} is ready! Click me to restart and update. 📎`);
     tts.speak('Update ready!');
+  });
+
+  // Auto-update silent-failure fallback: after two failed quitAndInstall
+  // attempts for the same version (usually AV/SmartScreen blocking the
+  // unsigned installer), we stop retrying and send the user to the GitHub
+  // release page to install manually. Breaks the update loop.
+  window.clippy.onUpdateFailed(({ version }) => {
+    pendingUpdate = 'manual';
+    pendingUpdateVersion = version;
+    clippyCtrl.playNamed('GetAttention');
+    bubbleCtrl.speak(`Auto-update to v${version} isn't working on this machine. Click me to open the download page. 📎`);
   });
 
   // === Drag + Click handling ===
@@ -167,6 +180,11 @@ async function init(): Promise<void> {
         pendingUpdate = null;
         bubbleCtrl.speak('Installing update, restarting...');
         window.clippy.installUpdate();
+      } else if (pendingUpdate === 'manual') {
+        // Auto-update gave up — open GitHub release page in the browser.
+        pendingUpdate = null;
+        bubbleCtrl.speak(`Opening the download page for v${pendingUpdateVersion}...`);
+        window.clippy.openManualUpdate();
       } else {
         // Normal click — open chat bubble
         bubbleCtrl.speak('What can I help you with?');
