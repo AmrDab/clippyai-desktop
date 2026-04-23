@@ -158,6 +158,11 @@ export class Brain {
   private lastScreenFingerprint = '';
   private greetedOnWake = false;
   private isExecuting = false;
+  // Set by a NEW handleUserMessage call arriving while a previous one is
+  // still in its tool-loop. The in-flight loop checks this between steps
+  // and aborts, letting the new message take over. Resets at the start of
+  // every new execution.
+  private cancelRequested = false;
 
   constructor(win: BrowserWindow) {
     this.win = win;
@@ -214,11 +219,28 @@ export class Brain {
       }
     }
 
+    // If a previous task is still running, signal cancel and wait for it to
+    // release the executing flag, then take over. Prevents the "I'm still
+    // working" dead-end where users typed a new thing mid-task and got
+    // nothing useful. The in-flight loop checks cancelRequested between
+    // steps and aborts with a "switching gears" message.
     if (this.isExecuting) {
-      log.warn('Already executing — dropping new message');
-      return "I'm still working on the last thing — hang on!";
+      log.info('User override — cancelling in-flight task', { newMessage: text.substring(0, 80) });
+      this.cancelRequested = true;
+      const waitStart = Date.now();
+      while (this.isExecuting && Date.now() - waitStart < 10_000) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (this.isExecuting) {
+        // Previous tool is stuck (e.g. PSBridge hang). Bail — don't start
+        // two concurrent tool loops because that would clobber each other's
+        // always-on-top re-asserts and read_screen output.
+        log.warn('Previous task did not abort within 10s — dropping override', { newMessage: text.substring(0, 80) });
+        return "Give me a sec — still finishing that up.";
+      }
     }
     this.isExecuting = true;
+    this.cancelRequested = false;
 
     try {
       this.emit('play-animation', 'Thinking');
@@ -256,6 +278,18 @@ export class Brain {
 
       for (let step = 0; step < MAX_STEPS; step++) {
         lastStep = step + 1;
+
+        // User-override abort — a newer handleUserMessage set cancelRequested.
+        // The new call is sitting in a wait-loop in the previous handleUserMessage
+        // block, polling isExecuting. Break cleanly so finally sets it false
+        // and the new message can take over.
+        if (this.cancelRequested) {
+          log.info('Task aborted — user override');
+          this.emit('clippy-speak', { text: 'Got it — switching gears.', animate: 'Wave' });
+          finalSpoken = 'Got it — switching gears.';
+          abortReason = 'user_override';
+          break;
+        }
         // Clippy stays always-on-top (visible in corner) throughout the loop.
         // We do NOT lower ourselves — the user should see Clippy's bubble and
         // animations while tasks execute. The focus_window tool uses
@@ -552,11 +586,12 @@ export class Brain {
 
       if (!reply || reply.includes('__SILENT__')) { log.debug('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
       if (reply.length > 200) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
-      // D2: extra-tight narration filter. Past logs showed replies like
-      // "Since Paint is the active window, I should provide a tip relevant to…"
-      // — the model thinking out loud. Catch meta-commentary patterns so
-      // nothing-to-say moments stay silent instead of leaking reasoning.
-      const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) provide|useful tips? for|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|for (paint|chrome|edge|firefox|notepad|word|excel|\w+ing))\b/i;
+      // Defense-in-depth narration filter. The server prompt tells the model
+      // to output exactly ONE tip sentence or __SILENT__, but Kimi keeps
+      // leaking meta-reasoning ("What could I suggest?", "Potential tips: 1.",
+      // "- Could suggest…", "- @ mentions But I don't see…"). Drop those here.
+      if (/^\s*[-•*]\s|^\s*\d+[.)]\s/.test(reply)) { log.debug('Proactive.filtered', { reason: 'starts_with_list_marker', text: reply.substring(0, 60) }); return; }
+      const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) (provide|suggest|recommend)|useful tips? for|potential tips?|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|(what|how) could (i|you)|could suggest|could recommend|they (might|may) (want|be) )\b/i;
       if (NARRATION_RE.test(reply)) { log.debug('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
       if (this.isSimilarToRecent(reply)) {
         log.debug('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
