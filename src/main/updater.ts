@@ -12,9 +12,15 @@ const GITHUB_REPO = 'clippyai-desktop';
 const RELEASE_PAGE = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 
 // A version is marked failed after this many silent-failure detections.
-// First failure gets one retry (network/AV may have been transient). Second
-// failure drops the user into the manual-install fallback.
-const MAX_FAILURES_BEFORE_SKIP = 2;
+//
+// v0.11.6 used `2` on the theory that the first failure might be transient
+// (AV scan still in progress, UAC fumble, etc.). In practice, NSIS silent
+// failures caused by unsigned-installer policy are DETERMINISTIC — Defender
+// doesn't change its mind on retry — so the "hedge" just made the user
+// watch the same failed update attempt twice before escaping to manual
+// install. Now: one silent failure is enough evidence, skip immediately.
+// If the user manually installs a newer version, skip state self-clears.
+const MAX_FAILURES_BEFORE_SKIP = 1;
 
 // How long after an install attempt we still treat a version-mismatch as
 // "install just failed" vs. "user downgraded by other means". 2h is long
