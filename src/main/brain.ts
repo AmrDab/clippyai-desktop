@@ -587,27 +587,40 @@ export class Brain {
       // D2: max_tokens was 120 which truncated legitimate one-sentence tips
       // mid-word (e.g. "...Useful tips for" cut off at token 120). Bumped
       // to 200. The 200-char reply-length cap below still enforces brevity.
+      // Kimi K2.5 uses chain-of-thought reasoning before outputting the tip.
+      // 200 tokens was too small — the model burned all tokens on thinking and
+      // produced empty content. 800 gives room to think (~500) + tip (~50).
       const resp = await this.callTurn(
         [{ role: 'user', parts: [{ text: `Current screen:\n${context}` }] }],
-        { proactive: true, max_tokens: 200 },
+        { proactive: true, max_tokens: 800 },
       );
 
       if (isError(resp)) { log.info('Proactive.error', { error: (resp as TurnError).error }); return; }
 
-      const reply = resp.parts
+      // BUG 4 FIX: if Kimi hit max_tokens, the tip is truncated mid-sentence.
+      // A half-sentence shown to the user is worse than silence — discard it.
+      if ((resp as TurnSuccess).finish_reason === 'length' || (resp as TurnSuccess).finish_reason === 'MAX_TOKENS') {
+        log.debug('Proactive.filtered', { reason: 'truncated_by_max_tokens' });
+        return;
+      }
+
+      // BUG 3 FIX: Kimi K2.5 reasoning bleeds into content on proactive calls.
+      // The model outputs a multi-line "thinking" paragraph then the actual tip.
+      // Take ONLY the first non-empty line — the actual tip (or __SILENT__).
+      const rawReply = resp.parts
         .filter(isText)
         .map((p) => p.text)
-        .join(' ')
+        .join('\n')
         .trim();
+      // Find the first non-blank line as the candidate tip
+      const firstLine = rawReply.split('\n').map((l) => l.trim()).find((l) => l.length > 0) || '';
+      const reply = firstLine;
 
       if (!reply || reply.includes('__SILENT__')) { log.debug('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
-      if (reply.length > 200) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
-      // Defense-in-depth narration filter. The server prompt tells the model
-      // to output exactly ONE tip sentence or __SILENT__, but Kimi keeps
-      // leaking meta-reasoning ("What could I suggest?", "Potential tips: 1.",
-      // "- Could suggest…", "- @ mentions But I don't see…"). Drop those here.
+      if (reply.length > 160) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
+      // Defense-in-depth narration filter.
       if (/^\s*[-•*]\s|^\s*\d+[.)]\s/.test(reply)) { log.debug('Proactive.filtered', { reason: 'starts_with_list_marker', text: reply.substring(0, 60) }); return; }
-      const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) (provide|suggest|recommend)|useful tips? for|potential tips?|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|(what|how) could (i|you)|could suggest|could recommend|they (might|may) (want|be) )\b/i;
+      const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) (provide|suggest|recommend)|useful tips? for|potential tips?|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|(what|how) could (i|you)|could suggest|could recommend|they (might|may) (want|be)|given that|no windows|empty desktop|not much to|the screen is|there('?s| are) (nothing|no |not)|nothing (specific|to|visible)|based on (the|what)|from the screen|nothing stands out)\b/i;
       if (NARRATION_RE.test(reply)) { log.debug('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
       if (this.isSimilarToRecent(reply)) {
         log.debug('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
