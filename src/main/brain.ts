@@ -151,7 +151,7 @@ export class Brain {
   private mode: 'awake' | 'sleep' = 'sleep';
   /** Collapsed conversation history (text-only) across user turns. */
   private history: Content[] = [];
-  private static readonly MAX_HISTORY = 8;
+  private static readonly MAX_HISTORY = 16;
   private recentProactiveMessages: string[] = [];
   private static readonly MAX_PROACTIVE_HISTORY = 8;
   private noRepeatUntil = 0;
@@ -275,6 +275,10 @@ export class Brain {
       // D5/D8: track step count and abort reason accurately.
       let lastStep = 0;
       let abortReason: string | null = null;
+      // Stuck-loop detection: if read_screen returns the same text twice in a
+      // row, the model is staring at the same page without learning anything.
+      // Inject a hint to break the pattern before the 3-call runaway guard fires.
+      let lastReadScreenResult = '';
 
       for (let step = 0; step < MAX_STEPS; step++) {
         lastStep = step + 1;
@@ -449,11 +453,23 @@ export class Brain {
               });
             }
 
+            // Stuck-screen detection: if read_screen returns the same text twice
+            // consecutively, inject a hint so the model knows it's looping and
+            // tries something different instead of repeating the same OCR call.
+            let stuckHint = '';
+            if (call.name === 'read_screen') {
+              const resultKey = resultText.substring(0, 400);
+              if (resultKey && resultKey === lastReadScreenResult) {
+                stuckHint = '\n\n[HINT: The screen has not changed since your last read_screen. Try a different approach — scroll, wait(2), navigate, or use desktop_screenshot to see the visual state.]';
+              }
+              lastReadScreenResult = resultKey;
+            }
+
             responseParts.push({
               functionResponse: {
                 name: call.name,
                 response: {
-                  result: resultText.substring(0, 800),
+                  result: (resultText + stuckHint).substring(0, 900),
                   ...(screenAfter ? { screen_after: screenAfter } : {}),
                 },
               },
@@ -602,8 +618,8 @@ export class Brain {
       if (this.recentProactiveMessages.length > Brain.MAX_PROACTIVE_HISTORY) {
         this.recentProactiveMessages.shift();
       }
-      log.info('Clippy.say', { text: reply, animation: 'Suggest', trigger: 'proactive' });
-      this.emit('clippy-speak', { text: reply, animate: 'Suggest' });
+      log.info('Clippy.say', { text: reply, animation: 'GetAttention', trigger: 'proactive' });
+      this.emit('clippy-speak', { text: reply, animate: 'GetAttention' });
       // 10 min cooldown after speaking — silence is better than noise
       this.noRepeatUntil = Date.now() + 600_000;
     } catch (err) {
@@ -639,7 +655,7 @@ export class Brain {
    * randomness inside each category so the character feels alive, not robotic.
    * Full list: Alert, CheckingSomething, Congratulate, EmptyTrash, Explain,
    * GestureDown/Left/Right/Up, GetArtsy, GetAttention, GetTechy, GetWizardy,
-   * GoodBye, Greeting, Hearing_1, Idle*, LookDown*, LookLeft, LookRight,
+   * GoodBye, Greeting, Idle*, LookDown*, LookLeft, LookRight,
    * LookUp*, Print, Processing, RestPose, Save, Searching, SendMail, Thinking,
    * Wave, Writing.
    */
@@ -680,7 +696,7 @@ export class Brain {
 
     // Question topics → gesture directions feel natural for explanations
     if (/what|how|why|when|where|which|explain|tell me/.test(u)) {
-      return pick(['Explain', 'GestureUp', 'GestureLeft', 'GestureRight', 'Hearing_1']);
+      return pick(['Explain', 'GestureUp', 'GestureLeft', 'GestureRight', 'Searching']);
     }
 
     // Reply content-based
@@ -688,7 +704,9 @@ export class Brain {
     if (/done|success|great|perfect|awesome|ta-?da|congratul|finished|complete/.test(r)) {
       return pick(['Congratulate', 'GetAttention']);
     }
-    if (/tip|suggest|recommend|try |you could|you should|maybe/.test(r)) return 'Suggest';
+    if (/tip|suggest|recommend|try |you could|you should|maybe/.test(r)) {
+      return pick(['GetAttention', 'Explain', 'GestureUp']);
+    }
     if (/hmm|let me think|interesting|good question|not sure/.test(r)) {
       return pick(['Thinking', 'CheckingSomething', 'LookUp', 'LookUpLeft', 'LookUpRight']);
     }
@@ -736,6 +754,7 @@ export class Brain {
       limit_reached: 'Monthly quota used up! Upgrade for more.',
       invalid_key: 'License key invalid.',
       subscription_inactive: 'Subscription inactive.',
+      service_unavailable: "My server is having a moment — try again in a bit!",
       feature_locked: "That's a Pro feature! I can chat all day — for desktop control, upgrade at clippyai.app 📎",
       ai_error: "Couldn't think straight — try again!",
       timeout: 'Took too long — try again!',
