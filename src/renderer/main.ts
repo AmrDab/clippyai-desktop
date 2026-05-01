@@ -114,7 +114,7 @@ async function init(): Promise<void> {
   window.clippy.onUpdateAvailable((version) => {
     pendingUpdate = 'download';
     pendingUpdateVersion = version;
-    clippyCtrl.playNamed('Suggest');
+    clippyCtrl.playNamed('GetAttention');
     bubbleCtrl.speak(`v${version} is available! Click me to download it. 📎`);
   });
 

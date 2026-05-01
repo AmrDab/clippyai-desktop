@@ -752,6 +752,91 @@ async function getFocusedElement(): Promise<ToolResult> {
   }
 }
 
+// ── COM Automation Tools ─────────────────────────────────────────
+
+async function runComScript(
+  scriptName: string,
+  args: string[],
+  timeoutMs = 20000,
+): Promise<ToolResult> {
+  const scriptPath = path.join(getScriptsDir(), scriptName);
+  if (!fs.existsSync(scriptPath)) {
+    return { text: `(script not found: ${scriptName})` };
+  }
+  try {
+    const { stdout, stderr } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', scriptPath,
+      ...args,
+    ], { timeout: timeoutMs, maxBuffer: 5 * 1024 * 1024 });
+    // Last non-empty line is the JSON result
+    const lines = stdout.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+    const lastLine = lines[lines.length - 1] || '';
+    try {
+      const parsed = JSON.parse(lastLine);
+      if (parsed.ok === false) return { text: `Error: ${parsed.error}` };
+      return { text: JSON.stringify(parsed) };
+    } catch {
+      // Not JSON — return raw output (shouldn't happen normally)
+      return { text: stdout.trim() || stderr.trim() || '(no output)' };
+    }
+  } catch (err) {
+    return { text: `(com script error: ${err instanceof Error ? err.message : String(err)})` };
+  }
+}
+
+async function createReminder(params: Record<string, unknown>): Promise<ToolResult> {
+  const title = String(params.title || '').substring(0, 100);
+  const datetime = String(params.datetime || '');
+  const notes = String(params.notes || '').substring(0, 200);
+  if (!title || !datetime) return { text: 'Error: title and datetime are required' };
+  const result = await runComScript('com-create-reminder.ps1', [
+    '-title', title, '-datetime', datetime, '-notes', notes,
+  ], 15000);
+  if (result.text.startsWith('Error:')) return result;
+  try {
+    const r = JSON.parse(result.text);
+    return { text: `Reminder set! "${title}" will appear at ${r.scheduledFor} (task: ${r.taskName})` };
+  } catch { return result; }
+}
+
+async function readFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: 'Error: path is required' };
+  const result = await runComScript('com-read-file.ps1', ['-path', filePath], 10000);
+  if (result.text.startsWith('Error:')) return result;
+  try {
+    const r = JSON.parse(result.text);
+    return { text: `File: ${filePath}\nLines: ${r.lines} | Size: ${r.sizeBytes} bytes\n\n${r.content}` };
+  } catch { return result; }
+}
+
+async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  const content = String(params.content || '');
+  const mode = String(params.mode || 'create');
+  if (!filePath) return { text: 'Error: path is required' };
+  const result = await runComScript('com-write-file.ps1', [
+    '-path', filePath, '-content', content, '-mode', mode,
+  ], 10000);
+  if (result.text.startsWith('Error:')) return result;
+  try {
+    const r = JSON.parse(result.text);
+    return { text: `File written: ${r.path} (${r.bytesWritten} bytes, mode=${r.mode})` };
+  } catch { return result; }
+}
+
+async function runPowershell(params: Record<string, unknown>): Promise<ToolResult> {
+  const script = String(params.script || '');
+  if (!script) return { text: 'Error: script is required' };
+  const result = await runComScript('com-run-powershell.ps1', ['-script', script], 20000);
+  if (result.text.startsWith('Error:')) return result;
+  try {
+    const r = JSON.parse(result.text);
+    return { text: r.output?.substring(0, 3000) || '(no output)' };
+  } catch { return result; }
+}
+
 // ── Tool Registry ────────────────────────────────────────────────
 
 const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<ToolResult>> = {
@@ -777,6 +862,11 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   write_clipboard: writeClipboard,
   wait: waitTool,
   ocr_read_screen: ocrReadScreen,
+  // COM automation
+  create_reminder: createReminder,
+  read_file: readFile,
+  write_file: writeFile,
+  run_powershell: runPowershell,
   // Aliases
   smart_read: readScreen,
 };

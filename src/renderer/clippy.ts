@@ -173,7 +173,7 @@ export class ClippyController {
 
   wave(): void { this.playAction('Wave'); }
   think(): void { this.playAction('Thinking'); }
-  suggest(): void { this.playAction('Suggest'); }
+  suggest(): void { this.playAction('GetAttention'); }
   idle(): void { this.play('Idle1_1'); }
   getAttention(): void { this.playAction('GetAttention'); }
   congratulate(): void { this.playAction('Congratulate'); }
