@@ -837,6 +837,112 @@ async function runPowershell(params: Record<string, unknown>): Promise<ToolResul
   } catch { return result; }
 }
 
+// ── Agent loop tools ────────────────────────────────────────────
+
+async function planTool(params: Record<string, unknown>): Promise<ToolResult> {
+  // No-op executor — the value is in the model emitting structured plans into
+  // its own context. We just acknowledge so the loop continues.
+  const goal = String(params.goal || '').substring(0, 200);
+  const steps = Array.isArray(params.steps) ? params.steps.map(String).slice(0, 12) : [];
+  if (!goal || steps.length === 0) return { text: 'Error: goal and steps are required' };
+  log.info('Plan', { goal, steps });
+  const numbered = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  return { text: `Plan acknowledged.\nGoal: ${goal}\n${numbered}` };
+}
+
+// ── Tier 1: System / network / files ─────────────────────────────
+
+async function systemInfo(params: Record<string, unknown>): Promise<ToolResult> {
+  const fields = String(params.fields || '');
+  const result = await runComScript('com-system-info.ps1', ['-fields', fields], 8000);
+  return result;
+}
+
+async function listProcesses(params: Record<string, unknown>): Promise<ToolResult> {
+  const sortBy = String(params.sortBy || 'ram');
+  const top = String(Number(params.top) || 10);
+  const result = await runComScript('com-list-processes.ps1', ['-sortBy', sortBy, '-top', top], 8000);
+  return result;
+}
+
+async function speakText(params: Record<string, unknown>): Promise<ToolResult> {
+  const text = String(params.text || '');
+  if (!text) return { text: 'Error: text is required' };
+  const rate = String(Number(params.rate) || 0);
+  const result = await runComScript('com-speak-text.ps1', ['-text', text, '-rate', rate], 5000);
+  return result;
+}
+
+async function searchFilesContent(params: Record<string, unknown>): Promise<ToolResult> {
+  const pattern = String(params.pattern || '');
+  if (!pattern) return { text: 'Error: pattern is required' };
+  const args = ['-pattern', pattern];
+  if (params.path) args.push('-path', String(params.path));
+  if (params.glob) args.push('-glob', String(params.glob));
+  const result = await runComScript('com-search-files.ps1', args, 30000);
+  return result;
+}
+
+async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
+  const host = String(params.host || '');
+  if (!host) return { text: 'Error: host is required' };
+  const count = String(Number(params.count) || 4);
+  // Note: -hostName in script (host is a reserved-ish param name in some PS contexts)
+  const result = await runComScript('com-ping-host.ps1', ['-hostName', host, '-count', count], 15000);
+  return result;
+}
+
+async function httpRequest(params: Record<string, unknown>): Promise<ToolResult> {
+  const url = String(params.url || '');
+  if (!url) return { text: 'Error: url is required' };
+  const args = ['-url', url];
+  if (params.method) args.push('-method', String(params.method));
+  if (params.headers) args.push('-headers', String(params.headers));
+  if (params.body) args.push('-body', String(params.body));
+  const result = await runComScript('com-http-request.ps1', args, 20000);
+  return result;
+}
+
+// ── Tier 2: Office COM ───────────────────────────────────────────
+
+async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolResult> {
+  const to = String(params.to || '');
+  const subject = String(params.subject || '');
+  const body = String(params.body || '');
+  if (!to || !subject || !body) return { text: 'Error: to, subject, and body are required' };
+  const args = ['-to', to, '-subject', subject, '-body', body];
+  if (params.cc) args.push('-cc', String(params.cc));
+  if (params.attachments) args.push('-attachments', String(params.attachments));
+  const result = await runComScript('com-outlook-send-email.ps1', args, 30000);
+  return result;
+}
+
+async function outlookReadInbox(params: Record<string, unknown>): Promise<ToolResult> {
+  const count = String(Number(params.count) || 10);
+  const unreadOnly = params.unreadOnly === true || params.unreadOnly === 'true' ? 'true' : 'false';
+  const result = await runComScript('com-outlook-read-inbox.ps1', ['-count', count, '-unreadOnly', unreadOnly], 20000);
+  return result;
+}
+
+async function excelRead(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: 'Error: path is required' };
+  const args = ['-path', filePath];
+  if (params.sheet) args.push('-sheet', String(params.sheet));
+  if (params.range) args.push('-range', String(params.range));
+  const result = await runComScript('com-excel-read.ps1', args, 30000);
+  return result;
+}
+
+async function wordToPdf(params: Record<string, unknown>): Promise<ToolResult> {
+  const input = String(params.input || '');
+  if (!input) return { text: 'Error: input is required' };
+  const args = ['-inputPath', input];
+  if (params.output) args.push('-outputPath', String(params.output));
+  const result = await runComScript('com-word-to-pdf.ps1', args, 60000);
+  return result;
+}
+
 // ── Tool Registry ────────────────────────────────────────────────
 
 const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<ToolResult>> = {
@@ -867,6 +973,20 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   read_file: readFile,
   write_file: writeFile,
   run_powershell: runPowershell,
+  // Agent loop
+  plan: planTool,
+  // System / network
+  system_info: systemInfo,
+  list_processes: listProcesses,
+  speak_text: speakText,
+  search_files_content: searchFilesContent,
+  ping_host: pingHost,
+  http_request: httpRequest,
+  // Office COM
+  outlook_send_email: outlookSendEmail,
+  outlook_read_inbox: outlookReadInbox,
+  excel_read: excelRead,
+  word_to_pdf: wordToPdf,
   // Aliases
   smart_read: readScreen,
 };
