@@ -322,15 +322,30 @@ export function downloadUpdate(): void {
 }
 
 /**
- * Open the GitHub release page so the user can download and install the
- * latest version manually. Used as the fallback when auto-update has
- * silently failed twice for the same version.
+ * Open the cached installer if available, otherwise fall back to the GitHub
+ * release page. This lets the user click through the SmartScreen "More info
+ * → Run anyway" prompt without re-downloading anything.
+ *
+ * SmartScreen blocks the NSIS /S (silent) flag on unsigned installers, but
+ * the same installer opened interactively via shell.openPath IS allowed —
+ * Windows shows the SmartScreen dialog and the user can approve it.
  */
 export function openManualUpdatePage(): void {
-  log.info('Opening manual update page', { url: RELEASE_PAGE });
-  shell.openExternal(RELEASE_PAGE).catch((err) => {
-    log.warn('Failed to open release page', String(err));
-  });
+  const cachedInstaller = path.join(cacheDir(), 'installer.exe');
+  if (fs.existsSync(cachedInstaller)) {
+    log.info('Opening cached installer (SmartScreen dialog will appear)', { cachedInstaller });
+    shell.openPath(cachedInstaller).then((err) => {
+      if (err) {
+        log.warn('shell.openPath failed, falling back to releases page', err);
+        shell.openExternal(RELEASE_PAGE).catch(() => {});
+      }
+    });
+  } else {
+    log.info('No cached installer — opening releases page', { url: RELEASE_PAGE });
+    shell.openExternal(RELEASE_PAGE).catch((err) => {
+      log.warn('Failed to open release page', String(err));
+    });
+  }
 }
 
 /**
@@ -406,8 +421,11 @@ export function installUpdate(): void {
   }
 
   // Phase 3: Hand off to NSIS.
+  // silent=false: shows the NSIS progress bar so Windows/SmartScreen allows
+  // the install (unsigned installers are blocked when run silently via /S).
+  // forceRunAfter=true: relaunches Clippy after install completes.
   setTimeout(() => {
-    log.info('Install.exec', { action: 'quitAndInstall', silent: true, forceRunAfter: true });
-    autoUpdater.quitAndInstall(true, true);
+    log.info('Install.exec', { action: 'quitAndInstall', silent: false, forceRunAfter: true });
+    autoUpdater.quitAndInstall(false, true);
   }, 1500);
 }
