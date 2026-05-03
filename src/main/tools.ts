@@ -83,26 +83,33 @@ function startPSBridge(): Promise<void> {
     }, 12000);
 
     psBridge.stdout?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      psBuffer += text;
+      // Wrap in try/catch — a throw inside this listener would bubble to
+      // process.on('uncaughtException') and (previously) crash the app.
+      try {
+        const text = chunk.toString();
+        psBuffer += text;
 
-      // Check for ready signal
-      if (!psReady && text.includes('READY')) {
-        psReady = true;
-        clearTimeout(timeout);
-        log.info('PSBridge ready');
-        resolve();
-      }
-
-      // Process completed responses (delimited by __END__)
-      while (psBuffer.includes('__END__')) {
-        const idx = psBuffer.indexOf('__END__');
-        const response = psBuffer.substring(0, idx).trim();
-        psBuffer = psBuffer.substring(idx + 7);
-        if (psQueue.length > 0) {
-          const { resolve: res } = psQueue.shift()!;
-          res(response);
+        // Check for ready signal
+        if (!psReady && text.includes('READY')) {
+          psReady = true;
+          clearTimeout(timeout);
+          log.info('PSBridge ready');
+          resolve();
         }
+
+        // Process completed responses (delimited by __END__)
+        while (psBuffer.includes('__END__')) {
+          const idx = psBuffer.indexOf('__END__');
+          const response = psBuffer.substring(0, idx).trim();
+          psBuffer = psBuffer.substring(idx + 7);
+          // Guard the dequeue — if a timeout already rejected and removed
+          // the queue entry, shift() returns undefined and the non-null
+          // assertion would throw.
+          const head = psQueue.shift();
+          if (head) head.resolve(response);
+        }
+      } catch (e) {
+        log.warn('PSBridge stdout handler error', String(e).substring(0, 200));
       }
     });
 
@@ -986,6 +993,59 @@ async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
   return await runComScript('com-list-files.ps1', args, 15000);
 }
 
+async function minimizeAllWindows(): Promise<ToolResult> {
+  // Shell.Application's MinimizeAll() is the canonical Win+D equivalent.
+  // We tried key_press("win+d") first — nut.js doesn't reliably send the
+  // Windows key, so the model claimed success without anything happening.
+  try {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      "(New-Object -ComObject Shell.Application).MinimizeAll()",
+    ], { timeout: 5000 });
+    return { text: 'Minimized all windows.' };
+  } catch (err) {
+    return { text: `(minimize_all_windows error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+async function showDesktop(): Promise<ToolResult> {
+  // Shell.Application.ToggleDesktop() is the true Win+D — toggles between
+  // showing the desktop and restoring all windows.
+  try {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      "(New-Object -ComObject Shell.Application).ToggleDesktop()",
+    ], { timeout: 5000 });
+    return { text: 'Toggled show-desktop.' };
+  } catch (err) {
+    return { text: `(show_desktop error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
+async function minimizeWindow(params: Record<string, unknown>): Promise<ToolResult> {
+  const procName = sanitizeAppName(String(params.processName || ''));
+  if (!procName) return { text: 'Error: processName is required' };
+  // Use Win32 ShowWindow via P/Invoke. SW_MINIMIZE = 6.
+  const ps = `
+$sig = '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'
+Add-Type -MemberDefinition $sig -Name Win -Namespace P -Using System.Runtime.InteropServices
+$procs = Get-Process -Name '${procName}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+if (-not $procs) { Write-Output 'NOTFOUND'; exit 0 }
+foreach ($p in $procs) { [P.Win]::ShowWindow($p.MainWindowHandle, 6) | Out-Null }
+Write-Output ('OK:' + $procs.Count)
+`.trim();
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command', ps,
+    ], { timeout: 5000 });
+    const last = stdout.trim().split('\n').pop()?.trim() || '';
+    if (last === 'NOTFOUND') return { text: `(minimize_window: no window for "${procName}")` };
+    return { text: `Minimized ${procName}.` };
+  } catch (err) {
+    return { text: `(minimize_window error: ${err instanceof Error ? err.message : ''})` };
+  }
+}
+
 async function killProcess(params: Record<string, unknown>): Promise<ToolResult> {
   const args: string[] = [];
   if (params.procPid !== undefined) args.push('-procPid', String(Number(params.procPid) || 0));
@@ -1284,6 +1344,10 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   // Files / processes
   list_files: listFiles,
   kill_process: killProcess,
+  // Window management
+  minimize_all_windows: minimizeAllWindows,
+  show_desktop: showDesktop,
+  minimize_window: minimizeWindow,
   // Browser CDP (Tier 0)
   cdp_connect: cdpConnect,
   cdp_page_context: cdpPageContext,

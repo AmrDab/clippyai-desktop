@@ -161,9 +161,13 @@ function detectSilentFailure(): UpdaterState {
       attempted: state.lastAttemptedVersion,
       current: currentVersion,
     });
+    // Capture the version BEFORE clearing — the previous code cleared
+    // lastAttemptedVersion first then tried to delete failureCount[''],
+    // leaving stale failureCount entries that never cleaned up.
+    const succeededVersion = state.lastAttemptedVersion;
     state.lastAttemptedVersion = '';
     state.lastAttemptedAt = '';
-    delete state.failureCount[state.lastAttemptedVersion];
+    delete state.failureCount[succeededVersion];
     writeState(state);
     return state;
   }

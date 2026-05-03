@@ -324,6 +324,13 @@ class CDPClient {
         ws.on('close', () => {
           this.ws = null;
           this.currentTargetId = null;
+          // Reject every pending command — without this, callers await
+          // forever and the agent loop wedges. (Sonnet code review caught
+          // this: "If the browser is killed while a CDP call is in flight,
+          // those promises hang forever and the brain loop sits at await
+          // client.evaluate(...) until the 60s callTurn timeout.")
+          for (const [, p] of this.pending) p.reject(new Error('CDP connection closed'));
+          this.pending.clear();
         });
       } catch (e) {
         resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });

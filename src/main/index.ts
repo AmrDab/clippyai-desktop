@@ -103,15 +103,21 @@ app.on('second-instance', () => {
   }
 });
 
-// Suppress uncaught errors from PowerShell pipes
+// Uncaught errors — log loudly, never crash. Previously called app.exit(1)
+// which killed the user's session mid-task on any non-EPIPE throw (e.g.
+// PSBridge stdout listener throwing because psQueue.shift() returned
+// undefined). The asymmetry with unhandledRejection (which only logs) was
+// itself a bug — they should behave the same way. The user sees Clippy
+// "shut down on its own and had to be reopened mid task" because of this.
 process.on('uncaughtException', (err) => {
   if (err.message?.includes('EPIPE') || err.message?.includes('broken pipe')) {
     log.warn('Suppressed pipe error', err.message);
     return;
   }
   bootLog(`UNCAUGHT_EXCEPTION: ${err.message}`);
-  log.error('Uncaught exception', err.message);
-  app.exit(1);
+  log.error('Uncaught exception (continuing)', err.stack || err.message);
+  // Do NOT exit. The renderer + agent loop are robust to one tool failing.
+  // A crash here is worse than any individual tool error.
 });
 
 // Unhandled promise rejections — previously silent, could mask bugs.
@@ -192,6 +198,13 @@ function launchWithOnboarding(): void {
   registerIpcHandlers(brain, mainWindow);
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
+
+  // Wire updater here too — unlicensed users are the MOST likely to be on
+  // a stale version (they may have installed once long ago, never paid,
+  // and never relaunched). Without this, they could never auto-update.
+  initUpdater(mainWindow);
+  setTimeout(() => checkForUpdates(), 10_000);
+  startPeriodicUpdateChecks();
 
   createOnboardingWindow();
   log.info('Onboarding window opened, waiting for license entry');

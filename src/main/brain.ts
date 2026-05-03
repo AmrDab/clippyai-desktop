@@ -82,6 +82,44 @@ function isText(p: Part): p is TextPart {
   return 'text' in p && !!p.text;
 }
 
+/**
+ * Map a tool name to the right "in-progress" animation. Played BEFORE the
+ * tool fires so the sprite shows what Clippy is doing during the wait.
+ * Without this, the sprite freezes on a single Thinking pose for the entire
+ * tool duration (up to 30s for Office COM ops), which feels broken.
+ */
+function animationForTool(tool: string): string {
+  // Email & calendar
+  if (tool === 'outlook_send_email' || tool.endsWith('_send_email')) return 'SendMail';
+  if (tool === 'outlook_create_event' || tool === 'create_reminder') return 'Writing';
+  if (tool === 'outlook_read_inbox' || tool === 'outlook_upcoming') return 'Searching';
+  // Writing / typing
+  if (tool === 'write_file' || tool === 'excel_write' || tool === 'word_to_pdf') return 'Writing';
+  if (tool === 'type_text' || tool === 'smart_type' || tool === 'cdp_type' || tool === 'write_clipboard') return 'Writing';
+  // Searching / reading
+  if (tool === 'read_file' || tool === 'read_screen' || tool === 'cdp_read_text' || tool === 'cdp_page_context') return 'Searching';
+  if (tool === 'search_files_content' || tool === 'list_files' || tool === 'cdp_list_tabs') return 'Searching';
+  if (tool === 'desktop_screenshot' || tool === 'ocr_read_screen') return 'CheckingSomething';
+  // Browser / web
+  if (tool === 'navigate_browser' || tool === 'cdp_connect' || tool === 'cdp_click' || tool === 'cdp_switch_tab') return 'CheckingSomething';
+  if (tool === 'cdp_evaluate' || tool === 'cdp_wait_for_selector' || tool === 'detect_webview_apps') return 'GetTechy';
+  // System / power-tool
+  if (tool === 'system_info' || tool === 'list_processes' || tool === 'kill_process') return 'GetTechy';
+  if (tool === 'run_powershell' || tool === 'http_request' || tool === 'ping_host') return 'GetTechy';
+  // Drawing / mouse / spatial
+  if (tool === 'mouse_drag') return 'GetArtsy';
+  if (tool === 'mouse_click' || tool === 'mouse_double_click' || tool === 'mouse_right_click') return 'GestureDown';
+  // Window management
+  if (tool === 'minimize_all_windows' || tool === 'show_desktop' || tool === 'minimize_window') return 'GestureDown';
+  if (tool === 'open_app' || tool === 'focus_window' || tool === 'get_windows' || tool === 'get_active_window') return 'CheckingSomething';
+  // Voice
+  if (tool === 'speak_text') return 'Hearing_1';
+  // Planning
+  if (tool === 'plan') return 'Thinking';
+  // Default
+  return 'Processing';
+}
+
 // ========== User Profile ==========
 
 function getUserProfilePath(): string {
@@ -268,8 +306,11 @@ export class Brain {
       const profile = getUserProfile();
       const userProfile = profile.Name ? `Name: ${profile.Name}` : undefined;
 
-      // 15 gives room for verification interleaved with real work.
-      const MAX_STEPS = 15;
+      // 40 covers drawing tasks (stickfigure ≈ 45 mouse_drags) and
+      // multi-step Excel writes. Previous limit of 15 starved drawings
+      // mid-figure. browser-use defaults to 100, UFO 30+, anthropic
+      // computer-use 50.
+      const MAX_STEPS = 40;
       let finalSpoken = '';
       let taskCompleted = false;
       // D5/D8: track step count and abort reason accurately.
@@ -379,6 +420,12 @@ export class Brain {
         // the last 6 steps, it's stuck. Break the loop instead of burning
         // tokens on the same failing action.
         for (const call of calls) {
+          // Drawing tasks LEGITIMATELY chain many mouse_drags. Each drag
+          // has different start/end coords (signature is unique per call),
+          // so the byte-identical-args check below already exempts normal
+          // drawing. But to be safe, skip the runaway guard entirely for
+          // mouse_drag — drawings naturally repeat the same tool name.
+          if (call.name === 'mouse_drag') continue;
           const sig = `${call.name}::${JSON.stringify(call.args)}`;
           const recent = contents.slice(-12) // last 6 turn pairs
             .filter((c) => c.role === 'model')
@@ -411,6 +458,12 @@ export class Brain {
         for (const call of calls) {
           const toolStart = Date.now();
           log.info('Tool.call', { step: step + 1, tool: call.name, args: call.args });
+          // Trigger an in-progress animation BEFORE the tool runs so the
+          // sprite shows what Clippy is doing during the wait. Without
+          // this, the sprite freezes on Thinking for the full tool duration
+          // (up to 30s for Outlook/Excel) and the user can't tell anything
+          // is happening. Map tool category → animation.
+          this.emit('play-animation', animationForTool(call.name));
           try {
             const result = await executeTool(call.name, call.args);
             const toolElapsed = Date.now() - toolStart;
@@ -508,9 +561,12 @@ export class Brain {
         await new Promise((r) => setTimeout(r, 300));
 
         if (step === MAX_STEPS - 1 && !taskCompleted) {
-          const capMsg = "That's a long task — stopping here for now!";
-          log.warn('Clippy.say', { text: capMsg, animation: 'Congratulate', trigger: 'max_steps', steps_used: MAX_STEPS });
-          this.emit('clippy-speak', { text: capMsg, animate: 'Congratulate' });
+          // Hitting the cap is a FAILURE state, not a celebration. Previous
+          // code played Congratulate which visually lied to the user that
+          // the task succeeded. Alert is honest.
+          const capMsg = "That's a long task — stopping here. Tell me what to focus on next.";
+          log.warn('Clippy.say', { text: capMsg, animation: 'Alert', trigger: 'max_steps', steps_used: MAX_STEPS });
+          this.emit('clippy-speak', { text: capMsg, animate: 'Alert' });
           finalSpoken = capMsg;
           abortReason = 'max_steps';
         }
