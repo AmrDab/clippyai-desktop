@@ -945,6 +945,55 @@ async function wordToPdf(params: Record<string, unknown>): Promise<ToolResult> {
   return result;
 }
 
+async function excelWrite(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  const data = params.data;
+  if (!filePath) return { text: 'Error: path is required' };
+  if (data === undefined || data === null) return { text: 'Error: data is required' };
+  // Accept either a JSON string (from the model) or a real array; serialize either way.
+  const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+  const args = ['-path', filePath, '-data', dataStr];
+  if (params.sheet) args.push('-sheet', String(params.sheet));
+  if (params.range) args.push('-range', String(params.range));
+  return await runComScript('com-excel-write.ps1', args, 30000);
+}
+
+async function outlookCreateEvent(params: Record<string, unknown>): Promise<ToolResult> {
+  const subject = String(params.subject || '');
+  const start = String(params.start || '');
+  if (!subject || !start) return { text: 'Error: subject and start are required' };
+  const args = ['-subject', subject, '-start', start];
+  if (params.durationMin !== undefined) args.push('-durationMin', String(Number(params.durationMin) || 30));
+  if (params.attendees) args.push('-attendees', String(params.attendees));
+  if (params.location) args.push('-location', String(params.location));
+  if (params.body) args.push('-body', String(params.body));
+  return await runComScript('com-outlook-create-event.ps1', args, 20000);
+}
+
+async function outlookUpcoming(params: Record<string, unknown>): Promise<ToolResult> {
+  const daysAhead = String(Number(params.daysAhead) || 7);
+  const count = String(Number(params.count) || 20);
+  return await runComScript('com-outlook-upcoming.ps1', ['-daysAhead', daysAhead, '-count', count], 20000);
+}
+
+async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: 'Error: path is required' };
+  const args = ['-path', filePath];
+  if (params.filter) args.push('-filter', String(params.filter));
+  if (params.recurse !== undefined) args.push('-recurse', params.recurse ? 'true' : 'false');
+  if (params.top !== undefined) args.push('-top', String(Number(params.top) || 100));
+  return await runComScript('com-list-files.ps1', args, 15000);
+}
+
+async function killProcess(params: Record<string, unknown>): Promise<ToolResult> {
+  const args: string[] = [];
+  if (params.procPid !== undefined) args.push('-procPid', String(Number(params.procPid) || 0));
+  if (params.name) args.push('-name', String(params.name));
+  if (args.length === 0) return { text: 'Error: procPid or name is required' };
+  return await runComScript('com-kill-process.ps1', args, 8000);
+}
+
 // ── Browser CDP tools (Tier 0) ───────────────────────────────────
 //
 // Connect to Edge/Chrome via Chrome DevTools Protocol. Gives the model
@@ -1227,8 +1276,14 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   // Office COM
   outlook_send_email: outlookSendEmail,
   outlook_read_inbox: outlookReadInbox,
+  outlook_create_event: outlookCreateEvent,
+  outlook_upcoming: outlookUpcoming,
   excel_read: excelRead,
+  excel_write: excelWrite,
   word_to_pdf: wordToPdf,
+  // Files / processes
+  list_files: listFiles,
+  kill_process: killProcess,
   // Browser CDP (Tier 0)
   cdp_connect: cdpConnect,
   cdp_page_context: cdpPageContext,
