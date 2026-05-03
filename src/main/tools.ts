@@ -7,13 +7,15 @@
  * No separate process, no HTTP, no port 3847, no startup failures.
  */
 
-import { execFile, ChildProcess } from 'child_process';
+import { execFile, ChildProcess, spawn } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import http from 'http';
 import { shell } from 'electron';
 import { createLogger } from './logger';
+import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -943,6 +945,246 @@ async function wordToPdf(params: Record<string, unknown>): Promise<ToolResult> {
   return result;
 }
 
+// ── Browser CDP tools (Tier 0) ───────────────────────────────────
+//
+// Connect to Edge/Chrome via Chrome DevTools Protocol. Gives the model
+// structured DOM access — selectors, text content, click/type, evaluate
+// JS — without screenshots or UIA. Browser must be launched with
+// --remote-debugging-port=<port>. cdp_connect tries to auto-launch if
+// no live endpoint is found.
+
+const CDP_PORT = DEFAULT_CDP_PORT;
+
+/** Spawn Edge or Chrome with a remote-debugging port enabled. */
+async function spawnCdpBrowser(): Promise<{ ok: boolean; error?: string }> {
+  // Try Edge first (default Windows browser), fall back to Chrome.
+  const candidates: Array<{ exe: string; args: string[] }> = [
+    {
+      exe: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      args: [`--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${path.join(os.tmpdir(), 'clippy-cdp-edge')}`],
+    },
+    {
+      exe: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      args: [`--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${path.join(os.tmpdir(), 'clippy-cdp-chrome')}`],
+    },
+  ];
+  for (const c of candidates) {
+    if (!fs.existsSync(c.exe)) continue;
+    try {
+      const child = spawn(c.exe, c.args, { detached: true, stdio: 'ignore', windowsHide: false });
+      child.unref();
+      // Give the browser ~1.5s to bind the debug port
+      await new Promise((r) => setTimeout(r, 1500));
+      return { ok: true };
+    } catch (err) {
+      log.warn('CDP browser spawn failed', String(err));
+    }
+  }
+  return { ok: false, error: 'Neither Edge nor Chrome was found in their default install paths.' };
+}
+
+async function cdpConnect(_params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  let result = await client.connect();
+  if (!result.ok) {
+    // Try to spawn a browser with CDP enabled, then retry.
+    const spawned = await spawnCdpBrowser();
+    if (!spawned.ok) {
+      return { text: `(cdp_connect: ${result.error}. Auto-launch failed: ${spawned.error})` };
+    }
+    result = await client.connect();
+    if (!result.ok) return { text: `(cdp_connect: still failed after launching browser: ${result.error})` };
+  }
+  return { text: `Connected to "${result.title}" at ${result.url}` };
+}
+
+async function cdpPageContext(_params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_page_context: not connected — call cdp_connect first)' };
+  try {
+    const ctx = await client.getPageContext();
+    return { text: ctx || '(no interactive elements found)' };
+  } catch (e) {
+    return { text: `(cdp_page_context error: ${e instanceof Error ? e.message : ''})` };
+  }
+}
+
+async function cdpReadText(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_read_text: not connected — call cdp_connect first)' };
+  const selector = String(params.selector || 'body');
+  const maxLength = Number(params.maxLength) || 3000;
+  try {
+    const text = await client.readText(selector, maxLength);
+    return { text };
+  } catch (e) {
+    return { text: `(cdp_read_text error: ${e instanceof Error ? e.message : ''})` };
+  }
+}
+
+async function cdpClick(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_click: not connected — call cdp_connect first)' };
+  const selector = params.selector ? String(params.selector) : '';
+  const text = params.text ? String(params.text) : '';
+  if (!selector && !text) return { text: 'Error: cdp_click requires selector or text' };
+  const r = text ? await client.clickByText(text) : await client.click(selector);
+  if (!r.success) return { text: `(cdp_click failed: ${r.error})` };
+  return { text: `Clicked ${selector || `"${text}"`} via ${r.method}` };
+}
+
+async function cdpType(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_type: not connected — call cdp_connect first)' };
+  const selector = params.selector ? String(params.selector) : '';
+  const label = params.label ? String(params.label) : '';
+  const text = String(params.text || '');
+  if (!text) return { text: 'Error: cdp_type requires text' };
+  if (!selector && !label) return { text: 'Error: cdp_type requires selector or label' };
+  const r = label ? await client.typeByLabel(label, text) : await client.typeInField(selector, text);
+  if (!r.success) return { text: `(cdp_type failed: ${r.error})` };
+  return { text: `Typed "${text.substring(0, 60)}" into ${selector || `label="${label}"`}` };
+}
+
+async function cdpSelectOption(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_select_option: not connected — call cdp_connect first)' };
+  const selector = String(params.selector || '');
+  const value = String(params.value || '');
+  if (!selector || !value) return { text: 'Error: cdp_select_option requires selector and value' };
+  const r = await client.selectOption(selector, value);
+  return { text: r.success ? `Selected "${value}" in ${selector}` : `(cdp_select_option failed: ${r.error})` };
+}
+
+async function cdpEvaluate(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_evaluate: not connected — call cdp_connect first)' };
+  const js = String(params.javascript || '');
+  if (!js) return { text: 'Error: cdp_evaluate requires javascript' };
+  try {
+    const r = await client.evaluate(js);
+    const text = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+    return { text: text || '(undefined)' };
+  } catch (e) {
+    return { text: `(cdp_evaluate error: ${e instanceof Error ? e.message : ''})` };
+  }
+}
+
+async function cdpWaitForSelector(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_wait_for_selector: not connected — call cdp_connect first)' };
+  const selector = String(params.selector || '');
+  if (!selector) return { text: 'Error: cdp_wait_for_selector requires selector' };
+  const timeout = Number(params.timeout) || 10_000;
+  const r = await client.waitForSelector(selector, timeout);
+  return { text: r.success ? `Element "${selector}" found` : `(cdp_wait_for_selector failed: ${r.error})` };
+}
+
+async function cdpListTabs(_params: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const tabs = await listTabsRaw(CDP_PORT);
+    if (tabs.length === 0) return { text: `(no tabs — launch browser with --remote-debugging-port=${CDP_PORT})` };
+    return {
+      text: tabs.map((t, i) => `${i + 1}. "${t.title}" — ${t.url}`).join('\n'),
+    };
+  } catch (e) {
+    return { text: `(cdp_list_tabs: ${e instanceof Error ? e.message : ''})` };
+  }
+}
+
+async function cdpSwitchTab(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  const target = String(params.target || '');
+  if (!target) return { text: 'Error: cdp_switch_tab requires target' };
+  const r = await client.switchTab(target);
+  return { text: r.ok ? `Switched to "${r.title}" at ${r.url}` : `(cdp_switch_tab: ${r.error})` };
+}
+
+async function cdpScroll(params: Record<string, unknown>): Promise<ToolResult> {
+  const client = getCdpClient();
+  if (!client.isConnected()) return { text: '(cdp_scroll: not connected — call cdp_connect first)' };
+  const dir = String(params.direction || 'down');
+  const amount = Number(params.amount) || 500;
+  const pixels = amount * (dir === 'down' ? 1 : -1);
+  try {
+    await client.evaluate(`window.scrollBy(0, ${pixels})`);
+    return { text: `Scrolled ${dir} by ${Math.abs(pixels)}px` };
+  } catch (e) {
+    return { text: `(cdp_scroll error: ${e instanceof Error ? e.message : ''})` };
+  }
+}
+
+// ── Electron WebView app detection ───────────────────────────────
+//
+// Many "native" Windows apps are Electron / WebView2 wrappers (Slack,
+// Teams, Discord, VS Code, Notion, New Outlook). Their accessibility
+// trees are mostly empty — UI lives inside an embedded Chromium. This
+// tool flags those candidates so the agent knows to relaunch with CDP
+// instead of fighting the empty UIA tree.
+//
+// Cherry-picked from clawdcursor/src/tools/electron_bridge.ts but
+// reimplemented compactly without a platform abstraction.
+
+const KNOWN_WEBVIEW_APPS: Array<{ procPrefixes: string[]; name: string; flag: string }> = [
+  { procPrefixes: ['olk'], name: 'New Outlook', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['ms-teams', 'teams'], name: 'Microsoft Teams', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['discord'], name: 'Discord', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['slack'], name: 'Slack', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['code', 'code - insiders'], name: 'VS Code', flag: '--inspect=9223' },
+  { procPrefixes: ['notion'], name: 'Notion', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['obsidian'], name: 'Obsidian', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['spotify'], name: 'Spotify', flag: '--remote-debugging-port=9223' },
+  { procPrefixes: ['github desktop', 'githubdesktop'], name: 'GitHub Desktop', flag: '--remote-debugging-port=9223' },
+];
+
+async function probeCdpPort(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/json/version', timeout: 500 }, (res) => {
+      resolve(res.statusCode === 200);
+      res.resume();
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+async function detectWebviewApps(_params: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    // Reuse get_windows to enumerate processes (PowerShell-backed).
+    const winResult = await getWindows();
+    type WinInfo = { processName?: string; title?: string; processId?: number };
+    let windows: WinInfo[] = [];
+    try {
+      const parsed = JSON.parse(winResult.text);
+      windows = Array.isArray(parsed) ? parsed : (parsed.windows || []);
+    } catch {
+      return { text: '(detect_webview_apps: could not parse window list)' };
+    }
+    const cdpPort = (await probeCdpPort(9223)) ? 9223 : (await probeCdpPort(9222)) ? 9222 : null;
+    const matches: Array<{ name: string; processName: string; title: string; flag: string }> = [];
+    for (const w of windows) {
+      const pn = (w.processName || '').toLowerCase();
+      for (const fp of KNOWN_WEBVIEW_APPS) {
+        if (fp.procPrefixes.some((p) => pn.startsWith(p))) {
+          matches.push({ name: fp.name, processName: w.processName || '', title: w.title || '', flag: fp.flag });
+          break;
+        }
+      }
+    }
+    if (matches.length === 0) {
+      return { text: cdpPort ? `No known WebView apps in window list. CDP IS live on port ${cdpPort} — call cdp_connect.` : 'No known WebView apps detected, no live CDP endpoint.' };
+    }
+    const lines = matches.map((m) =>
+      cdpPort
+        ? `${m.name} ("${m.title}") detected — CDP live on ${cdpPort}, call cdp_connect.`
+        : `${m.name} ("${m.title}") — UI lives in embedded Chromium. Ask user to relaunch with: ${m.processName} ${m.flag}`,
+    );
+    return { text: lines.join('\n') };
+  } catch (e) {
+    return { text: `(detect_webview_apps error: ${e instanceof Error ? e.message : ''})` };
+  }
+}
+
 // ── Tool Registry ────────────────────────────────────────────────
 
 const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<ToolResult>> = {
@@ -987,6 +1229,19 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   outlook_read_inbox: outlookReadInbox,
   excel_read: excelRead,
   word_to_pdf: wordToPdf,
+  // Browser CDP (Tier 0)
+  cdp_connect: cdpConnect,
+  cdp_page_context: cdpPageContext,
+  cdp_read_text: cdpReadText,
+  cdp_click: cdpClick,
+  cdp_type: cdpType,
+  cdp_select_option: cdpSelectOption,
+  cdp_evaluate: cdpEvaluate,
+  cdp_wait_for_selector: cdpWaitForSelector,
+  cdp_list_tabs: cdpListTabs,
+  cdp_switch_tab: cdpSwitchTab,
+  cdp_scroll: cdpScroll,
+  detect_webview_apps: detectWebviewApps,
   // Aliases
   smart_read: readScreen,
 };

@@ -23,10 +23,12 @@
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
     "clippyjs": "^0.1.0",
     "electron": "^29.0.0",
     "electron-builder": "^24.0.0",
