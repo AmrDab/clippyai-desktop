@@ -138,11 +138,18 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     createSettingsWindow();
   });
 
-  // Open external URL (whitelisted domains only)
+  // Open external URL (whitelisted protocols + domains)
   ipcMain.handle('open-external-url', async (_event, url: string) => {
     try {
       const parsed = new URL(url);
-      if (parsed.hostname === 'buy.stripe.com' || parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app') {
+      // mailto: links go to the user's default mail client. No hostname,
+      // safe to allow unconditionally — every Settings → About → Support
+      // click was silently failing the hostname check.
+      if (parsed.protocol === 'mailto:') {
+        await shell.openExternal(url);
+        return true;
+      }
+      if (parsed.hostname === 'buy.stripe.com' || parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app' || parsed.hostname === 'github.com') {
         await shell.openExternal(url);
         return true;
       }

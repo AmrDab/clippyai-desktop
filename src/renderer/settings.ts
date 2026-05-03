@@ -13,6 +13,7 @@ declare global {
       onUpdateAvailable: (cb: (version: string) => void) => void;
       onUpdateNotAvailable: (cb: () => void) => void;
       onUpdateReady: (cb: (version: string) => void) => void;
+      onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => void;
       getLaunchOnStartup: () => Promise<boolean>;
       setLaunchOnStartup: (enabled: boolean) => Promise<boolean>;
       openSubscriptionPortal: () => Promise<boolean>;
@@ -292,21 +293,16 @@ window.clippy.onUpdateReady((version: string) => {
 // for the full 30 seconds before falling back to a generic "couldn't reach"
 // message — even when the actual error was already known. Now we surface the
 // real reason immediately and re-enable the button.
-const updateFailedHandler = (window.clippy as unknown as {
-  onUpdateFailed?: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => void;
-}).onUpdateFailed;
-if (updateFailedHandler) {
-  updateFailedHandler(({ reason, manualUrl }) => {
-    const friendly = reason === 'previous-install-failed'
-      ? `Auto-update keeps failing on this machine. <a href="${manualUrl}" target="_blank">Download v0.11.16 manually</a> — that fixes it permanently.`
-      : `Couldn't reach the update server (${reason}). <a href="${manualUrl}" target="_blank">Manual download</a>.`;
-    setAllUpdateStatus(friendly);
-    for (const id of ['btn-check-update', 'btn-check-update-about']) {
-      const btn = document.getElementById(id) as HTMLButtonElement | null;
-      if (btn) btn.disabled = false;
-    }
-  });
-}
+window.clippy.onUpdateFailed(({ reason, manualUrl }) => {
+  const friendly = reason === 'previous-install-failed'
+    ? `Auto-update keeps failing on this machine. <a href="${manualUrl}" target="_blank">Download manually</a> — that fixes it permanently.`
+    : `Couldn't reach the update server (${reason}). <a href="${manualUrl}" target="_blank">Manual download</a>.`;
+  setAllUpdateStatus(friendly);
+  for (const id of ['btn-check-update', 'btn-check-update-about']) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (btn) btn.disabled = false;
+  }
+});
 
 // Init
 loadConfig();
