@@ -465,26 +465,66 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
   // 15s timeout — customer machines with slow UIA (PSBridge 12s startup)
   // need more time for find-element searches in complex ribbon UIs like Paint.
   // The old 8s timeout caused frequent smart_click failures.
+  //
+  // Fixes from the v0.11.20 audit:
+  //  1. Constrain the UIA search to the foreground window's process so a
+  //     button label that exists in a background window can't win the race.
+  //  2. Parse find-element.ps1's actual JSON output (it returns
+  //     [{"bounds":{"x","y","width","height"}}], NOT "X:N Y:N" text the
+  //     previous regex was looking for, which never matched).
+  //  3. Click via raw mouse_event with the UIA-reported coords directly —
+  //     UIA returns physical pixels, so re-multiplying by screenScale (as
+  //     the model-facing mouseClick does for OCR coords) double-scales on
+  //     high-DPI displays and lands the click in the wrong quadrant.
   try {
-    const { stdout } = await execFileAsync('powershell.exe', [
+    // 1) Limit search to the foreground window
+    let fgPid = 0;
+    try {
+      const fg = await getActiveWindow();
+      const parsed = JSON.parse(fg.text);
+      if (typeof parsed.processId === 'number') fgPid = parsed.processId;
+    } catch { /* fall through with fgPid=0 → search all windows */ }
+
+    const findArgs = [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(getScriptsDir(), 'find-element.ps1'),
       '-Name', target,
-    ], { timeout: 15000 });
-    const match = stdout.match(/X:(\d+)\s+Y:(\d+)/i) || stdout.match(/(\d+),(\d+)/);
-    if (match) {
-      const ex = parseInt(match[1]);
-      const ey = parseInt(match[2]);
-      await mouseClick({ x: ex, y: ey });
-      return { text: `Clicked "${target}" at (${ex},${ey})` };
+    ];
+    if (fgPid > 0) findArgs.push('-ProcessId', String(fgPid));
+
+    const { stdout } = await execFileAsync('powershell.exe', findArgs, { timeout: 15000 });
+
+    // 2) Parse the JSON array. find-element.ps1 always emits an array
+    //    on success (or {error} on failure). Pick the first element.
+    let bounds: { x: number; y: number; width: number; height: number } | null = null;
+    try {
+      const out = stdout.trim();
+      if (out.startsWith('[')) {
+        const arr = JSON.parse(out);
+        if (Array.isArray(arr) && arr.length > 0 && arr[0].bounds) {
+          bounds = arr[0].bounds;
+        }
+      }
+    } catch { /* parse error — handled below */ }
+
+    if (bounds) {
+      const ex = Math.round(bounds.x + bounds.width / 2);
+      const ey = Math.round(bounds.y + bounds.height / 2);
+      // 3) Click directly at UIA coords (already physical pixels). Inline
+      //    instead of going through mouseClick() so we skip the screenScale
+      //    multiply that mouseClick applies for OCR/screenshot coords.
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Add-Type -AssemblyName System.Windows.Forms; ` +
+        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${ex},${ey}); ` +
+        `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
+        `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
+      ], { timeout: 5000 });
+      const where = fgPid > 0 ? ` in foreground window` : '';
+      return { text: `Clicked "${target}" at (${ex},${ey})${where}` };
     }
-    // Fallback: try invoke-element (UIA Invoke pattern)
-    const { stdout: invokeOut } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      path.join(getScriptsDir(), 'invoke-element.ps1'),
-      '-Name', target, '-Action', 'click',
-    ], { timeout: 15000 });
-    return { text: invokeOut.trim() || `Clicked "${target}"` };
+
+    return { text: `(smart_click: "${target}" not found in the foreground window)` };
   } catch (err) {
     return { text: `(smart_click error for "${target}": ${err instanceof Error ? err.message : ''})` };
   }

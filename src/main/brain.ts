@@ -214,6 +214,12 @@ export class Brain {
       this.noRepeatUntil = 0;
       this.startLoop();
     } else {
+      // Sleep is a hard stop: signal any in-flight agent loop to break
+      // at its next iteration. Without this, the loop kept firing tools
+      // and emitting clippy-speak while the sprite was supposed to be
+      // sleeping — overriding the sleep animation and continuing the
+      // task in the background.
+      this.cancelRequested = true;
       this.stopLoop();
     }
   }
@@ -324,15 +330,20 @@ export class Brain {
       for (let step = 0; step < MAX_STEPS; step++) {
         lastStep = step + 1;
 
-        // User-override abort — a newer handleUserMessage set cancelRequested.
-        // The new call is sitting in a wait-loop in the previous handleUserMessage
-        // block, polling isExecuting. Break cleanly so finally sets it false
-        // and the new message can take over.
+        // Cancel-requested abort. Two callers set this:
+        //  - handleUserMessage when a newer user message arrives (override)
+        //  - setMode('sleep') so sleep is a real stop, not just a sprite swap
+        // Only chatter on user-override; sleeping users want silence.
         if (this.cancelRequested) {
-          log.info('Task aborted — user override');
-          this.emit('clippy-speak', { text: 'Got it — switching gears.', animate: 'Wave' });
-          finalSpoken = 'Got it — switching gears.';
-          abortReason = 'user_override';
+          if (this.mode === 'sleep') {
+            log.info('Task aborted — sleep');
+            abortReason = 'sleep';
+          } else {
+            log.info('Task aborted — user override');
+            this.emit('clippy-speak', { text: 'Got it — switching gears.', animate: 'Wave' });
+            finalSpoken = 'Got it — switching gears.';
+            abortReason = 'user_override';
+          }
           break;
         }
         // Clippy stays always-on-top (visible in corner) throughout the loop.
