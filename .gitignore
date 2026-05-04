@@ -3,6 +3,7 @@ out/
 dist/
 release/
 vendor/
+build/signing/dlib/
 *.log
 .DS_Store
 .env

@@ -43,7 +43,11 @@ function loadCreds() {
   if (!fs.existsSync(credsPath)) {
     throw new Error(`No signing creds. Set AZURE_* env vars OR create ${credsPath}.`);
   }
-  const j = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+  // Strip a UTF-8 BOM if present — PowerShell's Out-File -Encoding utf8 (PS 5.1)
+  // writes one and JSON.parse can't tolerate it.
+  let raw = fs.readFileSync(credsPath, 'utf8');
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  const j = JSON.parse(raw);
   return {
     AZURE_TENANT_ID: j.AZURE_TENANT_ID,
     AZURE_CLIENT_ID: j.AZURE_CLIENT_ID,
@@ -55,15 +59,19 @@ function loadCreds() {
 }
 
 // 2) Locate the TrustedSigning DLib. We bundle a copy under build/signing/dlib/.
+// The NuGet package was renamed: Microsoft.Trusted.Signing.Client became
+// Microsoft.ArtifactSigning.Client. Search both layouts.
 function dlibPath() {
   const base = path.join(__dirname, 'dlib');
   const candidates = [
+    path.join(base, 'Microsoft.ArtifactSigning.Client', 'bin', 'x64', 'Azure.CodeSigning.Dlib.dll'),
+    path.join(base, 'Microsoft.Trusted.Signing.Client', 'bin', 'x64', 'Azure.CodeSigning.Dlib.dll'),
     path.join(base, 'bin', 'x64', 'Azure.CodeSigning.Dlib.dll'),
     path.join(base, 'Azure.CodeSigning.Dlib.dll'),
   ];
   for (const p of candidates) if (fs.existsSync(p)) return p;
   throw new Error(
-    `TrustedSigning DLib not found. Run: nuget install Microsoft.Trusted.Signing.Client -OutputDirectory ${base} -ExcludeVersion`,
+    `TrustedSigning DLib not found. Run: nuget install Microsoft.ArtifactSigning.Client -OutputDirectory ${base} -ExcludeVersion`,
   );
 }
 

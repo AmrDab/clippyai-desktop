@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.11.18
+buildVersion: 0.11.19
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -14,18 +14,22 @@ win:
     - target: nsis
       arch: x64
   icon: build/icon.ico
-  # publisherName removed — causes auto-update signature check failures without code signing cert
-  # Re-add when we have an EV code signing certificate
-  # Used for VERSIONINFO resource (file description / product name)
+  # Cert subject is "Amro Dabbas" — must match for SmartScreen trust attribution.
+  publisherName: Amro Dabbas
   legalTrademarks: ClippyAI is a trademark of Cloudana.
   requestedExecutionLevel: asInvoker
-  # File naming — clean, no spaces
   artifactName: ClippyAI-Setup-${version}.${ext}
-  # rcedit embeds icon + product name into exe (works without code signing)
-  signAndEditExecutable: false
-  signingHashAlgorithms: []
-  forceCodeSigning: false
-  verifyUpdateCodeSignature: false
+  # === CODE SIGNING (Azure Trusted Signing) ===
+  # Wired in v0.11.19. Cert profile: clippyai-cert.
+  # Wrapper: build/signing/sign.js calls SignTool with the TrustedSigning DLib.
+  # Auth: %USERPROFILE%\.azure\clippyai-signing-creds.json (gitignored) or
+  # AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET env vars (CI).
+  signAndEditExecutable: true
+  signingHashAlgorithms:
+    - sha256
+  sign: ./build/signing/sign.js
+  forceCodeSigning: true
+  verifyUpdateCodeSignature: true
 
 nsis:
   # oneClick MUST be true for reliable auto-updates. The update loop bug:
