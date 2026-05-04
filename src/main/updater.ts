@@ -424,12 +424,62 @@ export function installUpdate(): void {
     log.warn('Install.cacheClean failed (non-fatal)', String(err));
   }
 
-  // Phase 3: Hand off to NSIS.
-  // silent=false: shows the NSIS progress bar so Windows/SmartScreen allows
-  // the install (unsigned installers are blocked when run silently via /S).
-  // forceRunAfter=true: relaunches Clippy after install completes.
-  setTimeout(() => {
-    log.info('Install.exec', { action: 'quitAndInstall', silent: false, forceRunAfter: true });
-    autoUpdater.quitAndInstall(false, true);
-  }, 1500);
+  // Phase 3: Open the installer EXPLICITLY via shell.openPath instead of
+  // autoUpdater.quitAndInstall.
+  //
+  // Why: quitAndInstall spawns the installer with --updated as a child
+  // process. On unsigned binaries, Windows SmartScreen blocks that auto-
+  // launched child silently — the user sees Clippy quit, the installer
+  // never appears, and the new version never starts. Reproducible across
+  // multiple users (see log report 2026-05-04 01:11).
+  //
+  // shell.openPath simulates a user double-click: SmartScreen still shows
+  // a warning, but with an actionable "Run anyway" button. The user gets
+  // clear visual feedback and can complete the install in one click. The
+  // NSIS oneClick installer's run-after behavior re-launches Clippy when
+  // it finishes.
+  //
+  // Long-term fix: Azure Trusted Signing certificate (~$10/mo) eliminates
+  // the SmartScreen warning entirely. Until then, this manual handoff is
+  // the most reliable path.
+  if (!installerPath || installerPath === '(unknown)' || !fs.existsSync(installerPath)) {
+    log.error('Install.exec aborted — no installer at expected path', { installerPath });
+    sendToRenderer('update-failed', {
+      version: expectedVersion || 'unknown',
+      reason: 'installer-missing',
+      manualUrl: RELEASE_PAGE,
+    });
+    return;
+  }
+
+  // Tell the user what's about to happen so they can react to SmartScreen.
+  sendToRenderer('clippy-speak', {
+    text: `Opening the v${expectedVersion} installer now — Windows may flash a security warning, click "More info" then "Run anyway" (it's safe). I'll be back once it finishes! 📎`,
+    animate: 'GetAttention',
+  });
+
+  // Wait 2.5s so the user sees the message before Clippy quits.
+  setTimeout(async () => {
+    log.info('Install.exec', { action: 'shell.openPath', installerPath });
+    try {
+      const err = await shell.openPath(installerPath);
+      if (err) {
+        log.error('Install.openPath failed', err);
+        sendToRenderer('update-failed', {
+          version: expectedVersion || 'unknown',
+          reason: 'open-installer-failed',
+          manualUrl: RELEASE_PAGE,
+        });
+        return;
+      }
+      // Installer is now running. Quit cleanly so NSIS can replace files;
+      // the installer's "run after install" relaunches Clippy automatically.
+      log.info('Install.exec quitting for installer to take over');
+      // Give the installer ~800ms to register before we quit (some users
+      // saw the installer never appear if we quit too quickly).
+      setTimeout(() => app.quit(), 800);
+    } catch (e) {
+      log.error('Install.exec exception', String(e));
+    }
+  }, 2500);
 }
