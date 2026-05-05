@@ -424,24 +424,23 @@ export function installUpdate(): void {
     log.warn('Install.cacheClean failed (non-fatal)', String(err));
   }
 
-  // Phase 3: Open the installer EXPLICITLY via shell.openPath instead of
-  // autoUpdater.quitAndInstall.
+  // Phase 3: Spawn the installer as a detached, visible child process.
   //
-  // Why: quitAndInstall spawns the installer with --updated as a child
-  // process. On unsigned binaries, Windows SmartScreen blocks that auto-
-  // launched child silently — the user sees Clippy quit, the installer
-  // never appears, and the new version never starts. Reproducible across
-  // multiple users (see log report 2026-05-04 01:11).
-  //
-  // shell.openPath simulates a user double-click: SmartScreen still shows
-  // a warning, but with an actionable "Run anyway" button. The user gets
-  // clear visual feedback and can complete the install in one click. The
-  // NSIS oneClick installer's run-after behavior re-launches Clippy when
-  // it finishes.
-  //
-  // Long-term fix: Azure Trusted Signing certificate (~$10/mo) eliminates
-  // the SmartScreen warning entirely. Until then, this manual handoff is
-  // the most reliable path.
+  // Update history of this code path:
+  //  - v0.11.x baseline used autoUpdater.quitAndInstall(true, true) — silent
+  //    install. SmartScreen blocked unsigned silent installers → no UI.
+  //  - v0.11.17 changed to quitAndInstall(false, true) — non-silent. Same
+  //    failure: NSIS oneClick mode runs hidden anyway.
+  //  - v0.11.18 replaced with shell.openPath(installerPath) — supposed to
+  //    simulate a user double-click. WRONG: shell.openPath = ShellExecute,
+  //    which on .exe files inherits the parent process's window-creation
+  //    flags. Electron defaults those to invisible, so NSIS still has no
+  //    foreground window. Confirmed in user log 2026-05-04: installer
+  //    "started" but no UI ever appeared.
+  //  - v0.11.21 (this code): use child_process.spawn with detached:true and
+  //    a fresh windowsHide:false to give NSIS its own console, then unref
+  //    so it survives our app.quit. This is what every other Electron
+  //    autoupdater (Discord, Slack, VS Code) actually does.
   if (!installerPath || installerPath === '(unknown)' || !fs.existsSync(installerPath)) {
     log.error('Install.exec aborted — no installer at expected path', { installerPath });
     sendToRenderer('update-failed', {
@@ -460,26 +459,41 @@ export function installUpdate(): void {
 
   // Wait 2.5s so the user sees the message before Clippy quits.
   setTimeout(async () => {
-    log.info('Install.exec', { action: 'shell.openPath', installerPath });
+    log.info('Install.exec', { action: 'spawn', installerPath });
     try {
-      const err = await shell.openPath(installerPath);
-      if (err) {
-        log.error('Install.openPath failed', err);
+      const { spawn } = await import('child_process');
+      // detached: true + unref() means the installer survives app.quit().
+      // windowsHide: false ensures NSIS gets a real console / window
+      // (the actual UI failure mode in v0.11.18-v0.11.20).
+      // stdio: 'ignore' detaches stdio so we don't hold a handle that
+      // could pin the installer's process to ours.
+      // The /UPDATE flag tells NSIS this is an update (vs fresh install)
+      // so it skips the "create shortcut" prompts and runs through cleanly.
+      const child = spawn(installerPath, ['--updated'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false,
+      });
+      child.on('error', (err) => {
+        log.error('Install.spawn error', String(err));
         sendToRenderer('update-failed', {
           version: expectedVersion || 'unknown',
-          reason: 'open-installer-failed',
+          reason: 'spawn-failed',
           manualUrl: RELEASE_PAGE,
         });
-        return;
-      }
-      // Installer is now running. Quit cleanly so NSIS can replace files;
-      // the installer's "run after install" relaunches Clippy automatically.
-      log.info('Install.exec quitting for installer to take over');
-      // Give the installer ~800ms to register before we quit (some users
-      // saw the installer never appear if we quit too quickly).
-      setTimeout(() => app.quit(), 800);
+      });
+      child.unref();
+      log.info('Install.exec spawned, quitting for installer to take over');
+      // Give the spawn ~1.5s to fully register and show its window before
+      // we quit. Our previous 800ms wasn't enough on slower machines.
+      setTimeout(() => app.quit(), 1500);
     } catch (e) {
       log.error('Install.exec exception', String(e));
+      sendToRenderer('update-failed', {
+        version: expectedVersion || 'unknown',
+        reason: 'spawn-exception',
+        manualUrl: RELEASE_PAGE,
+      });
     }
   }, 2500);
 }
