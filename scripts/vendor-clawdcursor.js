@@ -30,13 +30,16 @@ const SKIP_EXTENSIONS = new Set([
   '.md',
 ]);
 
+// v0.11.22 — `guides/` is INTENTIONALLY kept now. ClippyAI's brain.ts
+// reads them at runtime via src/main/guides.ts to inject app-specific
+// workflows + shortcuts into the model's screen context. They were
+// previously stripped because the runtime didn't know about them yet.
 const SKIP_DIRS = new Set([
   '__tests__',
   'test',
   'tests',
   'docs',
   'doc',
-  'guides',
   '.github',
   '.vscode',
 ]);

@@ -13,6 +13,8 @@
 import { BrowserWindow, net, app } from 'electron';
 import { executeTool } from './tools';
 import { getLicenseKey } from './license';
+import { getGuidePrompt } from './guides';
+import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import Store from 'electron-store';
 import { createLogger } from './logger';
 import fs from 'fs';
@@ -289,12 +291,27 @@ export class Brain {
     try {
       this.emit('play-animation', 'Thinking');
 
-      // Build initial user message — add screen context if we can grab it fast
-      const screenContext = await this.captureScreenContext(2500);
+      // Build initial user message — add screen context if we can grab it
+      // fast. Pass userText so memory.lookupWorkflow can match learned
+      // workflows for this user+app+task.
+      const screenContext = await this.captureScreenContext(2500, text);
+      // Pre-capture the active app's process name so we can record the
+      // workflow under it on success (active app may shift mid-task).
+      let activeProcessAtStart = '';
+      try {
+        const aw = await executeTool('get_active_window', {});
+        const parsed = JSON.parse(aw.text);
+        if (typeof parsed.processName === 'string') activeProcessAtStart = parsed.processName;
+      } catch { /* memory recording is best-effort */ }
+      // Track successful tool calls so we can distill them into a learned
+      // workflow on task completion. Only the model-emitted Tool.call args
+      // — populated below in the loop.
+      const successfulActions: Array<{ name: string; args: Record<string, unknown> }> = [];
       log.info('Task.start', {
         hasScreenContext: !!screenContext,
         screenContextLen: screenContext?.length || 0,
         historyMessages: this.history.length,
+        activeProcessAtStart,
       });
       const initialText = screenContext
         ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
@@ -555,6 +572,15 @@ export class Brain {
                 },
               } as any);
             }
+
+            // === MEMORY: track action for learned-workflow recording ===
+            // Only count tools that actually changed state (not observations).
+            // Filter out clearly-failed results so we don't memorize a no-op
+            // sequence as a "successful" workflow.
+            const looksLikeError = resultText.startsWith('(') || resultText.toLowerCase().startsWith('error:');
+            if (!looksLikeError) {
+              successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });
+            }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const toolElapsed = Date.now() - toolStart;
@@ -591,7 +617,21 @@ export class Brain {
         taskCompleted,
         abortReason,
         stepsUsed: lastStep,
+        successfulActionCount: successfulActions.length,
       });
+
+      // v0.11.22 — record the action sequence as a learned workflow scoped
+      // to the active app at task start. Only for clean successes (no
+      // abort, ≥2 substantive actions). The next time the user asks
+      // something similar in the same app, formatWorkflowHint() injects
+      // these steps as context so the model takes the proven path.
+      if (taskCompleted && !abortReason && activeProcessAtStart && successfulActions.length >= 2) {
+        try {
+          recordWorkflow(activeProcessAtStart, text, successfulActions);
+        } catch (err) {
+          log.warn('recordWorkflow failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+        }
+      }
 
       if (finalSpoken) {
         this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
@@ -710,7 +750,7 @@ export class Brain {
 
   // ========== Helpers ==========
 
-  private async captureScreenContext(timeoutMs: number): Promise<string> {
+  private async captureScreenContext(timeoutMs: number, userText?: string): Promise<string> {
     try {
       const promise = (async () => {
         const [active, screen] = await Promise.allSettled([
@@ -720,7 +760,31 @@ export class Brain {
         const activeText = active.status === 'fulfilled' ? active.value.text : '';
         const screenText = screen.status === 'fulfilled' ? screen.value.text : '';
         if (!activeText && !screenText) return '';
-        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 2000)}`;
+
+        // v0.11.22 — extract process name from active-window JSON, then
+        // append (a) the bundled ClawdCursor app guide and (b) the
+        // per-machine learned-workflow hint if one matches the user's ask.
+        // Both are app-agnostic injections — they do NOT replace the
+        // smart_click OCR fallback, they supplement it. Guide tells the
+        // model the right shortcut (e.g. Ctrl+Enter for Outlook send) so
+        // it skips coordinate-clicking entirely.
+        let extras = '';
+        try {
+          const parsedActive = JSON.parse(activeText) as { processName?: string };
+          const proc = parsedActive.processName;
+          if (proc) {
+            const guide = getGuidePrompt(proc);
+            if (guide) extras += guide;
+            if (userText && memoryEnabled()) {
+              const hint = formatWorkflowHint(proc, userText);
+              if (hint) extras += hint;
+            }
+          }
+        } catch {
+          // activeText not JSON (e.g. "(no active window)") — skip extras
+        }
+
+        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 2000)}${extras}`;
       })();
       const timeout = new Promise<string>((r) => setTimeout(() => r(''), timeoutMs));
       return await Promise.race([promise, timeout]);

@@ -401,28 +401,37 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
   }
 }
 
+// v0.11.22 — coordinate-space contract:
+// All mouse_* tools below treat (x,y) as PHYSICAL pixels — same space as
+// Windows.Media.Ocr output, UIA bounds, and PrimaryScreen.Bounds. The old
+// `* Math.round(screenScale)` multiplier on these tools was based on a
+// faulty assumption that the model would emit "logical" coordinates from
+// screenshots. In practice screenshots are physical-pixel and OCR is
+// physical-pixel, so the multiplier double-scaled on HiDPI displays
+// (scale=1.5/2.0) and landed clicks in the wrong quadrant. smart_click
+// already avoided the multiplier (correct); now everyone matches.
+//
+// The model is told (by the API tool description) to PREFER calling
+// smart_click(target="text") or read_screen(mode='ocr')→mouse_click rather
+// than estimating coords from desktop_screenshot, so this path is only
+// exercised when the agent has a known-good coordinate.
+
 async function mouseClick(params: Record<string, unknown>): Promise<ToolResult> {
-  const x = sanitizeNumber(params.x) * Math.round(screenScale);
-  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  const x = Math.round(sanitizeNumber(params.x));
+  const y = Math.round(sanitizeNumber(params.y));
   try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; ` +
-      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
-      `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-      `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
-    ], { timeout: 5000 });
-    return { text: `Clicked at (${params.x},${params.y})` };
+    await clickPhysical(x, y);
+    return { text: `Clicked at (${x},${y})` };
   } catch (err) {
     return { text: `(mouse_click error: ${err instanceof Error ? err.message : ''})` };
   }
 }
 
 async function mouseDrag(params: Record<string, unknown>): Promise<ToolResult> {
-  const sx = Math.round(Number(params.startX || 0) * screenScale);
-  const sy = Math.round(Number(params.startY || 0) * screenScale);
-  const ex = Math.round(Number(params.endX || 0) * screenScale);
-  const ey = Math.round(Number(params.endY || 0) * screenScale);
+  const sx = Math.round(Number(params.startX || 0));
+  const sy = Math.round(Number(params.startY || 0));
+  const ex = Math.round(Number(params.endX || 0));
+  const ey = Math.round(Number(params.endY || 0));
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -433,15 +442,15 @@ async function mouseDrag(params: Record<string, unknown>): Promise<ToolResult> {
       `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${ex},${ey}); Start-Sleep -Milliseconds 50; ` +
       `[API.Win32]::mouse_event(4,0,0,0,0)`,
     ], { timeout: 5000 });
-    return { text: `Dragged from (${params.startX},${params.startY}) to (${params.endX},${params.endY})` };
+    return { text: `Dragged from (${sx},${sy}) to (${ex},${ey})` };
   } catch (err) {
     return { text: `(mouse_drag error: ${err instanceof Error ? err.message : ''})` };
   }
 }
 
 async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult> {
-  const x = Math.round(Number(params.x || 640) * screenScale);
-  const y = Math.round(Number(params.y || 400) * screenScale);
+  const x = Math.round(Number(params.x || 640));
+  const y = Math.round(Number(params.y || 400));
   const direction = String(params.direction || 'down');
   const amount = Number(params.amount || 3);
   const delta = direction === 'up' ? 120 * amount : -120 * amount;
@@ -453,37 +462,152 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
       `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
       `[API.Win32]::mouse_event(0x0800,0,0,${delta},0)`,
     ], { timeout: 5000 });
-    return { text: `Scrolled ${direction} at (${params.x},${params.y})` };
+    return { text: `Scrolled ${direction} at (${x},${y})` };
   } catch (err) {
     return { text: `(mouse_scroll error: ${err instanceof Error ? err.message : ''})` };
   }
 }
 
+/**
+ * Run native Windows.Media.Ocr on a fresh screen capture and return the
+ * parsed element list (text + bounding box per word/line). Returns null on
+ * failure. Coordinates are PHYSICAL pixels — Windows OCR API does not
+ * apply DPI scaling. Used by both `ocr_read_screen` (model-facing) and
+ * `smart_click`'s OCR fallback (internal, no LLM round-trip).
+ *
+ * v0.11.22: factored out of ocrReadScreen so smart_click can ground
+ * coordinate clicks against OCR locally instead of asking Kimi K2 to
+ * pixel-locate from a screenshot — a documented LLM weakness.
+ */
+async function captureAndOcr(): Promise<{
+  elements: Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number; line?: number }>;
+  fullText: string;
+} | null> {
+  const scriptPath = path.join(getScriptsDir(), 'ocr-recognize.ps1');
+  if (!fs.existsSync(scriptPath)) return null;
+  const tmpPng = path.join(os.tmpdir(), `clippy-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  try {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
+      `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+      `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
+      `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
+      `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
+      `$bmp.Save('${tmpPng.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
+      `$g.Dispose(); $bmp.Dispose()`,
+    ], { timeout: 10000 });
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+      '-ImagePath', tmpPng,
+    ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
+    const parsed = JSON.parse(stdout.trim());
+    if (parsed.error || !Array.isArray(parsed.elements)) return null;
+    return { elements: parsed.elements, fullText: String(parsed.fullText || '') };
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmpPng); } catch { /* cleanup */ }
+  }
+}
+
+/**
+ * Click at a precise (physical-pixel) coordinate via raw mouse_event.
+ * Does NOT apply screenScale — caller is responsible for passing physical
+ * pixels (UIA bounds, OCR element centers, or already-resolved coords).
+ * Lifted out of smart_click so the OCR fallback can reuse the same code path.
+ */
+async function clickPhysical(x: number, y: number): Promise<void> {
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-Command',
+    `Add-Type -AssemblyName System.Windows.Forms; ` +
+    `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+    `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
+    `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
+  ], { timeout: 5000 });
+}
+
+/**
+ * Fuzzy-match `target` against a list of OCR text elements. Returns the
+ * best-scoring element or null if nothing crosses the threshold.
+ *
+ * Scoring (cheap, deterministic — no embeddings):
+ *   - exact (case-insensitive) trim match → 1.0
+ *   - target appears as a whole-word substring → 0.9
+ *   - target appears as a substring → 0.7 * (target.length / element.length)
+ *   - element appears as a substring of target → 0.6 * (element.length / target.length)
+ *   - first-letters acronym match (e.g. "NM" matches "New Mail") → 0.5
+ * Threshold: 0.5. Below that, return null to signal "not found".
+ */
+function fuzzyMatchOcrElement(
+  target: string,
+  elements: Array<{ text: string; x: number; y: number; width: number; height: number }>,
+  fgWindowBounds?: { x: number; y: number; width: number; height: number },
+): { idx: number; score: number; element: { text: string; x: number; y: number; width: number; height: number } } | null {
+  const t = target.trim().toLowerCase();
+  if (!t) return null;
+  let best: { idx: number; score: number; element: typeof elements[number] } | null = null;
+
+  // ClawdCursor 0.8.8 trick: if we have foreground-window bounds, prefer
+  // matches inside that window over matches in background windows. Reduces
+  // the "matched a button label in a stale background window" bug.
+  const inForeground = (el: { x: number; y: number; width: number; height: number }): boolean => {
+    if (!fgWindowBounds) return true;
+    const cx = el.x + el.width / 2;
+    const cy = el.y + el.height / 2;
+    return (
+      cx >= fgWindowBounds.x && cx <= fgWindowBounds.x + fgWindowBounds.width &&
+      cy >= fgWindowBounds.y && cy <= fgWindowBounds.y + fgWindowBounds.height
+    );
+  };
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    const e = el.text.trim().toLowerCase();
+    if (!e) continue;
+    let score = 0;
+    if (e === t) score = 1.0;
+    else if (new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(e)) score = 0.9;
+    else if (e.includes(t)) score = 0.7 * (t.length / Math.max(e.length, 1));
+    else if (t.includes(e) && e.length >= 3) score = 0.6 * (e.length / t.length);
+
+    // Foreground bonus
+    if (score > 0 && inForeground(el)) score += 0.05;
+
+    if (score > 0 && (!best || score > best.score)) best = { idx: i, score, element: el };
+  }
+  return best && best.score >= 0.5 ? best : null;
+}
+
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
   const target = String(params.target || '');
   if (!target) return { text: '(no target provided)' };
-  // 15s timeout — customer machines with slow UIA (PSBridge 12s startup)
-  // need more time for find-element searches in complex ribbon UIs like Paint.
-  // The old 8s timeout caused frequent smart_click failures.
+  // Two-tier resolution (v0.11.22):
+  //   Tier 1 — UIA accessibility tree (fast, exact, structured). Constrained
+  //            to the foreground PID so a button label in a background window
+  //            can't win the race. Patched in v0.11.21.
+  //   Tier 2 — Local OCR via Windows.Media.Ocr. If UIA misses (the target
+  //            window is a WebView/canvas/custom-rendered control that
+  //            doesn't expose its UI tree — Edge web content, Electron
+  //            apps without a11y enabled, games), fuzzy-match `target`
+  //            against on-screen text and click the matched element's
+  //            center. NO LLM round-trip — coordinates come from OCR's
+  //            pre-computed boxes (physical pixels, no DPI scaling needed).
   //
-  // Fixes from the v0.11.20 audit:
-  //  1. Constrain the UIA search to the foreground window's process so a
-  //     button label that exists in a background window can't win the race.
-  //  2. Parse find-element.ps1's actual JSON output (it returns
-  //     [{"bounds":{"x","y","width","height"}}], NOT "X:N Y:N" text the
-  //     previous regex was looking for, which never matched).
-  //  3. Click via raw mouse_event with the UIA-reported coords directly —
-  //     UIA returns physical pixels, so re-multiplying by screenScale (as
-  //     the model-facing mouseClick does for OCR coords) double-scales on
-  //     high-DPI displays and lands the click in the wrong quadrant.
+  // This replaces the old "(not found)" fail path that forced the model to
+  // estimate coords from a desktop_screenshot — a documented LLM weakness
+  // that produced wrong-by-300px clicks (see v0.11.21 log report
+  // fbfc636e... clicking outlook.live.com Send button).
   try {
-    // 1) Limit search to the foreground window
+    // Tier 1 — UIA
     let fgPid = 0;
+    let fgBounds: { x: number; y: number; width: number; height: number } | undefined;
     try {
       const fg = await getActiveWindow();
       const parsed = JSON.parse(fg.text);
       if (typeof parsed.processId === 'number') fgPid = parsed.processId;
-    } catch { /* fall through with fgPid=0 → search all windows */ }
+      if (parsed.bounds && typeof parsed.bounds.x === 'number') fgBounds = parsed.bounds;
+    } catch { /* fall through */ }
 
     const findArgs = [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -493,38 +617,36 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     if (fgPid > 0) findArgs.push('-ProcessId', String(fgPid));
 
     const { stdout } = await execFileAsync('powershell.exe', findArgs, { timeout: 15000 });
-
-    // 2) Parse the JSON array. find-element.ps1 always emits an array
-    //    on success (or {error} on failure). Pick the first element.
     let bounds: { x: number; y: number; width: number; height: number } | null = null;
     try {
       const out = stdout.trim();
       if (out.startsWith('[')) {
         const arr = JSON.parse(out);
-        if (Array.isArray(arr) && arr.length > 0 && arr[0].bounds) {
-          bounds = arr[0].bounds;
-        }
+        if (Array.isArray(arr) && arr.length > 0 && arr[0].bounds) bounds = arr[0].bounds;
       }
-    } catch { /* parse error — handled below */ }
+    } catch { /* fall through to OCR */ }
 
     if (bounds) {
       const ex = Math.round(bounds.x + bounds.width / 2);
       const ey = Math.round(bounds.y + bounds.height / 2);
-      // 3) Click directly at UIA coords (already physical pixels). Inline
-      //    instead of going through mouseClick() so we skip the screenScale
-      //    multiply that mouseClick applies for OCR/screenshot coords.
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
-        `Add-Type -AssemblyName System.Windows.Forms; ` +
-        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${ex},${ey}); ` +
-        `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-        `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
-      ], { timeout: 5000 });
+      await clickPhysical(ex, ey);
       const where = fgPid > 0 ? ` in foreground window` : '';
-      return { text: `Clicked "${target}" at (${ex},${ey})${where}` };
+      return { text: `Clicked "${target}" at (${ex},${ey})${where} via UIA` };
     }
 
-    return { text: `(smart_click: "${target}" not found in the foreground window)` };
+    // Tier 2 — OCR fallback. The big win for WebViews and custom-rendered UIs.
+    log.info('smart_click: UIA miss, falling back to OCR', { target, fgPid });
+    const ocr = await captureAndOcr();
+    if (!ocr) return { text: `(smart_click: "${target}" not found via UIA; OCR unavailable)` };
+    const match = fuzzyMatchOcrElement(target, ocr.elements, fgBounds);
+    if (match) {
+      const cx = Math.round(match.element.x + match.element.width / 2);
+      const cy = Math.round(match.element.y + match.element.height / 2);
+      await clickPhysical(cx, cy);
+      const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
+      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}` };
+    }
+    return { text: `(smart_click: "${target}" not found via UIA or OCR — visible text: "${ocr.fullText.substring(0, 200)}…")` };
   } catch (err) {
     return { text: `(smart_click error for "${target}": ${err instanceof Error ? err.message : ''})` };
   }
@@ -627,64 +749,25 @@ async function desktopScreenshot(): Promise<ToolResult> {
 }
 
 async function ocrReadScreen(): Promise<ToolResult> {
-  const scriptPath = path.join(getScriptsDir(), 'ocr-recognize.ps1');
-  if (!fs.existsSync(scriptPath)) {
-    return { text: '(ocr-recognize.ps1 not found — OCR unavailable)' };
-  }
-  // Capture screenshot to temp file, run OCR on it, return text + positions
-  const tmpPng = path.join(os.tmpdir(), `clippy-ocr-${Date.now()}.png`);
-  try {
-    // Step 1: capture screenshot to temp PNG
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
-      `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
-      `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
-      `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
-      `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
-      `$bmp.Save('${tmpPng.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
-      `$g.Dispose(); $bmp.Dispose()`,
-    ], { timeout: 10000 });
-
-    // Step 2: run OCR on the temp PNG
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-      '-ImagePath', tmpPng,
-    ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
-
-    const raw = stdout.trim();
-    if (!raw) return { text: '(OCR returned no output)' };
-
-    // Step 3: parse and format
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed.error) return { text: `(OCR error: ${parsed.error})` };
-      // Format: return full text first, then element positions for coordinate-based clicking
-      let result = `=== OCR TEXT ===\n${parsed.fullText || '(no text detected)'}\n`;
-      if (parsed.elements && parsed.elements.length > 0) {
-        result += `\n=== TEXT POSITIONS (for mouse_click targets) ===\n`;
-        // Group by line for readability
-        let currentLine = -1;
-        for (const el of parsed.elements) {
-          if (el.line !== currentLine) {
-            currentLine = el.line;
-            result += `\n[Line ${currentLine}]\n`;
-          }
-          const cx = Math.round(el.x + el.width / 2);
-          const cy = Math.round(el.y + el.height / 2);
-          result += `  "${el.text}" → center(${cx}, ${cy})  rect(${el.x},${el.y},${el.width}x${el.height})\n`;
-        }
+  // v0.11.22 — delegates to captureAndOcr() so smart_click and the
+  // model-facing tool share the same screenshot + OCR pipeline.
+  const ocr = await captureAndOcr();
+  if (!ocr) return { text: '(ocr_read_screen: OCR unavailable — script missing or capture failed)' };
+  let result = `=== OCR TEXT ===\n${ocr.fullText || '(no text detected)'}\n`;
+  if (ocr.elements.length > 0) {
+    result += `\n=== TEXT POSITIONS (for mouse_click targets) ===\n`;
+    let currentLine = -1;
+    for (const el of ocr.elements) {
+      if (el.line !== currentLine) {
+        currentLine = el.line ?? -1;
+        result += `\n[Line ${currentLine}]\n`;
       }
-      return { text: result };
-    } catch {
-      // Couldn't parse JSON — return raw output
-      return { text: raw };
+      const cx = Math.round(el.x + el.width / 2);
+      const cy = Math.round(el.y + el.height / 2);
+      result += `  "${el.text}" → center(${cx}, ${cy})  rect(${el.x},${el.y},${el.width}x${el.height})\n`;
     }
-  } catch (err) {
-    return { text: `(ocr_read_screen error: ${err instanceof Error ? err.message : String(err)})` };
-  } finally {
-    try { fs.unlinkSync(tmpPng); } catch { /* cleanup */ }
   }
+  return { text: result };
 }
 
 async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
@@ -728,8 +811,9 @@ async function writeClipboard(params: Record<string, unknown>): Promise<ToolResu
 // ── Mouse variants ───────────────────────────────────────────────
 
 async function mouseDoubleClick(params: Record<string, unknown>): Promise<ToolResult> {
-  const x = sanitizeNumber(params.x) * Math.round(screenScale);
-  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  // v0.11.22 — physical pixels, no screenScale multiplier (see mouseClick comment).
+  const x = Math.round(sanitizeNumber(params.x));
+  const y = Math.round(sanitizeNumber(params.y));
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -740,15 +824,16 @@ async function mouseDoubleClick(params: Record<string, unknown>): Promise<ToolRe
       `Start-Sleep -Milliseconds 50; ` +
       `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
     ], { timeout: 5000 });
-    return { text: `Double-clicked at (${params.x},${params.y})` };
+    return { text: `Double-clicked at (${x},${y})` };
   } catch (err) {
     return { text: `(mouse_double_click error: ${err instanceof Error ? err.message : ''})` };
   }
 }
 
 async function mouseRightClick(params: Record<string, unknown>): Promise<ToolResult> {
-  const x = sanitizeNumber(params.x) * Math.round(screenScale);
-  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  // v0.11.22 — physical pixels, no screenScale multiplier (see mouseClick comment).
+  const x = Math.round(sanitizeNumber(params.x));
+  const y = Math.round(sanitizeNumber(params.y));
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -758,15 +843,16 @@ async function mouseRightClick(params: Record<string, unknown>): Promise<ToolRes
       // 0x0008 = RIGHTDOWN, 0x0010 = RIGHTUP
       `[API.Win32]::mouse_event(8,0,0,0,0); [API.Win32]::mouse_event(16,0,0,0,0)`,
     ], { timeout: 5000 });
-    return { text: `Right-clicked at (${params.x},${params.y})` };
+    return { text: `Right-clicked at (${x},${y})` };
   } catch (err) {
     return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : ''})` };
   }
 }
 
 async function mouseHover(params: Record<string, unknown>): Promise<ToolResult> {
-  const x = sanitizeNumber(params.x) * Math.round(screenScale);
-  const y = sanitizeNumber(params.y) * Math.round(screenScale);
+  // v0.11.22 — physical pixels, no screenScale multiplier (see mouseClick comment).
+  const x = Math.round(sanitizeNumber(params.x));
+  const y = Math.round(sanitizeNumber(params.y));
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -830,7 +916,25 @@ async function runComScript(
       return { text: stdout.trim() || stderr.trim() || '(no output)' };
     }
   } catch (err) {
-    return { text: `(com script error: ${err instanceof Error ? err.message : String(err)})` };
+    // v0.11.22 — capture stderr from the failed PowerShell invocation so the
+    // model (and we) can actually diagnose what went wrong. Previously
+    // surfaced only "Command failed: powershell.exe ..." with no PS error.
+    // Also log script + args so we can correlate with the report log.
+    const e = err as { message?: string; stderr?: string; code?: number; signal?: string };
+    const stderrTrimmed = (e.stderr || '').trim();
+    const msg = e.message || String(err);
+    log.warn('runComScript failed', {
+      script: scriptName,
+      argCount: args.length,
+      code: e.code,
+      signal: e.signal,
+      stderrPreview: stderrTrimmed.substring(0, 300),
+    });
+    if (stderrTrimmed) {
+      // PS error first (the actual reason), then fallback to wrapper message.
+      return { text: `(com script error in ${scriptName}: ${stderrTrimmed.substring(0, 400)})` };
+    }
+    return { text: `(com script error in ${scriptName}: ${msg.substring(0, 400)})` };
   }
 }
 
@@ -959,7 +1063,17 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   const subject = String(params.subject || '');
   const body = String(params.body || '');
   if (!to || !subject || !body) return { text: 'Error: to, subject, and body are required' };
-  const args = ['-to', to, '-subject', subject, '-body', body];
+  // v0.11.22 — encode body + subject as UTF-8 base64 to bypass PowerShell's
+  // command-line tokenizer. Multi-line bodies (\n\n), em-dashes (—), and
+  // smart quotes were previously breaking the -File invocation: PowerShell
+  // re-tokenized the OS command line and split on the first newline,
+  // truncating the body and crashing the script. Base64 is single-token,
+  // ASCII-only, and decodes to the original UTF-8 inside the .ps1.
+  // (See report log fbfc636e... — outlook_send_email crashed silently with
+  // "Command failed: powershell.exe ... -body Hi there!\n\nI'm Clippy...")
+  const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
+  const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
+  const args = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
   if (params.cc) args.push('-cc', String(params.cc));
   if (params.attachments) args.push('-attachments', String(params.attachments));
   const result = await runComScript('com-outlook-send-email.ps1', args, 30000);
