@@ -182,6 +182,147 @@ function layer1() {
   if (sendEmailSrc.includes('-subjectB64') && sendEmailSrc.includes('-bodyB64')) {
     pass('outlook-send-email accepts -subjectB64 + -bodyB64');
   } else fail('outlook-send-email B64 params', 'missing -subjectB64 or -bodyB64');
+
+  // ── v0.11.27 additions (Subagent E coverage gaps) ────────────────────
+
+  // 1.12 soundsLikeClaimedSuccess: positive cases (model claiming action complete)
+  // Copied verbatim from brain.ts so we test the actual production regex.
+  function soundsLikeClaimedSuccess(text) {
+    if (!text) return false;
+    const t = text.toLowerCase();
+    return /\b(sent|posted|submitted|created|deleted|saved|published|emailed|booked|scheduled)\b/.test(t)
+      && !/\b(will|going to|let me|trying|attempting|about to|i'll|i’ll|would)\b.*\b(send|post|submit|create|delete|save|publish|email|book|schedule)\b/.test(t);
+  }
+  const SHOULD_TRIP = [
+    'Email sent!',
+    'I posted it.',
+    'Created the calendar event.',
+    'File deleted successfully.',
+    'Saved to disk.',
+    'Your message has been published.',
+  ];
+  const positiveFails = SHOULD_TRIP.filter((s) => !soundsLikeClaimedSuccess(s));
+  if (positiveFails.length === 0) pass(`soundsLikeClaimedSuccess: trips on ${SHOULD_TRIP.length}/${SHOULD_TRIP.length} confident successes`);
+  else fail('soundsLikeClaimedSuccess: missed positives', positiveFails.join(' | '));
+
+  // 1.13 soundsLikeClaimedSuccess: negative cases (must NOT trip on future-tense)
+  const SHOULD_NOT_TRIP = [
+    "I'll send it now.",
+    "Let me submit that for you.",
+    "I'm going to create the event.",
+    "I would delete it but...",
+    "Trying to post — one moment.",
+    'I presented the data',  // "presented" contains "sented" — \b boundary should prevent match
+  ];
+  const negativeFails = SHOULD_NOT_TRIP.filter((s) => soundsLikeClaimedSuccess(s));
+  if (negativeFails.length === 0) pass(`soundsLikeClaimedSuccess: ${SHOULD_NOT_TRIP.length}/${SHOULD_NOT_TRIP.length} future-tense correctly suppressed`);
+  else fail('soundsLikeClaimedSuccess: false positive', negativeFails.join(' | '));
+
+  // 1.14 DESTRUCTIVE_TOOLS structural invariant — every member must exist in TOOL_MAP
+  // Catches silent breakage when a tool gets renamed: hallucination guard
+  // turns into a no-op for that tool with no warning.
+  const brainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+  const toolsSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
+  const dtMatch = brainSrc.match(/const DESTRUCTIVE_TOOLS = new Set\(\[([\s\S]*?)\]\)/);
+  const dtNames = dtMatch ? (dtMatch[1].match(/'([^']+)'/g) || []).map((s) => s.replace(/'/g, '')) : [];
+  // Line-walker for TOOL_MAP — more robust than a multi-line regex against
+  // CRLF/LF + nested generic types in the declaration line.
+  const tmKeys = (() => {
+    const lines = toolsSrc.split(/\r?\n/);
+    let inMap = false;
+    const keys = [];
+    for (const ln of lines) {
+      if (!inMap) {
+        if (/^\s*const TOOL_MAP\b/.test(ln)) inMap = true;
+        continue;
+      }
+      if (/^\s*\};\s*$/.test(ln)) break;
+      const m = ln.match(/^\s+(\w+)\s*:/);
+      if (m) keys.push(m[1]);
+    }
+    return keys;
+  })();
+  const tmSet = new Set(tmKeys);
+  const dtOrphans = dtNames.filter((n) => !tmSet.has(n));
+  if (dtNames.length > 0 && dtOrphans.length === 0) pass(`DESTRUCTIVE_TOOLS: all ${dtNames.length} members exist in TOOL_MAP (${tmKeys.length} tools total)`);
+  else if (dtNames.length === 0) fail('DESTRUCTIVE_TOOLS not found in brain.ts', '(regex failed to match)');
+  else fail('DESTRUCTIVE_TOOLS orphans', dtOrphans.join(', '));
+
+  // 1.15 UI_MODIFYING_TOOLS structural invariant — same idea, different set
+  const uiMatch = brainSrc.match(/const UI_MODIFYING_TOOLS = new Set\(\[([\s\S]*?)\]\)/);
+  const uiNames = uiMatch ? (uiMatch[1].match(/'([^']+)'/g) || []).map((s) => s.replace(/'/g, '')) : [];
+  const uiOrphans = uiNames.filter((n) => !tmSet.has(n));
+  if (uiNames.length > 0 && uiOrphans.length === 0) pass(`UI_MODIFYING_TOOLS: all ${uiNames.length} members exist in TOOL_MAP`);
+  else if (uiNames.length === 0) fail('UI_MODIFYING_TOOLS not found in brain.ts', '(regex failed to match)');
+  else fail('UI_MODIFYING_TOOLS orphans', uiOrphans.join(', '));
+
+  // 1.16 Screenshot downscale constants present (v0.11.23 invariant)
+  const hasTarget = toolsSrc.includes('TARGET_SCREENSHOT_WIDTH = 1024');
+  const hasThresh = toolsSrc.includes('SCREENSHOT_DOWNSCALE_THRESHOLD = 1280');
+  if (hasTarget && hasThresh) pass('screenshot downscale constants: TARGET=1024 + THRESHOLD=1280 present');
+  else fail('screenshot downscale constants', `TARGET=${hasTarget}, THRESHOLD=${hasThresh}`);
+
+  // 1.17 captureAndOcr 5 failure-mode log strings present (v0.11.25 invariant)
+  const ocrFailureLogs = [
+    'captureAndOcr: script missing',
+    'captureAndOcr: screenshot failed',
+    'captureAndOcr: tmp png never written',
+    'captureAndOcr: ocr-recognize.ps1 failed',
+    'captureAndOcr: OCR returned non-JSON',
+  ];
+  const missingLogs = ocrFailureLogs.filter((s) => !toolsSrc.includes(s));
+  if (missingLogs.length === 0) pass('captureAndOcr: all 5 failure-mode log strings present');
+  else fail('captureAndOcr failure modes', `missing: ${missingLogs.join(' | ')}`);
+
+  // 1.18 abortAllInFlightTools structural test (v0.11.26 invariant)
+  const abortMatch = toolsSrc.match(/export function abortAllInFlightTools[\s\S]*?\n\}/);
+  const abortBody = abortMatch ? abortMatch[0] : '';
+  const abortChecks = [
+    ['ac.abort()', abortBody.includes('ac.abort()')],
+    ['activeAborts.clear()', abortBody.includes('activeAborts.clear()')],
+  ];
+  const abortFails = abortChecks.filter(([, ok]) => !ok).map(([n]) => n);
+  if (abortFails.length === 0) pass('abortAllInFlightTools: calls .abort() AND .clear()');
+  else fail('abortAllInFlightTools structure', `missing: ${abortFails.join(', ')}`);
+
+  // 1.19 runComScript: stdout-JSON extraction logic (v0.11.26 invariant)
+  // Pure-function copy of the parse path. We don't shell out — just verify
+  // the parsing rules.
+  function parseRunComStdout(stdoutTrimmed) {
+    const lines = stdoutTrimmed.split('\n').map((l) => l.trim()).filter(Boolean);
+    const lastLine = lines[lines.length - 1] || '';
+    try {
+      const parsed = JSON.parse(lastLine);
+      if (parsed && parsed.ok === false && typeof parsed.error === 'string') {
+        return `Error: ${parsed.error}`;
+      }
+    } catch { /* fall through */ }
+    return null;
+  }
+  const cases = [
+    ['{"ok":false,"error":"Outlook not installed"}', 'Error: Outlook not installed'],
+    ['debug noise\n{"ok":false,"error":"timeout"}', 'Error: timeout'],
+    ['plain text not json', null],
+    ['{"ok":true,"sent":true}', null],
+  ];
+  const parseFails = cases.filter(([input, expected]) => parseRunComStdout(input) !== expected);
+  if (parseFails.length === 0) pass(`runComScript: stdout JSON extraction correct on ${cases.length}/${cases.length} cases`);
+  else fail('runComScript stdout parse', parseFails.map(([i]) => i.substring(0, 30)).join(' | '));
+
+  // 1.20 Kimi-only invariant (v0.11.27): brain.ts MUST NOT reference Gemini fallback
+  // (the comment block describing the v0.11.27 change is allowed; what's
+  // banned is fallback wiring like `provider === 'gemini'` or imports of
+  // @google/generative-ai)
+  const hasGeminiCode =
+    /import\s+.*@google\/generative-ai/.test(brainSrc)
+    || /provider\s*===\s*['"]gemini['"]/.test(brainSrc)
+    || /callGemini|GoogleGenerativeAI/.test(brainSrc);
+  if (!hasGeminiCode) pass('v0.11.27: no live Gemini code paths remain in brain.ts');
+  else fail('v0.11.27: Gemini code reappeared', 'found live Gemini reference in brain.ts');
+
+  // 1.21 Tool count sanity (catches accidental mass-deletion or duplication)
+  if (tmKeys.length >= 30 && tmKeys.length <= 80) pass(`TOOL_MAP: ${tmKeys.length} tools registered (within sane bounds 30-80)`);
+  else fail('TOOL_MAP tool count', `${tmKeys.length} is out of expected range`);
 }
 
 // ────────────────────────────────────────────────────────────────────

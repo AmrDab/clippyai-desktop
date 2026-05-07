@@ -93,7 +93,7 @@ function soundsLikeClaimedSuccess(text: string): boolean {
     && !/\b(will|going to|let me|trying|attempting|about to|i'll|i’ll|would)\b.*\b(send|post|submit|create|delete|save|publish|email|book|schedule)\b/.test(t);
 }
 
-// ========== Wire content shape (Gemini-style; kept for compat with /v1/turn) ==========
+// ========== Wire content shape used by /v1/turn (Kimi K2 backend) ==========
 
 type TextPart = { text: string };
 type FunctionCallPart = { functionCall: { name: string; args: Record<string, unknown> } };
@@ -114,6 +114,9 @@ type TurnSuccess = {
   finish_reason: string;
   tokens_used: number;
   tokens_remaining: number;
+  /** v0.11.27 — typed to remove the `as any` cast in the log line.
+   * Server always sets this to "kimi" (Kimi-only post-v0.11.27). */
+  provider?: string;
 };
 
 type TurnError = { error: string; detail?: string; message?: string };
@@ -459,13 +462,14 @@ export class Brain {
         const spoken = texts.join(' ').trim();
 
         // Structured API response log — the missing piece for diagnosing performance
+        const okResp = resp as TurnSuccess;
         log.info('Turn.ok', {
           step: step + 1,
           elapsed_ms: turnMs,
-          tokens_used: (resp as TurnSuccess).tokens_used,
-          tokens_remaining: (resp as TurnSuccess).tokens_remaining,
-          provider: (resp as any).provider,
-          finish_reason: (resp as TurnSuccess).finish_reason,
+          tokens_used: okResp.tokens_used,
+          tokens_remaining: okResp.tokens_remaining,
+          provider: okResp.provider,
+          finish_reason: okResp.finish_reason,
           has_text: !!spoken,
           text_preview: spoken ? spoken.substring(0, 100) : null,
           tool_calls: calls.map((c) => c.name),

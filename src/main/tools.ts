@@ -13,7 +13,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import http from 'http';
-import { shell } from 'electron';
+import { shell, app } from 'electron';
 import { createLogger } from './logger';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 
@@ -35,7 +35,6 @@ function sanitizeNumber(val: unknown): number {
   if (!Number.isFinite(n)) return 0;
   return Math.round(n);
 }
-import { app } from 'electron';
 
 const log = createLogger('Tools');
 const execFileAsync = promisify(execFile);
@@ -89,14 +88,22 @@ export function abortAllInFlightTools(): number {
 
 // ── Path resolution ──────────────────────────────────────────────
 
+// v0.11.27 — memoized. The scripts dir doesn't change at runtime, but
+// `getScriptsDir` was called on every single tool invocation (including
+// inside hot loops like read_screen-after-every-step). On a typical
+// 40-step task that meant ~80 redundant `fs.existsSync` calls on the
+// same two paths.
+let _cachedScriptsDir: string | null = null;
 function getScriptsDir(): string {
+  if (_cachedScriptsDir) return _cachedScriptsDir;
   // Production: resources/scripts/
   const bundled = path.join(process.resourcesPath || '', 'scripts');
-  if (fs.existsSync(bundled)) return bundled;
+  if (fs.existsSync(bundled)) { _cachedScriptsDir = bundled; return bundled; }
   // Dev: assets/scripts/
   const dev = path.join(app.getAppPath(), 'assets', 'scripts');
-  if (fs.existsSync(dev)) return dev;
-  return path.join(__dirname, '../../assets/scripts');
+  if (fs.existsSync(dev)) { _cachedScriptsDir = dev; return dev; }
+  _cachedScriptsDir = path.join(__dirname, '../../assets/scripts');
+  return _cachedScriptsDir;
 }
 
 // ── PowerShell Bridge (persistent UIA process) ───────────────────
@@ -482,10 +489,13 @@ async function mouseClick(params: Record<string, unknown>): Promise<ToolResult> 
 }
 
 async function mouseDrag(params: Record<string, unknown>): Promise<ToolResult> {
-  const sx = Math.round(Number(params.startX || 0));
-  const sy = Math.round(Number(params.startY || 0));
-  const ex = Math.round(Number(params.endX || 0));
-  const ey = Math.round(Number(params.endY || 0));
+  // v0.11.27 — use sanitizeNumber consistently with the rest of the
+  // mouse_* family. Previously raw `Number(...)` cast which yields NaN
+  // for non-numeric input → silently passed `NaN` to PowerShell as text.
+  const sx = sanitizeNumber(params.startX);
+  const sy = sanitizeNumber(params.startY);
+  const ex = sanitizeNumber(params.endX);
+  const ey = sanitizeNumber(params.endY);
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -1484,10 +1494,28 @@ async function cdpConnect(_params: Record<string, unknown>): Promise<ToolResult>
     // Try to spawn a browser with CDP enabled, then retry.
     const spawned = await spawnCdpBrowser();
     if (!spawned.ok) {
-      return { text: `(cdp_connect: ${result.error}. Auto-launch failed: ${spawned.error})` };
+      // v0.11.27 — explicit anti-retry guidance. Per log analysis (May 7),
+      // 4/5 recent reports showed the model burning the runaway guard
+      // by retrying cdp_connect 3x in a row when ECONNREFUSED. The error
+      // message now tells the model exactly what to do INSTEAD of retry.
+      return { text:
+        `(cdp_connect failed: ${result.error}. Auto-launch failed: ${spawned.error}. ` +
+        `DO NOT call cdp_connect again — it will keep failing. ` +
+        `Alternatives in order of preference: ` +
+        `(1) For email — use outlook_send_email if classic Outlook is installed. ` +
+        `(2) For web tasks — use smart_click + smart_type on the visible browser window via UIA + OCR (no CDP needed). ` +
+        `(3) For URL navigation — use shell openExternal via navigate_browser. ` +
+        `(4) Last resort — ask user to relaunch their browser with --remote-debugging-port=${CDP_PORT}. ` +
+        `Do not retry CDP this turn.)`,
+      };
     }
     result = await client.connect();
-    if (!result.ok) return { text: `(cdp_connect: still failed after launching browser: ${result.error})` };
+    if (!result.ok) {
+      return { text:
+        `(cdp_connect: still failed after launching browser: ${result.error}. ` +
+        `DO NOT call cdp_connect again. Use smart_click + smart_type on the foreground browser window instead.)`,
+      };
+    }
   }
   return { text: `Connected to "${result.title}" at ${result.url}` };
 }
