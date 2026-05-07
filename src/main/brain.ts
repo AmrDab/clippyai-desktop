@@ -45,6 +45,46 @@ const UI_MODIFYING_TOOLS = new Set([
   'navigate_browser',
 ]);
 
+/**
+ * v0.11.25 — destructive / non-undoable tools. After any of these fires,
+ * we (a) record success/failure in `destructiveAttempts` for the
+ * hallucination guard, and (b) the final task summary is post-checked
+ * against the actual results. Per report ccd4d6f4 the model claimed
+ * "Email sent!" without any tool actually confirming the send went
+ * through — outlook_send_email had errored, smart_click("Send") returned
+ * "(not found via UIA; OCR unavailable)", and a Ctrl+Enter keypress went
+ * to the wrong window after focus drift. The model invented success.
+ *
+ * Hallucination guard: if the model's final spoken text contains
+ * confident-success language ("sent", "posted", "submitted", "created",
+ * "deleted", etc.) AND the most recent destructive attempt FAILED or
+ * was unverified, we override the spoken text with an honest version.
+ */
+const DESTRUCTIVE_TOOLS = new Set([
+  'outlook_send_email',
+  'outlook_create_event',
+  'create_reminder',
+  'write_file',
+  'kill_process',
+  'cdp_click',     // could be a "Send" or "Delete" button
+  'cdp_evaluate',  // arbitrary JS execution
+  'http_request',  // POST/DELETE etc.
+]);
+
+/**
+ * Heuristic: does this string sound like the model claiming a destructive
+ * action succeeded? Conservative — we only trip on confident past-tense
+ * verbs. Future-tense ("I'll send", "let me send") is fine.
+ */
+function soundsLikeClaimedSuccess(text: string): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  // Anchored on " sent" / " posted" etc. with leading space to avoid
+  // false positives like "presented", "submitted to git" (not "submitted").
+  return /\b(sent|posted|submitted|created|deleted|saved|published|emailed|booked|scheduled)\b/.test(t)
+    && !/\b(will|going to|let me|trying|attempting|about to|i'll|i’ll|would)\b.*\b(send|post|submit|create|delete|save|publish|email|book|schedule)\b/.test(t);
+}
+
 // ========== Gemini content shape (local types — no runtime SDK dep) ==========
 
 type TextPart = { text: string };
@@ -306,6 +346,11 @@ export class Brain {
       // workflow on task completion. Only the model-emitted Tool.call args
       // — populated below in the loop.
       const successfulActions: Array<{ name: string; args: Record<string, unknown> }> = [];
+      // v0.11.25 — destructive-action ledger for the hallucination guard.
+      // Each entry records whether the destructive call genuinely
+      // succeeded (per the tool's own result text). Used at task-end to
+      // sanity-check the model's "I sent it!" closer.
+      const destructiveAttempts: Array<{ name: string; succeeded: boolean; resultPreview: string }> = [];
       log.info('Task.start', {
         hasScreenContext: !!screenContext,
         screenContextLen: screenContext?.length || 0,
@@ -483,6 +528,25 @@ export class Brain {
         // Execute each function call, collect responses
         const responseParts: FunctionResponsePart[] = [];
         for (const call of calls) {
+          // v0.11.25 — cancel check BEFORE each tool. Previously
+          // `cancelRequested` was only checked between turns (top of the
+          // outer `for (step ...)` loop), so a 30-second outlook_send_email
+          // or 60-second word_to_pdf would happily run to completion even
+          // after the user put Clippy to sleep or sent a new message.
+          // Subagent B (audit, May 7) flagged this as P0. Now: short-circuit
+          // here, push a synthetic "cancelled" functionResponse so the
+          // model's tool-call schema stays consistent if we re-enter,
+          // and break out.
+          if (this.cancelRequested) {
+            log.info('Tool.cancelled before exec', { tool: call.name, mode: this.mode });
+            responseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: { error: 'cancelled by user before tool ran' },
+              },
+            });
+            break; // exit the per-call loop; outer loop will catch cancelRequested at top of next step
+          }
           const toolStart = Date.now();
           log.info('Tool.call', { step: step + 1, tool: call.name, args: call.args });
           // Trigger an in-progress animation BEFORE the tool runs so the
@@ -580,6 +644,21 @@ export class Brain {
             if (!looksLikeError) {
               successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });
             }
+
+            // === DESTRUCTIVE LEDGER (v0.11.25) ===
+            // Track destructive-tool outcomes for the end-of-task
+            // hallucination guard. We're conservative: if the result
+            // text doesn't start with `(` AND doesn't contain explicit
+            // failure words, we count it as a (possibly) successful
+            // attempt. The guard then cross-checks the model's final
+            // claim against this ledger.
+            if (DESTRUCTIVE_TOOLS.has(call.name)) {
+              destructiveAttempts.push({
+                name: call.name,
+                succeeded: !looksLikeError && !/\b(failed|not found|unavailable|timeout|denied|refused)\b/i.test(resultText),
+                resultPreview: resultText.substring(0, 120),
+              });
+            }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const toolElapsed = Date.now() - toolStart;
@@ -608,6 +687,32 @@ export class Brain {
         }
       }
 
+      // === HALLUCINATION GUARD (v0.11.25) ===
+      // If the model closed with confident-success language ("Email sent!",
+      // "Posted!", "Created!") but no destructive tool actually succeeded,
+      // override the spoken text with an honest version. Per report
+      // ccd4d6f4 the model said "Email sent!" when (a) outlook_send_email
+      // had errored, (b) cdp_connect refused, (c) smart_click "Send"
+      // returned "(not found via UIA; OCR unavailable)", and (d) the
+      // Ctrl+Enter keypress went to explorer.exe after focus drift.
+      // Lying to the user is worse than failing visibly.
+      if (
+        finalSpoken
+        && destructiveAttempts.length > 0
+        && soundsLikeClaimedSuccess(finalSpoken)
+        && !destructiveAttempts.some((a) => a.succeeded)
+      ) {
+        const failures = destructiveAttempts.map((a) => `${a.name}: ${a.resultPreview}`).join(' | ');
+        log.warn('Task.hallucinatedSuccess', {
+          claimed: finalSpoken.substring(0, 200),
+          destructiveAttempts: destructiveAttempts.length,
+          attemptsSummary: failures.substring(0, 400),
+        });
+        const honest = `I tried but couldn't confirm it worked — every attempt failed or returned an unverified result. Want me to try a different approach? (Details: ${destructiveAttempts.map((a) => a.name).join(', ')} all failed.)`;
+        this.emit('clippy-speak', { text: honest, animate: 'Alert' });
+        finalSpoken = honest;
+      }
+
       // D8: stepsUsed used to be `contents.length - history.length` which is
       // a message-count proxy, not a step count. It showed 0 for simple text
       // replies and 22 for a 12-step task. Use the actual loop counter.
@@ -617,6 +722,8 @@ export class Brain {
         abortReason,
         stepsUsed: lastStep,
         successfulActionCount: successfulActions.length,
+        destructiveAttempts: destructiveAttempts.length,
+        destructiveSucceeded: destructiveAttempts.filter((a) => a.succeeded).length,
       });
 
       // v0.11.22 — record the action sequence as a learned workflow scoped

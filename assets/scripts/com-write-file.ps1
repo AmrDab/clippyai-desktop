@@ -3,10 +3,20 @@
 # Outputs JSON on the last line.
 
 param(
-    [string]$path    = "",
-    [string]$content = "",
-    [string]$mode    = "create"
+    [string]$path       = "",
+    [string]$content    = "",
+    [string]$contentB64 = "",
+    [string]$mode       = "create"
 )
+
+# v0.11.25 — accept base64-encoded content. File contents routinely
+# contain newlines, quotes, and Unicode that the PowerShell command-line
+# tokenizer mangles. The B64 path is the preferred caller path; raw
+# -content kept for back-compat.
+if ($contentB64) {
+    try { $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($contentB64)) }
+    catch { }
+}
 
 function Out-Result($obj) {
     Write-Output ($obj | ConvertTo-Json -Compress -Depth 3)

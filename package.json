@@ -1,6 +1,6 @@
 {
   "name": "clippyai",
-  "version": "0.11.24",
+  "version": "0.11.25",
   "productName": "ClippyAI",
   "description": "ClippyAI — Your AI desktop buddy",
   "homepage": "https://clippyai.app",
@@ -19,7 +19,10 @@
     "vendor": "node scripts/vendor-clawdcursor.js",
     "pack": "npm run vendor && npm run build && electron-builder --dir",
     "dist": "npm run vendor && npm run build && electron-builder",
-    "postinstall": "node scripts/copy-assets.js"
+    "postinstall": "node scripts/copy-assets.js",
+    "smoke": "node scripts/smoke.js",
+    "smoke:1": "node scripts/smoke.js --layer=1",
+    "smoke:2": "node scripts/smoke.js --layer=2"
   },
   "dependencies": {
     "electron-store": "^8.2.0",

@@ -3,8 +3,20 @@
 # Outputs JSON on the last line.
 
 param(
-    [string]$script = ""
+    [string]$script    = "",
+    [string]$scriptB64 = ""
 )
+
+# v0.11.25 — base64 variant for the script body. Multi-line scripts
+# (which are virtually all non-trivial scripts the model emits) were
+# previously silently truncated by the PS command-line tokenizer to
+# their first line — the job ran just the first line and reported
+# success. Subagent A flagged this as a latent P1. The B64 path
+# preserves the entire script verbatim.
+if ($scriptB64) {
+    try { $script = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($scriptB64)) }
+    catch { }
+}
 
 function Out-Result($obj) {
     Write-Output ($obj | ConvertTo-Json -Compress -Depth 3)

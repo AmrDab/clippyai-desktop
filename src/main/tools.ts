@@ -491,29 +491,88 @@ async function captureAndOcr(): Promise<{
   elements: Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number; line?: number }>;
   fullText: string;
 } | null> {
+  // v0.11.25 — every failure path now logs WHY it failed. Per report
+  // ccd4d6f4, captureAndOcr returned null silently 3 times in one task;
+  // the model and the diagnostician had zero visibility into which of the
+  // four failure modes (script missing / screenshot crashed / OCR crashed
+  // / parse failed / no elements) actually triggered. Fix: log each.
   const scriptPath = path.join(getScriptsDir(), 'ocr-recognize.ps1');
-  if (!fs.existsSync(scriptPath)) return null;
+  if (!fs.existsSync(scriptPath)) {
+    log.warn('captureAndOcr: script missing', { scriptPath, scriptsDir: getScriptsDir() });
+    return null;
+  }
   const tmpPng = path.join(os.tmpdir(), `clippy-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
   try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
-      `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
-      `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
-      `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
-      `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
-      `$bmp.Save('${tmpPng.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
-      `$g.Dispose(); $bmp.Dispose()`,
-    ], { timeout: 10000 });
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-      '-ImagePath', tmpPng,
-    ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
-    const parsed = JSON.parse(stdout.trim());
-    if (parsed.error || !Array.isArray(parsed.elements)) return null;
-    return { elements: parsed.elements, fullText: String(parsed.fullText || '') };
-  } catch {
-    return null;
+    // Step 1: capture screenshot
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
+        `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+        `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
+        `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
+        `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
+        `$bmp.Save('${tmpPng.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
+        `$g.Dispose(); $bmp.Dispose()`,
+      ], { timeout: 10000 });
+    } catch (capErr) {
+      const e = capErr as { message?: string; stderr?: string };
+      log.warn('captureAndOcr: screenshot failed', {
+        error: (e.message || '').substring(0, 200),
+        stderr: (e.stderr || '').substring(0, 200),
+      });
+      return null;
+    }
+
+    // Confirm the PNG was actually written before invoking OCR. If
+    // CopyFromScreen silently no-op'd (e.g. session-locked), the OCR
+    // script will throw a misleading error.
+    if (!fs.existsSync(tmpPng)) {
+      log.warn('captureAndOcr: tmp png never written', { tmpPng });
+      return null;
+    }
+
+    // Step 2: OCR
+    let stdout: string;
+    try {
+      const r = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+        '-ImagePath', tmpPng,
+      ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
+      stdout = r.stdout;
+    } catch (ocrErr) {
+      const e = ocrErr as { message?: string; stderr?: string; code?: number };
+      log.warn('captureAndOcr: ocr-recognize.ps1 failed', {
+        exitCode: e.code,
+        error: (e.message || '').substring(0, 200),
+        stderr: (e.stderr || '').substring(0, 200),
+      });
+      return null;
+    }
+
+    // Step 3: parse
+    let parsed: { error?: string; elements?: unknown; fullText?: unknown };
+    try {
+      parsed = JSON.parse(stdout.trim());
+    } catch (parseErr) {
+      log.warn('captureAndOcr: OCR returned non-JSON', {
+        stdoutPreview: stdout.substring(0, 200),
+        error: String(parseErr).substring(0, 100),
+      });
+      return null;
+    }
+    if (parsed.error) {
+      log.warn('captureAndOcr: OCR script reported error', { error: parsed.error });
+      return null;
+    }
+    if (!Array.isArray(parsed.elements)) {
+      log.warn('captureAndOcr: OCR returned no elements array', { keys: Object.keys(parsed) });
+      return null;
+    }
+    return {
+      elements: parsed.elements as Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number; line?: number }>,
+      fullText: String(parsed.fullText || ''),
+    };
   } finally {
     try { fs.unlinkSync(tmpPng); } catch { /* cleanup */ }
   }
@@ -1007,8 +1066,14 @@ async function createReminder(params: Record<string, unknown>): Promise<ToolResu
   const datetime = String(params.datetime || '');
   const notes = String(params.notes || '').substring(0, 200);
   if (!title || !datetime) return { text: 'Error: title and datetime are required' };
+  // v0.11.25 — pass title + notes via base64 to bypass PS tokenizer (newlines,
+  // smart quotes, em-dashes) AND to defend against the cmd-injection vector
+  // the previous string-interpolation impl had. The .ps1 now writes title/notes
+  // to a JSON sidecar and launches show-reminder.ps1 with quoted paths only.
+  const titleB64 = Buffer.from(title, 'utf8').toString('base64');
+  const notesB64 = Buffer.from(notes, 'utf8').toString('base64');
   const result = await runComScript('com-create-reminder.ps1', [
-    '-title', title, '-datetime', datetime, '-notes', notes,
+    '-titleB64', titleB64, '-datetime', datetime, '-notesB64', notesB64,
   ], 15000);
   if (result.text.startsWith('Error:')) return result;
   try {
@@ -1033,8 +1098,12 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
   const content = String(params.content || '');
   const mode = String(params.mode || 'create');
   if (!filePath) return { text: 'Error: path is required' };
+  // v0.11.25 — pass file content via base64 (preserves newlines, all
+  // bytes, all chars). Previously a content like "hello\n -mode overwrite"
+  // would be re-tokenized by PS and silently flip the mode arg.
+  const contentB64 = Buffer.from(content, 'utf8').toString('base64');
   const result = await runComScript('com-write-file.ps1', [
-    '-path', filePath, '-content', content, '-mode', mode,
+    '-path', filePath, '-contentB64', contentB64, '-mode', mode,
   ], 10000);
   if (result.text.startsWith('Error:')) return result;
   try {
@@ -1046,7 +1115,11 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
 async function runPowershell(params: Record<string, unknown>): Promise<ToolResult> {
   const script = String(params.script || '');
   if (!script) return { text: 'Error: script is required' };
-  const result = await runComScript('com-run-powershell.ps1', ['-script', script], 20000);
+  // v0.11.25 — pass via base64. Multi-line scripts were silently
+  // truncated to first line by PS tokenizer, then "succeeded" with
+  // partial execution. Subagent A flagged this as a latent P1.
+  const scriptB64 = Buffer.from(script, 'utf8').toString('base64');
+  const result = await runComScript('com-run-powershell.ps1', ['-scriptB64', scriptB64], 20000);
   if (result.text.startsWith('Error:')) return result;
   try {
     const r = JSON.parse(result.text);
@@ -1086,7 +1159,10 @@ async function speakText(params: Record<string, unknown>): Promise<ToolResult> {
   const text = String(params.text || '');
   if (!text) return { text: 'Error: text is required' };
   const rate = String(Number(params.rate) || 0);
-  const result = await runComScript('com-speak-text.ps1', ['-text', text, '-rate', rate], 5000);
+  // v0.11.25 — base64 encode. Spoken text is often verbatim user/model
+  // output containing punctuation that breaks the PS tokenizer.
+  const textB64 = Buffer.from(text, 'utf8').toString('base64');
+  const result = await runComScript('com-speak-text.ps1', ['-textB64', textB64, '-rate', rate], 5000);
   return result;
 }
 
@@ -1114,8 +1190,17 @@ async function httpRequest(params: Record<string, unknown>): Promise<ToolResult>
   if (!url) return { text: 'Error: url is required' };
   const args = ['-url', url];
   if (params.method) args.push('-method', String(params.method));
-  if (params.headers) args.push('-headers', String(params.headers));
-  if (params.body) args.push('-body', String(params.body));
+  // v0.11.25 — headers (JSON) and body via base64. Headers JSON contains
+  // double-quotes; bodies routinely contain newlines/JSON/special chars.
+  // Both broke the PS tokenizer when passed raw.
+  if (params.headers) {
+    const headersB64 = Buffer.from(String(params.headers), 'utf8').toString('base64');
+    args.push('-headersB64', headersB64);
+  }
+  if (params.body) {
+    const bodyB64 = Buffer.from(String(params.body), 'utf8').toString('base64');
+    args.push('-bodyB64', bodyB64);
+  }
   const result = await runComScript('com-http-request.ps1', args, 20000);
   return result;
 }
@@ -1127,14 +1212,39 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   const subject = String(params.subject || '');
   const body = String(params.body || '');
   if (!to || !subject || !body) return { text: 'Error: to, subject, and body are required' };
-  // v0.11.22 — encode body + subject as UTF-8 base64 to bypass PowerShell's
-  // command-line tokenizer. Multi-line bodies (\n\n), em-dashes (—), and
-  // smart quotes were previously breaking the -File invocation: PowerShell
-  // re-tokenized the OS command line and split on the first newline,
-  // truncating the body and crashing the script. Base64 is single-token,
-  // ASCII-only, and decodes to the original UTF-8 inside the .ps1.
-  // (See report log fbfc636e... — outlook_send_email crashed silently with
-  // "Command failed: powershell.exe ... -body Hi there!\n\nI'm Clippy...")
+
+  // v0.11.25 — detect Outlook flavour before attempting COM. Windows 11
+  // ships "Outlook (new)" (process: olk.exe) by default, which has NO
+  // COM/MAPI surface. Calling Outlook.Application against it crashes the
+  // PS script with exit 1 and EMPTY stderr — invisible failure. Per
+  // report ccd4d6f4 the user said "I have outlook installed" and we
+  // wrongly fell through to Gmail/CDP, then false-claimed success.
+  // Now: probe for Outlook.Application COM registration first; if it's
+  // not registered (or only Outlook-new exists), return a clear,
+  // model-readable error so the model can pick a different path
+  // (CDP/Gmail) deliberately rather than thrashing.
+  try {
+    const probe = await execFileAsync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      // Returns 0 if classic Outlook COM is present, 1 otherwise. No
+      // side effects — just a registry check on HKCR\Outlook.Application.
+      `if (Test-Path 'Registry::HKEY_CLASSES_ROOT\\Outlook.Application') { exit 0 } else { exit 1 }`,
+    ], { timeout: 3000 });
+    void probe; // exit 0 => present; we proceed
+  } catch {
+    // exit non-zero OR the probe itself threw → assume classic Outlook unavailable
+    log.info('outlook_send_email: classic Outlook COM not registered — likely Outlook (new) only');
+    return {
+      text: 'Error: Outlook classic (Office desktop) is not installed on this machine. ' +
+            'Outlook (new) — the WebView2 default Outlook on Windows 11 — does not expose COM/MAPI for automation. ' +
+            'Use cdp_connect + navigate_browser to outlook.live.com or mail.google.com instead. ' +
+            'Do NOT claim the email was sent unless cdp_click on the Send button succeeds AND the compose window closes.',
+    };
+  }
+
+  // Encode body + subject as UTF-8 base64 to bypass PowerShell's command-line
+  // tokenizer. Multi-line bodies (\n\n), em-dashes (—), and smart quotes
+  // would otherwise break the -File invocation. (v0.11.22 fix.)
   const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
   const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
   const args = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
@@ -1187,11 +1297,20 @@ async function outlookCreateEvent(params: Record<string, unknown>): Promise<Tool
   const subject = String(params.subject || '');
   const start = String(params.start || '');
   if (!subject || !start) return { text: 'Error: subject and start are required' };
-  const args = ['-subject', subject, '-start', start];
+  // v0.11.25 — base64-encode subject / location / body. Meeting body
+  // routinely contains newlines + Unicode that the PS tokenizer mangles.
+  const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
+  const args = ['-subjectB64', subjectB64, '-start', start];
   if (params.durationMin !== undefined) args.push('-durationMin', String(Number(params.durationMin) || 30));
   if (params.attendees) args.push('-attendees', String(params.attendees));
-  if (params.location) args.push('-location', String(params.location));
-  if (params.body) args.push('-body', String(params.body));
+  if (params.location) {
+    const locationB64 = Buffer.from(String(params.location), 'utf8').toString('base64');
+    args.push('-locationB64', locationB64);
+  }
+  if (params.body) {
+    const bodyB64 = Buffer.from(String(params.body), 'utf8').toString('base64');
+    args.push('-bodyB64', bodyB64);
+  }
   return await runComScript('com-outlook-create-event.ps1', args, 20000);
 }
 

@@ -4,13 +4,23 @@
 # Outputs JSON on the last line.
 
 param(
-    [string]$subject = "",
-    [string]$start = "",
-    [int]$durationMin = 30,
-    [string]$attendees = "",
-    [string]$location = "",
-    [string]$body = ""
+    [string]$subject     = "",
+    [string]$subjectB64  = "",
+    [string]$start       = "",
+    [int]$durationMin    = 30,
+    [string]$attendees   = "",
+    [string]$location    = "",
+    [string]$locationB64 = "",
+    [string]$body        = "",
+    [string]$bodyB64     = ""
 )
+
+# v0.11.25 — accept base64-encoded variants for any string param that
+# might contain newlines or special chars. PowerShell command-line
+# tokenizer splits on embedded newlines and breaks on special quotes.
+if ($subjectB64)  { try { $subject  = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($subjectB64))  } catch { } }
+if ($locationB64) { try { $location = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($locationB64)) } catch { } }
+if ($bodyB64)     { try { $body     = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($bodyB64))     } catch { } }
 
 function Out-Result($obj) {
     Write-Output ($obj | ConvertTo-Json -Compress -Depth 3)

@@ -4,11 +4,19 @@
 # Outputs JSON on the last line.
 
 param(
-    [string]$url = "",
-    [string]$method = "GET",
-    [string]$headers = "",
-    [string]$body = ""
+    [string]$url        = "",
+    [string]$method     = "GET",
+    [string]$headers    = "",
+    [string]$headersB64 = "",
+    [string]$body       = "",
+    [string]$bodyB64    = ""
 )
+
+# v0.11.25 — base64-encoded variants for headers (JSON) + body. POST
+# bodies routinely contain quotes, braces, and Unicode that break the
+# PowerShell tokenizer when passed raw.
+if ($headersB64) { try { $headers = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($headersB64)) } catch { } }
+if ($bodyB64)    { try { $body    = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($bodyB64))    } catch { } }
 
 function Out-Result($obj) {
     Write-Output ($obj | ConvertTo-Json -Compress -Depth 4)
