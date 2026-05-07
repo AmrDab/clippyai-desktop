@@ -1,13 +1,21 @@
 /**
  * Brain — ClippyAI's agent loop on the client side.
  *
- * Calls the unified /v1/turn backend endpoint which runs Gemini with native
- * function calling. No JSON-in-text. No regex parsing of model output.
- * Tool calls come back as structured `functionCall` parts; we execute them
- * locally via tools.ts and feed results back as `functionResponse` parts.
+ * Calls the unified /v1/turn backend endpoint which runs Kimi K2 (Moonshot)
+ * with native function calling. No JSON-in-text. No regex parsing of model
+ * output. Tool calls come back as structured `functionCall` parts; we
+ * execute them locally via tools.ts and feed results back as
+ * `functionResponse` parts.
  *
  * The server owns the system prompt (identity, date, plan, tool schema).
  * The client owns the conversation loop and local tool execution.
+ *
+ * v0.11.27 — single LLM provider. The Gemini fallback was removed in
+ * favor of Kimi-only operation per Option A (operator decision,
+ * 2026-05-07). If the upstream Moonshot API is unavailable, /v1/turn
+ * returns a 502 ai_error and the user sees an error message — no
+ * silent failover. See git tag `legacy-kimi-k2-v0.11.26` for the
+ * prior Kimi+Gemini-fallback shape if rollback is ever needed.
  */
 
 import { BrowserWindow, net, app } from 'electron';
@@ -85,7 +93,7 @@ function soundsLikeClaimedSuccess(text: string): boolean {
     && !/\b(will|going to|let me|trying|attempting|about to|i'll|i’ll|would)\b.*\b(send|post|submit|create|delete|save|publish|email|book|schedule)\b/.test(t);
 }
 
-// ========== Gemini content shape (local types — no runtime SDK dep) ==========
+// ========== Wire content shape (Gemini-style; kept for compat with /v1/turn) ==========
 
 type TextPart = { text: string };
 type FunctionCallPart = { functionCall: { name: string; args: Record<string, unknown> } };
