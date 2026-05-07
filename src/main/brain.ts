@@ -11,7 +11,7 @@
  */
 
 import { BrowserWindow, net, app } from 'electron';
-import { executeTool } from './tools';
+import { executeTool, abortAllInFlightTools } from './tools';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
@@ -255,12 +255,23 @@ export class Brain {
       this.noRepeatUntil = 0;
       this.startLoop();
     } else {
-      // Sleep is a hard stop: signal any in-flight agent loop to break
-      // at its next iteration. Without this, the loop kept firing tools
-      // and emitting clippy-speak while the sprite was supposed to be
-      // sleeping — overriding the sleep animation and continuing the
-      // task in the background.
+      // Sleep is a hard stop. Three layers, in order:
+      //   1. cancelRequested=true — signals the agent loop to break at
+      //      its next iteration AND short-circuits the next per-call
+      //      pre-dispatch check (added in v0.11.25).
+      //   2. abortAllInFlightTools() (v0.11.26) — sends AbortSignal to
+      //      every active execFileAbortable child process. This kills
+      //      a mid-flight 30s outlook_send_email or 60s word_to_pdf
+      //      that the loop-level cancel can't interrupt because the
+      //      loop is awaiting the tool's completion. Without this,
+      //      sleep felt unresponsive — Clippy's sprite went to sleep
+      //      pose while the underlying powershell.exe was still
+      //      driving the user's keyboard. Per report 8836f5ec.
+      //   3. stopLoop() — stops the proactive timer.
       this.cancelRequested = true;
+      try { abortAllInFlightTools(); } catch (err) {
+        log.warn('abortAllInFlightTools threw on sleep (non-fatal)', String(err).substring(0, 100));
+      }
       this.stopLoop();
     }
   }

@@ -41,6 +41,52 @@ const log = createLogger('Tools');
 const execFileAsync = promisify(execFile);
 // exec removed — all commands use execFileAsync (safe) or shell.openExternal
 
+// v0.11.26 — Abortable child-process registry. Sleep should KILL all
+// in-flight tool executions, not just signal the loop. Per report
+// 8836f5ec the user expected setMode('sleep') to behave like a Ctrl+C
+// — kill running PowerShell processes too. The previous implementation
+// only set cancelRequested=true, which the loop checks BETWEEN tool
+// calls but ignores during a 30s outlook_send_email or 60s word_to_pdf.
+//
+// Pattern: every long-running execFileAsync call is wrapped in
+// `execFileAbortable` which registers an AbortController, runs with
+// `signal: ac.signal`, and unregisters on completion. brain.ts's
+// setMode('sleep') calls `abortAllInFlightTools()` which fires
+// ac.abort() on every registered controller — Node sends SIGKILL
+// to the child process and the awaited promise rejects with AbortError.
+const activeAborts = new Set<AbortController>();
+
+async function execFileAbortable(
+  file: string,
+  args: string[],
+  options: { timeout?: number; maxBuffer?: number; encoding?: BufferEncoding } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const ac = new AbortController();
+  activeAborts.add(ac);
+  try {
+    // Cast widens the options type to match the original execFile signature.
+    return await execFileAsync(file, args, { ...options, signal: ac.signal } as Parameters<typeof execFileAsync>[2]);
+  } finally {
+    activeAborts.delete(ac);
+  }
+}
+
+/**
+ * Abort every currently-running execFileAbortable call. Called by
+ * brain.ts setMode('sleep') so sleep actually stops what Clippy is doing
+ * instead of letting the current tool run to completion. Best-effort —
+ * any tool that uses raw execFileAsync (not abortable) will still finish.
+ */
+export function abortAllInFlightTools(): number {
+  const n = activeAborts.size;
+  for (const ac of activeAborts) {
+    try { ac.abort(); } catch { /* best effort */ }
+  }
+  activeAborts.clear();
+  if (n > 0) log.info('abortAllInFlightTools', { aborted: n });
+  return n;
+}
+
 // ── Path resolution ──────────────────────────────────────────────
 
 function getScriptsDir(): string {
@@ -503,9 +549,9 @@ async function captureAndOcr(): Promise<{
   }
   const tmpPng = path.join(os.tmpdir(), `clippy-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
   try {
-    // Step 1: capture screenshot
+    // Step 1: capture screenshot (v0.11.26 abortable)
     try {
-      await execFileAsync('powershell.exe', [
+      await execFileAbortable('powershell.exe', [
         '-NoProfile', '-Command',
         `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
         `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
@@ -532,10 +578,10 @@ async function captureAndOcr(): Promise<{
       return null;
     }
 
-    // Step 2: OCR
+    // Step 2: OCR (v0.11.26 abortable)
     let stdout: string;
     try {
-      const r = await execFileAsync('powershell.exe', [
+      const r = await execFileAbortable('powershell.exe', [
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
         '-ImagePath', tmpPng,
       ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
@@ -805,11 +851,8 @@ const SCREENSHOT_DOWNSCALE_THRESHOLD = 1280;
 async function desktopScreenshot(): Promise<ToolResult> {
   try {
     // Capture at native, then downscale only if larger than the threshold.
-    // The PowerShell script returns the base64 PNG plus a JSON header line
-    // describing the captured + final dimensions and the scale factor.
-    // The factor is included in the tool result text so the model knows
-    // how to translate clicks back to native coordinates.
-    const { stdout } = await execFileAsync('powershell.exe', [
+    // v0.11.26 abortable so sleep can kill an in-flight 10s capture.
+    const { stdout } = await execFileAbortable('powershell.exe', [
       '-NoProfile', '-Command',
       `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
       `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
@@ -1022,7 +1065,8 @@ async function runComScript(
     return { text: `(script not found: ${scriptName})` };
   }
   try {
-    const { stdout, stderr } = await execFileAsync('powershell.exe', [
+    // v0.11.26 — abortable so setMode('sleep') can kill the child mid-flight.
+    const { stdout, stderr } = await execFileAbortable('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-File', scriptPath,
       ...args,
@@ -1040,23 +1084,43 @@ async function runComScript(
     }
   } catch (err) {
     // v0.11.22 — capture stderr from the failed PowerShell invocation so the
-    // model (and we) can actually diagnose what went wrong. Previously
-    // surfaced only "Command failed: powershell.exe ..." with no PS error.
-    // Also log script + args so we can correlate with the report log.
-    const e = err as { message?: string; stderr?: string; code?: number; signal?: string };
+    // model (and we) can actually diagnose what went wrong.
+    // v0.11.26 — ALSO check stdout. The Fail() helper inside every COM
+    // script writes JSON `{ok:false,error:"..."}` to STDOUT then `exit 1`.
+    // execFileAsync rejects on exit-1 — but the err object's `stdout`
+    // field contains that JSON. Previously we only looked at stderr (which
+    // the scripts don't write to), missing the script's own clean error
+    // message. Per report 8836f5ec the user was getting the generic
+    // "Command failed: powershell.exe ..." message even though the script
+    // had emitted a proper JSON error explaining the actual problem.
+    const e = err as { message?: string; stderr?: string; stdout?: string; code?: number; signal?: string };
     const stderrTrimmed = (e.stderr || '').trim();
+    const stdoutTrimmed = (e.stdout || '').trim();
     const msg = e.message || String(err);
     log.warn('runComScript failed', {
       script: scriptName,
       argCount: args.length,
       code: e.code,
       signal: e.signal,
-      stderrPreview: stderrTrimmed.substring(0, 300),
+      stdoutPreview: stdoutTrimmed.substring(0, 200),
+      stderrPreview: stderrTrimmed.substring(0, 200),
     });
+    // 1. Try parsing stdout as JSON — that's where Fail() writes
+    if (stdoutTrimmed) {
+      const lines = stdoutTrimmed.split('\n').map((l) => l.trim()).filter(Boolean);
+      const lastLine = lines[lines.length - 1] || '';
+      try {
+        const parsed = JSON.parse(lastLine);
+        if (parsed && parsed.ok === false && typeof parsed.error === 'string') {
+          return { text: `Error: ${parsed.error}` };
+        }
+      } catch { /* not JSON, fall through */ }
+    }
+    // 2. Otherwise surface stderr (rare for our scripts but possible)
     if (stderrTrimmed) {
-      // PS error first (the actual reason), then fallback to wrapper message.
       return { text: `(com script error in ${scriptName}: ${stderrTrimmed.substring(0, 400)})` };
     }
+    // 3. Last resort — the wrapper exception message
     return { text: `(com script error in ${scriptName}: ${msg.substring(0, 400)})` };
   }
 }
@@ -1213,38 +1277,22 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   const body = String(params.body || '');
   if (!to || !subject || !body) return { text: 'Error: to, subject, and body are required' };
 
-  // v0.11.25 — detect Outlook flavour before attempting COM. Windows 11
-  // ships "Outlook (new)" (process: olk.exe) by default, which has NO
-  // COM/MAPI surface. Calling Outlook.Application against it crashes the
-  // PS script with exit 1 and EMPTY stderr — invisible failure. Per
-  // report ccd4d6f4 the user said "I have outlook installed" and we
-  // wrongly fell through to Gmail/CDP, then false-claimed success.
-  // Now: probe for Outlook.Application COM registration first; if it's
-  // not registered (or only Outlook-new exists), return a clear,
-  // model-readable error so the model can pick a different path
-  // (CDP/Gmail) deliberately rather than thrashing.
-  try {
-    const probe = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-Command',
-      // Returns 0 if classic Outlook COM is present, 1 otherwise. No
-      // side effects — just a registry check on HKCR\Outlook.Application.
-      `if (Test-Path 'Registry::HKEY_CLASSES_ROOT\\Outlook.Application') { exit 0 } else { exit 1 }`,
-    ], { timeout: 3000 });
-    void probe; // exit 0 => present; we proceed
-  } catch {
-    // exit non-zero OR the probe itself threw → assume classic Outlook unavailable
-    log.info('outlook_send_email: classic Outlook COM not registered — likely Outlook (new) only');
-    return {
-      text: 'Error: Outlook classic (Office desktop) is not installed on this machine. ' +
-            'Outlook (new) — the WebView2 default Outlook on Windows 11 — does not expose COM/MAPI for automation. ' +
-            'Use cdp_connect + navigate_browser to outlook.live.com or mail.google.com instead. ' +
-            'Do NOT claim the email was sent unless cdp_click on the Send button succeeds AND the compose window closes.',
-    };
-  }
-
-  // Encode body + subject as UTF-8 base64 to bypass PowerShell's command-line
-  // tokenizer. Multi-line bodies (\n\n), em-dashes (—), and smart quotes
-  // would otherwise break the -File invocation. (v0.11.22 fix.)
+  // v0.11.26 — REMOVED the v0.11.25 registry probe. Per report 8836f5ec
+  // the probe (`Test-Path 'Registry::HKEY_CLASSES_ROOT\Outlook.Application'`)
+  // returned false on a user machine that DOES have classic Outlook
+  // installed. The probe was a false-negative source — better to attempt
+  // the COM call directly and let the .ps1's own catch block emit a
+  // clean JSON error if Outlook isn't actually available.
+  //
+  // The original v0.11.25 motivation (avoid silent crash on Outlook-new)
+  // is preserved by the runComScript fix below — the script's Fail()
+  // JSON output (which DOES fire even when Outlook.Application can't
+  // be activated) is now surfaced from execFileAsync's error.stdout
+  // instead of falling through to the generic "Command failed" message.
+  //
+  // Encode body + subject as UTF-8 base64 to bypass PowerShell's
+  // command-line tokenizer (v0.11.22 fix; multi-line bodies, em-dashes,
+  // smart quotes were silently truncated).
   const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
   const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
   const args = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
