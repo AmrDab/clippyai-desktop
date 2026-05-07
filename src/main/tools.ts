@@ -351,7 +351,15 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
       `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
     ], { timeout: 5000 });
     try { fs.unlinkSync(tmpFile); } catch {} // cleanup fallback
-    return { text: `Typed: ${text.substring(0, 50)}` };
+    // v0.11.23 — return the FULL char count + an unambiguously-marked
+    // preview. Old code returned `Typed: ${text.substring(0,50)}` with no
+    // length, no truncation marker — the model misread the truncated
+    // preview as evidence the typing failed mid-sentence (see report
+    // fbfc636e where 84 chars typed correctly but the model claimed
+    // truncation because the result string ended at "...joy an"). The
+    // clipboard-paste path is byte-exact; trust it and report accurately.
+    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+    return { text: `Typed ${text.length} chars: "${preview}"` };
   } catch (err) {
     return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
   }
@@ -725,23 +733,79 @@ async function navigateBrowser(params: Record<string, unknown>): Promise<ToolRes
   }
 }
 
+// v0.11.23 — Screenshot downscale target. Above this width, native
+// resolution is downscaled to TARGET_SCREENSHOT_WIDTH while preserving
+// aspect ratio. Below, sent at native to preserve detail. 1280 catches
+// 1366×768 laptops at native and downscales 1920+/2560+/4K to a model-
+// friendly size. LLMs are measurably more accurate at coordinate
+// estimation on ~1024-wide images than 2560+ (Anthropic computer-use
+// reference: their pipeline downscales to 1024 before sending too).
+const TARGET_SCREENSHOT_WIDTH = 1024;
+const SCREENSHOT_DOWNSCALE_THRESHOLD = 1280;
+
 async function desktopScreenshot(): Promise<ToolResult> {
   try {
-    // Use PowerShell to capture screen as base64 PNG
+    // Capture at native, then downscale only if larger than the threshold.
+    // The PowerShell script returns the base64 PNG plus a JSON header line
+    // describing the captured + final dimensions and the scale factor.
+    // The factor is included in the tool result text so the model knows
+    // how to translate clicks back to native coordinates.
     const { stdout } = await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
       `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
       `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
-      `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
+      `$nw = $b.Width; $nh = $b.Height; ` +
+      `$bmp = New-Object System.Drawing.Bitmap($nw,$nh); ` +
       `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
       `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
+      `$g.Dispose(); ` +
+      // Decide whether to downscale
+      `$tw = ${TARGET_SCREENSHOT_WIDTH}; $thr = ${SCREENSHOT_DOWNSCALE_THRESHOLD}; ` +
+      `if ($nw -gt $thr) { ` +
+      `  $sw = $tw; $sh = [int][Math]::Round($nh * ($tw / [double]$nw)); ` +
+      `  $small = New-Object System.Drawing.Bitmap($sw,$sh); ` +
+      `  $sg = [System.Drawing.Graphics]::FromImage($small); ` +
+      `  $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; ` +
+      `  $sg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality; ` +
+      `  $sg.DrawImage($bmp,0,0,$sw,$sh); ` +
+      `  $sg.Dispose(); $bmp.Dispose(); $bmp = $small; ` +
+      `} ` +
+      `$fw = $bmp.Width; $fh = $bmp.Height; ` +
       `$ms = New-Object System.IO.MemoryStream; ` +
       `$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); ` +
-      `[Convert]::ToBase64String($ms.ToArray())`,
+      `$bmp.Dispose(); ` +
+      // Emit as: NATIVE_W NATIVE_H FINAL_W FINAL_H<newline>BASE64
+      `Write-Output ("$nw $nh $fw $fh"); ` +
+      `Write-Output ([Convert]::ToBase64String($ms.ToArray()))`,
     ], { timeout: 10000, maxBuffer: 20 * 1024 * 1024 });
+
+    const lines = stdout.trim().split(/\r?\n/);
+    const headerParts = (lines[0] || '').split(' ');
+    const nativeW = parseInt(headerParts[0] || '0', 10);
+    const nativeH = parseInt(headerParts[1] || '0', 10);
+    const finalW = parseInt(headerParts[2] || '0', 10);
+    const finalH = parseInt(headerParts[3] || '0', 10);
+    const base64 = (lines.slice(1).join('') || '').trim();
+    const downscaled = nativeW > 0 && finalW > 0 && finalW < nativeW;
+    const scale = downscaled ? nativeW / finalW : 1;
+
+    let text: string;
+    if (downscaled) {
+      // Tell the model the scale factor explicitly. Modern LLMs are reliable
+      // at multiplying small ints; this avoids a stateful coords-mode hack
+      // in mouse_click. Coords from read_screen / OCR are still NATIVE
+      // pixels — only screenshot-derived coords need scaling.
+      text =
+        `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
+        `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
+        `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`;
+    } else {
+      text = `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+    }
+
     return {
-      text: 'Screenshot captured',
-      image: { data: stdout.trim(), mimeType: 'image/png' },
+      text,
+      image: { data: base64, mimeType: 'image/png' },
     };
   } catch (err) {
     return { text: `(screenshot error: ${err instanceof Error ? err.message : ''})` };

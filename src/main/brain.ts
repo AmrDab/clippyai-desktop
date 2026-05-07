@@ -25,25 +25,24 @@ const API_BASE = 'https://api.clippyai.app';
 const TURN_ENDPOINT = `${API_BASE}/v1/turn`;
 
 /**
- * Tools that modify the screen state. After these fire, we inject a fresh
- * read_screen into the tool's functionResponse so the model sees what
- * actually happened, not what it hoped happened. Fixes the "blind after
- * step 1" problem that caused multi-step tasks to drift.
+ * Tools that change layout/focus and warrant a follow-up read_screen so
+ * the model sees what actually happened. Restricted in v0.11.23 from the
+ * old 13-tool set — type_text / smart_type / key_press / mouse_scroll /
+ * write_clipboard rarely change layout in ways the model needs verified
+ * before its next decision, and the post-tool read_screen costs ~300-600ms
+ * each (UIA call). Removing them saves 2-3 seconds end-to-end on a
+ * 12-step task with mixed clicks + typing. The model can still call
+ * read_screen voluntarily when it wants to verify.
  */
 const UI_MODIFYING_TOOLS = new Set([
   'open_app',
   'focus_window',
   'smart_click',
-  'smart_type',
-  'type_text',
-  'key_press',
   'mouse_click',
   'mouse_double_click',
   'mouse_right_click',
   'mouse_drag',
-  'mouse_scroll',
   'navigate_browser',
-  'write_clipboard',
 ]);
 
 // ========== Gemini content shape (local types — no runtime SDK dep) ==========
@@ -674,11 +673,23 @@ export class Brain {
     try {
       if (!this.greetedOnWake) {
         this.greetedOnWake = true;
-        log.info('Clippy.say', { text: "Hi! Click me to chat. I can help with whatever you're working on!", animation: 'Wave', trigger: 'wake_greeting' });
-        this.emit('clippy-speak', {
-          text: "Hi! Click me to chat. I can help with whatever you're working on!",
-          animate: 'Wave',
-        });
+        // v0.11.23 — suppress wake_greeting when name_prompt is going to
+        // fire 1-3s later. Otherwise the user sees:
+        //   "Hi! Click me to chat..."  ← generic
+        //   "Hey! What should I call you?"  ← what they actually need
+        // back-to-back, which feels chatty/repetitive (per user report).
+        // If the profile isn't set up, the post-onboarding flow is about
+        // to fire its own greeting — don't double-talk.
+        const profile = getUserProfile();
+        if (!profile.Name) {
+          this.noRepeatUntil = Date.now() + 120_000;
+          log.debug('Proactive.skip', { reason: 'name_prompt_will_fire' });
+          return;
+        }
+        const name = profile.Name;
+        const greeting = `Hi ${name}! Click me to chat — I can help with whatever you're working on.`;
+        log.info('Clippy.say', { text: greeting, animation: 'Wave', trigger: 'wake_greeting' });
+        this.emit('clippy-speak', { text: greeting, animate: 'Wave' });
         this.noRepeatUntil = Date.now() + 120_000;
         return;
       }

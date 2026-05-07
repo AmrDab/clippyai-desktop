@@ -32,6 +32,15 @@ let mainWindow: BrowserWindow | null = null;
 let updateDownloaded = false;
 let expectedVersion = '';
 const skippedVersions: Set<string> = new Set();
+// v0.11.23 — guard against double registration. The launchWithOnboarding
+// path AND the post-onboarding IPC handler both used to call initUpdater +
+// startPeriodicUpdateChecks, which registered electron-updater event
+// listeners twice (so download-progress, update-downloaded, etc. fired
+// twice) and scheduled two 24h setIntervals (so periodic checks ran 2×).
+// Per report fbfc636e: "Checking for updates..." appeared twice on every
+// scheduled tick. Idempotent guards below.
+let updaterInitialized = false;
+let periodicCheckScheduled = false;
 
 interface UpdaterState {
   lastAttemptedVersion: string;
@@ -221,6 +230,19 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
 export function initUpdater(win: BrowserWindow): void {
   mainWindow = win;
 
+  // v0.11.23 — idempotent. Same root cause as startPeriodicUpdateChecks:
+  // both launchWithOnboarding (no license) and the post-onboarding IPC
+  // handler call this. Without the guard, every autoUpdater event
+  // (`update-available`, `download-progress`, `update-downloaded`,
+  // `error`) would fire its handler twice. Refresh `mainWindow` above so
+  // late callers point notifications at the latest BrowserWindow, then
+  // bail before re-registering listeners.
+  if (updaterInitialized) {
+    log.debug('initUpdater: already initialized, refreshed mainWindow only');
+    return;
+  }
+  updaterInitialized = true;
+
   // We manage install timing ourselves — no race with will-quit hooks.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -312,6 +334,14 @@ export function checkForUpdates(): void {
 const UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 
 export function startPeriodicUpdateChecks(): void {
+  // v0.11.23 — idempotent. Calling twice (launchWithOnboarding +
+  // post-onboarding IPC handler) used to schedule two 24h timers that
+  // both fired on every tick.
+  if (periodicCheckScheduled) {
+    log.debug('startPeriodicUpdateChecks: already scheduled, skipping');
+    return;
+  }
+  periodicCheckScheduled = true;
   setInterval(() => {
     log.debug('Periodic update check (24h)');
     checkForUpdates();
