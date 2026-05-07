@@ -24,7 +24,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { createLogger } from './logger';
+import { createLogger, serializeErr } from './logger';
 
 const log = createLogger('Guides');
 
@@ -75,12 +75,12 @@ function buildIndex(): void {
         }
         count++;
       } catch (err) {
-        log.warn('Skipped malformed guide', { file, error: err instanceof Error ? err.message : String(err) });
+        log.warn('Skipped malformed guide', { file, error: serializeErr(err) });
       }
     }
     log.info('Loaded app guides', { dir, count, processes: Array.from(processToGuide.keys()) });
   } catch (err) {
-    log.warn('Could not enumerate guides directory', { dir, error: err instanceof Error ? err.message : String(err) });
+    log.warn('Could not enumerate guides directory', { dir, error: serializeErr(err) });
   }
 }
 

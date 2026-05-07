@@ -24,7 +24,8 @@ import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import Store from 'electron-store';
-import { createLogger } from './logger';
+import { createLogger, serializeErr, setCurrentTaskId } from './logger';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -281,7 +282,7 @@ export class Brain {
       //   3. stopLoop() — stops the proactive timer.
       this.cancelRequested = true;
       try { abortAllInFlightTools(); } catch (err) {
-        log.warn('abortAllInFlightTools threw on sleep (non-fatal)', String(err).substring(0, 100));
+        log.warn('abortAllInFlightTools threw on sleep (non-fatal)', serializeErr(err));
       }
       this.stopLoop();
     }
@@ -306,7 +307,12 @@ export class Brain {
   // ========== Public entry ==========
 
   async handleUserMessage(text: string): Promise<string> {
-    log.info('User.message', { text: text.substring(0, 200), length: text.length });
+    // v0.11.28 — task correlation id. Set as the logger's current task so every
+    // log line emitted by brain/tools/scripts under this user request shares it.
+    // Cleared in finally{} so post-task lines don't bleed into a stale id.
+    const task_id = randomUUID();
+    setCurrentTaskId(task_id);
+    log.info('User.message', { text: text.substring(0, 200), length: text.length, task_id });
 
     // Name introduction — handled client-side for deterministic UX.
     // Matches "my name is X", "call me X", "I'm X", or just a bare name
@@ -373,13 +379,16 @@ export class Brain {
       // succeeded (per the tool's own result text). Used at task-end to
       // sanity-check the model's "I sent it!" closer.
       const destructiveAttempts: Array<{ name: string; succeeded: boolean; resultPreview: string }> = [];
+      const screenContextOk = !!screenContext && !screenContext.startsWith('<screen-context-');
       log.info('Task.start', {
-        hasScreenContext: !!screenContext,
+        hasScreenContext: screenContextOk,
         screenContextLen: screenContext?.length || 0,
+        screenContextSentinel: screenContextOk ? null : screenContext || null,
         historyMessages: this.history.length,
         activeProcessAtStart,
+        task_id,
       });
-      const initialText = screenContext
+      const initialText = screenContextOk
         ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
         : text;
 
@@ -758,7 +767,7 @@ export class Brain {
         try {
           recordWorkflow(activeProcessAtStart, text, successfulActions);
         } catch (err) {
-          log.warn('recordWorkflow failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+          log.warn('recordWorkflow failed (non-fatal)', { error: serializeErr(err) });
         }
       }
 
@@ -767,12 +776,14 @@ export class Brain {
       }
       return finalSpoken || "I'm not sure what to say.";
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error('handleUserMessage threw', msg);
+      log.error('handleUserMessage threw', serializeErr(err));
       this.emit('clippy-speak', { text: "Hmm, that didn't work. Try again!", animate: 'Alert' });
       return 'Something went wrong.';
     } finally {
       this.isExecuting = false;
+      // Clear task correlation id so subsequent proactive/idle log lines
+      // don't carry a stale id from a finished task.
+      setCurrentTaskId(undefined);
       // Clippy stays always-on-top throughout — no re-assert needed.
       // The window was never lowered during the loop.
     }
@@ -825,7 +836,10 @@ export class Brain {
       }
 
       const context = await this.captureScreenContext(3000);
-      if (!context) { log.debug('Proactive.skip', { reason: 'no_context' }); return; }
+      if (!context || context.startsWith('<screen-context-')) {
+        log.debug('Proactive.skip', { reason: 'no_context', sentinel: context });
+        return;
+      }
 
       // Screen fingerprint — skip API call if nothing changed
       const fingerprint = context.substring(0, 200);
@@ -884,7 +898,7 @@ export class Brain {
       // 10 min cooldown after speaking — silence is better than noise
       this.noRepeatUntil = Date.now() + 600_000;
     } catch (err) {
-      log.error('proactiveCheck failed', err);
+      log.error('proactiveCheck failed', serializeErr(err));
       this.noRepeatUntil = Date.now() + 120_000;
     }
   }
@@ -927,10 +941,23 @@ export class Brain {
 
         return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 2000)}${extras}`;
       })();
-      const timeout = new Promise<string>((r) => setTimeout(() => r(''), timeoutMs));
+      const timeout = new Promise<string>((r) => setTimeout(() => r('<screen-context-timeout>'), timeoutMs));
       return await Promise.race([promise, timeout]);
-    } catch {
-      return '';
+    } catch (err) {
+      // v0.11.28 — was a bare `catch { return ''; }` that swallowed UIA
+      // failures, OCR failures, and read_screen errors silently. Per the
+      // silent-failure audit (subagent C) this was the single most
+      // dangerous mute in the codebase: the model would then run blind
+      // with no screen context AND no log line explaining why.
+      // Now: log the error with full stack and return a sentinel string
+      // so the model knows the visual state is untrusted instead of
+      // assuming "empty screen".
+      log.error('captureScreenContext failed', {
+        timeoutMs,
+        userText: userText?.substring(0, 80),
+        err: serializeErr(err),
+      });
+      return '<screen-context-unavailable>';
     }
   }
 
@@ -1117,7 +1144,7 @@ export class Brain {
             log.debug(`Turn response (${elapsed}ms)`, data.substring(0, 250));
             resolve(parsed);
           } catch (err) {
-            log.error('Turn parse error', String(err));
+            log.error('Turn parse error', serializeErr(err));
             resolve({ error: 'parse_error' });
           }
         });
@@ -1125,7 +1152,7 @@ export class Brain {
 
       req.on('error', (err) => {
         clearTimeout(timeout);
-        log.error('Turn network error', String(err));
+        log.error('Turn network error', serializeErr(err));
         resolve({ error: 'network' });
       });
 

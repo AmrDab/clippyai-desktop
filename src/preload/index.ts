@@ -109,4 +109,17 @@ contextBridge.exposeInMainWorld('clippy', {
 
   // Stripe customer portal (Manage Subscription link)
   openSubscriptionPortal: () => ipcRenderer.invoke('open-subscription-portal'),
+
+  // v0.11.28 — renderer→main log bridge. Lets bubble/clippy/settings code
+  // pipe errors and warnings into the same JSONL file as main, so support
+  // reports include UI-side failures (animation load errors, IPC failures
+  // before main.handle responds, click-handler exceptions, etc).
+  log: (
+    level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
+    component: string,
+    message: string,
+    data?: unknown,
+  ) => {
+    ipcRenderer.send('renderer-log', { level, component, message, data });
+  },
 });

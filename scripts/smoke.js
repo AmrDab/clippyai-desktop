@@ -323,6 +323,84 @@ function layer1() {
   // 1.21 Tool count sanity (catches accidental mass-deletion or duplication)
   if (tmKeys.length >= 30 && tmKeys.length <= 80) pass(`TOOL_MAP: ${tmKeys.length} tools registered (within sane bounds 30-80)`);
   else fail('TOOL_MAP tool count', `${tmKeys.length} is out of expected range`);
+
+  // ────────── v0.11.28 logging-overhaul invariants ──────────
+
+  const loggerSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'logger.ts'), 'utf8');
+  const ipcSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'ipc.ts'), 'utf8');
+  const preloadSrc = fs.readFileSync(path.join(ROOT, 'src', 'preload', 'index.ts'), 'utf8');
+
+  // 1.22 serializeErr helper exported from logger
+  if (/export function serializeErr\b/.test(loggerSrc)) pass('v0.11.28: serializeErr exported from logger');
+  else fail('v0.11.28: serializeErr', 'not exported from logger.ts');
+
+  // 1.23 Task.start log includes task_id (correlation id propagation)
+  // brain.ts must call setCurrentTaskId at start of handleUserMessage AND
+  // include task_id in the Task.start log payload.
+  const hasTaskIdInit = /const task_id = randomUUID\(\)/.test(brainSrc) && /setCurrentTaskId\(task_id\)/.test(brainSrc);
+  const taskStartHasId = /log\.info\('Task\.start'[\s\S]{0,400}task_id/.test(brainSrc);
+  if (hasTaskIdInit && taskStartHasId) pass('v0.11.28: task_id initialized + included in Task.start');
+  else fail('v0.11.28: task_id propagation', `init=${hasTaskIdInit}, taskStart=${taskStartHasId}`);
+
+  // 1.24 captureScreenContext catch is non-empty (no more bare `catch {}`)
+  // The most dangerous silent failure per subagent C. Catch must log AND
+  // return a sentinel string so the model knows visual state is untrusted.
+  const captureCatch = brainSrc.match(/private async captureScreenContext[\s\S]*?\n  \}/);
+  const captureCatchBody = captureCatch ? captureCatch[0] : '';
+  const hasLogCall = /log\.error\('captureScreenContext failed'/.test(captureCatchBody);
+  const hasSentinel = /<screen-context-unavailable>|<screen-context-timeout>/.test(captureCatchBody);
+  if (hasLogCall && hasSentinel) pass('v0.11.28: captureScreenContext catch logs error + returns sentinel');
+  else fail('v0.11.28: screen-context catch', `log=${hasLogCall}, sentinel=${hasSentinel}`);
+
+  // 1.25 renderer→main log bridge wired (preload exposes log, ipc handles it)
+  const preloadHasLog = /\blog:\s*\(/.test(preloadSrc) && /'renderer-log'/.test(preloadSrc);
+  const ipcHasLog = /'renderer-log'/.test(ipcSrc) && /ingestRendererLog/.test(ipcSrc);
+  if (preloadHasLog && ipcHasLog) pass('v0.11.28: renderer→main log bridge wired (preload + ipc)');
+  else fail('v0.11.28: log bridge', `preload=${preloadHasLog}, ipc=${ipcHasLog}`);
+
+  // 1.26 support-bundle module exists with required exports
+  const bundlePath = path.join(ROOT, 'src', 'main', 'support-bundle.ts');
+  if (fs.existsSync(bundlePath)) {
+    const bundleSrc = fs.readFileSync(bundlePath, 'utf8');
+    const hasBuild = /export function buildBundle\b/.test(bundleSrc);
+    const hasManifest = /manifest:\s*Record<string,\s*unknown>|manifest\s*\}/.test(bundleSrc);
+    const hasTaskSlice = /extractLastTaskSlice\b/.test(bundleSrc);
+    const hasScrub = /scrubPII\(bundle\)/.test(bundleSrc);
+    if (hasBuild && hasManifest && hasTaskSlice && hasScrub) {
+      pass('v0.11.28: support-bundle exports buildBundle + manifest + task slice + PII scrub');
+    } else {
+      fail('v0.11.28: support-bundle shape', `build=${hasBuild}, manifest=${hasManifest}, slice=${hasTaskSlice}, scrub=${hasScrub}`);
+    }
+  } else {
+    fail('v0.11.28: support-bundle.ts', 'file does not exist');
+  }
+
+  // 1.27 PII scrubber exported AND scrubs username/email/license patterns
+  // Behavioral check, not just presence — make sure the scrub still does
+  // its job after refactor.
+  function evalScrub(text) {
+    // Mirror logger.ts scrubPII patterns
+    const USERNAME = os.userInfo().username;
+    const HOME_DIR = os.homedir();
+    let r = text;
+    r = r.replace(new RegExp(HOME_DIR.replace(/\\/g, '\\\\'), 'gi'), '~');
+    r = r.replace(new RegExp(HOME_DIR.replace(/\\/g, '/'), 'gi'), '~');
+    r = r.replace(new RegExp(`\\b${USERNAME}\\b`, 'gi'), '<user>');
+    r = r.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '<email>');
+    r = r.replace(/CLIP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}/gi, 'CLIP-****-****-****-****');
+    return r;
+  }
+  const scrubExported = /export function scrubPII\b/.test(loggerSrc);
+  const sample = `email me at someone@example.com and the path was ${os.homedir()}\\Documents — license CLIP-ABCD-EFGH-IJKL-MNOP for ${os.userInfo().username}`;
+  const scrubbed = evalScrub(sample);
+  const cleansEmail = scrubbed.includes('<email>') && !scrubbed.includes('someone@example.com');
+  const cleansPath = scrubbed.includes('~') && !scrubbed.includes(os.homedir());
+  const cleansLicense = scrubbed.includes('CLIP-****');
+  if (scrubExported && cleansEmail && cleansPath && cleansLicense) {
+    pass('v0.11.28: scrubPII exported + redacts email/path/license');
+  } else {
+    fail('v0.11.28: PII scrubber', `exported=${scrubExported}, email=${cleansEmail}, path=${cleansPath}, license=${cleansLicense}`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────

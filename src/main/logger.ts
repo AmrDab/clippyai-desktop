@@ -43,7 +43,7 @@ const PII_PATTERNS: Array<[RegExp, string]> = [
   [/CLIP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}/gi, 'CLIP-****-****-****-****'],
 ];
 
-function scrubPII(text: string): string {
+export function scrubPII(text: string): string {
   let result = text;
   for (const [pattern, replacement] of PII_PATTERNS) {
     result = result.replace(pattern, replacement);
@@ -96,6 +96,40 @@ interface LogEntry {
   component: string;
   msg: string;
   data?: unknown;
+  // v0.11.28 — task correlation id propagated by .child({task_id}) so a single
+  // user request can be traced across brain → tools → script log lines.
+  task_id?: string;
+  // v0.11.28 — 'main' (default) or 'renderer' (forwarded via IPC bridge).
+  source?: 'main' | 'renderer';
+}
+
+/**
+ * Serialize an error to a structured object that survives JSON.stringify.
+ * Replaces ad-hoc String(err) / err.message log sites — those drop the stack
+ * and any custom fields. Use this for every catch-block that logs.
+ */
+export function serializeErr(err: unknown): {
+  message: string;
+  name?: string;
+  stack?: string;
+  code?: string | number;
+  cause?: unknown;
+} {
+  if (err instanceof Error) {
+    const out: ReturnType<typeof serializeErr> = {
+      message: err.message,
+      name: err.name,
+      stack: err.stack?.split('\n').slice(0, 12).join('\n'),
+    };
+    const code = (err as Error & { code?: string | number }).code;
+    if (code !== undefined) out.code = code;
+    const cause = (err as Error & { cause?: unknown }).cause;
+    if (cause !== undefined) out.cause = cause instanceof Error ? serializeErr(cause) : cause;
+    return out;
+  }
+  if (typeof err === 'string') return { message: err };
+  try { return { message: JSON.stringify(err) }; }
+  catch { return { message: '[unserializable error]' }; }
 }
 
 function truncateData(data: unknown): unknown {
@@ -115,7 +149,20 @@ function truncateData(data: unknown): unknown {
   }
 }
 
-function writeLog(level: LogLevel, component: string, message: string, data?: unknown): void {
+// v0.11.28 — current task id, set by brain.beginTask() / endTask().
+// Brain enforces single in-flight task (isExecuting flag), so this is race-free.
+// Tools, scripts, anything triggered from inside a task picks it up automatically.
+let currentTaskId: string | undefined;
+export function setCurrentTaskId(id: string | undefined): void { currentTaskId = id; }
+export function getCurrentTaskId(): string | undefined { return currentTaskId; }
+
+function writeLog(
+  level: LogLevel,
+  component: string,
+  message: string,
+  data?: unknown,
+  ctx?: { task_id?: string; source?: 'main' | 'renderer' },
+): void {
   if (LEVEL_ORDER[level] < LEVEL_ORDER[minLevel]) return;
 
   const entry: LogEntry = {
@@ -124,6 +171,11 @@ function writeLog(level: LogLevel, component: string, message: string, data?: un
     component,
     msg: message,
   };
+
+  // Explicit ctx.task_id wins; otherwise inherit the active task id (if any).
+  const taskId = ctx?.task_id ?? currentTaskId;
+  if (taskId) entry.task_id = taskId;
+  if (ctx?.source) entry.source = ctx.source;
 
   if (data !== undefined) {
     entry.data = truncateData(data);
@@ -152,13 +204,41 @@ function writeLog(level: LogLevel, component: string, message: string, data?: un
 
 // ── Public API ──────────────────────────────────────────────────────
 
-export function createLogger(component: string) {
+export interface Logger {
+  debug: (message: string, data?: unknown) => void;
+  info: (message: string, data?: unknown) => void;
+  warn: (message: string, data?: unknown) => void;
+  error: (message: string, data?: unknown) => void;
+  /** Returns a new logger that injects task_id (and optional source override) into every line. */
+  child: (ctx: { task_id?: string; source?: 'main' | 'renderer' }) => Logger;
+}
+
+function makeLogger(component: string, ctx?: { task_id?: string; source?: 'main' | 'renderer' }): Logger {
   return {
-    debug: (message: string, data?: unknown) => writeLog('DEBUG', component, message, data),
-    info: (message: string, data?: unknown) => writeLog('INFO', component, message, data),
-    warn: (message: string, data?: unknown) => writeLog('WARN', component, message, data),
-    error: (message: string, data?: unknown) => writeLog('ERROR', component, message, data),
+    debug: (message: string, data?: unknown) => writeLog('DEBUG', component, message, data, ctx),
+    info: (message: string, data?: unknown) => writeLog('INFO', component, message, data, ctx),
+    warn: (message: string, data?: unknown) => writeLog('WARN', component, message, data, ctx),
+    error: (message: string, data?: unknown) => writeLog('ERROR', component, message, data, ctx),
+    child: (extra) => makeLogger(component, { ...ctx, ...extra }),
   };
+}
+
+export function createLogger(component: string): Logger {
+  return makeLogger(component);
+}
+
+/**
+ * Direct entry-point used by the renderer→main IPC bridge (preload).
+ * Lets renderer-side errors and warnings land in the same JSONL file.
+ */
+export function ingestRendererLog(
+  level: LogLevel,
+  component: string,
+  message: string,
+  data?: unknown,
+  task_id?: string,
+): void {
+  writeLog(level, component, message, data, { task_id, source: 'renderer' });
 }
 
 export function setLogLevel(level: LogLevel): void {

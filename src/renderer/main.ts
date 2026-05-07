@@ -29,11 +29,38 @@ declare global {
       onUpdateAvailable: (cb: (version: string) => void) => void;
       onUpdateReady: (cb: (version: string) => void) => void;
       onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => void;
+      log?: (level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR', component: string, message: string, data?: unknown) => void;
     };
   }
 }
 
+// v0.11.28 — pipe uncaught renderer errors to the main-process JSONL log so
+// they show up in support reports. Previously the only visible record was
+// DevTools console which the user can't see.
+function installRendererLogBridge(component: string): void {
+  const send = (level: 'WARN' | 'ERROR', message: string, data?: unknown) => {
+    try { window.clippy.log?.(level, component, message, data); } catch { /* bridge unavailable, drop silently */ }
+  };
+  window.addEventListener('error', (e) => {
+    send('ERROR', 'Uncaught error', {
+      message: e.message,
+      filename: e.filename,
+      lineno: e.lineno,
+      colno: e.colno,
+      stack: e.error instanceof Error ? e.error.stack?.split('\n').slice(0, 8).join('\n') : undefined,
+    });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const reason = e.reason;
+    send('ERROR', 'Unhandled promise rejection', {
+      message: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack?.split('\n').slice(0, 8).join('\n') : undefined,
+    });
+  });
+}
+
 async function init(): Promise<void> {
+  installRendererLogBridge('Renderer.main');
   console.log('[Main] Initializing ClippyAI renderer...');
 
   let agentData: AgentData;
@@ -49,6 +76,10 @@ async function init(): Promise<void> {
     console.log('[Main] Assets loaded. Animations:', Object.keys(agentData.animations).length);
   } catch (err) {
     console.error('[Main] Failed to load assets:', err);
+    window.clippy.log?.('ERROR', 'Renderer.main', 'Failed to load assets', {
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack?.split('\n').slice(0, 8).join('\n') : undefined,
+    });
     return;
   }
 

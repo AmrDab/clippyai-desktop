@@ -1,6 +1,6 @@
 import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow, shell } from 'electron';
-import { createLogger } from './logger';
+import { createLogger, serializeErr } from './logger';
 import { cleanupTools } from './tools';
 import fs from 'fs';
 import path from 'path';
@@ -85,7 +85,7 @@ function writeState(state: UpdaterState): void {
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf-8' });
     fs.renameSync(tmp, target);
   } catch (err) {
-    log.warn('State write failed', String(err));
+    log.warn('State write failed', serializeErr(err));
   }
 }
 
@@ -129,7 +129,7 @@ function purgeCache(reason: string): void {
     }
     log.info('Cache purged', { reason, dir });
   } catch (err) {
-    log.warn('Cache purge failed', String(err));
+    log.warn('Cache purge failed', serializeErr(err));
   }
 }
 
@@ -311,7 +311,7 @@ export function initUpdater(win: BrowserWindow): void {
   });
 
   autoUpdater.on('error', (err) => {
-    log.error('Auto-update error', String(err).substring(0, 400));
+    log.error('Auto-update error', serializeErr(err));
     sendToRenderer('update-failed', {
       version: expectedVersion || 'unknown',
       reason: 'updater-error',
@@ -327,7 +327,7 @@ export function checkForUpdates(): void {
   }
 
   autoUpdater.checkForUpdates().catch((err) => {
-    log.warn('Update check failed', String(err).substring(0, 200));
+    log.warn('Update check failed', serializeErr(err));
   });
 }
 
@@ -351,7 +351,7 @@ export function startPeriodicUpdateChecks(): void {
 export function downloadUpdate(): void {
   log.info('User accepted update — downloading');
   autoUpdater.downloadUpdate().catch((err) => {
-    log.error('Download failed', String(err).substring(0, 200));
+    log.error('Download failed', serializeErr(err));
   });
 }
 
@@ -377,7 +377,7 @@ export function openManualUpdatePage(): void {
   } else {
     log.info('No cached installer — opening releases page', { url: RELEASE_PAGE });
     shell.openExternal(RELEASE_PAGE).catch((err) => {
-      log.warn('Failed to open release page', String(err));
+      log.warn('Failed to open release page', serializeErr(err));
     });
   }
 }
@@ -437,7 +437,7 @@ export async function installUpdate(): Promise<void> {
   try {
     cleanupTools();
   } catch (err) {
-    log.warn('cleanupTools error (non-fatal)', String(err));
+    log.warn('cleanupTools error (non-fatal)', serializeErr(err));
   }
 
   // Phase 2: Delete any stale installer.exe sitting in the cache root.
@@ -451,7 +451,7 @@ export async function installUpdate(): Promise<void> {
       log.info('Install.cacheClean', { deleted: staleInstaller });
     }
   } catch (err) {
-    log.warn('Install.cacheClean failed (non-fatal)', String(err));
+    log.warn('Install.cacheClean failed (non-fatal)', serializeErr(err));
   }
 
   // Phase 3: Hand the installer to the user via Explorer. (v0.11.24)
@@ -513,7 +513,7 @@ export async function installUpdate(): Promise<void> {
     ], { timeout: 4000 });
     log.info('Install.unblockedMOTW', { installerPath });
   } catch (err) {
-    log.warn('Install.unblockMOTW failed (non-fatal)', String(err).substring(0, 200));
+    log.warn('Install.unblockMOTW failed (non-fatal)', serializeErr(err));
   }
 
   // Step 2 — open File Explorer with the installer selected. The user

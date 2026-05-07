@@ -14,7 +14,7 @@ import fs from 'fs';
 import os from 'os';
 import http from 'http';
 import { shell, app } from 'electron';
-import { createLogger } from './logger';
+import { createLogger, serializeErr } from './logger';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
@@ -162,7 +162,7 @@ function startPSBridge(): Promise<void> {
           if (head) head.resolve(response);
         }
       } catch (e) {
-        log.warn('PSBridge stdout handler error', String(e).substring(0, 200));
+        log.warn('PSBridge stdout handler error', serializeErr(e));
       }
     });
 
@@ -1481,7 +1481,7 @@ async function spawnCdpBrowser(): Promise<{ ok: boolean; error?: string }> {
       await new Promise((r) => setTimeout(r, 1500));
       return { ok: true };
     } catch (err) {
-      log.warn('CDP browser spawn failed', String(err));
+      log.warn('CDP browser spawn failed', serializeErr(err));
     }
   }
   return { ok: false, error: 'Neither Edge nor Chrome was found in their default install paths.' };
@@ -1788,7 +1788,7 @@ export async function initTools(): Promise<void> {
   try {
     await detectScreenScale();
   } catch (err) {
-    log.warn('Screen scale detection failed', String(err));
+    log.warn('Screen scale detection failed', serializeErr(err));
   }
   // PSBridge warmup is SLOW (~12s on fresh Windows installs) and blocking
   // it here makes Clippy show nothing for ~12s after click-to-launch. Start
@@ -1796,7 +1796,7 @@ export async function initTools(): Promise<void> {
   // calls until the bridge reports READY. Users get a responsive app now;
   // per-call overhead of one-off PS is ~100-500ms until warmup completes.
   startPSBridge().catch((err) => {
-    log.warn('PSBridge startup failed — using fallback one-off PowerShell calls', String(err));
+    log.warn('PSBridge startup failed — using fallback one-off PowerShell calls', serializeErr(err));
   });
   initialized = true;
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
@@ -1817,7 +1817,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     return result;
   } catch (err) {
     const elapsed = Date.now() - startTime;
-    log.error(`Tool ${tool} failed (${elapsed}ms)`, String(err));
+    log.error(`Tool ${tool} failed (${elapsed}ms)`, serializeErr(err));
     return { text: `(tool ${tool} error: ${err instanceof Error ? err.message : String(err)})` };
   }
 }

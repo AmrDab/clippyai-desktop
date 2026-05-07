@@ -71,7 +71,7 @@ import { initStartup } from './startup';
 import { isLicensed, revalidateIfNeeded } from './license';
 import { isProfileSetUp } from './brain';
 import { initTools, cleanupTools } from './tools';
-import { createLogger, cleanOldLogs } from './logger';
+import { createLogger, cleanOldLogs, serializeErr } from './logger';
 import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater';
 
 bootLog('IMPORTS_LOADED');
@@ -142,7 +142,7 @@ app.whenReady().then(async () => {
   try {
     await initTools();
   } catch (err) {
-    log.warn('Tools init failed — desktop automation may be limited', String(err));
+    log.warn('Tools init failed — desktop automation may be limited', serializeErr(err));
   }
 
   if (isLicensed()) {

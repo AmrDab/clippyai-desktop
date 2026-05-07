@@ -2,7 +2,7 @@ import { ipcMain, BrowserWindow, Menu, app, shell } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
 import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage } from './updater';
-import { createLogger } from './logger';
+import { createLogger, serializeErr, ingestRendererLog } from './logger';
 
 const log = createLogger('IPC');
 import {
@@ -31,8 +31,30 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const response = await brain.handleUserMessage(trimmed);
       return response || "Hmm, try again! 📎";
     } catch (err) {
-      log.error('handleUserMessage threw', String(err));
+      log.error('handleUserMessage threw', serializeErr(err));
       return "Something went wrong — try again! 📎";
+    }
+  });
+
+  // v0.11.28 — renderer log bridge. Renderer-side errors and warnings get
+  // forwarded here and written to the same JSONL log as main, so a "Report
+  // issue" bundle includes UI-layer failures (animation load errors,
+  // bubble click-handler exceptions, etc) — previously invisible because
+  // they only hit DevTools console.
+  ipcMain.on('renderer-log', (_event, payload: unknown) => {
+    try {
+      const p = payload as {
+        level?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+        component?: string;
+        message?: string;
+        data?: unknown;
+      };
+      const level = p?.level && ['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(p.level) ? p.level : 'INFO';
+      const component = typeof p?.component === 'string' ? p.component.substring(0, 40) : 'Renderer';
+      const message = typeof p?.message === 'string' ? p.message.substring(0, 500) : '(no message)';
+      ingestRendererLog(level, component, message, p?.data);
+    } catch (err) {
+      log.warn('renderer-log ingest failed', serializeErr(err));
     }
   });
 
@@ -230,54 +252,35 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
 
   // Report logs to backend (with optional user description).
-  // Also includes: the boot log (if the app has recently crashed on startup)
-  // and a list of any crash dump filenames so we can follow up asking for
-  // the actual .dmp file.
+  // v0.11.28 — assembled by support-bundle.ts. Sections: system info,
+  // last task slice (isolated by task_id), boot.log, full clippy.log,
+  // crash dump filenames. PII-scrubbed across the whole bundle. Manifest
+  // is appended to the description so the engineer reading the KV entry
+  // sees app_version + last_task_id + chars without parsing the body.
   ipcMain.handle('report-logs', async (_event, content: string, description?: string) => {
     try {
       const { net } = await import('electron');
+      const { buildBundle } = await import('./support-bundle');
       const licenseKey = getLicenseKey();
 
-      // Boot log tells us the LAST successful startup phase — gold for
-      // diagnosing pre-whenReady crashes.
-      let bootLogContent = '';
-      try {
-        const bootLogPath = path.join(app.getPath('appData'), 'ClippyAI', 'boot.log');
-        if (fs.existsSync(bootLogPath)) {
-          bootLogContent = fs.readFileSync(bootLogPath, 'utf-8').slice(-4000);
-        }
-      } catch { /* boot log optional */ }
-
-      // Crash dump filenames (not the dumps themselves — they can be MB).
-      let crashDumpList: string[] = [];
-      try {
-        const dumpsDir = app.getPath('crashDumps');
-        if (fs.existsSync(dumpsDir)) {
-          crashDumpList = fs.readdirSync(dumpsDir)
-            .filter((f) => f.endsWith('.dmp'))
-            .slice(-5);
-        }
-      } catch { /* crash dumps optional */ }
-
-      const fullLogs = bootLogContent
-        ? `=== boot.log (last 4KB) ===\n${bootLogContent}\n\n=== clippy.log ===\n${content}`
-        : content;
-
-      const fullDescription = crashDumpList.length > 0
-        ? `${description || ''}\n\n[System] ${crashDumpList.length} crash dump(s) on disk: ${crashDumpList.join(', ')}`
-        : (description || '');
+      const { logs, manifest } = buildBundle(content);
+      const fullDescription = `${description || ''}\n\n[manifest] ${JSON.stringify(manifest)}`.substring(0, 4000);
 
       const req = net.request({ url: 'https://api.clippyai.app/report', method: 'POST' });
       req.setHeader('Content-Type', 'application/json');
       req.write(JSON.stringify({
         key: licenseKey,
-        logs: fullLogs,
-        description: fullDescription.substring(0, 4000),
+        logs,
+        description: fullDescription,
         version: app.getVersion(),
       }));
       req.end();
+      log.info('Report.upload', { manifest });
       return true;
-    } catch { return false; }
+    } catch (err) {
+      log.error('Report.upload failed', serializeErr(err));
+      return false;
+    }
   });
 
   // Launch on startup (uses Electron's native login item API)
