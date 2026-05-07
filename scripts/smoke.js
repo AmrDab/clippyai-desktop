@@ -144,6 +144,7 @@ function layer1() {
     'ocr-recognize.ps1',
     'ps-bridge.ps1',
     'show-reminder.ps1',  // v0.11.25 — new helper for cmd-injection fix
+    '_outlook-com-precheck.ps1',  // v0.11.29 — discriminates classic vs new Outlook
   ];
   const missing = required.filter((f) => !fs.existsSync(path.join(SCRIPTS, f)));
   if (missing.length === 0) pass(`scripts present: ${required.length}/${required.length}`);
@@ -400,6 +401,70 @@ function layer1() {
     pass('v0.11.28: scrubPII exported + redacts email/path/license');
   } else {
     fail('v0.11.28: PII scrubber', `exported=${scrubExported}, email=${cleansEmail}, path=${cleansPath}, license=${cleansLicense}`);
+  }
+
+  // ────────── v0.11.29 hotfix invariants ──────────
+
+  // 1.28 Bubble dedup: BubbleController callback must NOT call bubbleCtrl.speak/tts.speak
+  // after sendMessage — brain emits clippy-speak which the IPC listener already renders.
+  const rendererMain = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'main.ts'), 'utf8');
+  const cbBlock = rendererMain.match(/new BubbleController\(async \(userText\) => \{[\s\S]*?^\s*\}\);/m);
+  const cbBody = cbBlock ? cbBlock[0] : '';
+  // After v0.11.29 the success path should ONLY have `await window.clippy.sendMessage(userText);`
+  // — no bubbleCtrl.speak in the try block (catch is allowed).
+  const successPath = cbBody.split('catch')[0] || '';
+  const noDuplicateRender = !/bubbleCtrl\.speak\(response/.test(successPath) && !/tts\.speak\(response/.test(successPath);
+  if (noDuplicateRender) pass('v0.11.29: bubble dedup — sendMessage callback no longer double-renders reply');
+  else fail('v0.11.29: bubble dedup', 'sendMessage callback still calls bubbleCtrl/tts.speak on response');
+
+  // 1.29 TTS emoji strip: stripEmoji helper exists + speak() pipes through it
+  const ttsSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'tts.ts'), 'utf8');
+  const hasStripEmoji = /private stripEmoji\(text: string\):/.test(ttsSrc);
+  const speakUsesStrip = /speak\(text: string\):[^}]*stripEmoji\(text\)/s.test(ttsSrc);
+  const stripsExtPicto = /\\p\{Extended_Pictographic\}/.test(ttsSrc);
+  if (hasStripEmoji && speakUsesStrip && stripsExtPicto) {
+    pass('v0.11.29: TTS stripEmoji exists + speak() pipes through it + uses Extended_Pictographic');
+  } else {
+    fail('v0.11.29: TTS emoji strip', `helper=${hasStripEmoji}, piped=${speakUsesStrip}, regex=${stripsExtPicto}`);
+  }
+
+  // 1.30 Proactive visibility: skip/filter logs MUST be at INFO (production
+  // log level is INFO; DEBUG is invisible). Reading brainSrc fresh because
+  // we already loaded it above but want the post-edit state.
+  const brainSrcNow = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+  const proactiveSkipDebugMatches = (brainSrcNow.match(/log\.debug\('Proactive\.(skip|filtered|silent)/g) || []);
+  const proactiveTickInfo = /log\.info\('Proactive\.tick'/.test(brainSrcNow);
+  if (proactiveSkipDebugMatches.length === 0 && proactiveTickInfo) {
+    pass('v0.11.29: proactive logs all INFO (no DEBUG-level skips) + Proactive.tick gates emit');
+  } else {
+    fail('v0.11.29: proactive log levels', `debug-skips=${proactiveSkipDebugMatches.length}, tick=${proactiveTickInfo}`);
+  }
+
+  // 1.31 lastScreenFingerprint reset on wake (avoid stale-fingerprint silence)
+  const setModeBlock = brainSrcNow.match(/setMode\(mode: 'awake' \| 'sleep'\): void \{[\s\S]*?if \(mode === 'awake'\)[\s\S]*?startLoop\(\)/);
+  const wakeBody = setModeBlock ? setModeBlock[0] : '';
+  if (/lastScreenFingerprint = ''/.test(wakeBody)) pass('v0.11.29: lastScreenFingerprint reset on wake');
+  else fail('v0.11.29: fingerprint reset', 'setMode awake-path does not reset lastScreenFingerprint');
+
+  // 1.32 Outlook precheck helper exists + all 4 com-outlook-*.ps1 dot-source it
+  const precheckPath = path.join(ROOT, 'assets', 'scripts', '_outlook-com-precheck.ps1');
+  if (fs.existsSync(precheckPath)) {
+    const precheckSrc = fs.readFileSync(precheckPath, 'utf8');
+    const hasNewOutlookReason = /new_outlook_no_com/.test(precheckSrc);
+    const checksAppx = /Microsoft\.OutlookForWindows/.test(precheckSrc);
+    const checksOlkProcess = /Get-Process[^\n]*olk/.test(precheckSrc);
+    const fourScripts = ['com-outlook-send-email.ps1', 'com-outlook-create-event.ps1', 'com-outlook-read-inbox.ps1', 'com-outlook-upcoming.ps1'];
+    const allDotSource = fourScripts.every((f) => {
+      const src = fs.readFileSync(path.join(ROOT, 'assets', 'scripts', f), 'utf8');
+      return /_outlook-com-precheck\.ps1/.test(src) && /Test-OutlookComAvailable/.test(src);
+    });
+    if (hasNewOutlookReason && checksAppx && checksOlkProcess && allDotSource) {
+      pass('v0.11.29: Outlook precheck (olk/AppX/COM ProgID) wired into all 4 com-outlook-*.ps1');
+    } else {
+      fail('v0.11.29: Outlook precheck', `reason=${hasNewOutlookReason}, appx=${checksAppx}, olk=${checksOlkProcess}, allWired=${allDotSource}`);
+    }
+  } else {
+    fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
 }
 

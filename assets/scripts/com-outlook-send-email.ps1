@@ -58,6 +58,13 @@ if ([string]::IsNullOrWhiteSpace($to)) { Fail "to is required" }
 if ([string]::IsNullOrWhiteSpace($subject)) { Fail "subject is required (or subjectB64)" }
 if ([string]::IsNullOrWhiteSpace($body)) { Fail "body is required (or bodyB64)" }
 
+# v0.11.29 — pre-flight: distinguish absent-Outlook from new-Outlook (olk.exe)
+# so the model gets an actionable error instead of "Outlook may not be installed"
+# when the user clearly has Outlook just not the COM-capable build.
+. "$PSScriptRoot\_outlook-com-precheck.ps1"
+$check = Test-OutlookComAvailable
+if (-not $check.available) { Fail-Outlook $check }
+
 $outlook = $null
 $mail = $null
 try {

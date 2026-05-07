@@ -22,6 +22,11 @@ if ($daysAhead -gt 90) { $daysAhead = 90 }
 if ($count -lt 1) { $count = 1 }
 if ($count -gt 100) { $count = 100 }
 
+# v0.11.29 — pre-flight: distinguish absent-Outlook from new-Outlook (olk.exe).
+. "$PSScriptRoot\_outlook-com-precheck.ps1"
+$check = Test-OutlookComAvailable
+if (-not $check.available) { Fail-Outlook $check }
+
 $outlook = $null
 $ns = $null
 try {

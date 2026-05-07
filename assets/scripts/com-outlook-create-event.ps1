@@ -41,6 +41,11 @@ try {
     Fail "Invalid start datetime '$start'"
 }
 
+# v0.11.29 — pre-flight: distinguish absent-Outlook from new-Outlook (olk.exe).
+. "$PSScriptRoot\_outlook-com-precheck.ps1"
+$check = Test-OutlookComAvailable
+if (-not $check.available) { Fail-Outlook $check }
+
 $outlook = $null
 $item = $null
 try {

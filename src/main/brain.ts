@@ -265,6 +265,10 @@ export class Brain {
     if (mode === 'awake') {
       this.greetedOnWake = false;
       this.noRepeatUntil = 0;
+      // v0.11.29 — reset fingerprint on wake so a stale "screen unchanged"
+      // marker from before sleep doesn't permanently silence proactive on
+      // the SAME app. Per user report: "proactive on, 300s, Clippy silent."
+      this.lastScreenFingerprint = '';
       this.startLoop();
     } else {
       // Sleep is a hard stop. Three layers, in order:
@@ -806,10 +810,18 @@ export class Brain {
   }
 
   private async proactiveCheck(): Promise<void> {
-    if (this.mode !== 'awake') return;
-    if (!settingsStore.get('proactiveEnabled')) return;
-    if (Date.now() < this.noRepeatUntil) return;
-    if (this.isExecuting) return;
+    // v0.11.29 — these gating checks were silent (no log). Per user report
+    // "Clippy stays silent, proactive on at 300s", we now emit Proactive.tick
+    // INFO logs so production reports show whether the loop is even firing
+    // and which gate is closing it.
+    if (this.mode !== 'awake') { log.info('Proactive.tick', { gate: 'not_awake', mode: this.mode }); return; }
+    if (!settingsStore.get('proactiveEnabled')) { log.info('Proactive.tick', { gate: 'disabled' }); return; }
+    if (Date.now() < this.noRepeatUntil) {
+      log.info('Proactive.tick', { gate: 'cooldown', remaining_ms: this.noRepeatUntil - Date.now() });
+      return;
+    }
+    if (this.isExecuting) { log.info('Proactive.tick', { gate: 'task_in_flight' }); return; }
+    log.info('Proactive.tick', { gate: 'open' });
 
     try {
       if (!this.greetedOnWake) {
@@ -824,7 +836,7 @@ export class Brain {
         const profile = getUserProfile();
         if (!profile.Name) {
           this.noRepeatUntil = Date.now() + 120_000;
-          log.debug('Proactive.skip', { reason: 'name_prompt_will_fire' });
+          log.info('Proactive.skip', { reason: 'name_prompt_will_fire' });
           return;
         }
         const name = profile.Name;
@@ -837,13 +849,24 @@ export class Brain {
 
       const context = await this.captureScreenContext(3000);
       if (!context || context.startsWith('<screen-context-')) {
-        log.debug('Proactive.skip', { reason: 'no_context', sentinel: context });
+        log.info('Proactive.skip', { reason: 'no_context', sentinel: context });
         return;
       }
 
-      // Screen fingerprint — skip API call if nothing changed
-      const fingerprint = context.substring(0, 200);
-      if (fingerprint === this.lastScreenFingerprint) { log.debug('Proactive.skip', { reason: 'screen_unchanged' }); return; }
+      // Screen fingerprint — skip API call if nothing changed.
+      // v0.11.29 — bumped from 200 → 800 chars + included extras (guides,
+      // workflow hints) so two visits to the SAME window with different
+      // foreground content (different Outlook email, different VS Code
+      // file) still register as "changed". The 200-char fingerprint was
+      // tripping false-identical on every interval when the user was
+      // sitting on the same app, leading to permanent silence.
+      const fingerprint = context.substring(0, 800);
+      if (fingerprint === this.lastScreenFingerprint) {
+        // Was DEBUG (invisible in production) — promoted to INFO so users
+        // who report "Clippy never speaks" can see this in their bundle.
+        log.info('Proactive.skip', { reason: 'screen_unchanged', fingerprint_len: fingerprint.length });
+        return;
+      }
       this.lastScreenFingerprint = fingerprint;
 
       // D2: max_tokens was 120 which truncated legitimate one-sentence tips
@@ -862,7 +885,7 @@ export class Brain {
       // BUG 4 FIX: if Kimi hit max_tokens, the tip is truncated mid-sentence.
       // A half-sentence shown to the user is worse than silence — discard it.
       if ((resp as TurnSuccess).finish_reason === 'length' || (resp as TurnSuccess).finish_reason === 'MAX_TOKENS') {
-        log.debug('Proactive.filtered', { reason: 'truncated_by_max_tokens' });
+        log.info('Proactive.filtered', { reason: 'truncated_by_max_tokens' });
         return;
       }
 
@@ -878,14 +901,14 @@ export class Brain {
       const firstLine = rawReply.split('\n').map((l) => l.trim()).find((l) => l.length > 0) || '';
       const reply = firstLine;
 
-      if (!reply || reply.includes('__SILENT__')) { log.debug('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
-      if (reply.length > 160) { log.debug('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
+      if (!reply || reply.includes('__SILENT__')) { log.info('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
+      if (reply.length > 160) { log.info('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
       // Defense-in-depth narration filter.
-      if (/^\s*[-•*]\s|^\s*\d+[.)]\s/.test(reply)) { log.debug('Proactive.filtered', { reason: 'starts_with_list_marker', text: reply.substring(0, 60) }); return; }
+      if (/^\s*[-•*]\s|^\s*\d+[.)]\s/.test(reply)) { log.info('Proactive.filtered', { reason: 'starts_with_list_marker', text: reply.substring(0, 60) }); return; }
       const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) (provide|suggest|recommend)|useful tips? for|potential tips?|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|(what|how) could (i|you)|could suggest|could recommend|they (might|may) (want|be)|given that|no windows|empty desktop|not much to|the screen is|there('?s| are) (nothing|no |not)|nothing (specific|to|visible)|based on (the|what)|from the screen|nothing stands out)\b/i;
-      if (NARRATION_RE.test(reply)) { log.debug('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
+      if (NARRATION_RE.test(reply)) { log.info('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
       if (this.isSimilarToRecent(reply)) {
-        log.debug('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
+        log.info('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
         return;
       }
 

@@ -21,6 +21,11 @@ if ($count -lt 1) { $count = 1 }
 if ($count -gt 50) { $count = 50 }
 $onlyUnread = ($unreadOnly -eq "true" -or $unreadOnly -eq "1")
 
+# v0.11.29 — pre-flight: distinguish absent-Outlook from new-Outlook (olk.exe).
+. "$PSScriptRoot\_outlook-com-precheck.ps1"
+$check = Test-OutlookComAvailable
+if (-not $check.available) { Fail-Outlook $check }
+
 $outlook = $null
 $ns = $null
 try {

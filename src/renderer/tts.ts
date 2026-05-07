@@ -33,10 +33,24 @@ export class TTS {
     this.selectVoice();
   }
 
+  /**
+   * v0.11.29 — strip emoji + pictographs before passing to the speech engine.
+   * Without this, the SAPI voice reads "📎" aloud as the literal word
+   * "paperclip" at the end of every reply (per user report 573d7579).
+   * Bubble display keeps the emoji — only the audio stream is cleaned.
+   */
+  private stripEmoji(text: string): string {
+    return text
+      .replace(/\p{Extended_Pictographic}/gu, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
   speak(text: string): void {
-    if (!this.enabled || !text.trim()) return;
+    const clean = this.stripEmoji(text);
+    if (!this.enabled || !clean) return;
     this.synth.cancel();
-    const utt = new SpeechSynthesisUtterance(text);
+    const utt = new SpeechSynthesisUtterance(clean);
     utt.rate = this.rate;
     utt.pitch = 1.0;
     utt.volume = 0.9;

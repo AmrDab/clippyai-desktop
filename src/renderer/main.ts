@@ -97,9 +97,12 @@ async function init(): Promise<void> {
   const bubbleCtrl = new BubbleController(async (userText) => {
     clippyCtrl.think();
     try {
-      const response = await window.clippy.sendMessage(userText);
-      bubbleCtrl.speak(response);
-      tts.speak(response);
+      // v0.11.29 — fire-and-forget the IPC. Brain emits 'clippy-speak' for
+      // EVERY reply (including the same `response` we'd get here), and the
+      // onSpeak listener below renders + speaks it. Calling bubbleCtrl.speak
+      // and tts.speak here too caused EVERY message to render TWICE in the
+      // bubble + speak TWICE through TTS. Per support report 573d7579.
+      await window.clippy.sendMessage(userText);
     } catch {
       bubbleCtrl.speak("Sorry, I couldn't connect right now.");
       clippyCtrl.alert();
