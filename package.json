@@ -17,12 +17,14 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "vendor": "node scripts/vendor-clawdcursor.js",
-    "pack": "npm run vendor && npm run build && electron-builder --dir",
-    "dist": "npm run vendor && npm run build && electron-builder",
+    "rebuild-natives": "electron-rebuild -f -w keytar",
+    "pack": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder --dir",
+    "dist": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder",
     "postinstall": "node scripts/copy-assets.js",
     "smoke": "node scripts/smoke.js",
     "smoke:1": "node scripts/smoke.js --layer=1",
-    "smoke:2": "node scripts/smoke.js --layer=2"
+    "smoke:2": "node scripts/smoke.js --layer=2",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@octokit/rest": "^21.0.0",
@@ -36,6 +38,7 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
     "@types/node": "^20.0.0",
     "@types/qrcode": "^1.5.5",
     "@types/ws": "^8.18.1",
