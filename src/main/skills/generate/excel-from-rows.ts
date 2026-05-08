@@ -1,9 +1,6 @@
 import path from 'path';
 import { getOutputDir } from './output-dir';
-
-interface ToolResult {
-  text: string;
-}
+import type { ToolResult } from '../../types/tool-result';
 
 interface Sheet {
   name: string;

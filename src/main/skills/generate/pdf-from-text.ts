@@ -1,9 +1,6 @@
 import path from 'path';
 import { getOutputDir } from './output-dir';
-
-interface ToolResult {
-  text: string;
-}
+import type { ToolResult } from '../../types/tool-result';
 
 /** Sanitize filename: strip path separators, add timestamp if no extension. */
 function sanitizeFilename(raw: string): string {

@@ -19,10 +19,7 @@ const ALLOWED_SCHEMES = new Set([
   'zoommtg',
 ]);
 
-export interface ToolResult {
-  text: string;
-  image?: Buffer;
-}
+import type { ToolResult } from '../types/tool-result';
 
 export async function openUrl(params: Record<string, unknown>): Promise<ToolResult> {
   const url = String(params.url || '');

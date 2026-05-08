@@ -28,6 +28,7 @@ import { openUrl } from './skills/openurl';
 import { spotifyPlayUri } from './skills/spotify';
 import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/github';
 import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, TIER5_FALLBACK_MAP } from './clawd-fallback';
+import type { ToolResult } from './types/tool-result';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -76,7 +77,14 @@ async function execFileAbortable(
   activeAborts.add(ac);
   try {
     // Cast widens the options type to match the original execFile signature.
-    return await execFileAsync(file, args, { ...options, signal: ac.signal } as Parameters<typeof execFileAsync>[2]);
+    const r = await execFileAsync(file, args, { ...options, signal: ac.signal } as Parameters<typeof execFileAsync>[2]);
+    // @types/node 20+ widens stdout/stderr to string | Buffer because execFile
+    // can return Buffers when encoding is null. We always pass string-encoding
+    // (default 'utf8'), so coerce explicitly to keep the API stable.
+    return {
+      stdout: typeof r.stdout === 'string' ? r.stdout : r.stdout.toString('utf8'),
+      stderr: typeof r.stderr === 'string' ? r.stderr : r.stderr.toString('utf8'),
+    };
   } finally {
     activeAborts.delete(ac);
   }
@@ -389,11 +397,8 @@ async function detectScreenScale(): Promise<void> {
 }
 
 // ── Tool Implementations ─────────────────────────────────────────
-
-interface ToolResult {
-  text: string;
-  image?: { data: string; mimeType: string };
-}
+// ToolResult is shared across the whole tool surface; canonical definition
+// lives in `./types/tool-result` so skill modules import the same type.
 
 /**
  * Strip Clippy's own window(s) from a read_screen result so the brain

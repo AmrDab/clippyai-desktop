@@ -3,11 +3,7 @@
  */
 
 import { openUrl } from './openurl';
-
-export interface ToolResult {
-  text: string;
-  image?: Buffer;
-}
+import type { ToolResult } from '../types/tool-result';
 
 export async function spotifyPlayUri(params: Record<string, unknown>): Promise<ToolResult> {
   const uri = String(params.uri || '');

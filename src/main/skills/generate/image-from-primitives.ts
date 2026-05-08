@@ -1,10 +1,6 @@
 import path from 'path';
 import { getOutputDir } from './output-dir';
-
-interface ToolResult {
-  text: string;
-  image?: { data: string; mimeType: string };
-}
+import type { ToolResult } from '../../types/tool-result';
 
 interface Primitive {
   shape: 'line' | 'circle' | 'rect' | 'text';

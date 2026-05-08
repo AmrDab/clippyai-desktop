@@ -4,11 +4,7 @@
  */
 
 import { getSecret } from './secrets';
-
-export interface ToolResult {
-  text: string;
-  image?: Buffer;
-}
+import type { ToolResult } from '../types/tool-result';
 
 async function getOctokit() {
   const pat = await getSecret('clippy.github', 'pat');
