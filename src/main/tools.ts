@@ -21,6 +21,9 @@ import { excelFromRows } from './skills/generate/excel-from-rows';
 import { imageFromPrimitives } from './skills/generate/image-from-primitives';
 import { pdfFromText } from './skills/generate/pdf-from-text';
 import { qrcodeFromText } from './skills/generate/qrcode-from-text';
+import { openUrl } from './skills/openurl';
+import { spotifyPlayUri } from './skills/spotify';
+import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/github';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -2071,6 +2074,12 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   cdp_switch_tab: cdpSwitchTab,
   cdp_scroll: cdpScroll,
   detect_webview_apps: detectWebviewApps,
+  // Tier 3: Web APIs & Deep Links
+  github_create_issue: githubCreateIssue,
+  github_get_pr: githubGetPr,
+  github_list_issues: githubListIssues,
+  open_url: openUrl,
+  spotify_play_uri: spotifyPlayUri,
   // Aliases
   smart_read: readScreen,
   // Tier 1 — local artifact generation (no GUI automation required)
