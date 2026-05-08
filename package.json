@@ -25,8 +25,10 @@
     "smoke:2": "node scripts/smoke.js --layer=2"
   },
   "dependencies": {
+    "@octokit/rest": "^21.0.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
+    "keytar": "^7.9.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {

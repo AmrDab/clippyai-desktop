@@ -16,6 +16,9 @@ import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
+import { openUrl } from './skills/openurl';
+import { spotifyPlayUri } from './skills/spotify';
+import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/github';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -1774,6 +1777,12 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   cdp_switch_tab: cdpSwitchTab,
   cdp_scroll: cdpScroll,
   detect_webview_apps: detectWebviewApps,
+  // Tier 3: Web APIs & Deep Links
+  github_create_issue: githubCreateIssue,
+  github_get_pr: githubGetPr,
+  github_list_issues: githubListIssues,
+  open_url: openUrl,
+  spotify_play_uri: spotifyPlayUri,
   // Aliases
   smart_read: readScreen,
 };
