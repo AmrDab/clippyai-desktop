@@ -16,6 +16,11 @@ import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
+import { docxFromBlocks } from './skills/generate/docx-from-blocks';
+import { excelFromRows } from './skills/generate/excel-from-rows';
+import { imageFromPrimitives } from './skills/generate/image-from-primitives';
+import { pdfFromText } from './skills/generate/pdf-from-text';
+import { qrcodeFromText } from './skills/generate/qrcode-from-text';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -1776,6 +1781,12 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   detect_webview_apps: detectWebviewApps,
   // Aliases
   smart_read: readScreen,
+  // Tier 1 — local artifact generation (no GUI automation required)
+  generate_docx: docxFromBlocks,
+  generate_excel: excelFromRows,
+  generate_image: imageFromPrimitives,
+  generate_pdf: pdfFromText,
+  generate_qrcode: qrcodeFromText,
 };
 
 // ── Public API ───────────────────────────────────────────────────

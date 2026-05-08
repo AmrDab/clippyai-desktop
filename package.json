@@ -25,12 +25,18 @@
     "smoke:2": "node scripts/smoke.js --layer=2"
   },
   "dependencies": {
+    "canvas": "^2.11.2",
+    "docx": "^8.5.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
+    "exceljs": "^4.4.0",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
     "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/qrcode": "^1.5.5",
     "@types/ws": "^8.18.1",
     "clippyjs": "^0.1.0",
     "electron": "^29.0.0",
