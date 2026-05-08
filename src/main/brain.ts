@@ -20,6 +20,7 @@
 
 import { BrowserWindow, net, app } from 'electron';
 import { executeTool, abortAllInFlightTools } from './tools';
+import { TOOL_META } from './tool-meta';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
@@ -92,6 +93,27 @@ function soundsLikeClaimedSuccess(text: string): boolean {
   // false positives like "presented", "submitted to git" (not "submitted").
   return /\b(sent|posted|submitted|created|deleted|saved|published|emailed|booked|scheduled)\b/.test(t)
     && !/\b(will|going to|let me|trying|attempting|about to|i'll|i’ll|would)\b.*\b(send|post|submit|create|delete|save|publish|email|book|schedule)\b/.test(t);
+}
+
+/**
+ * Tier-aware tool selection (Pipeline v0 PR 5).
+ *
+ * The brain ships `tool_tiers` to /v1/turn so the server can prepend
+ * `[T<tier>]` to each function declaration's description and append the
+ * "prefer the lowest-tier tool that fits the task" line to the system
+ * prompt. The system prompt and tool schema are owned by the API; this
+ * client just provides the metadata. See src/main/tool-meta.ts for the
+ * source-of-truth registry.
+ *
+ * If the API does not yet consume `tool_tiers`, the field is ignored and
+ * behavior is unchanged — safe to deploy ahead of the orchestrator wiring.
+ */
+function buildToolTiers(): Record<string, { tier: number; cost: string }> {
+  const out: Record<string, { tier: number; cost: string }> = {};
+  for (const [name, meta] of Object.entries(TOOL_META)) {
+    out[name] = { tier: meta.tier, cost: meta.cost };
+  }
+  return out;
 }
 
 // ========== Wire content shape used by /v1/turn (Kimi K2 backend) ==========
@@ -1179,7 +1201,10 @@ export class Brain {
         resolve({ error: 'network' });
       });
 
-      req.write(JSON.stringify({ contents, ...opts }));
+      // tool_tiers — see buildToolTiers above. Server appends "[Tn]" to each
+      // declared function's description and adds a "prefer lowest tier" line
+      // to the system prompt. Forward-compatible: ignored if not yet wired.
+      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), ...opts }));
       req.end();
     });
   }

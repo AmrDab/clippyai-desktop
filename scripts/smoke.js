@@ -446,6 +446,94 @@ function layer1() {
   if (/lastScreenFingerprint = ''/.test(wakeBody)) pass('v0.11.29: lastScreenFingerprint reset on wake');
   else fail('v0.11.29: fingerprint reset', 'setMode awake-path does not reset lastScreenFingerprint');
 
+  // 1.33 tier-meta-coverage — every key in TOOL_MAP has a matching key in
+  // TOOL_META and vice versa. Source-of-truth for tiers is tool-meta.ts;
+  // this catches drift when tools.ts gains/loses an entry.
+  // 1.34 tier-values-valid — tier ∈ {1..5}, cost ∈ {cheap,medium,expensive}.
+  // 1.35 tier-fallback-references-real-tools — fallback_alternative names
+  //      must point at a real TOOL_MAP key.
+  try {
+    const toolsPath = path.join(ROOT, 'src', 'main', 'tools.ts');
+    const metaPath = path.join(ROOT, 'src', 'main', 'tool-meta.ts');
+    const toolsSrc = fs.readFileSync(toolsPath, 'utf8');
+    const metaSrc = fs.readFileSync(metaPath, 'utf8');
+
+    // Extract TOOL_MAP keys: capture between `const TOOL_MAP ... > = {` and
+    // the matching closing `};`. The TOOL_MAP type signature contains `=>`
+    // inside `Promise<ToolResult>` so we anchor on `> = {` rather than `[^=]*=`.
+    const toolMapMatch = toolsSrc.match(/const TOOL_MAP\b[\s\S]*?>\s*=\s*\{([\s\S]*?)\n\};/);
+    const toolMapBody = toolMapMatch ? toolMapMatch[1] : '';
+    const toolMapKeys = new Set();
+    for (const line of toolMapBody.split('\n')) {
+      const m = line.match(/^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
+      if (m) toolMapKeys.add(m[1]);
+    }
+
+    // Extract TOOL_META keys + tier/cost values.
+    const metaMapMatch = metaSrc.match(/export const TOOL_META[^=]*=\s*\{([\s\S]*?)\n\};/);
+    const metaBody = metaMapMatch ? metaMapMatch[1] : '';
+    const metaEntries = []; // {name, tier, cost, fallback}
+    const metaKeys = new Set();
+    for (const line of metaBody.split('\n')) {
+      const m = line.match(/^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*\{(.*?)\}/);
+      if (!m) continue;
+      const name = m[1];
+      const inner = m[2];
+      metaKeys.add(name);
+      const tierM = inner.match(/tier:\s*(\d+)/);
+      const costM = inner.match(/cost:\s*'([^']+)'/);
+      const fbM = inner.match(/fallback_alternative:\s*'([^']+)'/);
+      metaEntries.push({
+        name,
+        tier: tierM ? Number(tierM[1]) : NaN,
+        cost: costM ? costM[1] : '',
+        fallback: fbM ? fbM[1] : null,
+      });
+    }
+
+    // 1.33 coverage
+    const orphansInMap = [...toolMapKeys].filter((k) => !metaKeys.has(k));
+    const orphansInMeta = [...metaKeys].filter((k) => !toolMapKeys.has(k));
+    if (toolMapKeys.size > 0 && orphansInMap.length === 0 && orphansInMeta.length === 0) {
+      pass(`tier-meta-coverage: ${toolMapKeys.size} tools tagged, no orphans`);
+    } else if (toolMapKeys.size === 0) {
+      fail('tier-meta-coverage', 'could not parse TOOL_MAP keys from tools.ts');
+    } else {
+      fail(
+        'tier-meta-coverage',
+        `missing-in-meta=[${orphansInMap.join(',')}] missing-in-map=[${orphansInMeta.join(',')}]`,
+      );
+    }
+
+    // 1.34 valid tier/cost values
+    const VALID_TIERS = new Set([1, 2, 3, 4, 5]);
+    const VALID_COSTS = new Set(['cheap', 'medium', 'expensive']);
+    const badEntries = metaEntries.filter(
+      (e) => !VALID_TIERS.has(e.tier) || !VALID_COSTS.has(e.cost),
+    );
+    if (metaEntries.length > 0 && badEntries.length === 0) {
+      pass(`tier-values-valid: ${metaEntries.length} entries, all tier/cost in range`);
+    } else if (metaEntries.length === 0) {
+      fail('tier-values-valid', 'could not parse any TOOL_META entries');
+    } else {
+      const sample = badEntries.slice(0, 3).map((e) => `${e.name}(tier=${e.tier},cost=${e.cost})`).join(',');
+      fail('tier-values-valid', `bad=${badEntries.length}: ${sample}`);
+    }
+
+    // 1.35 fallback_alternative points at a real tool
+    const badFallbacks = metaEntries.filter(
+      (e) => e.fallback && !toolMapKeys.has(e.fallback),
+    );
+    if (badFallbacks.length === 0) {
+      pass('tier-fallback-references-real-tools: all fallback_alternative refs valid');
+    } else {
+      const sample = badFallbacks.map((e) => `${e.name}->${e.fallback}`).join(',');
+      fail('tier-fallback-references-real-tools', `dangling=[${sample}]`);
+    }
+  } catch (e) {
+    fail('tier-meta tests', e.message.substring(0, 120));
+  }
+
   // 1.32 Outlook precheck helper exists + all 4 com-outlook-*.ps1 dot-source it
   const precheckPath = path.join(ROOT, 'assets', 'scripts', '_outlook-com-precheck.ps1');
   if (fs.existsSync(precheckPath)) {
