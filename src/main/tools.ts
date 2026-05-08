@@ -113,6 +113,15 @@ let psReady = false;
 let psQueue: Array<{ cmd: string; resolve: (v: string) => void; reject: (e: Error) => void }> = [];
 let psBuffer = '';
 
+// Health monitor state
+let psHealthInterval: ReturnType<typeof setInterval> | null = null;
+// Respawn rate limiter: max 3 respawns in any 60s rolling window.
+// Once exceeded, psBridge stays null and psCommand falls back to one-off
+// PowerShell calls indefinitely until the next app restart.
+let psRespawnsThisMinute = 0;
+let psRespawnWindowStart = 0;
+let psDegraded = false; // permanently degraded for this session
+
 function startPSBridge(): Promise<void> {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(getScriptsDir(), 'ps-bridge.ps1');
@@ -174,6 +183,12 @@ function startPSBridge(): Promise<void> {
       log.info('PSBridge exited', { code });
       psBridge = null;
       psReady = false;
+      // Clear the health-check interval so a stale ping doesn't fire and
+      // try to send to the now-dead process after a respawn starts a new one.
+      if (psHealthInterval) {
+        clearInterval(psHealthInterval);
+        psHealthInterval = null;
+      }
       // Reject any pending queries
       for (const q of psQueue) q.reject(new Error('PSBridge exited'));
       psQueue = [];
@@ -181,9 +196,123 @@ function startPSBridge(): Promise<void> {
   });
 }
 
+/**
+ * Respawn the PSBridge if allowed by the rate limiter (max 3 in 60s).
+ * Called from psHealthCheck on failure and could be extended to retry
+ * after unexpected exits. Sets psDegraded=true and gives up permanently
+ * if the limit is exceeded — psCommand falls back to one-off PowerShell.
+ */
+function maybeRespawnPSBridge(): void {
+  const now = Date.now();
+  // Roll the window if more than 60s has elapsed since the window started
+  if (now - psRespawnWindowStart > 60_000) {
+    psRespawnsThisMinute = 0;
+    psRespawnWindowStart = now;
+  }
+
+  if (psRespawnsThisMinute >= 3) {
+    if (!psDegraded) {
+      psDegraded = true;
+      log.error('PSBridge: 3 respawns in 60s — permanently degraded for this session. All UIA commands will use one-off PowerShell fallback. Restart the app to restore the bridge.');
+    }
+    return;
+  }
+
+  psRespawnsThisMinute++;
+  log.warn('PSBridge: respawning', { attempt: psRespawnsThisMinute, windowStart: new Date(psRespawnWindowStart).toISOString() });
+  startPSBridge().catch((err) => {
+    log.warn('PSBridge respawn failed', serializeErr(err));
+  });
+}
+
+/**
+ * Health check: send a trivial PowerShell expression and expect the
+ * sentinel back within 2 seconds. On failure, kill the bridge cleanly
+ * and trigger a respawn (subject to rate limit).
+ *
+ * Runs every 30 seconds while the bridge is up. The interval is cleared
+ * in the exit handler and restarted (via initTools → startPSBridge) if
+ * the bridge respawns.
+ */
+async function psHealthCheck(): Promise<void> {
+  if (!psReady || !psBridge) return; // bridge not up — nothing to check
+  if (psDegraded) return; // permanently degraded — don't bother
+
+  const local = psBridge;
+  const PING_CMD = '& {1}';
+  const PING_TIMEOUT_MS = 2000;
+
+  try {
+    const result = await Promise.race([
+      psCommand(PING_CMD),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('health-check timeout (2s)')), PING_TIMEOUT_MS),
+      ),
+    ]);
+    // Expected: the bridge echoes "1" followed by "__END__"
+    if (!String(result).trim().startsWith('1')) {
+      log.warn('PSBridge health check: unexpected response', { result: String(result).substring(0, 80) });
+      // Unexpected response is a yellow flag but not fatal — don't kill
+      // the bridge over one bad response.
+    }
+    // Happy path — bridge is healthy, do nothing.
+  } catch (err) {
+    log.warn('PSBridge health check failed — killing bridge and respawning', {
+      msg: err instanceof Error ? err.message : String(err),
+    });
+    // Kill the bridge cleanly. The exit handler will reject any queued
+    // promises, null out psBridge/psReady, and clear this interval.
+    if (local && !local.killed) {
+      try { local.kill(); } catch { /* already dead */ }
+    }
+    maybeRespawnPSBridge();
+  }
+}
+
+/**
+ * Write `data` to the bridge's stdin. Returns true on success, false if the
+ * write failed (EPIPE, destroyed stream, etc.). Never throws — callers
+ * handle false by falling back or rejecting the queued promise explicitly.
+ *
+ * This is the only place in the codebase that writes to psBridge.stdin.
+ * Keeping all writes here makes it impossible for EPIPE to reach the
+ * uncaughtException handler: the write is wrapped, any OS-level error is
+ * caught here, and the caller is given a clean boolean.
+ */
+function safePsWrite(local: ChildProcess, data: string): boolean {
+  if (!local.stdin || local.stdin.destroyed || !local.stdin.writable || local.killed) {
+    return false;
+  }
+  try {
+    local.stdin.write(data);
+    return true;
+  } catch (writeErr) {
+    // EPIPE or similar OS pipe error. The bridge is dead. Log once so we
+    // can detect patterns in boot.log, but do NOT propagate — the caller
+    // will reject the pending promise with a clean error instead.
+    log.warn('safePsWrite: stdin write failed (bridge likely dead)', {
+      msg: writeErr instanceof Error ? writeErr.message : String(writeErr),
+    });
+    return false;
+  }
+}
+
 async function psCommand(cmd: string): Promise<string> {
-  if (!psBridge || !psReady) {
-    // Fallback: one-off powershell call
+  // Atomic snapshot: capture psBridge in a local const BEFORE the ready
+  // check. The exit handler sets psBridge=null asynchronously; without the
+  // snapshot, the check (psBridge && psReady) could pass and then
+  // psBridge could become null between the check and the write — that
+  // was the exact race that caused the EPIPE storm (line 204 old code).
+  const local = psBridge;
+  if (
+    !psReady
+    || !local
+    || !local.stdin
+    || local.stdin.destroyed
+    || !local.stdin.writable
+    || local.killed
+  ) {
+    // Bridge not usable — one-off fallback
     try {
       const { stdout } = await execFileAsync('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd,
@@ -195,13 +324,32 @@ async function psCommand(cmd: string): Promise<string> {
   }
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('PSBridge command timeout (10s)')), 10000);
+    const timer = setTimeout(() => {
+      // Timeout: remove from queue so the response handler doesn't resolve
+      // a dead promise later. We know index 0 is ours only if the queue is
+      // strictly FIFO and we haven't been removed already — find by cmd.
+      const idx = psQueue.findIndex((q) => q.cmd === cmd);
+      if (idx !== -1) psQueue.splice(idx, 1);
+      reject(new Error('PSBridge command timeout (10s)'));
+    }, 10000);
+
     psQueue.push({
       cmd,
       resolve: (v) => { clearTimeout(timer); resolve(v); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    psBridge!.stdin?.write(cmd + '\n');
+
+    // Use the local snapshot — NOT psBridge — so we write to the same
+    // process we just validated above. If safePsWrite returns false, the
+    // bridge died in the tiny window after our snapshot. Reject now rather
+    // than waiting for the 10s timeout.
+    if (!safePsWrite(local, cmd + '\n')) {
+      clearTimeout(timer);
+      // Remove the entry we just pushed
+      const idx = psQueue.findIndex((q) => q.cmd === cmd);
+      if (idx !== -1) psQueue.splice(idx, 1);
+      reject(new Error('PSBridge stdin not writable (bridge died before write)'));
+    }
   });
 }
 
@@ -1065,15 +1213,106 @@ async function getFocusedElement(): Promise<ToolResult> {
 
 // ── COM Automation Tools ─────────────────────────────────────────
 
-async function runComScript(
+/**
+ * Structured result from a COM script invocation. brain.ts's hallucination
+ * guard (brain.ts:726-750) checks destructive tool results for the
+ * `(error:CODE)` prefix to detect false-success claims. errorCode lets
+ * callers branch programmatically without string-parsing.
+ */
+type ComErrorCode =
+  | 'OUTLOOK_NOT_RUNNING'   // _outlook-com-precheck: outlook_not_installed
+  | 'OUTLOOK_NEW_NO_COM'    // _outlook-com-precheck: new_outlook_no_com
+  | 'COM_ERROR'             // Generic COM activation / script runtime error
+  | 'TIMEOUT'               // execFileAbortable timed out
+  | 'PERMISSION_DENIED'     // Access denied from OS / UAC
+  | 'SCRIPT_NOT_FOUND'      // .ps1 file missing from scripts dir
+  | 'UNKNOWN';              // Unclassified failure
+
+interface ComResult {
+  ok: boolean;
+  data?: unknown;        // Parsed JSON payload on success
+  errorCode?: ComErrorCode;
+  message: string;       // Human-readable summary (success or error)
+}
+
+/**
+ * Map a raw error string from a PowerShell COM script to a ComErrorCode.
+ * The precheck script emits structured reason strings; generic catch blocks
+ * emit freetext. We classify by substring matching as a fallback.
+ */
+function classifyComError(errorField: string, rawMsg: string): ComErrorCode {
+  // Structured reason strings from _outlook-com-precheck.ps1
+  if (errorField === 'new_outlook_no_com') return 'OUTLOOK_NEW_NO_COM';
+  if (errorField === 'outlook_not_installed') return 'OUTLOOK_NOT_RUNNING';
+
+  // Freetext heuristics — order matters, more specific first
+  const combined = (errorField + ' ' + rawMsg).toLowerCase();
+  if (combined.includes('timeout') || combined.includes('timed out')) return 'TIMEOUT';
+  if (combined.includes('access denied') || combined.includes('unauthorized') || combined.includes('permission')) return 'PERMISSION_DENIED';
+  if (
+    combined.includes('outlook') && (
+      combined.includes('not installed') || combined.includes('not running') ||
+      combined.includes('cannot create') || combined.includes('com object') ||
+      combined.includes('0x80040154') || combined.includes('class not registered')
+    )
+  ) return 'OUTLOOK_NOT_RUNNING';
+  if (
+    combined.includes('com') || combined.includes('comobject') ||
+    combined.includes('createobject') || combined.includes('progid')
+  ) return 'COM_ERROR';
+
+  return 'UNKNOWN';
+}
+
+/**
+ * Human-readable message for the model when a COM call fails.
+ * Format: `(error:CODE) <actionable sentence>`
+ * brain.ts hallucination guard parses the `(error:CODE)` prefix.
+ */
+function comErrorMessage(code: ComErrorCode, scriptDetail: string): string {
+  switch (code) {
+    case 'OUTLOOK_NOT_RUNNING':
+      return `(error:OUTLOOK_NOT_RUNNING) Outlook isn't running or isn't installed. Want me to start it, or use a browser-based approach instead?`;
+    case 'OUTLOOK_NEW_NO_COM':
+      return `(error:OUTLOOK_NEW_NO_COM) You have the new Outlook (olk.exe) which doesn't support COM automation. Use mailto: or open Outlook in the browser and I'll drive it via smart_click.`;
+    case 'TIMEOUT':
+      return `(error:TIMEOUT) The COM operation timed out. The app may be busy or frozen. ${scriptDetail}`;
+    case 'PERMISSION_DENIED':
+      return `(error:PERMISSION_DENIED) Access was denied. Try running as administrator or check file/app permissions. ${scriptDetail}`;
+    case 'COM_ERROR':
+      return `(error:COM_ERROR) COM automation failed. ${scriptDetail}`;
+    case 'SCRIPT_NOT_FOUND':
+      return `(error:SCRIPT_NOT_FOUND) Internal error: the automation script is missing. Reinstall ClippyAI. ${scriptDetail}`;
+    default:
+      return `(error:UNKNOWN) The operation failed. ${scriptDetail}`;
+  }
+}
+
+/**
+ * Run a bundled PowerShell COM script and return a structured ComResult.
+ *
+ * On success: ok=true, data=parsed JSON payload, message=success summary.
+ * On failure: ok=false, errorCode=classified code, message=(error:CODE) text
+ *   for brain.ts hallucination guard.
+ *
+ * All callers receive ToolResult via runComScript() which calls this
+ * internally. The ComResult type is exported for callers that need to branch
+ * on errorCode without re-parsing the message string.
+ */
+async function runComScriptStructured(
   scriptName: string,
   args: string[],
   timeoutMs = 20000,
-): Promise<ToolResult> {
+): Promise<ComResult> {
   const scriptPath = path.join(getScriptsDir(), scriptName);
   if (!fs.existsSync(scriptPath)) {
-    return { text: `(script not found: ${scriptName})` };
+    return {
+      ok: false,
+      errorCode: 'SCRIPT_NOT_FOUND',
+      message: comErrorMessage('SCRIPT_NOT_FOUND', `(${scriptName})`),
+    };
   }
+
   try {
     // v0.11.26 — abortable so setMode('sleep') can kill the child mid-flight.
     const { stdout, stderr } = await execFileAbortable('powershell.exe', [
@@ -1081,16 +1320,27 @@ async function runComScript(
       '-File', scriptPath,
       ...args,
     ], { timeout: timeoutMs, maxBuffer: 5 * 1024 * 1024 });
+
     // Last non-empty line is the JSON result
     const lines = stdout.trim().split('\n').map((l) => l.trim()).filter(Boolean);
     const lastLine = lines[lines.length - 1] || '';
     try {
       const parsed = JSON.parse(lastLine);
-      if (parsed.ok === false) return { text: `Error: ${parsed.error}` };
-      return { text: JSON.stringify(parsed) };
+      if (parsed.ok === false) {
+        const errorField = String(parsed.error || '');
+        const msgField = String(parsed.message || '');
+        const code = classifyComError(errorField, msgField);
+        return {
+          ok: false,
+          errorCode: code,
+          message: comErrorMessage(code, msgField || errorField),
+        };
+      }
+      return { ok: true, data: parsed, message: JSON.stringify(parsed) };
     } catch {
       // Not JSON — return raw output (shouldn't happen normally)
-      return { text: stdout.trim() || stderr.trim() || '(no output)' };
+      const raw = stdout.trim() || stderr.trim() || '(no output)';
+      return { ok: true, data: raw, message: raw };
     }
   } catch (err) {
     // v0.11.22 — capture stderr from the failed PowerShell invocation so the
@@ -1106,7 +1356,8 @@ async function runComScript(
     const e = err as { message?: string; stderr?: string; stdout?: string; code?: number; signal?: string };
     const stderrTrimmed = (e.stderr || '').trim();
     const stdoutTrimmed = (e.stdout || '').trim();
-    const msg = e.message || String(err);
+    const rawMsg = e.message || String(err);
+
     log.warn('runComScript failed', {
       script: scriptName,
       argCount: args.length,
@@ -1115,6 +1366,21 @@ async function runComScript(
       stdoutPreview: stdoutTrimmed.substring(0, 200),
       stderrPreview: stderrTrimmed.substring(0, 200),
     });
+
+    // Check if it was an abort (sleep/cancel signal) — not a COM failure
+    if (rawMsg.includes('AbortError') || rawMsg.includes('signal is aborted')) {
+      return { ok: false, errorCode: 'UNKNOWN', message: '(error:UNKNOWN) Operation was cancelled.' };
+    }
+
+    // Check for timeout specifically (execFileAbortable timeout option)
+    if (rawMsg.includes('ETIMEDOUT') || rawMsg.includes('timed out') || e.signal === 'SIGTERM') {
+      return {
+        ok: false,
+        errorCode: 'TIMEOUT',
+        message: comErrorMessage('TIMEOUT', `(${scriptName} exceeded ${timeoutMs}ms)`),
+      };
+    }
+
     // 1. Try parsing stdout as JSON — that's where Fail() writes
     if (stdoutTrimmed) {
       const lines = stdoutTrimmed.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -1122,17 +1388,43 @@ async function runComScript(
       try {
         const parsed = JSON.parse(lastLine);
         if (parsed && parsed.ok === false && typeof parsed.error === 'string') {
-          return { text: `Error: ${parsed.error}` };
+          const code = classifyComError(parsed.error, parsed.message || '');
+          return {
+            ok: false,
+            errorCode: code,
+            message: comErrorMessage(code, parsed.message || parsed.error),
+          };
         }
       } catch { /* not JSON, fall through */ }
     }
-    // 2. Otherwise surface stderr (rare for our scripts but possible)
-    if (stderrTrimmed) {
-      return { text: `(com script error in ${scriptName}: ${stderrTrimmed.substring(0, 400)})` };
-    }
-    // 3. Last resort — the wrapper exception message
-    return { text: `(com script error in ${scriptName}: ${msg.substring(0, 400)})` };
+
+    // 2. Otherwise classify from stderr / exception message
+    const detail = stderrTrimmed || rawMsg;
+    const code = classifyComError('', detail);
+    return {
+      ok: false,
+      errorCode: code,
+      message: comErrorMessage(code, detail.substring(0, 300)),
+    };
   }
+}
+
+/**
+ * Public wrapper: calls runComScriptStructured and converts to ToolResult.
+ * All existing COM tool callers use this signature — no caller changes needed.
+ *
+ * On success: ToolResult.text = JSON payload string (unchanged behaviour).
+ * On failure: ToolResult.text = `(error:CODE) <message>` for hallucination
+ *   guard detection, replacing the previous `Error: ...` prefix which was
+ *   not parseable by brain.ts.
+ */
+async function runComScript(
+  scriptName: string,
+  args: string[],
+  timeoutMs = 20000,
+): Promise<ToolResult> {
+  const result = await runComScriptStructured(scriptName, args, timeoutMs);
+  return { text: result.message };
 }
 
 async function createReminder(params: Record<string, unknown>): Promise<ToolResult> {
@@ -1149,7 +1441,7 @@ async function createReminder(params: Record<string, unknown>): Promise<ToolResu
   const result = await runComScript('com-create-reminder.ps1', [
     '-titleB64', titleB64, '-datetime', datetime, '-notesB64', notesB64,
   ], 15000);
-  if (result.text.startsWith('Error:')) return result;
+  if (result.text.startsWith('Error:') || result.text.startsWith('(error:')) return result;
   try {
     const r = JSON.parse(result.text);
     return { text: `Reminder set! "${title}" will appear at ${r.scheduledFor} (task: ${r.taskName})` };
@@ -1160,7 +1452,7 @@ async function readFile(params: Record<string, unknown>): Promise<ToolResult> {
   const filePath = String(params.path || '');
   if (!filePath) return { text: 'Error: path is required' };
   const result = await runComScript('com-read-file.ps1', ['-path', filePath], 10000);
-  if (result.text.startsWith('Error:')) return result;
+  if (result.text.startsWith('Error:') || result.text.startsWith('(error:')) return result;
   try {
     const r = JSON.parse(result.text);
     return { text: `File: ${filePath}\nLines: ${r.lines} | Size: ${r.sizeBytes} bytes\n\n${r.content}` };
@@ -1179,7 +1471,7 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
   const result = await runComScript('com-write-file.ps1', [
     '-path', filePath, '-contentB64', contentB64, '-mode', mode,
   ], 10000);
-  if (result.text.startsWith('Error:')) return result;
+  if (result.text.startsWith('Error:') || result.text.startsWith('(error:')) return result;
   try {
     const r = JSON.parse(result.text);
     return { text: `File written: ${r.path} (${r.bytesWritten} bytes, mode=${r.mode})` };
@@ -1194,7 +1486,7 @@ async function runPowershell(params: Record<string, unknown>): Promise<ToolResul
   // partial execution. Subagent A flagged this as a latent P1.
   const scriptB64 = Buffer.from(script, 'utf8').toString('base64');
   const result = await runComScript('com-run-powershell.ps1', ['-scriptB64', scriptB64], 20000);
-  if (result.text.startsWith('Error:')) return result;
+  if (result.text.startsWith('Error:') || result.text.startsWith('(error:')) return result;
   try {
     const r = JSON.parse(result.text);
     return { text: r.output?.substring(0, 3000) || '(no output)' };
@@ -1798,6 +2090,19 @@ export async function initTools(): Promise<void> {
   startPSBridge().catch((err) => {
     log.warn('PSBridge startup failed — using fallback one-off PowerShell calls', serializeErr(err));
   });
+
+  // Health monitor: every 30s, ping the bridge. On failure: kill + respawn
+  // (max 3 per 60s window, then permanent degradation to one-off fallback).
+  // The interval is also cleared in the PSBridge exit handler so a stale
+  // ping cannot fire and try to write to a bridge that is mid-respawn.
+  psHealthInterval = setInterval(() => {
+    psHealthCheck().catch((err) => {
+      // psHealthCheck never throws by design — this is a belt-and-suspenders
+      // catch in case an internal promise rejects unexpectedly.
+      log.warn('psHealthCheck uncaught error', serializeErr(err));
+    });
+  }, 30_000);
+
   initialized = true;
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
 }
@@ -1834,6 +2139,13 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  * OS confirms the kill before we hand control back to app.quit.
  */
 export function cleanupTools(): void {
+  // Stop the health monitor first so it can't fire during teardown and
+  // attempt a respawn while we're in the middle of killing the bridge.
+  if (psHealthInterval) {
+    clearInterval(psHealthInterval);
+    psHealthInterval = null;
+  }
+
   if (psBridge && !psBridge.killed && psBridge.pid) {
     try {
       const { spawnSync } = require('child_process') as typeof import('child_process');
