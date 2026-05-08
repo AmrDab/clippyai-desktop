@@ -109,11 +109,25 @@ app.on('second-instance', () => {
 // undefined). The asymmetry with unhandledRejection (which only logs) was
 // itself a bug — they should behave the same way. The user sees Clippy
 // "shut down on its own and had to be reopened mid task" because of this.
+//
+// EPIPE BRANCH REMOVED (was lines 113-115).
+// What it was masking: psCommand() in tools.ts used psBridge! (non-null
+// assertion) to write to stdin AFTER the exit handler could have nulled
+// psBridge — a classic TOCTOU race. The OS pipe was closed but the write
+// still fired, producing EPIPE. The swallower hid ~500K of these per
+// session from clippy-2026-05-05.log.1.
+//
+// Why it is now safe to remove: tools.ts safePsWrite() wraps every
+// stdin.write() in try/catch and returns boolean. psCommand() atomically
+// snapshots psBridge before the ready-check and uses the snapshot for
+// the write — the module variable changing concurrently no longer matters.
+// No write can reach an uncaught exception path.
+//
+// How to detect regression: if EPIPE ever returns here, search boot.log
+// for lines matching "UNCAUGHT_EXCEPTION.*EPIPE". That would mean a new
+// code path in tools.ts (or elsewhere) is writing to a pipe without going
+// through safePsWrite.
 process.on('uncaughtException', (err) => {
-  if (err.message?.includes('EPIPE') || err.message?.includes('broken pipe')) {
-    log.warn('Suppressed pipe error', err.message);
-    return;
-  }
   bootLog(`UNCAUGHT_EXCEPTION: ${err.message}`);
   log.error('Uncaught exception (continuing)', err.stack || err.message);
   // Do NOT exit. The renderer + agent loop are robust to one tool failing.
