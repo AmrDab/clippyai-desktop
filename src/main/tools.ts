@@ -1,10 +1,13 @@
 /**
  * ClippyAI Direct Tool Executor
  *
- * Replaces ClawdCursor's HTTP server with in-process tool execution.
- * Uses: nut-js (mouse/keyboard), PowerShell (Windows UIA), sharp (screenshots)
+ * Primary tool execution is in-process; clawdcursor is the Tier 5 final
+ * fallback. Uses: nut-js (mouse/keyboard), PowerShell (Windows UIA), sharp
+ * (screenshots). When in-process tools fail with structured codes
+ * (UI_NOT_FOUND, COM_ERROR, TIMEOUT, PSBRIDGE_DEAD), executeTool retries
+ * via clawdcursor — see clawd-fallback.ts.
  *
- * No separate process, no HTTP, no port 3847, no startup failures.
+ * No separate process for the common path, no HTTP, no port 3847.
  */
 
 import { execFile, ChildProcess, spawn } from 'child_process';
@@ -24,6 +27,7 @@ import { qrcodeFromText } from './skills/generate/qrcode-from-text';
 import { openUrl } from './skills/openurl';
 import { spotifyPlayUri } from './skills/spotify';
 import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/github';
+import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, TIER5_FALLBACK_MAP } from './clawd-fallback';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -2074,12 +2078,14 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   cdp_switch_tab: cdpSwitchTab,
   cdp_scroll: cdpScroll,
   detect_webview_apps: detectWebviewApps,
-  // Tier 3: Web APIs & Deep Links
+  // Tier 3 — Web APIs & Deep Links
   github_create_issue: githubCreateIssue,
   github_get_pr: githubGetPr,
   github_list_issues: githubListIssues,
   open_url: openUrl,
   spotify_play_uri: spotifyPlayUri,
+  // Tier 5 — clawdcursor fallback diagnostics
+  clawd_status: clawdStatus,
   // Aliases
   smart_read: readScreen,
   // Tier 1 — local artifact generation (no GUI automation required)
@@ -2089,6 +2095,34 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   generate_pdf: pdfFromText,
   generate_qrcode: qrcodeFromText,
 };
+
+async function clawdStatus(): Promise<ToolResult> {
+  const ready = isClawdReady();
+  const inst = isClawdInstalled();
+  const h = getClawdHandle();
+  const state = ready ? 'ready' : (inst === false ? 'disabled' : 'installing');
+  const payload: Record<string, unknown> = { state };
+  if (h) {
+    payload.port = h.port;
+    payload.pid = h.pid;
+  }
+  return { text: JSON.stringify(payload) };
+}
+
+// ── Tier 5 fallback wiring ───────────────────────────────────────
+// Codes that signal the in-process attempt failed in a way clawdcursor
+// might recover from. We deliberately do NOT fall back on every error —
+// e.g. validation errors, file-not-found, network errors should not waste
+// a subprocess hop.
+const FALLBACK_ELIGIBLE_CODES = ['UI_NOT_FOUND', 'COM_ERROR', 'TIMEOUT', 'PSBRIDGE_DEAD'];
+const ERROR_CODE_RE = /\(error:([A-Z_]+)\)/;
+
+function isFallbackEligible(text: string | undefined): boolean {
+  if (!text) return false;
+  const m = ERROR_CODE_RE.exec(text);
+  if (!m) return false;
+  return FALLBACK_ELIGIBLE_CODES.includes(m[1]);
+}
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -2135,16 +2169,34 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   }
 
   const startTime = Date.now();
+  let primaryResult: ToolResult;
   try {
-    const result = await fn(params);
+    primaryResult = await fn(params);
     const elapsed = Date.now() - startTime;
-    log.debug(`Tool ${tool} ok (${elapsed}ms)`, result.text?.substring(0, 100));
-    return result;
+    log.debug(`Tool ${tool} ok (${elapsed}ms)`, primaryResult.text?.substring(0, 100));
   } catch (err) {
     const elapsed = Date.now() - startTime;
     log.error(`Tool ${tool} failed (${elapsed}ms)`, serializeErr(err));
-    return { text: `(tool ${tool} error: ${err instanceof Error ? err.message : String(err)})` };
+    primaryResult = { text: `(tool ${tool} error: ${err instanceof Error ? err.message : String(err)})` };
   }
+
+  // Tier 5 fallback: only if (a) result looks like a structured eligible
+  // error, (b) this tool has a clawdcursor counterpart, (c) clawdcursor is
+  // ready. Cheap regex check — single-digit microseconds when not eligible.
+  const fallbackName = TIER5_FALLBACK_MAP[tool];
+  if (fallbackName && isFallbackEligible(primaryResult.text) && isClawdReady()) {
+    log.info(`Tier 5 fallback: ${tool} → clawdcursor.${fallbackName}`);
+    const fallbackResult = await callClawdTool(fallbackName, params, 30_000);
+    // If clawdcursor also failed, return the original — the in-process
+    // error is more user-friendly than CLAWD_FAILED.
+    if (fallbackResult.text.startsWith('(error:CLAWD_FAILED)')) {
+      log.warn(`Tier 5 fallback also failed for ${tool}`, fallbackResult.text);
+      return primaryResult;
+    }
+    return fallbackResult;
+  }
+
+  return primaryResult;
 }
 
 /**
