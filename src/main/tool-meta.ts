@@ -30,7 +30,6 @@ export interface ToolMeta {
 
 export const TOOL_META: Record<string, ToolMeta> = {
   // ── Tier 1 — local artifact generation (added by PR 2) ──────────────
-  generate_image:    { tier: 1, cost: 'cheap',  description: 'Render shapes/lines/text from a JSON spec to a PNG file (canvas, no GUI)' },
   generate_qrcode:   { tier: 1, cost: 'cheap',  description: 'Render text to a QR-code PNG file' },
   generate_excel:    { tier: 1, cost: 'medium', description: 'Build an .xlsx workbook from row data (multi-sheet, exceljs, no Excel needed)' },
   generate_docx:     { tier: 1, cost: 'medium', description: 'Build a .docx document from heading/paragraph/list blocks (no Word needed)' },

@@ -26,7 +26,6 @@
   },
   "dependencies": {
     "@octokit/rest": "^21.0.0",
-    "canvas": "^2.11.2",
     "docx": "^8.5.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",

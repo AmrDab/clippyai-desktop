@@ -21,7 +21,9 @@ import { createLogger, serializeErr } from './logger';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 import { docxFromBlocks } from './skills/generate/docx-from-blocks';
 import { excelFromRows } from './skills/generate/excel-from-rows';
-import { imageFromPrimitives } from './skills/generate/image-from-primitives';
+// generate_image / canvas dep deferred to v0.12.1 — Electron 29 ABI lacks
+// a node-canvas prebuild for win32-x64 and source-build fails on this MSBuild
+// chain. Plan: re-add via @napi-rs/canvas (Node-API, ABI-stable prebuilds).
 import { pdfFromText } from './skills/generate/pdf-from-text';
 import { qrcodeFromText } from './skills/generate/qrcode-from-text';
 import { openUrl } from './skills/openurl';
@@ -2096,7 +2098,6 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   // Tier 1 — local artifact generation (no GUI automation required)
   generate_docx: docxFromBlocks,
   generate_excel: excelFromRows,
-  generate_image: imageFromPrimitives,
   generate_pdf: pdfFromText,
   generate_qrcode: qrcodeFromText,
 };

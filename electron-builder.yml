@@ -50,12 +50,6 @@ nsis:
   deleteAppDataOnUninstall: true
   include: build/installer.nsh
 
-asarUnpack:
-  # canvas has native bindings (.node file) that must be outside the asar
-  # archive so the OS loader can find them at runtime. Without this the
-  # require() resolves into the asar virtual FS and dlopen fails.
-  - "node_modules/canvas/**"
-
 files:
   - out/**/*
   - assets/**/*
