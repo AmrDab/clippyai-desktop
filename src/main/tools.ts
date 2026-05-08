@@ -181,9 +181,50 @@ function startPSBridge(): Promise<void> {
   });
 }
 
+/**
+ * Write `data` to the bridge's stdin. Returns true on success, false if the
+ * write failed (EPIPE, destroyed stream, etc.). Never throws — callers
+ * handle false by falling back or rejecting the queued promise explicitly.
+ *
+ * This is the only place in the codebase that writes to psBridge.stdin.
+ * Keeping all writes here makes it impossible for EPIPE to reach the
+ * uncaughtException handler: the write is wrapped, any OS-level error is
+ * caught here, and the caller is given a clean boolean.
+ */
+function safePsWrite(local: ChildProcess, data: string): boolean {
+  if (!local.stdin || local.stdin.destroyed || !local.stdin.writable || local.killed) {
+    return false;
+  }
+  try {
+    local.stdin.write(data);
+    return true;
+  } catch (writeErr) {
+    // EPIPE or similar OS pipe error. The bridge is dead. Log once so we
+    // can detect patterns in boot.log, but do NOT propagate — the caller
+    // will reject the pending promise with a clean error instead.
+    log.warn('safePsWrite: stdin write failed (bridge likely dead)', {
+      msg: writeErr instanceof Error ? writeErr.message : String(writeErr),
+    });
+    return false;
+  }
+}
+
 async function psCommand(cmd: string): Promise<string> {
-  if (!psBridge || !psReady) {
-    // Fallback: one-off powershell call
+  // Atomic snapshot: capture psBridge in a local const BEFORE the ready
+  // check. The exit handler sets psBridge=null asynchronously; without the
+  // snapshot, the check (psBridge && psReady) could pass and then
+  // psBridge could become null between the check and the write — that
+  // was the exact race that caused the EPIPE storm (line 204 old code).
+  const local = psBridge;
+  if (
+    !psReady
+    || !local
+    || !local.stdin
+    || local.stdin.destroyed
+    || !local.stdin.writable
+    || local.killed
+  ) {
+    // Bridge not usable — one-off fallback
     try {
       const { stdout } = await execFileAsync('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd,
@@ -195,13 +236,32 @@ async function psCommand(cmd: string): Promise<string> {
   }
 
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('PSBridge command timeout (10s)')), 10000);
+    const timer = setTimeout(() => {
+      // Timeout: remove from queue so the response handler doesn't resolve
+      // a dead promise later. We know index 0 is ours only if the queue is
+      // strictly FIFO and we haven't been removed already — find by cmd.
+      const idx = psQueue.findIndex((q) => q.cmd === cmd);
+      if (idx !== -1) psQueue.splice(idx, 1);
+      reject(new Error('PSBridge command timeout (10s)'));
+    }, 10000);
+
     psQueue.push({
       cmd,
       resolve: (v) => { clearTimeout(timer); resolve(v); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    psBridge!.stdin?.write(cmd + '\n');
+
+    // Use the local snapshot — NOT psBridge — so we write to the same
+    // process we just validated above. If safePsWrite returns false, the
+    // bridge died in the tiny window after our snapshot. Reject now rather
+    // than waiting for the 10s timeout.
+    if (!safePsWrite(local, cmd + '\n')) {
+      clearTimeout(timer);
+      // Remove the entry we just pushed
+      const idx = psQueue.findIndex((q) => q.cmd === cmd);
+      if (idx !== -1) psQueue.splice(idx, 1);
+      reject(new Error('PSBridge stdin not writable (bridge died before write)'));
+    }
   });
 }
 
