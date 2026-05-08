@@ -513,7 +513,7 @@ export class Brain {
 
         // Emit text to bubble — structured, clean, no stripping needed
         if (spoken) {
-          const anim = this.pickAnimation(text, spoken, calls.length > 0);
+          const anim = this.pickAnimation(spoken, calls.map((c) => c.name));
           log.info('Clippy.say', { text: spoken, animation: anim, trigger: 'reply', step: step + 1 });
           this.emit('clippy-speak', { text: spoken, animate: anim });
           finalSpoken = spoken;
@@ -1016,63 +1016,45 @@ export class Brain {
    * LookUp*, Print, Processing, RestPose, Save, Searching, SendMail, Thinking,
    * Wave, Writing.
    */
-  private pickAnimation(userText: string, reply: string, hasTools: boolean): string {
-    const u = userText.toLowerCase();
+  /**
+   * Map the current turn to a Clippy animation.
+   *
+   * Two ground-truth signals:
+   *   1. The actual tool Clippy is calling (action phase) — far more reliable
+   *      than parsing user-intent text. "Send an email" might mean compose,
+   *      open Outlook, or something else; the called tool tells us exactly.
+   *   2. Clippy's own reply tone (reply phase) — picks an emotion gesture
+   *      from words Clippy chose to use.
+   *
+   * Replaces the v0.11.x regex that matched USER text — that fired wrong
+   * any time the user said one verb and Clippy did something else.
+   */
+  private pickAnimation(reply: string, toolNames: string[]): string {
     const r = reply.toLowerCase();
     const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
-    // ACTION PHASE — Clippy is doing something
-    if (hasTools) {
-      if (/type|write|draft|compose|email|message|letter/.test(u)) {
-        return pick(['Writing', 'SendMail']);
-      }
-      if (/save|download/.test(u)) return 'Save';
-      if (/print/.test(u)) return 'Print';
-      if (/delete|remove|trash|empty/.test(u)) return 'EmptyTrash';
-      if (/search|find|look|browse/.test(u)) return pick(['Searching', 'CheckingSomething']);
-      if (/design|draw|paint|art|creat/.test(u)) return pick(['GetArtsy', 'Writing']);
-      if (/code|program|script|compile|debug/.test(u)) return 'GetTechy';
-      if (/magic|wizard|automate|bulk/.test(u)) return 'GetWizardy';
+    // ACTION PHASE — animation reflects the tool Clippy is actually invoking.
+    if (toolNames.length > 0) {
+      const t = toolNames[0];
+      if (/^outlook_send_email|^speak_text/.test(t)) return 'SendMail';
+      if (/^excel_|^word_to_pdf|^generate_(docx|excel|pdf|qrcode)|^write_file|^write_clipboard|^create_reminder/.test(t)) return pick(['Writing', 'Save']);
+      if (/^outlook_(read_inbox|create_event|upcoming)|^read_screen|^smart_read|^get_(active_window|windows|focused_element)|^desktop_screenshot|^ocr_read_screen|^read_file|^read_clipboard|^list_files|^search_files_content|^excel_read|^list_processes|^system_info|^clawd_status/.test(t)) return pick(['Searching', 'CheckingSomething']);
+      if (/^cdp_|^navigate_browser|^open_url|^spotify_play_uri|^github_/.test(t)) return 'Searching';
+      if (/^smart_(click|type)|^mouse_|^key_press|^type_text|^focus_window|^minimize_(window|all_windows)|^show_desktop|^open_app|^detect_webview_apps/.test(t)) return pick(['Writing', 'Processing']);
+      if (/^run_powershell|^kill_process|^ping_host|^http_request/.test(t)) return 'GetTechy';
       return pick(['Searching', 'Processing', 'CheckingSomething']);
     }
 
-    // REPLY PHASE — Clippy is responding with text
-    // Playful / entertainment
-    if (/trick|dance|entertain|show me|funny|perform|animat|cool|surprise/.test(u)) {
-      return pick([
-        'Congratulate', 'GetAttention', 'GetArtsy', 'GetWizardy',
-        'IdleAtom', 'IdleRopePile', 'IdleSideToSide', 'IdleEyeBrowRaise',
-        'IdleFingerTap', 'IdleHeadScratch',
-      ]);
-    }
-    // Greetings / goodbyes
-    if (/^(hi|hey|hello|sup|yo|howdy|what'?s up|good morning|good afternoon)/i.test(u)) {
-      return pick(['Wave', 'Greeting']);
-    }
-    if (/^(bye|goodbye|see you|later|cya)/i.test(u)) return 'GoodBye';
-
-    // Question topics → gesture directions feel natural for explanations
-    if (/what|how|why|when|where|which|explain|tell me/.test(u)) {
-      return pick(['Explain', 'GestureUp', 'GestureLeft', 'GestureRight', 'Searching']);
-    }
-
-    // Reply content-based
+    // REPLY PHASE — match Clippy's own emotional tone in the words SHE chose.
+    if (/^(hi|hey|hello|hiya|howdy|sup|yo)\b/.test(r)) return pick(['Wave', 'Greeting']);
+    if (/^(bye|goodbye|later|cya|see you)\b/.test(r)) return 'GoodBye';
     if (/sorry|error|can'?t|couldn'?t|failed|wrong|oops|hmm,? that/.test(r)) return 'Alert';
-    if (/done|success|great|perfect|awesome|ta-?da|congratul|finished|complete/.test(r)) {
-      return pick(['Congratulate', 'GetAttention']);
-    }
-    if (/tip|suggest|recommend|try |you could|you should|maybe/.test(r)) {
-      return pick(['GetAttention', 'Explain', 'GestureUp']);
-    }
-    if (/hmm|let me think|interesting|good question|not sure/.test(r)) {
-      return pick(['Thinking', 'CheckingSomething', 'LookUp', 'LookUpLeft', 'LookUpRight']);
-    }
-    if (/look|see|check|here|there/.test(r)) {
-      return pick(['LookLeft', 'LookRight', 'LookDown', 'LookDownLeft', 'LookDownRight']);
-    }
+    if (/done|success|great|perfect|awesome|ta-?da|congratul|finished|complete/.test(r)) return pick(['Congratulate', 'GetAttention']);
+    if (/tip|suggest|recommend|try |you could|you should|maybe/.test(r)) return pick(['GetAttention', 'Explain', 'GestureUp']);
+    if (/hmm|let me think|interesting|good question|not sure/.test(r)) return pick(['Thinking', 'CheckingSomething', 'LookUp']);
+    if (/look|see|check|here|there/.test(r)) return pick(['LookLeft', 'LookRight', 'LookDown']);
 
-    // Default: a small wave/greeting or a subtle idle gesture
-    return pick(['Wave', 'Greeting', 'GestureUp', 'Explain']);
+    return pick(['Wave', 'GestureUp', 'Explain']);
   }
 
   /**
