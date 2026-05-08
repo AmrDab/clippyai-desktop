@@ -113,6 +113,15 @@ let psReady = false;
 let psQueue: Array<{ cmd: string; resolve: (v: string) => void; reject: (e: Error) => void }> = [];
 let psBuffer = '';
 
+// Health monitor state
+let psHealthInterval: ReturnType<typeof setInterval> | null = null;
+// Respawn rate limiter: max 3 respawns in any 60s rolling window.
+// Once exceeded, psBridge stays null and psCommand falls back to one-off
+// PowerShell calls indefinitely until the next app restart.
+let psRespawnsThisMinute = 0;
+let psRespawnWindowStart = 0;
+let psDegraded = false; // permanently degraded for this session
+
 function startPSBridge(): Promise<void> {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(getScriptsDir(), 'ps-bridge.ps1');
@@ -174,11 +183,90 @@ function startPSBridge(): Promise<void> {
       log.info('PSBridge exited', { code });
       psBridge = null;
       psReady = false;
+      // Clear the health-check interval so a stale ping doesn't fire and
+      // try to send to the now-dead process after a respawn starts a new one.
+      if (psHealthInterval) {
+        clearInterval(psHealthInterval);
+        psHealthInterval = null;
+      }
       // Reject any pending queries
       for (const q of psQueue) q.reject(new Error('PSBridge exited'));
       psQueue = [];
     });
   });
+}
+
+/**
+ * Respawn the PSBridge if allowed by the rate limiter (max 3 in 60s).
+ * Called from psHealthCheck on failure and could be extended to retry
+ * after unexpected exits. Sets psDegraded=true and gives up permanently
+ * if the limit is exceeded — psCommand falls back to one-off PowerShell.
+ */
+function maybeRespawnPSBridge(): void {
+  const now = Date.now();
+  // Roll the window if more than 60s has elapsed since the window started
+  if (now - psRespawnWindowStart > 60_000) {
+    psRespawnsThisMinute = 0;
+    psRespawnWindowStart = now;
+  }
+
+  if (psRespawnsThisMinute >= 3) {
+    if (!psDegraded) {
+      psDegraded = true;
+      log.error('PSBridge: 3 respawns in 60s — permanently degraded for this session. All UIA commands will use one-off PowerShell fallback. Restart the app to restore the bridge.');
+    }
+    return;
+  }
+
+  psRespawnsThisMinute++;
+  log.warn('PSBridge: respawning', { attempt: psRespawnsThisMinute, windowStart: new Date(psRespawnWindowStart).toISOString() });
+  startPSBridge().catch((err) => {
+    log.warn('PSBridge respawn failed', serializeErr(err));
+  });
+}
+
+/**
+ * Health check: send a trivial PowerShell expression and expect the
+ * sentinel back within 2 seconds. On failure, kill the bridge cleanly
+ * and trigger a respawn (subject to rate limit).
+ *
+ * Runs every 30 seconds while the bridge is up. The interval is cleared
+ * in the exit handler and restarted (via initTools → startPSBridge) if
+ * the bridge respawns.
+ */
+async function psHealthCheck(): Promise<void> {
+  if (!psReady || !psBridge) return; // bridge not up — nothing to check
+  if (psDegraded) return; // permanently degraded — don't bother
+
+  const local = psBridge;
+  const PING_CMD = '& {1}';
+  const PING_TIMEOUT_MS = 2000;
+
+  try {
+    const result = await Promise.race([
+      psCommand(PING_CMD),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('health-check timeout (2s)')), PING_TIMEOUT_MS),
+      ),
+    ]);
+    // Expected: the bridge echoes "1" followed by "__END__"
+    if (!String(result).trim().startsWith('1')) {
+      log.warn('PSBridge health check: unexpected response', { result: String(result).substring(0, 80) });
+      // Unexpected response is a yellow flag but not fatal — don't kill
+      // the bridge over one bad response.
+    }
+    // Happy path — bridge is healthy, do nothing.
+  } catch (err) {
+    log.warn('PSBridge health check failed — killing bridge and respawning', {
+      msg: err instanceof Error ? err.message : String(err),
+    });
+    // Kill the bridge cleanly. The exit handler will reject any queued
+    // promises, null out psBridge/psReady, and clear this interval.
+    if (local && !local.killed) {
+      try { local.kill(); } catch { /* already dead */ }
+    }
+    maybeRespawnPSBridge();
+  }
 }
 
 /**
@@ -1858,6 +1946,19 @@ export async function initTools(): Promise<void> {
   startPSBridge().catch((err) => {
     log.warn('PSBridge startup failed — using fallback one-off PowerShell calls', serializeErr(err));
   });
+
+  // Health monitor: every 30s, ping the bridge. On failure: kill + respawn
+  // (max 3 per 60s window, then permanent degradation to one-off fallback).
+  // The interval is also cleared in the PSBridge exit handler so a stale
+  // ping cannot fire and try to write to a bridge that is mid-respawn.
+  psHealthInterval = setInterval(() => {
+    psHealthCheck().catch((err) => {
+      // psHealthCheck never throws by design — this is a belt-and-suspenders
+      // catch in case an internal promise rejects unexpectedly.
+      log.warn('psHealthCheck uncaught error', serializeErr(err));
+    });
+  }, 30_000);
+
   initialized = true;
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
 }
@@ -1894,6 +1995,13 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  * OS confirms the kill before we hand control back to app.quit.
  */
 export function cleanupTools(): void {
+  // Stop the health monitor first so it can't fire during teardown and
+  // attempt a respawn while we're in the middle of killing the bridge.
+  if (psHealthInterval) {
+    clearInterval(psHealthInterval);
+    psHealthInterval = null;
+  }
+
   if (psBridge && !psBridge.killed && psBridge.pid) {
     try {
       const { spawnSync } = require('child_process') as typeof import('child_process');
