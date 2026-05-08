@@ -19,7 +19,7 @@ import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
-import { callClawdTool, isClawdReady, TIER5_FALLBACK_MAP } from './clawd-fallback';
+import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, TIER5_FALLBACK_MAP } from './clawd-fallback';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -1778,9 +1778,24 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   cdp_switch_tab: cdpSwitchTab,
   cdp_scroll: cdpScroll,
   detect_webview_apps: detectWebviewApps,
+  // Tier 5 fallback diagnostics
+  clawd_status: clawdStatus,
   // Aliases
   smart_read: readScreen,
 };
+
+async function clawdStatus(): Promise<ToolResult> {
+  const ready = isClawdReady();
+  const inst = isClawdInstalled();
+  const h = getClawdHandle();
+  const state = ready ? 'ready' : (inst === false ? 'disabled' : 'installing');
+  const payload: Record<string, unknown> = { state };
+  if (h) {
+    payload.port = h.port;
+    payload.pid = h.pid;
+  }
+  return { text: JSON.stringify(payload) };
+}
 
 // ── Tier 5 fallback wiring ───────────────────────────────────────
 // Codes that signal the in-process attempt failed in a way clawdcursor
