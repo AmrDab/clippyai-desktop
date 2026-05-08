@@ -911,24 +911,20 @@ export class Brain {
         return;
       }
 
-      // BUG 3 FIX: Kimi K2.5 reasoning bleeds into content on proactive calls.
-      // The model outputs a multi-line "thinking" paragraph then the actual tip.
-      // Take ONLY the first non-empty line — the actual tip (or __SILENT__).
-      const rawReply = resp.parts
+      // The server (clippyai-api routes/turn.ts proactive sanitize) returns
+      // either a clean one-sentence tip OR the literal __SILENT__ sentinel.
+      // All format + narration gating happens server-side so the patterns
+      // live in one place. Client only does:
+      //   1. React to __SILENT__ (don't speak)
+      //   2. Stateful similarity dedup against recent proactive messages
+      //      (must be client-side because the server is stateless per turn)
+      const reply = resp.parts
         .filter(isText)
         .map((p) => p.text)
         .join('\n')
         .trim();
-      // Find the first non-blank line as the candidate tip
-      const firstLine = rawReply.split('\n').map((l) => l.trim()).find((l) => l.length > 0) || '';
-      const reply = firstLine;
 
       if (!reply || reply.includes('__SILENT__')) { log.info('Proactive.silent', { tokens: (resp as TurnSuccess).tokens_used }); return; }
-      if (reply.length > 160) { log.info('Proactive.filtered', { reason: 'too_long', length: reply.length }); return; }
-      // Defense-in-depth narration filter.
-      if (/^\s*[-•*]\s|^\s*\d+[.)]\s/.test(reply)) { log.info('Proactive.filtered', { reason: 'starts_with_list_marker', text: reply.substring(0, 60) }); return; }
-      const NARRATION_RE = /\b(i see you|you have .+ open|you're (using|looking|working)|i (should|'ll|will) (provide|suggest|recommend)|useful tips? for|potential tips?|since .+ is (the )?active|let me (think|check|try)|here'?s (a|one|some) tips?|(what|how) could (i|you)|could suggest|could recommend|they (might|may) (want|be)|given that|no windows|empty desktop|not much to|the screen is|there('?s| are) (nothing|no |not)|nothing (specific|to|visible)|based on (the|what)|from the screen|nothing stands out)\b/i;
-      if (NARRATION_RE.test(reply)) { log.info('Proactive.filtered', { reason: 'narration', text: reply.substring(0, 60) }); return; }
       if (this.isSimilarToRecent(reply)) {
         log.info('Proactive.filtered', { reason: 'similar_to_recent', text: reply.substring(0, 60) });
         return;
