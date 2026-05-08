@@ -2,37 +2,7 @@ import { ClippyController, AgentData } from './clippy';
 import { BubbleController } from './bubble';
 import { TTS } from './tts';
 
-declare global {
-  interface Window {
-    clippy: {
-      sendMessage: (text: string) => Promise<string>;
-      validateLicense: (key: string) => Promise<{ valid: boolean; plan: string }>;
-      saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
-      getConfig: () => Promise<Record<string, unknown>>;
-      updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
-      onSpeak: (cb: (payload: { text: string; animate: string }) => void) => void;
-      onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
-      onTtsToggle: (cb: (enabled: boolean) => void) => void;
-      onProactiveToggle: (cb: (enabled: boolean) => void) => void;
-      onSpeechRate: (cb: (rate: number) => void) => void;
-      setClickThrough: (enabled: boolean) => void;
-      openSettings: () => void;
-      showContextMenu: () => void;
-      onPlayAnimation: (cb: (name: string) => void) => void;
-      moveWindow: (deltaX: number, deltaY: number) => void;
-      expandWindow: () => void;
-      collapseWindow: () => void;
-      closeWindow: () => void;
-      downloadUpdate: () => Promise<boolean>;
-      installUpdate: () => Promise<boolean>;
-      openManualUpdate: () => Promise<boolean>;
-      onUpdateAvailable: (cb: (version: string) => void) => void;
-      onUpdateReady: (cb: (version: string) => void) => void;
-      onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => void;
-      log?: (level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR', component: string, message: string, data?: unknown) => void;
-    };
-  }
-}
+// Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
 // v0.11.28 — pipe uncaught renderer errors to the main-process JSONL log so
 // they show up in support reports. Previously the only visible record was
@@ -71,8 +41,10 @@ async function init(): Promise<void> {
       import('../../assets/agents/clippy/agent.mjs'),
       import('../../assets/agents/clippy/map.mjs'),
     ]);
-    agentData = agentModule.default;
-    spriteDataUri = mapModule.default;
+    // Wildcard `*.mjs` declarations type the default export as `unknown` to
+    // avoid lying about an asset we don't validate. Cast at the boundary.
+    agentData = agentModule.default as AgentData;
+    spriteDataUri = mapModule.default as string;
     console.log('[Main] Assets loaded. Animations:', Object.keys(agentData.animations).length);
   } catch (err) {
     console.error('[Main] Failed to load assets:', err);

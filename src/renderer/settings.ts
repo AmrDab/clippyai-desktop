@@ -1,25 +1,5 @@
-declare global {
-  interface Window {
-    clippy: {
-      getConfig: () => Promise<Record<string, unknown>>;
-      updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
-      testClawdCursor: () => Promise<boolean>;
-      clearLicense: () => Promise<boolean>;
-      openOnboarding: () => void;
-      openExternalUrl: (url: string) => Promise<boolean>;
-      checkForUpdates: () => Promise<boolean>;
-      downloadUpdate: () => Promise<boolean>;
-      installUpdate: () => Promise<boolean>;
-      onUpdateAvailable: (cb: (version: string) => void) => void;
-      onUpdateNotAvailable: (cb: () => void) => void;
-      onUpdateReady: (cb: (version: string) => void) => void;
-      onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => void;
-      getLaunchOnStartup: () => Promise<boolean>;
-      setLaunchOnStartup: (enabled: boolean) => Promise<boolean>;
-      openSubscriptionPortal: () => Promise<boolean>;
-    };
-  }
-}
+// Window.clippy types live in src/preload/api.d.ts (single source of truth).
+export {};
 
 // Nav switching
 const navItems = document.querySelectorAll<HTMLElement>('.settings-nav-item');

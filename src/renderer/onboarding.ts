@@ -1,15 +1,5 @@
-declare global {
-  interface Window {
-    clippy: {
-      validateLicense: (key: string) => Promise<{ valid: boolean; plan: string }>;
-      saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
-      saveUserProfile: (data: Record<string, string>) => Promise<boolean>;
-      closeWindow: () => void;
-      openExternalUrl: (url: string) => Promise<boolean>;
-      onOnboardingComplete: () => void;
-    };
-  }
-}
+// Window.clippy types live in src/preload/api.d.ts (single source of truth).
+export {};
 
 const LICENSE_REGEX = /^CLIPPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
