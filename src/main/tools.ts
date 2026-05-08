@@ -2170,7 +2170,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   const fn = TOOL_MAP[tool];
   if (!fn) {
     log.warn(`Unknown tool: ${tool}`);
-    return { text: `(unknown tool: ${tool})` };
+    return { text: `(error:UNKNOWN_TOOL) unknown tool: ${tool}` };
   }
 
   const startTime = Date.now();
@@ -2182,7 +2182,11 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   } catch (err) {
     const elapsed = Date.now() - startTime;
     log.error(`Tool ${tool} failed (${elapsed}ms)`, serializeErr(err));
-    primaryResult = { text: `(tool ${tool} error: ${err instanceof Error ? err.message : String(err)})` };
+    // (error:CODE) format keeps brain.ts hallucination guard happy and is
+    // intentionally NOT in FALLBACK_ELIGIBLE_CODES — an in-process exception
+    // is a programming bug or transient I/O failure, not something a Tier 5
+    // UI hop can recover from. Returning a clean code lets the model decide.
+    primaryResult = { text: `(error:TOOL_THREW) ${tool} threw: ${err instanceof Error ? err.message : String(err)}` };
   }
 
   // Tier 5 fallback: only if (a) result looks like a structured eligible

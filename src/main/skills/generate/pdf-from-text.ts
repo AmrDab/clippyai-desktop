@@ -1,14 +1,6 @@
 import path from 'path';
-import { getOutputDir } from './output-dir';
+import { getOutputDir, sanitizeFilename } from './output-dir';
 import type { ToolResult } from '../../types/tool-result';
-
-/** Sanitize filename: strip path separators, add timestamp if no extension. */
-function sanitizeFilename(raw: string): string {
-  let name = raw.replace(/[/\\:*?"<>|]/g, '_').trim();
-  if (!name) name = 'output';
-  if (!name.endsWith('.pdf')) name = `${name}_${Date.now()}.pdf`;
-  return name;
-}
 
 /**
  * Tier 1 — pdf-from-text
@@ -78,7 +70,7 @@ export async function pdfFromText(params: Record<string, unknown>): Promise<Tool
     const pdfBytes = await pdfDoc.save();
 
     const outDir = getOutputDir();
-    const filename = sanitizeFilename(rawFilename);
+    const filename = sanitizeFilename(rawFilename, '.pdf');
     const outPath = path.join(outDir, filename);
 
     const fs = await import('fs');

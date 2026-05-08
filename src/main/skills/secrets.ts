@@ -3,6 +3,10 @@
  * Gracefully handles keytar failures (e.g., missing libsecret on Linux)
  */
 
+import { createLogger } from '../logger';
+
+const log = createLogger('Secrets');
+
 let keytar: any = null;
 let keytarLoadError: string | null = null;
 
@@ -23,12 +27,12 @@ export async function getSecret(service: string, account: string): Promise<strin
   try {
     const loaded = await loadKeytar();
     if (!loaded) {
-      console.warn(`[secrets] keytar unavailable: ${keytarLoadError}`);
+      log.warn('keytar unavailable', { reason: keytarLoadError });
       return null;
     }
     return await keytar.getPassword(service, account);
   } catch (err) {
-    console.warn(`[secrets] getSecret failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn('getSecret failed', { service, account, msg: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
@@ -37,12 +41,12 @@ export async function setSecret(service: string, account: string, value: string)
   try {
     const loaded = await loadKeytar();
     if (!loaded) {
-      console.warn(`[secrets] keytar unavailable: ${keytarLoadError}`);
+      log.warn('keytar unavailable', { reason: keytarLoadError });
       return;
     }
     await keytar.setPassword(service, account, value);
   } catch (err) {
-    console.warn(`[secrets] setSecret failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn('setSecret failed', { service, account, msg: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -50,11 +54,11 @@ export async function clearSecret(service: string, account: string): Promise<voi
   try {
     const loaded = await loadKeytar();
     if (!loaded) {
-      console.warn(`[secrets] keytar unavailable: ${keytarLoadError}`);
+      log.warn('keytar unavailable', { reason: keytarLoadError });
       return;
     }
     await keytar.deletePassword(service, account);
   } catch (err) {
-    console.warn(`[secrets] clearSecret failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn('clearSecret failed', { service, account, msg: err instanceof Error ? err.message : String(err) });
   }
 }

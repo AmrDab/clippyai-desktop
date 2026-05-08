@@ -1,18 +1,10 @@
 import path from 'path';
-import { getOutputDir } from './output-dir';
+import { getOutputDir, sanitizeFilename } from './output-dir';
 import type { ToolResult } from '../../types/tool-result';
 
 interface Sheet {
   name: string;
   rows: unknown[][];
-}
-
-/** Sanitize filename: strip path separators, add timestamp if no extension. */
-function sanitizeFilename(raw: string): string {
-  let name = raw.replace(/[/\\:*?"<>|]/g, '_').trim();
-  if (!name) name = 'output';
-  if (!name.endsWith('.xlsx')) name = `${name}_${Date.now()}.xlsx`;
-  return name;
 }
 
 /**
@@ -51,7 +43,7 @@ export async function excelFromRows(params: Record<string, unknown>): Promise<To
     }
 
     const outDir = getOutputDir();
-    const filename = sanitizeFilename(rawFilename);
+    const filename = sanitizeFilename(rawFilename, '.xlsx');
     const outPath = path.join(outDir, filename);
 
     await workbook.xlsx.writeFile(outPath);

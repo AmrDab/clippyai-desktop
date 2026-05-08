@@ -21,6 +21,7 @@ import os from 'os';
 import path from 'path';
 import { Notification } from 'electron';
 import { createLogger, serializeErr } from './logger';
+import type { ToolResult } from './types/tool-result';
 
 const log = createLogger('Clawd');
 const execFileAsync = promisify(execFile);
@@ -29,11 +30,6 @@ export interface ClawdHandle {
   port: number;
   token: string;
   pid: number;
-}
-
-interface ToolResult {
-  text: string;
-  image?: { data: string; mimeType: string };
 }
 
 let handle: ClawdHandle | null = null;

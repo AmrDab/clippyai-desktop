@@ -4,7 +4,10 @@
  */
 
 import { getSecret } from './secrets';
+import { createLogger } from '../logger';
 import type { ToolResult } from '../types/tool-result';
+
+const log = createLogger('GitHub');
 
 async function getOctokit() {
   const pat = await getSecret('clippy.github', 'pat');
@@ -14,7 +17,7 @@ async function getOctokit() {
     const { Octokit } = await import('@octokit/rest');
     return new Octokit({ auth: pat });
   } catch (err) {
-    console.warn('[github] Failed to load @octokit/rest:', err instanceof Error ? err.message : String(err));
+    log.warn('Failed to load @octokit/rest', { msg: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }

@@ -28,15 +28,19 @@ export async function openUrl(params: Record<string, unknown>): Promise<ToolResu
     return { text: '(error:EMPTY_URL) url parameter is required' };
   }
 
-  let scheme = 'https';
+  // Require an EXPLICIT scheme. Bare "example.com" used to default to 'https'
+  // and pass the allowlist, then shell.openExternal('example.com') on Windows
+  // could match an installed file/protocol handler. Force the caller to be
+  // explicit; if they want https, they say so.
   const colonIdx = url.indexOf(':');
-  if (colonIdx > 0) {
-    const candidate = url.substring(0, colonIdx).toLowerCase();
-    // Only accept schemes that look valid (alphanumeric + dash)
-    if (/^[a-z][a-z0-9+.-]*$/.test(candidate)) {
-      scheme = candidate;
-    }
+  if (colonIdx <= 0) {
+    return { text: '(error:NO_SCHEME) URL must include an explicit scheme (e.g., https://example.com)' };
   }
+  const candidate = url.substring(0, colonIdx).toLowerCase();
+  if (!/^[a-z][a-z0-9+.-]*$/.test(candidate)) {
+    return { text: `(error:INVALID_SCHEME) malformed scheme: ${candidate}` };
+  }
+  const scheme = candidate;
 
   if (!ALLOWED_SCHEMES.has(scheme)) {
     return { text: `(error:SCHEME_NOT_ALLOWED) ${scheme} is not in the allowlist` };

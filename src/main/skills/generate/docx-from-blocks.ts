@@ -1,18 +1,10 @@
 import path from 'path';
-import { getOutputDir } from './output-dir';
+import { getOutputDir, sanitizeFilename } from './output-dir';
 import type { ToolResult } from '../../types/tool-result';
 
 interface Block {
   type: 'heading' | 'paragraph' | 'list';
   content: string | string[];
-}
-
-/** Sanitize filename: strip path separators, add timestamp if no extension. */
-function sanitizeFilename(raw: string): string {
-  let name = raw.replace(/[/\\:*?"<>|]/g, '_').trim();
-  if (!name) name = 'output';
-  if (!name.endsWith('.docx')) name = `${name}_${Date.now()}.docx`;
-  return name;
 }
 
 /**
@@ -71,7 +63,7 @@ export async function docxFromBlocks(params: Record<string, unknown>): Promise<T
     const buffer = await Packer.toBuffer(doc);
 
     const outDir = getOutputDir();
-    const filename = sanitizeFilename(rawFilename);
+    const filename = sanitizeFilename(rawFilename, '.docx');
     const outPath = path.join(outDir, filename);
 
     const fs = await import('fs');
