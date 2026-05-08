@@ -145,6 +145,12 @@ app.whenReady().then(async () => {
     log.warn('Tools init failed — desktop automation may be limited', serializeErr(err));
   }
 
+  // Tier 5 fallback: clawdcursor is optional. Spawn in background; missing
+  // or broken clawdcursor must NEVER block clippy from starting.
+  import('./clawd-fallback').then((m) =>
+    m.startClawd().catch((err) => log.warn('clawdcursor fallback unavailable', err.message)),
+  );
+
   if (isLicensed()) {
     log.info('License found, revalidating...');
     const stillValid = await revalidateIfNeeded();
@@ -212,6 +218,13 @@ function launchWithOnboarding(): void {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  // Stop clawdcursor first — SIGTERM is async, so this fires the signal
+  // and returns immediately. clawdcursor exits cleanly on SIGTERM thanks
+  // to the MCP server lifecycle changes; if it's slow, stopClawd's 2s
+  // grace + SIGKILL fallback runs in the background while we proceed.
+  import('./clawd-fallback')
+    .then((m) => m.stopClawd())
+    .catch((err) => log.warn('clawdcursor stop failed', serializeErr(err)));
   cleanupTools();
   log.info('ClippyAI shutting down');
 });
