@@ -29,6 +29,13 @@ export interface ToolMeta {
 }
 
 export const TOOL_META: Record<string, ToolMeta> = {
+  // ── Tier 1 — local artifact generation (added by PR 2) ──────────────
+  generate_image:    { tier: 1, cost: 'cheap',  description: 'Render shapes/lines/text from a JSON spec to a PNG file (canvas, no GUI)' },
+  generate_qrcode:   { tier: 1, cost: 'cheap',  description: 'Render text to a QR-code PNG file' },
+  generate_excel:    { tier: 1, cost: 'medium', description: 'Build an .xlsx workbook from row data (multi-sheet, exceljs, no Excel needed)' },
+  generate_docx:     { tier: 1, cost: 'medium', description: 'Build a .docx document from heading/paragraph/list blocks (no Word needed)' },
+  generate_pdf:      { tier: 1, cost: 'medium', description: 'Build a .pdf from text content with auto word-wrap (pdf-lib, no Word needed)' },
+
   // ── Tier 2 — OS / shell direct ──────────────────────────────────────
   read_screen:        { tier: 2, cost: 'medium',    description: 'Read what is currently on screen via the Windows accessibility tree (UIA)' },
   smart_read:         { tier: 2, cost: 'medium',    description: 'Alias of read_screen — read the foreground UIA tree' },
@@ -68,8 +75,15 @@ export const TOOL_META: Record<string, ToolMeta> = {
   word_to_pdf:         { tier: 3, cost: 'expensive', description: 'Convert a Word document to PDF via Word COM' },
   create_reminder:     { tier: 3, cost: 'medium',    description: 'Create a Windows reminder / scheduled toast' },
 
+  // ── Tier 3b — Web service APIs (added by PR 3) ───────────────────────
+  github_create_issue: { tier: 3, cost: 'medium',    description: 'Create a GitHub issue via REST API (requires PAT in keytar:clippy.github)' },
+  github_list_issues:  { tier: 3, cost: 'medium',    description: 'List GitHub issues for a repo via REST API' },
+  github_get_pr:       { tier: 3, cost: 'medium',    description: 'Fetch a GitHub pull request by number via REST API' },
+
   // ── Tier 3c — URL scheme / shell.openExternal ────────────────────────
   navigate_browser:    { tier: 3, cost: 'medium',    description: 'Open a URL in the default browser via shell.openExternal' },
+  open_url:            { tier: 3, cost: 'cheap',     description: 'Open a URL or deep-link via the OS handler — allowlisted schemes (mailto, spotify, vscode, slack, ms-teams, zoommtg, https, http, tel, sms)' },
+  spotify_play_uri:    { tier: 3, cost: 'cheap',     description: 'Play a Spotify track/album/playlist/artist by URI via the spotify: deep link' },
 
   // ── Tier 4 — Browser automation via CDP ──────────────────────────────
   cdp_connect:           { tier: 4, cost: 'medium',    description: 'Attach to a Chromium debugging port (CDP)' },
@@ -96,6 +110,12 @@ export const TOOL_META: Record<string, ToolMeta> = {
   mouse_hover:          { tier: 5, cost: 'cheap',     description: 'Move the cursor to absolute screen coordinates' },
   mouse_drag:           { tier: 5, cost: 'medium',    description: 'Drag from one set of screen coordinates to another' },
   mouse_scroll:         { tier: 5, cost: 'cheap',     description: 'Scroll the mouse wheel at the cursor position' },
+
+  // ── Tier 5 diagnostic (added by PR 4) ────────────────────────────────
+  // clawd_status reads the clawdcursor fallback subprocess state. Tagged
+  // tier 2 because it is a status read with no UI driving — it just exposes
+  // whether the Tier-5 fallback is ready, installing, or disabled.
+  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {
