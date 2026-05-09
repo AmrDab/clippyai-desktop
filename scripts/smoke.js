@@ -145,6 +145,7 @@ function layer1() {
     'ps-bridge.ps1',
     'show-reminder.ps1',  // v0.11.25 — new helper for cmd-injection fix
     '_outlook-com-precheck.ps1',  // v0.11.29 — discriminates classic vs new Outlook
+    'olk-send-email-uia.ps1',     // v0.12.2 — single-shot UIA fallback for new Outlook
   ];
   const missing = required.filter((f) => !fs.existsSync(path.join(SCRIPTS, f)));
   if (missing.length === 0) pass(`scripts present: ${required.length}/${required.length}`);
@@ -532,6 +533,41 @@ function layer1() {
     }
   } catch (e) {
     fail('tier-meta tests', e.message.substring(0, 120));
+  }
+
+  // ────────── v0.12.2 outlook self-contained fallback ──────────
+
+  // 1.x outlook_send_email handler chains COM → olk UIA internally
+  const toolsSrcNow = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
+  const sendHandler = toolsSrcNow.match(/async function outlookSendEmail[\s\S]*?\n\}/);
+  const sendBody = sendHandler ? sendHandler[0] : '';
+  const callsCom = /com-outlook-send-email\.ps1/.test(sendBody);
+  const callsUia = /olk-send-email-uia\.ps1/.test(sendBody);
+  const branchesOnNewOutlook = /OUTLOOK_NEW_NO_COM/.test(sendBody);
+  if (callsCom && callsUia && branchesOnNewOutlook) {
+    pass('v0.12.2: outlookSendEmail chains COM → olk UIA internally on new_outlook_no_com');
+  } else {
+    fail('v0.12.2: outlookSendEmail fallback chain', `com=${callsCom}, uia=${callsUia}, branch=${branchesOnNewOutlook}`);
+  }
+
+  // 1.x olk-send-email-uia.ps1 emits the right error codes for the JS handler
+  // to pattern-match on later (body_too_long, compose_window_not_found, etc.)
+  const uiaPath = path.join(ROOT, 'assets', 'scripts', 'olk-send-email-uia.ps1');
+  if (fs.existsSync(uiaPath)) {
+    const uiaSrc = fs.readFileSync(uiaPath, 'utf8');
+    const requiredErrors = ['body_too_long', 'compose_window_not_found', 'send_button_not_found', 'unverified', 'launch_failed'];
+    const missingErrors = requiredErrors.filter((e) => !uiaSrc.includes(e));
+    const acceptsB64 = uiaSrc.includes('subjectB64') && uiaSrc.includes('bodyB64');
+    const usesUiaApi = /System\.Windows\.Automation/.test(uiaSrc);
+    const hasMailto = /mailto:/.test(uiaSrc);
+    const hasInvokePattern = /InvokePattern/.test(uiaSrc);
+    if (missingErrors.length === 0 && acceptsB64 && usesUiaApi && hasMailto && hasInvokePattern) {
+      pass('v0.12.2: olk-send-email-uia.ps1 — UIA + InvokePattern + b64 args + 5 named errors');
+    } else {
+      fail('v0.12.2: olk UIA script shape', `b64=${acceptsB64}, uia=${usesUiaApi}, mailto=${hasMailto}, invoke=${hasInvokePattern}, missing-errors=${missingErrors.join(',')}`);
+    }
+  } else {
+    fail('v0.12.2: olk-send-email-uia.ps1', 'file does not exist');
   }
 
   // 1.32 Outlook precheck helper exists + all 4 com-outlook-*.ps1 dot-source it

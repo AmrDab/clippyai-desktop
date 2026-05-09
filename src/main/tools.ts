@@ -1598,29 +1598,46 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   const body = String(params.body || '');
   if (!to || !subject || !body) return { text: 'Error: to, subject, and body are required' };
 
-  // v0.11.26 — REMOVED the v0.11.25 registry probe. Per report 8836f5ec
-  // the probe (`Test-Path 'Registry::HKEY_CLASSES_ROOT\Outlook.Application'`)
-  // returned false on a user machine that DOES have classic Outlook
-  // installed. The probe was a false-negative source — better to attempt
-  // the COM call directly and let the .ps1's own catch block emit a
-  // clean JSON error if Outlook isn't actually available.
-  //
-  // The original v0.11.25 motivation (avoid silent crash on Outlook-new)
-  // is preserved by the runComScript fix below — the script's Fail()
-  // JSON output (which DOES fire even when Outlook.Application can't
-  // be activated) is now surfaced from execFileAsync's error.stdout
-  // instead of falling through to the generic "Command failed" message.
-  //
-  // Encode body + subject as UTF-8 base64 to bypass PowerShell's
-  // command-line tokenizer (v0.11.22 fix; multi-line bodies, em-dashes,
-  // smart quotes were silently truncated).
+  // v0.11.22 — base64 encode body + subject to bypass PS command-line
+  // tokenizer (multi-line bodies, em-dashes, smart quotes were truncated).
   const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
   const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
   const args = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
   if (params.cc) args.push('-cc', String(params.cc));
   if (params.attachments) args.push('-attachments', String(params.attachments));
-  const result = await runComScript('com-outlook-send-email.ps1', args, 30000);
-  return result;
+
+  // Layer 1: classic Outlook COM. Fastest path, exposes Send + attachments.
+  const comResult = await runComScriptStructured('com-outlook-send-email.ps1', args, 30000);
+  if (comResult.ok) return { text: comResult.message };
+
+  // Layer 2: new Outlook (olk.exe) via single-shot UIA driver. Per support
+  // report 3df80c75 (2026-05-09): when classic COM fails because the user
+  // has the Microsoft Store Outlook, the brain previously went on a 23-step
+  // CDP UI-clicking spree. This collapses that into ONE PowerShell call.
+  // Body length is limited to ~2KB by the mailto: protocol; the script
+  // surfaces 'body_too_long' if exceeded so we don't silently truncate.
+  if (comResult.errorCode === 'OUTLOOK_NEW_NO_COM') {
+    log.info('outlook_send_email: classic COM unavailable → trying olk UIA fallback');
+    // Attachments dropped here: mailto: doesn't carry them. Surface as a
+    // soft warning in the result rather than refusing the send.
+    const uiaArgs = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
+    if (params.cc) uiaArgs.push('-cc', String(params.cc));
+    const uiaResult = await runComScriptStructured('olk-send-email-uia.ps1', uiaArgs, 25000);
+    if (uiaResult.ok) {
+      const note = params.attachments ? ' (note: attachments not sent — mailto: protocol does not carry them)' : '';
+      return { text: `${uiaResult.message}${note}` };
+    }
+    // Layer 2 also failed. Surface a richer error than just the script
+    // detail so the model knows BOTH paths were tried.
+    log.warn('outlook_send_email: olk UIA fallback also failed', { detail: uiaResult.message });
+    return {
+      text: `(error:OUTLOOK_NEW_NO_COM) Tried classic Outlook COM and the new Outlook UIA driver — both failed. ${uiaResult.message}. Last resort: open outlook.live.com via cdp_connect, or use mailto: with shorter content.`,
+    };
+  }
+
+  // Layer 3: any other COM failure surfaces verbatim. The model can decide
+  // whether to retry or surface to the user.
+  return { text: comResult.message };
 }
 
 async function outlookReadInbox(params: Record<string, unknown>): Promise<ToolResult> {
