@@ -106,6 +106,13 @@ async function init(): Promise<void> {
 
   window.clippy.onTtsToggle((enabled) => tts.setEnabled(enabled));
   window.clippy.onSpeechRate((rate) => tts.setRate(rate));
+  // v0.12.3 — apply persisted bubble auto-hide on startup + on change.
+  try {
+    const cfg = await window.clippy.getConfig();
+    const ms = Number(cfg.bubbleAutoHideMs);
+    if (Number.isFinite(ms) && ms >= 0) bubbleCtrl.setAutoHideMs(ms);
+  } catch { /* config not available; keep default */ }
+  window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 

@@ -50,7 +50,8 @@ export const TOOL_META: Record<string, ToolMeta> = {
   write_file:         { tier: 2, cost: 'cheap',     description: 'Write a local file to disk' },
   list_files:         { tier: 2, cost: 'cheap',     description: 'List files in a directory' },
   search_files_content:{ tier: 2, cost: 'medium',   description: 'Search file contents for a regex/string pattern' },
-  run_powershell:     { tier: 2, cost: 'medium',    description: 'Run a PowerShell command (sandboxed allow-list)' },
+  // run_powershell removed v0.12.3 — security audit (prompt-injection → RCE).
+  // Bundled PS scripts (outlook_*, excel_*, file ops) cover legitimate use.
   system_info:        { tier: 2, cost: 'cheap',     description: 'Get OS / hardware / disk info' },
   list_processes:     { tier: 2, cost: 'cheap',     description: 'List running processes' },
   kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name or PID' },

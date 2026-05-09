@@ -61,13 +61,30 @@ if ([string]::IsNullOrWhiteSpace($to))      { Fail 'missing_to' 'to is required'
 if ([string]::IsNullOrWhiteSpace($subject)) { Fail 'missing_subject' 'subject is required (or subjectB64)' 'validate' }
 if ([string]::IsNullOrWhiteSpace($body))    { Fail 'missing_body' 'body is required (or bodyB64)' 'validate' }
 
+# v0.12.3 — validate $to against a permissive RFC 5322-ish pattern. Without
+# this an attacker-supplied recipient like "x@y.com%0D%0ABcc:evil@a.com"
+# would be string-interpolated raw into the mailto: URI and some clients
+# parse it as a header injection. Per security audit finding #2.
+$toPattern = '^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}(\s*,\s*[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})*$'
+if ($to -notmatch $toPattern) {
+    Fail 'invalid_to' "Recipient '$to' is not a valid email address (or comma-separated list). Reject to prevent mailto: header injection." 'validate'
+}
+$ccPattern = $toPattern
+if ($cc -and ($cc -notmatch $ccPattern)) {
+    Fail 'invalid_cc' "CC '$cc' is not a valid email address (or comma-separated list)." 'validate'
+}
+
 # mailto: URLs have a practical limit around 2000 chars on Windows. If the
 # body is too long we surface a clean error rather than truncating silently.
+# v0.12.3 — also URL-encode $to itself. Even with regex validation this is
+# defense-in-depth; the pattern allows some chars that could behave oddly
+# in raw URI position depending on the OS shell handler.
+$toEncoded = [uri]::EscapeDataString($to)
 $bodyEncoded = [uri]::EscapeDataString($body)
 $subjectEncoded = [uri]::EscapeDataString($subject)
 $ccEncoded = if ($cc) { [uri]::EscapeDataString($cc) } else { '' }
 
-$mailto = "mailto:$to" + "?subject=$subjectEncoded&body=$bodyEncoded"
+$mailto = "mailto:$toEncoded" + "?subject=$subjectEncoded&body=$bodyEncoded"
 if ($ccEncoded) { $mailto += "&cc=$ccEncoded" }
 
 if ($mailto.Length -gt 2000) {

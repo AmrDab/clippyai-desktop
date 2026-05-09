@@ -146,6 +146,7 @@ function layer1() {
     'show-reminder.ps1',  // v0.11.25 — new helper for cmd-injection fix
     '_outlook-com-precheck.ps1',  // v0.11.29 — discriminates classic vs new Outlook
     'olk-send-email-uia.ps1',     // v0.12.2 — single-shot UIA fallback for new Outlook
+    '_path-guard.ps1',            // v0.12.3 — shared filesystem read guard
   ];
   const missing = required.filter((f) => !fs.existsSync(path.join(SCRIPTS, f)));
   if (missing.length === 0) pass(`scripts present: ${required.length}/${required.length}`);
@@ -569,6 +570,104 @@ function layer1() {
   } else {
     fail('v0.12.2: olk-send-email-uia.ps1', 'file does not exist');
   }
+
+  // ────────── v0.12.3 audit-fix invariants ──────────
+
+  // smart_click failures emit (error:UI_NOT_FOUND) so Tier-5 fallback fires.
+  // Per architecture audit finding #7. Walk the file line-by-line to extract
+  // the smartClick function body (regex with [\s\S]*? was unreliable across
+  // the multi-line nested structure with template literals).
+  const smartClickBody = (() => {
+    const lines = toolsSrcNow.split(/\r?\n/);
+    let inFn = false;
+    let depth = 0;
+    const out = [];
+    for (const ln of lines) {
+      if (!inFn && /^async function smartClick\b/.test(ln)) {
+        inFn = true; depth = 0;
+      }
+      if (inFn) {
+        out.push(ln);
+        // Count braces — start at depth 0 (open brace on signature line),
+        // increment on `{`, decrement on `}`. Function ends when depth back to 0
+        // after we've seen at least one `{`.
+        for (const ch of ln) {
+          if (ch === '{') depth++;
+          else if (ch === '}') {
+            depth--;
+            if (depth === 0) return out.join('\n');
+          }
+        }
+      }
+    }
+    return out.join('\n');
+  })();
+  const hasUiNotFoundCode = /\(error:UI_NOT_FOUND\)/.test(smartClickBody);
+  // No legacy free-text "not found via UIA or OCR" string returned WITHOUT
+  // the (error:UI_NOT_FOUND) prefix.
+  const legacyMatch = smartClickBody.match(/return \{ text: `\([^)]*not found[^)]*\)` \}/g);
+  const noLegacyStrings = !legacyMatch || legacyMatch.length === 0;
+  if (hasUiNotFoundCode && noLegacyStrings) pass('v0.12.3: smart_click failures emit (error:UI_NOT_FOUND) — Tier-5 fallback now fires');
+  else fail('v0.12.3: smart_click error code', `hasCode=${hasUiNotFoundCode}, noLegacy=${noLegacyStrings}, bodyLen=${smartClickBody.length}`);
+
+  // run_powershell removed from TOOL_MAP + tool-meta + server prompt declaration
+  const runPsInToolMap = /^\s+run_powershell:/m.test(toolsSrcNow);
+  const metaSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
+  const runPsInMeta = /^\s+run_powershell:\s*\{/m.test(metaSrc);
+  const apiToolsSrc = fs.readFileSync(path.join(ROOT, '..', 'clippyai-api', 'src', 'lib', 'tools.ts'), 'utf8');
+  const runPsInServerDecl = /name:\s*'run_powershell'/.test(apiToolsSrc);
+  if (!runPsInToolMap && !runPsInMeta && !runPsInServerDecl) {
+    pass('v0.12.3: run_powershell removed from client TOOL_MAP + tool-meta + server prompt');
+  } else {
+    fail('v0.12.3: run_powershell removal', `clientMap=${runPsInToolMap}, meta=${runPsInMeta}, serverDecl=${runPsInServerDecl}`);
+  }
+
+  // DESTRUCTIVE_TOOLS expanded to cover keyboard-driven sends
+  const destExpanded = ['type_text', 'key_press', 'cdp_type', 'write_clipboard'].every((t) => brainSrcNow.includes(`'${t}'`));
+  if (destExpanded) pass('v0.12.3: DESTRUCTIVE_TOOLS includes type_text + key_press + cdp_type + write_clipboard');
+  else fail('v0.12.3: DESTRUCTIVE_TOOLS expansion', 'one or more new entries missing');
+
+  // _path-guard.ps1 helper exists + dot-sourced by 3 read tools
+  const pathGuardPath = path.join(ROOT, 'assets', 'scripts', '_path-guard.ps1');
+  if (fs.existsSync(pathGuardPath)) {
+    const pgSrc = fs.readFileSync(pathGuardPath, 'utf8');
+    const hasFn = /function Test-PathAllowedForRead/.test(pgSrc);
+    const blocksSshAws = /\.ssh|\.aws|\.azure/.test(pgSrc);
+    const blocksBrowserCreds = /Login Data|Cookies/.test(pgSrc);
+    const dotSourced = ['com-list-files.ps1', 'com-search-files.ps1', 'com-read-file.ps1'].every((f) => {
+      const src = fs.readFileSync(path.join(ROOT, 'assets', 'scripts', f), 'utf8');
+      return /_path-guard\.ps1/.test(src) && /Test-PathAllowedForRead/.test(src);
+    });
+    if (hasFn && blocksSshAws && blocksBrowserCreds && dotSourced) {
+      pass('v0.12.3: path-guard wired into list-files + search-files + read-file (blocks .ssh/.aws/browser creds)');
+    } else {
+      fail('v0.12.3: path-guard', `fn=${hasFn}, ssh=${blocksSshAws}, browser=${blocksBrowserCreds}, wired=${dotSourced}`);
+    }
+  } else {
+    fail('v0.12.3: _path-guard.ps1', 'file does not exist');
+  }
+
+  // mailto: $to URL-encoded + email regex validation in olk script
+  const olkSrc = fs.readFileSync(path.join(ROOT, 'assets', 'scripts', 'olk-send-email-uia.ps1'), 'utf8');
+  const hasToValidation = /toPattern|invalid_to/.test(olkSrc);
+  const hasToEncoding = /toEncoded\s*=\s*\[uri\]::EscapeDataString\(\$to\)/.test(olkSrc);
+  if (hasToValidation && hasToEncoding) pass('v0.12.3: olk-send-email-uia validates + URL-encodes $to (header-injection guard)');
+  else fail('v0.12.3: $to validation', `validation=${hasToValidation}, encoding=${hasToEncoding}`);
+
+  // Override branch calls abortAllInFlightTools
+  const overrideBlock = brainSrcNow.match(/User override[\s\S]{0,800}/);
+  const overrideBody = overrideBlock ? overrideBlock[0] : '';
+  if (/abortAllInFlightTools\(\)/.test(overrideBody)) {
+    pass('v0.12.3: user-override branch calls abortAllInFlightTools()');
+  } else {
+    fail('v0.12.3: override abort', 'override branch does not call abortAllInFlightTools');
+  }
+
+  // proactiveCooldownMs is a setting (not hardcoded 600_000)
+  const cooldownIsSetting = /settingsStore\.get\('proactiveCooldownMs'\)/.test(brainSrcNow);
+  const noHardcoded600k = !/noRepeatUntil\s*=\s*Date\.now\(\)\s*\+\s*600_000/.test(brainSrcNow);
+  if (cooldownIsSetting && noHardcoded600k) pass('v0.12.3: proactiveCooldownMs is a Setting (not hardcoded)');
+  else fail('v0.12.3: proactive cooldown setting', `setting=${cooldownIsSetting}, no-hardcode=${noHardcoded600k}`);
 
   // 1.32 Outlook precheck helper exists + all 4 com-outlook-*.ps1 dot-source it
   const precheckPath = path.join(ROOT, 'assets', 'scripts', '_outlook-com-precheck.ps1');

@@ -27,6 +27,18 @@ if ($path.StartsWith('~')) { $path = $path -replace '^~', $env:USERPROFILE }
 $path = [System.Environment]::ExpandEnvironmentVariables($path)
 $path = $path.Replace('/', '\')
 
+# v0.12.3 — block recursive content search through system + secret dirs.
+# Per security audit finding #3: a model-driven `search_files_content` could
+# previously scan C:\ and return content snippets from any world-readable
+# file (browser SQLite DBs, jump lists, etc).
+. "$PSScriptRoot\_path-guard.ps1"
+$guard = Test-PathAllowedForRead $path
+if (-not $guard.allowed) {
+    Out-Result @{ ok = $false; error = 'path_blocked'; reason = $guard.reason; resolved = $guard.resolved }
+    exit 1
+}
+$path = $guard.resolved
+
 if (-not (Test-Path $path)) { Fail "path not found: $path" }
 
 $globs = $glob.Split(',') | ForEach-Object { $_.Trim() }

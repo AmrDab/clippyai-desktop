@@ -1,4 +1,12 @@
-const AUTO_HIDE_MS = 20000;
+// v0.12.3 — auto-hide is now configurable via Settings.bubbleAutoHideMs.
+// 0 = "Manual" (never auto-hide). Default 30000 (was 20000 — 20s stole long
+// replies mid-read per UX audit finding #4).
+const DEFAULT_AUTO_HIDE_MS = 30000;
+// v0.12.3 — typewriter speeds up when text is long so TTS doesn't finish
+// 5s before the bubble. 25ms/char on a 200-char tip = 5s typing while TTS
+// finishes in ~3s. Per UX audit finding #1.
+const TYPE_INTERVAL_FAST_MS = 10;  // for replies > 80 chars
+const TYPE_INTERVAL_NORMAL_MS = 18; // for short replies (still feels alive)
 
 interface ChatMessage {
   role: 'user' | 'clippy' | 'system';
@@ -17,6 +25,9 @@ export class BubbleController {
   private hideTimer: number | null = null;
   private chatHistory: ChatMessage[] = [];
   private showingHistory: boolean = false;
+  // v0.12.3 — runtime-configurable auto-hide. Set via setAutoHideMs() from
+  // settings IPC. 0 = manual / never auto-hide.
+  private autoHideMs: number = DEFAULT_AUTO_HIDE_MS;
 
   constructor(onSend: (text: string) => void) {
     this.bubble = document.getElementById('bubble')!;
@@ -62,14 +73,30 @@ export class BubbleController {
     this.bubbleText.className = '';
     this.clearTypeTimer();
 
+    // v0.12.3 — adaptive typewriter speed. Long replies (>80 chars) type
+    // ~2.5x faster so the bubble finishes around the same time TTS does
+    // (TTS speaks at ~150 wpm ≈ 12 chars/s; old 25ms/char = 40 chars/s
+    // started fast then fell behind the spoken voice).
+    const interval = text.length > 80 ? TYPE_INTERVAL_FAST_MS : TYPE_INTERVAL_NORMAL_MS;
     let i = 0;
     this.typeTimer = window.setInterval(() => {
       this.bubbleText.textContent += text[i];
       i++;
       if (i >= text.length) this.clearTypeTimer();
-    }, 25);
+    }, interval);
 
     this.resetAutoHide();
+  }
+
+  /**
+   * v0.12.3 — runtime override for the auto-hide timeout. Called from
+   * settings IPC when the user changes the "Bubble dismiss" setting.
+   * 0 = manual (never auto-hide); positive value = ms.
+   */
+  setAutoHideMs(ms: number): void {
+    this.autoHideMs = Math.max(0, ms | 0);
+    // If a timer is currently armed, restart it with the new value.
+    if (this.hideTimer !== null) this.resetAutoHide();
   }
 
   showThinking(): void {
@@ -156,9 +183,11 @@ export class BubbleController {
 
   private resetAutoHide(): void {
     this.clearAutoHide();
+    // v0.12.3 — autoHideMs===0 means "Manual" (user disabled auto-hide).
+    if (this.autoHideMs <= 0) return;
     this.hideTimer = window.setTimeout(() => {
       if (!this.showingHistory) this.hide();
-    }, AUTO_HIDE_MS);
+    }, this.autoHideMs);
   }
 
   private clearAutoHide(): void {

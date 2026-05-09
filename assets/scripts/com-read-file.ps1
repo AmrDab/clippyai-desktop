@@ -33,12 +33,16 @@ $path = [System.Environment]::ExpandEnvironmentVariables($path)
 # Normalise separators
 $path = $path.Replace('/', '\')
 
-# Resolve to absolute
-try {
-    $resolved = [System.IO.Path]::GetFullPath($path)
-} catch {
-    Fail "Cannot resolve path: $($_.Exception.Message)"
+# v0.12.3 — block reads from system + secret dirs even when extension passes.
+# Per security audit finding #3: extension allowlist alone didn't stop
+# `read_file path=~/.ssh/id_rsa` (no extension → falls through ext check).
+. "$PSScriptRoot\_path-guard.ps1"
+$guard = Test-PathAllowedForRead $path
+if (-not $guard.allowed) {
+    Out-Result @{ ok = $false; error = 'path_blocked'; reason = $guard.reason; resolved = $guard.resolved }
+    exit 1
 }
+$resolved = $guard.resolved
 
 if (-not [System.IO.File]::Exists($resolved)) {
     Fail "File not found: $resolved"

@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('proactive-toggle', (_e, enabled) => cb(enabled));
   },
 
+  // v0.12.3 — bubble auto-hide setting changed; bubble.ts updates its
+  // internal autoHideMs without a window reload.
+  onBubbleAutoHide: (cb: (ms: number) => void) => {
+    ipcRenderer.on('bubble-auto-hide', (_e, ms) => cb(ms));
+  },
+
   setClickThrough: (enabled: boolean) => {
     ipcRenderer.send('set-click-through', enabled);
   },

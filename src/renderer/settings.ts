@@ -60,6 +60,20 @@ async function loadConfig(): Promise<void> {
   proactiveIntervalRange.value = String(intervalSec);
   proactiveIntervalValue.textContent = `${intervalSec}s`;
 
+  // v0.12.3 — load cooldown + bubble auto-hide
+  const cooldownMin = Math.round(((config.proactiveCooldownMs as number) || 600000) / 60000);
+  const cdRange = document.getElementById('setting-proactive-cooldown') as HTMLInputElement | null;
+  const cdLabel = document.getElementById('proactive-cooldown-value');
+  if (cdRange && cdLabel) {
+    cdRange.value = String(cooldownMin);
+    cdLabel.textContent = cooldownMin === 0 ? '0 (chatty)' : `${cooldownMin} min`;
+  }
+  const hideSel = document.getElementById('setting-bubble-hide') as HTMLSelectElement | null;
+  if (hideSel) {
+    const hideMs = Number(config.bubbleAutoHideMs);
+    if ([0, 15000, 30000, 60000].includes(hideMs)) hideSel.value = String(hideMs);
+  }
+
   if (config.ttsVoice) {
     voiceSelect.value = config.ttsVoice as string;
   }
@@ -130,6 +144,25 @@ const ttsToggle = document.getElementById('setting-tts-enabled') as HTMLInputEle
 if (ttsToggle) {
   ttsToggle.addEventListener('change', () => {
     window.clippy.updateSettings({ ttsEnabled: ttsToggle.checked });
+  });
+}
+
+// v0.12.3 — proactive cooldown slider (0–30 min). 0 = chatty mode.
+const proactiveCooldownRange = document.getElementById('setting-proactive-cooldown') as HTMLInputElement | null;
+const proactiveCooldownValue = document.getElementById('proactive-cooldown-value');
+if (proactiveCooldownRange && proactiveCooldownValue) {
+  proactiveCooldownRange.addEventListener('input', () => {
+    const minutes = Number(proactiveCooldownRange.value);
+    proactiveCooldownValue.textContent = minutes === 0 ? '0 (chatty)' : `${minutes} min`;
+    debounceSave({ proactiveCooldownMs: minutes * 60_000 });
+  });
+}
+
+// v0.12.3 — bubble auto-hide dropdown
+const bubbleHideSelect = document.getElementById('setting-bubble-hide') as HTMLSelectElement | null;
+if (bubbleHideSelect) {
+  bubbleHideSelect.addEventListener('change', () => {
+    window.clippy.updateSettings({ bubbleAutoHideMs: Number(bubbleHideSelect.value) });
   });
 }
 

@@ -49,6 +49,8 @@ interface Window {
     // ── Mode
     onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
     onProactiveToggle: (cb: (enabled: boolean) => void) => void;
+    /** v0.12.3 — bubble auto-hide ms; 0 = manual */
+    onBubbleAutoHide: (cb: (ms: number) => void) => void;
 
     // ── Window control
     setClickThrough: (enabled: boolean) => void;

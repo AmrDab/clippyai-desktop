@@ -52,7 +52,30 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const level = p?.level && ['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(p.level) ? p.level : 'INFO';
       const component = typeof p?.component === 'string' ? p.component.substring(0, 40) : 'Renderer';
       const message = typeof p?.message === 'string' ? p.message.substring(0, 500) : '(no message)';
-      ingestRendererLog(level, component, message, p?.data);
+      // v0.12.3 — bound the data payload BEFORE handing it to the logger.
+      // Per security audit finding #5: previously a circular object would
+      // make JSON.stringify throw inside the logger's truncate path, and a
+      // multi-MB payload would force a multi-MB log line + write spike
+      // before truncation kicked in. Here we serialize first, length-cap,
+      // and replace with a placeholder if anything goes wrong.
+      let safeData: unknown = undefined;
+      if (p?.data !== undefined) {
+        try {
+          const serialized = JSON.stringify(p.data);
+          if (typeof serialized === 'string' && serialized.length <= 4000) {
+            safeData = p.data;
+          } else if (typeof serialized === 'string') {
+            safeData = { _truncated: true, _bytes: serialized.length, _preview: serialized.substring(0, 500) };
+          } else {
+            // JSON.stringify returned undefined (e.g. function value) — drop
+            safeData = '[non-serializable]';
+          }
+        } catch {
+          // Circular reference or stringify threw
+          safeData = '[circular-or-throws]';
+        }
+      }
+      ingestRendererLog(level, component, message, safeData);
     } catch (err) {
       log.warn('renderer-log ingest failed', serializeErr(err));
     }
@@ -115,6 +138,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       ttsVoice: getTtsVoice(),
       proactiveInterval: brainSettingsStore.get('proactiveInterval'),
       proactiveEnabled: brainSettingsStore.get('proactiveEnabled'),
+      // v0.12.3 — exposed cooldown + bubble auto-hide
+      proactiveCooldownMs: brainSettingsStore.get('proactiveCooldownMs'),
+      bubbleAutoHideMs: brainSettingsStore.get('bubbleAutoHideMs'),
       ttsEnabled: licenseStore.get('ttsEnabled', true),
       speechRate: licenseStore.get('speechRate', 1.1),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
@@ -140,6 +166,18 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (settings.proactiveEnabled !== undefined) {
       brainSettingsStore.set('proactiveEnabled', Boolean(settings.proactiveEnabled));
       proactiveChanged = true;
+    }
+    // v0.12.3 — proactive cooldown after speaking. 0 = no cooldown.
+    if (settings.proactiveCooldownMs !== undefined) {
+      const cooldown = Math.max(0, Math.min(1800000, Number(settings.proactiveCooldownMs) || 0));
+      brainSettingsStore.set('proactiveCooldownMs', cooldown);
+      // No restart needed — proactiveCheck reads the value live.
+    }
+    // v0.12.3 — bubble auto-hide timeout. 0 = manual / never auto-hide.
+    if (settings.bubbleAutoHideMs !== undefined) {
+      const hideMs = Math.max(0, Math.min(120000, Number(settings.bubbleAutoHideMs) || 0));
+      brainSettingsStore.set('bubbleAutoHideMs', hideMs);
+      mainWindow.webContents.send('bubble-auto-hide', hideMs);
     }
     if (proactiveChanged) brain.restartProactiveLoop();
     // TTS toggle + speech rate — saved in licenseStore, broadcast to main window

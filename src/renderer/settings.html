@@ -90,6 +90,23 @@
             <span class="toggle-slider"></span>
           </label>
         </div>
+        <!-- v0.12.3 — Quiet Time After Tip. Replaces hardcoded 10-min cooldown
+             that was the actual reason "Clippy stays silent" per UX audit. -->
+        <div class="settings-group">
+          <label for="setting-proactive-cooldown">Quiet Time After Tip</label>
+          <input id="setting-proactive-cooldown" type="range" min="0" max="30" step="1" value="10" />
+          <span id="proactive-cooldown-value" style="font-size: 12px; color: #888;">10 min</span>
+        </div>
+        <!-- v0.12.3 — Bubble dismiss. 0 = manual / never auto-hide. -->
+        <div class="settings-group">
+          <label for="setting-bubble-hide">Bubble Dismiss</label>
+          <select id="setting-bubble-hide">
+            <option value="15000">15 seconds</option>
+            <option value="30000" selected>30 seconds</option>
+            <option value="60000">1 minute</option>
+            <option value="0">Manual (never auto-hide)</option>
+          </select>
+        </div>
       </div>
 
       <!-- Desktop Tools -->

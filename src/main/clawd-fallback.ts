@@ -15,6 +15,7 @@
 
 import { spawn, ChildProcess, execFile } from 'child_process';
 import { promisify } from 'util';
+import { randomBytes } from 'crypto';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -131,6 +132,49 @@ function readToken(): string | null {
   }
 }
 
+/**
+ * v0.12.3 — generate a fresh per-session bearer token and write it to the
+ * token file BEFORE clawdcursor reads it at startup. Per security audit
+ * finding #4: previously the token was static (set once at clawdcursor
+ * install via `consent --accept`) and the file was world-readable for the
+ * current user. Any other local process running as the same user could
+ * read it and drive Clippy's UI primitives.
+ *
+ * Per-session rotation means a leaked token is invalid the moment Clippy
+ * restarts (or stopClawd is called). Combined with the file-permission
+ * tightening below, the attack surface is materially smaller.
+ *
+ * Returns the new token (or null if write failed — clawd uses the prior
+ * token in that case, which is the previous behavior, so this is graceful).
+ */
+function rotateToken(): string | null {
+  try {
+    const dir = path.dirname(TOKEN_PATH);
+    fs.mkdirSync(dir, { recursive: true });
+    const token = randomBytes(32).toString('hex');
+    // Atomic write: tmp file + rename so a concurrent reader never sees
+    // a partial token.
+    const tmp = TOKEN_PATH + '.tmp';
+    fs.writeFileSync(tmp, token, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, TOKEN_PATH);
+    // Best-effort: tighten Windows ACL to current user only. icacls is
+    // synchronous via execFile — fire-and-forget here, log on failure but
+    // don't block startup.
+    try {
+      const username = os.userInfo().username;
+      execFile('icacls', [TOKEN_PATH, '/inheritance:r', '/grant', `${username}:F`], { timeout: 3000 }, (err) => {
+        if (err) log.warn('clawd token icacls failed (non-fatal)', { err: serializeErr(err) });
+      });
+    } catch (err) {
+      log.warn('clawd token icacls spawn failed (non-fatal)', { err: serializeErr(err) });
+    }
+    return token;
+  } catch (err) {
+    log.warn('clawd token rotation failed — falling back to existing token', { err: serializeErr(err) });
+    return null;
+  }
+}
+
 function showConsentNotice(): void {
   if (consentNoticeShown) return;
   consentNoticeShown = true;
@@ -163,6 +207,14 @@ export async function startClawd(): Promise<void> {
   }
 
   intentionalStop = false;
+
+  // v0.12.3 — rotate the bearer token to a fresh per-session value BEFORE
+  // spawning clawd, so the file it reads at startup contains a token that
+  // wasn't valid for any prior session. If rotation fails (disk full,
+  // permission), we still spawn — clawd uses whatever's already on disk
+  // (graceful degradation matching pre-v0.12.3 behavior).
+  const rotatedToken = rotateToken();
+  if (rotatedToken) log.info('clawd token rotated for this session');
 
   let resolved = false;
   let detectedPort: number | null = null;

@@ -24,6 +24,16 @@ if ($path.StartsWith('~')) { $path = $path -replace '^~', $env:USERPROFILE }
 $path = [System.Environment]::ExpandEnvironmentVariables($path)
 $path = $path.Replace('/', '\')
 
+# v0.12.3 — block enumeration of system dirs and user-secret dirs
+# (~/.ssh, browser cookie/login DBs, etc). Per security audit finding #3.
+. "$PSScriptRoot\_path-guard.ps1"
+$guard = Test-PathAllowedForRead $path
+if (-not $guard.allowed) {
+    Out-Result @{ ok = $false; error = 'path_blocked'; reason = $guard.reason; resolved = $guard.resolved }
+    exit 1
+}
+$path = $guard.resolved
+
 if (-not (Test-Path $path)) { Fail "path not found: $path" }
 if (-not (Get-Item $path).PSIsContainer) { Fail "path is a file, not a directory" }
 

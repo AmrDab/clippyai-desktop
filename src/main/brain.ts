@@ -78,7 +78,15 @@ const DESTRUCTIVE_TOOLS = new Set([
   'kill_process',
   'cdp_click',     // could be a "Send" or "Delete" button
   'cdp_evaluate',  // arbitrary JS execution
+  'cdp_type',      // typing into a form field — Send/Submit reachable via key_press
   'http_request',  // POST/DELETE etc.
+  // v0.12.3 — per security audit finding #5: hallucination guard ledger
+  // previously excluded these, so the model could ghost-claim "Sent!" after
+  // keyboard-driving a mail client via type_text + key_press without any
+  // ledger entry. Now any of these triggers the post-task verify check.
+  'type_text',
+  'key_press',
+  'write_clipboard',
 ]);
 
 /**
@@ -240,6 +248,13 @@ export function isProfileSetUp(): boolean {
 interface BrainSettings {
   proactiveInterval: number;
   proactiveEnabled: boolean;
+  /** v0.12.3 — quiet time after Clippy speaks proactively. Was hardcoded
+   *  to 600_000 (10 min) — the actual reason "Clippy stays silent" per
+   *  UX audit finding #5. Now exposed in Settings UI. 0 = no cooldown. */
+  proactiveCooldownMs: number;
+  /** v0.12.3 — bubble auto-hide. 0 = manual (never auto-hide). Per UX
+   *  audit finding #4: 20s default stole long replies mid-read. */
+  bubbleAutoHideMs: number;
   /** TTS voice on/off (wired from settings UI → broadcast to main renderer). */
   ttsEnabled: boolean;
   /** Utterance rate 0.5–2.0 (default 1.1). */
@@ -251,6 +266,8 @@ const settingsStore = new Store<BrainSettings>({
   defaults: {
     proactiveInterval: 300000, // 5 minutes — was 30s, way too frequent
     proactiveEnabled: true,
+    proactiveCooldownMs: 600000, // 10 min default — preserves prior behavior
+    bubbleAutoHideMs: 30000,     // 30s default (was hardcoded 20s, too short)
     ttsEnabled: true,
     speechRate: 1.1,
   },
@@ -366,6 +383,15 @@ export class Brain {
     if (this.isExecuting) {
       log.info('User override — cancelling in-flight task', { newMessage: text.substring(0, 80) });
       this.cancelRequested = true;
+      // v0.12.3 — also kill in-flight execFileAbortable children. Per
+      // architecture audit finding #4: previously the override branch only
+      // set cancelRequested and waited up to 10s for the running tool to
+      // finish naturally. A 30s outlook_send_email or 60s word_to_pdf
+      // would just hold the user's new message hostage. Now sleep + override
+      // both abort children immediately.
+      try { abortAllInFlightTools(); } catch (err) {
+        log.warn('abortAllInFlightTools threw on override (non-fatal)', serializeErr(err));
+      }
       const waitStart = Date.now();
       while (this.isExecuting && Date.now() - waitStart < 10_000) {
         await new Promise((r) => setTimeout(r, 100));
@@ -936,8 +962,13 @@ export class Brain {
       }
       log.info('Clippy.say', { text: reply, animation: 'GetAttention', trigger: 'proactive' });
       this.emit('clippy-speak', { text: reply, animate: 'GetAttention' });
-      // 10 min cooldown after speaking — silence is better than noise
-      this.noRepeatUntil = Date.now() + 600_000;
+      // v0.12.3 — cooldown is now user-configurable via Settings → Brain →
+      // "Quiet Time After Tip". Per UX audit finding #5: the prior hardcoded
+      // 10-min cooldown was the actual root cause of "Clippy stays silent"
+      // — interval would say 30s but proactive would only fire once per
+      // 10 min regardless. 0 disables the cooldown entirely (chatty mode).
+      const cooldown = settingsStore.get('proactiveCooldownMs');
+      this.noRepeatUntil = Date.now() + Math.max(0, cooldown);
     } catch (err) {
       log.error('proactiveCheck failed', serializeErr(err));
       this.noRepeatUntil = Date.now() + 120_000;
