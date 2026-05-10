@@ -116,6 +116,16 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // tier 2 because it is a status read with no UI driving — it just exposes
   // whether the Tier-5 fallback is ready, installing, or disabled.
   clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)' },
+
+  // ── v0.12.4 additions ──
+  zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive' },
+  unzip_files:          { tier: 2, cost: 'medium',    description: 'Decompress a ZIP archive into a destination directory' },
+  hash_file:            { tier: 2, cost: 'cheap',     description: 'Return SHA256/MD5/SHA1/SHA384/SHA512 hash of a local file' },
+  ocr_from_image:       { tier: 2, cost: 'medium',    description: 'Extract text from an image file on disk via Windows OCR' },
+  windows_service_control: { tier: 2, cost: 'cheap',  description: 'Query / start / stop / restart a Windows service by name (start/stop need admin)' },
+  get_current_time_tz:  { tier: 1, cost: 'cheap',     description: 'Current time in any IANA timezone (e.g. "America/Los_Angeles")' },
+  weather_current:      { tier: 3, cost: 'cheap',     description: 'Current weather + 24h forecast via Open-Meteo (free, no API key)' },
+  shortcuts_execute:    { tier: 5, cost: 'medium',    description: 'Execute a keyboard shortcut by semantic intent (e.g. "save document") — clawdcursor resolves the right combo per app' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {

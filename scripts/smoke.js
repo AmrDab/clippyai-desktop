@@ -147,6 +147,11 @@ function layer1() {
     '_outlook-com-precheck.ps1',  // v0.11.29 — discriminates classic vs new Outlook
     'olk-send-email-uia.ps1',     // v0.12.2 — single-shot UIA fallback for new Outlook
     '_path-guard.ps1',            // v0.12.3 — shared filesystem read guard
+    'zip-files.ps1',              // v0.12.4
+    'unzip-files.ps1',            // v0.12.4
+    'hash-file.ps1',              // v0.12.4
+    'ocr-from-image.ps1',         // v0.12.4
+    'windows-service-control.ps1',// v0.12.4
   ];
   const missing = required.filter((f) => !fs.existsSync(path.join(SCRIPTS, f)));
   if (missing.length === 0) pass(`scripts present: ${required.length}/${required.length}`);
@@ -668,6 +673,72 @@ function layer1() {
   const noHardcoded600k = !/noRepeatUntil\s*=\s*Date\.now\(\)\s*\+\s*600_000/.test(brainSrcNow);
   if (cooldownIsSetting && noHardcoded600k) pass('v0.12.3: proactiveCooldownMs is a Setting (not hardcoded)');
   else fail('v0.12.3: proactive cooldown setting', `setting=${cooldownIsSetting}, no-hardcode=${noHardcoded600k}`);
+
+  // ────────── v0.12.4 new-tool registration invariants ──────────
+
+  const v124Tools = [
+    'zip_files',
+    'unzip_files',
+    'hash_file',
+    'ocr_from_image',
+    'windows_service_control',
+    'get_current_time_tz',
+    'weather_current',
+    'shortcuts_execute',
+  ];
+
+  // All 8 are present in TOOL_MAP, tool-meta, and server prompt declarations.
+  const allInToolMap = v124Tools.every((t) => tmKeys.includes(t));
+  const metaSrcNow = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
+  const allInMeta = v124Tools.every((t) => new RegExp(`^\\s+${t}\\s*:`, 'm').test(metaSrcNow));
+  // Reuse apiToolsSrc declared in v0.12.3 block above.
+  const allInServerDecl = v124Tools.every((t) => new RegExp(`name:\\s*'${t}'`).test(apiToolsSrc));
+  if (allInToolMap && allInMeta && allInServerDecl) {
+    pass(`v0.12.4: all 8 new tools registered (TOOL_MAP + tool-meta + server prompt)`);
+  } else {
+    fail('v0.12.4: tool registration', `map=${allInToolMap}, meta=${allInMeta}, server=${allInServerDecl}`);
+  }
+
+  // get_current_time_tz is pure JS (no PS script) and uses Intl.DateTimeFormat
+  const toolsSrcV124 = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
+  const tzImpl = toolsSrcV124.match(/async function getCurrentTimeTz[\s\S]*?\n\}/);
+  const tzBody = tzImpl ? tzImpl[0] : '';
+  if (/Intl\.DateTimeFormat/.test(tzBody) && /timeZone:/.test(tzBody)) {
+    pass('v0.12.4: get_current_time_tz uses Intl.DateTimeFormat (no native deps)');
+  } else {
+    fail('v0.12.4: get_current_time_tz', 'missing Intl.DateTimeFormat impl');
+  }
+
+  // weather_current calls Open-Meteo (no API key), supports both location + lat/lon
+  const weatherImpl = toolsSrcV124.match(/async function weatherCurrent[\s\S]*?\n\}/);
+  const weatherBody = weatherImpl ? weatherImpl[0] : '';
+  const usesOpenMeteo = /api\.open-meteo\.com|geocoding-api\.open-meteo\.com/.test(weatherBody);
+  const handlesLatLon = /params\.lat|params\.lon/.test(weatherBody);
+  const handlesLocation = /params\.location/.test(weatherBody);
+  if (usesOpenMeteo && handlesLatLon && handlesLocation) {
+    pass('v0.12.4: weather_current uses Open-Meteo + supports location AND lat/lon');
+  } else {
+    fail('v0.12.4: weather_current', `openmeteo=${usesOpenMeteo}, latlon=${handlesLatLon}, loc=${handlesLocation}`);
+  }
+
+  // shortcuts_execute proxies to clawdcursor (Tier-5)
+  const shortcutsImpl = toolsSrcV124.match(/async function shortcutsExecute[\s\S]*?\n\}/);
+  const shortcutsBody = shortcutsImpl ? shortcutsImpl[0] : '';
+  if (/callClawdTool\('shortcuts_execute'/.test(shortcutsBody) && /isClawdReady/.test(shortcutsBody)) {
+    pass('v0.12.4: shortcuts_execute proxies to clawdcursor (Tier-5)');
+  } else {
+    fail('v0.12.4: shortcuts_execute', 'does not proxy via callClawdTool');
+  }
+
+  // 5 new PS scripts dot-source _path-guard (security guarantee for the
+  // file-touching ones — zip, unzip, hash, ocr-from-image)
+  const pathGuardConsumers = ['zip-files.ps1', 'unzip-files.ps1', 'hash-file.ps1', 'ocr-from-image.ps1'];
+  const allGuard = pathGuardConsumers.every((f) => {
+    const src = fs.readFileSync(path.join(ROOT, 'assets', 'scripts', f), 'utf8');
+    return /_path-guard\.ps1/.test(src) && /Test-PathAllowedForRead/.test(src);
+  });
+  if (allGuard) pass('v0.12.4: zip/unzip/hash/ocr-from-image all dot-source path-guard');
+  else fail('v0.12.4: path-guard wiring', 'one or more new PS scripts skip path-guard');
 
   // 1.32 Outlook precheck helper exists + all 4 com-outlook-*.ps1 dot-source it
   const precheckPath = path.join(ROOT, 'assets', 'scripts', '_outlook-com-precheck.ps1');

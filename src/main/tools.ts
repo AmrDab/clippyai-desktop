@@ -1696,6 +1696,189 @@ async function wordToPdf(params: Record<string, unknown>): Promise<ToolResult> {
   return result;
 }
 
+// ── v0.12.4 additions ────────────────────────────────────────────
+
+async function zipFiles(params: Record<string, unknown>): Promise<ToolResult> {
+  const inputs = String(params.inputs || '');
+  const output = String(params.output || '');
+  if (!inputs) return { text: '(error:MISSING_INPUTS) inputs is required (comma-separated paths)' };
+  if (!output) return { text: '(error:MISSING_OUTPUT) output is required (.zip path)' };
+  const args = ['-inputs', inputs, '-output', output];
+  if (params.overwrite === true || params.overwrite === 'true') args.push('-overwrite', 'true');
+  return await runComScript('zip-files.ps1', args, 60_000);
+}
+
+async function unzipFiles(params: Record<string, unknown>): Promise<ToolResult> {
+  const input = String(params.input || '');
+  const output = String(params.output || '');
+  if (!input) return { text: '(error:MISSING_INPUT) input is required (.zip path)' };
+  if (!output) return { text: '(error:MISSING_OUTPUT) output is required (directory)' };
+  const args = ['-input', input, '-output', output];
+  if (params.overwrite === true || params.overwrite === 'true') args.push('-overwrite', 'true');
+  return await runComScript('unzip-files.ps1', args, 60_000);
+}
+
+async function hashFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: '(error:MISSING_PATH) path is required' };
+  const args = ['-path', filePath];
+  if (params.algo) args.push('-algo', String(params.algo).toUpperCase());
+  return await runComScript('hash-file.ps1', args, 30_000);
+}
+
+async function ocrFromImage(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: '(error:MISSING_PATH) path is required' };
+  const args = ['-path', filePath];
+  if (params.lang) args.push('-lang', String(params.lang));
+  return await runComScript('ocr-from-image.ps1', args, 30_000);
+}
+
+async function windowsServiceControl(params: Record<string, unknown>): Promise<ToolResult> {
+  const name = String(params.name || '');
+  const action = String(params.action || 'status');
+  if (!name) return { text: '(error:MISSING_NAME) name is required (Windows service short name)' };
+  return await runComScript('windows-service-control.ps1', ['-name', name, '-action', action], 30_000);
+}
+
+/**
+ * v0.12.4 — get_current_time_tz: zero-dependency timezone-aware time. Lets the
+ * model answer "what time is it in Tokyo" without hallucinating from training
+ * cutoff.
+ */
+async function getCurrentTimeTz(params: Record<string, unknown>): Promise<ToolResult> {
+  const tz = String(params.timezone || params.tz || 'UTC');
+  // Validate IANA tz by feeding it to Intl. Throws RangeError on bad input.
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      dateStyle: 'full',
+      timeStyle: 'long',
+      hour12: false,
+    });
+    const now = new Date();
+    const formatted = fmt.format(now);
+    // Compute offset for the requested zone.
+    const offsetFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' });
+    const offsetParts = offsetFmt.formatToParts(now).find((p) => p.type === 'timeZoneName');
+    const offset = offsetParts ? offsetParts.value : '';
+    return {
+      text: JSON.stringify({
+        ok: true,
+        timezone: tz,
+        iso: now.toISOString(),
+        formatted,
+        utc_offset: offset,
+        unix_seconds: Math.floor(now.getTime() / 1000),
+      }),
+    };
+  } catch (err) {
+    return {
+      text: `(error:INVALID_TIMEZONE) "${tz}" is not a valid IANA timezone (e.g. "America/Los_Angeles", "Europe/London", "Asia/Tokyo"). ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
+ * v0.12.4 — weather_current via Open-Meteo (free, no API key, no rate limits
+ * for personal use). Two-phase: geocode the city via the open-meteo geocoding
+ * endpoint, then fetch current weather + 24h forecast via the forecast endpoint.
+ *
+ * Args: { location: "Los Angeles" | "Los Angeles, CA" }
+ * Or:   { lat: 34.05, lon: -118.24 }
+ */
+async function weatherCurrent(params: Record<string, unknown>): Promise<ToolResult> {
+  let lat: number | null = typeof params.lat === 'number' ? params.lat : null;
+  let lon: number | null = typeof params.lon === 'number' ? params.lon : null;
+  let resolvedName = '';
+
+  if (lat === null || lon === null) {
+    const location = String(params.location || '').trim();
+    if (!location) {
+      return { text: '(error:MISSING_LOCATION) Provide either { location: "City Name" } or { lat, lon }.' };
+    }
+    try {
+      const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+      const geoRes = await fetch(geoUrl, { signal: AbortSignal.timeout(8000) });
+      if (!geoRes.ok) return { text: `(error:GEOCODE_HTTP) Geocoding HTTP ${geoRes.status}` };
+      const geo = await geoRes.json() as { results?: Array<{ latitude: number; longitude: number; name: string; admin1?: string; country?: string }> };
+      const hit = geo.results?.[0];
+      if (!hit) return { text: `(error:LOCATION_NOT_FOUND) Could not geocode "${location}". Try a more specific name like "Paris, France".` };
+      lat = hit.latitude;
+      lon = hit.longitude;
+      resolvedName = `${hit.name}${hit.admin1 ? ', ' + hit.admin1 : ''}${hit.country ? ', ' + hit.country : ''}`;
+    } catch (err) {
+      return { text: `(error:GEOCODE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+    }
+  } else {
+    resolvedName = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  }
+
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m&hourly=temperature_2m,precipitation_probability,weather_code&forecast_days=2&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return { text: `(error:WEATHER_HTTP) Open-Meteo HTTP ${res.status}` };
+    const data = await res.json() as {
+      current?: { temperature_2m?: number; apparent_temperature?: number; relative_humidity_2m?: number; precipitation?: number; weather_code?: number; wind_speed_10m?: number; is_day?: number; time?: string };
+      hourly?: { time?: string[]; temperature_2m?: number[]; precipitation_probability?: number[]; weather_code?: number[] };
+      timezone?: string;
+    };
+    const c = data.current || {};
+    // Map WMO weather codes to short text. Reference: https://open-meteo.com/en/docs
+    const codeToText: Record<number, string> = {
+      0: 'Clear', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+      45: 'Fog', 48: 'Depositing rime fog',
+      51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Dense drizzle',
+      61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+      71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+      80: 'Rain showers', 81: 'Heavy rain showers', 82: 'Violent rain showers',
+      95: 'Thunderstorm', 96: 'Thunderstorm w/ light hail', 99: 'Thunderstorm w/ heavy hail',
+    };
+    const condition = codeToText[c.weather_code ?? -1] || 'Unknown';
+    return {
+      text: JSON.stringify({
+        ok: true,
+        location: resolvedName,
+        coords: { lat, lon },
+        timezone: data.timezone,
+        current: {
+          temp_f: c.temperature_2m,
+          feels_like_f: c.apparent_temperature,
+          humidity_pct: c.relative_humidity_2m,
+          precip_in: c.precipitation,
+          wind_mph: c.wind_speed_10m,
+          condition,
+          weather_code: c.weather_code,
+          is_day: c.is_day === 1,
+        },
+        hourly_24: (data.hourly?.time || []).slice(0, 24).map((t, i) => ({
+          time: t,
+          temp_f: data.hourly?.temperature_2m?.[i],
+          precip_pct: data.hourly?.precipitation_probability?.[i],
+          condition: codeToText[data.hourly?.weather_code?.[i] ?? -1] || 'Unknown',
+        })),
+      }),
+    };
+  } catch (err) {
+    return { text: `(error:WEATHER_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * v0.12.4 — shortcuts_execute: proxy to clawdcursor's existing shortcuts
+ * registry. clawdcursor maps semantic intent ("save document", "undo") to the
+ * correct keyboard combo per app, lowering error rate vs raw key_press where
+ * the model has to know the exact combo per app.
+ */
+async function shortcutsExecute(params: Record<string, unknown>): Promise<ToolResult> {
+  if (!isClawdReady()) {
+    return { text: '(error:CLAWD_FAILED) clawdcursor is not running. Install with: npm i -g clawdcursor && clawdcursor consent --accept' };
+  }
+  const intent = String(params.intent || params.action || '');
+  if (!intent) return { text: '(error:MISSING_INTENT) intent is required (e.g. "save document", "undo")' };
+  return await callClawdTool('shortcuts_execute', { intent }, 8_000);
+}
+
 async function excelWrite(params: Record<string, unknown>): Promise<ToolResult> {
   const filePath = String(params.path || '');
   const data = params.data;
@@ -2095,6 +2278,15 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   read_file: readFile,
   write_file: writeFile,
   // run_powershell removed in v0.12.3 — see comment above runPowershell function definition.
+  // v0.12.4 additions
+  zip_files: zipFiles,
+  unzip_files: unzipFiles,
+  hash_file: hashFile,
+  ocr_from_image: ocrFromImage,
+  windows_service_control: windowsServiceControl,
+  get_current_time_tz: getCurrentTimeTz,
+  weather_current: weatherCurrent,
+  shortcuts_execute: shortcutsExecute,
   // Agent loop
   plan: planTool,
   // System / network
