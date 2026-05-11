@@ -668,6 +668,23 @@ function layer1() {
     fail('v0.12.3: override abort', 'override branch does not call abortAllInFlightTools');
   }
 
+  // v0.12.6 — cdp_click + cdp_type in NEVER_CONFIRMS_SUCCESS (false-positive
+  // send guard, per report 543ff234). Plus cdp_client.clickByText restricts
+  // destructive verbs ("send", "submit", "delete", etc.) to <button>+role=
+  // button, never <a>/role=link (which matched the "Sent Items" sidebar nav
+  // and triggered the false-positive).
+  const neverConfirmsBlock = brainSrcNow.match(/NEVER_CONFIRMS_SUCCESS = new Set\(\[([\s\S]*?)\]\)/);
+  const neverConfirmsBody = neverConfirmsBlock ? neverConfirmsBlock[1] : '';
+  const cdpInNeverConfirms = /['"]cdp_click['"]/.test(neverConfirmsBody) && /['"]cdp_type['"]/.test(neverConfirmsBody);
+  const cdpSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'cdp-client.ts'), 'utf8');
+  const hasDestructiveVerbs = /DESTRUCTIVE_VERBS\s*=\s*\[/.test(cdpSrc);
+  const restrictsAnchors = /isDestructive\?\[\]:Array/.test(cdpSrc);
+  if (cdpInNeverConfirms && hasDestructiveVerbs && restrictsAnchors) {
+    pass('v0.12.6: cdp_click/cdp_type never confirm send + clickByText restricts destructive-verb anchors');
+  } else {
+    fail('v0.12.6: false-positive guard', `nc=${cdpInNeverConfirms}, verbs=${hasDestructiveVerbs}, anchor-restrict=${restrictsAnchors}`);
+  }
+
   // proactiveCooldownMs is a setting (not hardcoded 600_000)
   const cooldownIsSetting = /settingsStore\.get\('proactiveCooldownMs'\)/.test(brainSrcNow);
   const noHardcoded600k = !/noRepeatUntil\s*=\s*Date\.now\(\)\s*\+\s*600_000/.test(brainSrcNow);

@@ -106,6 +106,15 @@ const NEVER_CONFIRMS_SUCCESS = new Set([
   'type_text',
   'key_press',
   'write_clipboard',
+  // v0.12.6 — per support report 543ff234 (false-positive "Sent!" claim):
+  // cdp_click("Send") landed on the "Sent Items" sidebar nav instead of
+  // the actual Send button, compose window closed, model claimed success.
+  // 8 prior cdp_click/cdp_type calls had heuristic-succeeded:true, so the
+  // hallucination guard stood down. These tools are intent, not
+  // confirmation — only purpose-built send tools (outlook_send_email,
+  // outlook_web_send_email, send_email_smtp) can confirm a send.
+  'cdp_click',
+  'cdp_type',
 ]);
 
 /**

@@ -176,25 +176,58 @@ class CDPClient {
 
   /** Click by visible text content (matches innerText). */
   async clickByText(text: string): Promise<CdpResult> {
+    // v0.12.6 — destructive verbs (Send, Submit, Delete, Discard, Save) must
+    // prefer <button> / role=button over <a> / role=link / nav items. Per
+    // support report 543ff234: cdp_click("Send") on outlook.live.com landed
+    // on the "Sent Items" sidebar nav (anchor element with text containing
+    // "Sent"), closed the compose window without sending, model claimed
+    // success. Selector ordering now puts buttons + submit inputs first;
+    // anchors only match if a destructive verb wasn't matched in buttons.
+    const DESTRUCTIVE_VERBS = ['send', 'submit', 'delete', 'discard', 'remove', 'publish'];
+    const isDestructive = DESTRUCTIVE_VERBS.some(
+      (v) => text.toLowerCase().trim() === v || text.toLowerCase().includes(v),
+    );
     const expr = `(function(){
-      const target=${JSON.stringify(text)}.toLowerCase();
-      const candidates=Array.from(document.querySelectorAll('a,button,[role="button"],[role="link"],input[type="submit"],input[type="button"]'));
-      for(const el of candidates){
+      const target=${JSON.stringify(text)}.toLowerCase().trim();
+      const isDestructive=${JSON.stringify(isDestructive)};
+      // Pass 1: <button>, <input type=submit/button>, role=button — exact UI controls
+      const primary=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"],input[type="button"]'));
+      // Pass 2: <a> / role=link — only consulted for non-destructive verbs
+      const secondary=isDestructive?[]:Array.from(document.querySelectorAll('a,[role="link"]'));
+      // Helper: does the element's nearest text match the target?
+      const matches=(el)=>{
         const t=(el.innerText||el.value||el.getAttribute('aria-label')||'').trim().toLowerCase();
-        if(t===target||t.includes(target)){
-          const rect=el.getBoundingClientRect();
-          if(rect.width===0||rect.height===0)continue;
+        if(!t)return null;
+        if(t===target)return 'exact';
+        if(t.includes(target))return 'contains';
+        return null;
+      };
+      const visible=(el)=>{const r=el.getBoundingClientRect();return r.width>0&&r.height>0;};
+      // Prefer exact match in primary, then contains in primary, then secondary.
+      const tryClick=(pool,matchType)=>{
+        for(const el of pool){
+          if(!visible(el))continue;
+          const m=matches(el);
+          if(m!==matchType)continue;
           el.scrollIntoView({block:'center'});
           el.click();
-          return 'ok';
+          return el.tagName+':'+m;
         }
-      }
-      return 'not_found';
+        return null;
+      };
+      return tryClick(primary,'exact')
+        ||tryClick(primary,'contains')
+        ||tryClick(secondary,'exact')
+        ||tryClick(secondary,'contains')
+        ||'not_found';
     })()`;
     try {
       const r = await this.evaluate<string>(expr);
       if (r === 'not_found') return { success: false, error: `No clickable element with text "${text}"` };
-      return { success: true, method: 'text' };
+      // v0.12.6 — surface which tag/match-type clicked so support logs can
+      // diagnose wrong-element claims (e.g. an A:contains match for "Send"
+      // probably hit a sidebar/nav, not the actual Send button).
+      return { success: true, method: `text(${r})` };
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
     }
