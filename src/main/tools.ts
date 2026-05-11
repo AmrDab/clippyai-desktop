@@ -29,7 +29,10 @@ import { qrcodeFromText } from './skills/generate/qrcode-from-text';
 import { openUrl } from './skills/openurl';
 import { spotifyPlayUri } from './skills/spotify';
 import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/github';
-import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, TIER5_FALLBACK_MAP } from './clawd-fallback';
+import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, submitClawdTask, TIER5_FALLBACK_MAP } from './clawd-fallback';
+import { outlookWebSendEmail } from './skills/outlook-web-send';
+import { gmailWebSendEmail } from './skills/gmail-web-send';
+import { getCachedMailEnvironment } from './mail-env';
 import type { ToolResult } from './types/tool-result';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
@@ -1630,53 +1633,138 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   const body = String(params.body || '');
   if (!to || !subject || !body) return { text: 'Error: to, subject, and body are required' };
 
-  // v0.11.22 — base64 encode body + subject to bypass PS command-line
-  // tokenizer (multi-line bodies, em-dashes, smart quotes were truncated).
+  // v0.13.0 — outlookSendEmail is now a DISPATCHER. It tries email backends
+  // in priority order, returns ONE structured ToolResult, and never asks the
+  // model to loop. Per support reports 3df80c75 + b6e81644 + acbe3aee +
+  // 543ff234: the prior architecture (model orchestrates CDP-by-step) caused
+  // 13-step UI loops AND false-positive "Sent!" claims when the model clicked
+  // the wrong button. Now the entire dispatch is internal.
+  //
+  //  L1 classic Outlook COM            (fastest, supports attachments)
+  //  L1 olk mailto UIA                 (works iff olk is default mailto)
+  //  L1 olk direct AppX launch         (works regardless of mailto handler)
+  //  L2 outlook.live.com via CDP recipe (deterministic + verified "Sent")
+  //  L2 mail.google.com via CDP recipe  (deterministic + verified "Sent")
+  //  L4 clawd-cursor /task              (plain-English UI delegation)
+  //  → hard error if all fail
+
   const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
   const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
-  const args = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
-  if (params.cc) args.push('-cc', String(params.cc));
-  if (params.attachments) args.push('-attachments', String(params.attachments));
+  const psArgs = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
+  if (params.cc) psArgs.push('-cc', String(params.cc));
+  if (params.attachments) psArgs.push('-attachments', String(params.attachments));
 
-  // Layer 1: classic Outlook COM. Fastest path, exposes Send + attachments.
-  const comResult = await runComScriptStructured('com-outlook-send-email.ps1', args, 30000);
-  if (comResult.ok) return { text: comResult.message };
+  const env = getCachedMailEnvironment();
+  const tried: string[] = [];
 
-  // Layer 2: new Outlook (olk.exe) via single-shot UIA driver. Per support
-  // report 3df80c75 (2026-05-09): when classic COM fails because the user
-  // has the Microsoft Store Outlook, the brain previously went on a 23-step
-  // CDP UI-clicking spree. This collapses that into ONE PowerShell call.
-  // Body length is limited to ~2KB by the mailto: protocol; the script
-  // surfaces 'body_too_long' if exceeded so we don't silently truncate.
-  if (comResult.errorCode === 'OUTLOOK_NEW_NO_COM') {
-    log.info('outlook_send_email: classic COM unavailable → trying olk UIA fallback');
-    // Attachments dropped here: mailto: doesn't carry them. Surface as a
-    // soft warning in the result rather than refusing the send.
-    const uiaArgs = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
-    if (params.cc) uiaArgs.push('-cc', String(params.cc));
-    const uiaResult = await runComScriptStructured('olk-send-email-uia.ps1', uiaArgs, 25000);
-    if (uiaResult.ok) {
-      const note = params.attachments ? ' (note: attachments not sent — mailto: protocol does not carry them)' : '';
-      return { text: `${uiaResult.message}${note}` };
+  // L1a: classic Outlook COM
+  if (!env || env.classic_outlook_com !== false) {
+    tried.push('com');
+    const r = await runComScriptStructured('com-outlook-send-email.ps1', psArgs, 30000);
+    if (r.ok) return { text: r.message };
+    // If COM said OUTLOOK_NEW_NO_COM, the user clearly has no classic — skip
+    // OUTLOOK_NOT_RUNNING (means user has classic but it isn't running — can't help)
+    if (r.errorCode !== 'OUTLOOK_NEW_NO_COM' && r.errorCode !== 'OUTLOOK_NOT_RUNNING') {
+      // Real COM error we didn't anticipate — surface it.
+      return { text: r.message };
     }
-    // v0.12.3 — if layer 2 returned OUTLOOK_UNVERIFIED, that's "maybe sent",
-    // not a failure. Surface it verbatim so the model can tell the user "I
-    // triggered Send but couldn't confirm — check for a dialog" instead of
-    // pretending both paths failed (per architecture audit finding #2).
-    if (uiaResult.errorCode === 'OUTLOOK_UNVERIFIED') {
-      return { text: uiaResult.message };
-    }
-    // Layer 2 hard-failed. Surface a richer error than just the script
-    // detail so the model knows BOTH paths were tried.
-    log.warn('outlook_send_email: olk UIA fallback also failed', { detail: uiaResult.message });
-    return {
-      text: `(error:OUTLOOK_NEW_NO_COM) Tried classic Outlook COM and the new Outlook UIA driver — both failed. ${uiaResult.message}. Last resort: open outlook.live.com via cdp_connect, or use mailto: with shorter content.`,
-    };
   }
 
-  // Layer 3: any other COM failure surfaces verbatim. The model can decide
-  // whether to retry or surface to the user.
-  return { text: comResult.message };
+  // L1b: olk mailto UIA (only if olk IS the default mailto handler — the
+  // script's own precheck enforces this, so just try it)
+  if (!env || env.new_outlook_installed) {
+    tried.push('olk-mailto');
+    const r = await runComScriptStructured('olk-send-email-uia.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 30000);
+    if (r.ok) {
+      const note = params.attachments ? ' (note: attachments not sent — mailto: protocol does not carry them)' : '';
+      return { text: `${r.message}${note}` };
+    }
+    if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
+  }
+
+  // L1c: olk direct AppX launch (NEW v0.13.0 — bypasses mailto handler)
+  if (!env || env.new_outlook_installed) {
+    tried.push('olk-direct');
+    const r = await runComScriptStructured('olk-send-email-direct.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 45000);
+    if (r.ok) {
+      const note = params.attachments ? ' (note: attachments not sent via olk-direct)' : '';
+      return { text: `${r.message}${note}` };
+    }
+    if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
+  }
+
+  // L2a: outlook.live.com via deterministic CDP recipe
+  tried.push('outlook-web');
+  try {
+    const r = await outlookWebSendEmail({ to, subject, body, cc: params.cc ? String(params.cc) : undefined });
+    if (!r.text.startsWith('(error:')) return r;
+    // Surface NOT_SIGNED_IN cleanly — model shouldn't try gmail-web if user is signed in to outlook-web with sign-in expired
+    if (r.text.includes('NOT_SIGNED_IN')) {
+      // proceed to gmail fallback
+    }
+  } catch (err) {
+    log.warn('outlook_web_send_email threw', { err: serializeErr(err) });
+  }
+
+  // L2b: gmail-web fallback
+  tried.push('gmail-web');
+  try {
+    const r = await gmailWebSendEmail({ to, subject, body, cc: params.cc ? String(params.cc) : undefined });
+    if (!r.text.startsWith('(error:')) return r;
+  } catch (err) {
+    log.warn('gmail_web_send_email threw', { err: serializeErr(err) });
+  }
+
+  // L4: last resort — delegate to clawd-cursor /task with a plain-English
+  // instruction. Only fires if clawdcursor is installed + ready.
+  if (isClawdReady()) {
+    tried.push('clawd-task');
+    log.info('outlook_send_email: all native paths failed → clawd /task');
+    const task = `Send an email. To: ${to}. Subject: ${subject}. Body: ${body}. Use whichever mail client is available on the desktop. Confirm sent before returning.`;
+    const r = await submitClawdTask(task, { timeoutMs: 120_000 });
+    if (!r.text.startsWith('(error:')) return r;
+  }
+
+  return {
+    text: `(error:EMAIL_SEND_FAILED) Tried ${tried.join(' → ')} — all failed. The user may need to set up Outlook (classic or new) as default mail, sign into outlook.live.com or mail.google.com in the browser, or paste the message into a mail client manually.`,
+  };
+}
+
+/**
+ * v0.13.0 — direct exposure of the deterministic outlook.live.com recipe.
+ * Mostly intended as an internal dispatch target from outlookSendEmail, but
+ * also surfaced as a separate tool so the model can pick it directly if it
+ * KNOWS the user is on outlook web (e.g. user said "use outlook web").
+ */
+async function outlookWebSendEmailTool(params: Record<string, unknown>): Promise<ToolResult> {
+  return outlookWebSendEmail({
+    to: String(params.to || ''),
+    subject: String(params.subject || ''),
+    body: String(params.body || ''),
+    cc: params.cc ? String(params.cc) : undefined,
+  });
+}
+
+async function gmailWebSendEmailTool(params: Record<string, unknown>): Promise<ToolResult> {
+  return gmailWebSendEmail({
+    to: String(params.to || ''),
+    subject: String(params.subject || ''),
+    body: String(params.body || ''),
+    cc: params.cc ? String(params.cc) : undefined,
+  });
+}
+
+/**
+ * v0.13.0 — clawd_task: L4 fallback for any task that doesn't fit L1-L3.
+ * Submits a plain-English instruction to clawd-cursor's /task endpoint.
+ * Per OpenClaw integration recommendations: this is LAST resort.
+ */
+async function clawdTaskTool(params: Record<string, unknown>): Promise<ToolResult> {
+  const task = String(params.task || '');
+  if (!task.trim()) return { text: '(error:MISSING_TASK) task description is required' };
+  const appHint = params.appHint ? String(params.appHint) : undefined;
+  const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 120_000;
+  return submitClawdTask(task, { appHint, timeoutMs });
 }
 
 async function outlookReadInbox(params: Record<string, unknown>): Promise<ToolResult> {
@@ -2296,6 +2384,10 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   get_current_time_tz: getCurrentTimeTz,
   weather_current: weatherCurrent,
   shortcuts_execute: shortcutsExecute,
+  // v0.13.0 — email-send L2 web recipes + L4 clawd-task wrapper
+  outlook_web_send_email: outlookWebSendEmailTool,
+  gmail_web_send_email: gmailWebSendEmailTool,
+  clawd_task: clawdTaskTool,
   // Agent loop
   plan: planTool,
   // System / network

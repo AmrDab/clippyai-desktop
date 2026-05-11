@@ -165,6 +165,14 @@ app.whenReady().then(async () => {
     m.startClawd().catch((err) => log.warn('clawdcursor fallback unavailable', err.message)),
   );
 
+  // v0.13.0 — mail-environment probe (classic Outlook? olk? default mailto
+  // handler?). Cached + injected into system prompt context so the model
+  // picks the right send-email backend on the first call rather than
+  // trial-and-error through all 5 paths.
+  import('./mail-env').then((m) =>
+    m.probeMailEnvironment().catch((err) => log.warn('mail-env probe failed (non-fatal)', err.message)),
+  );
+
   if (isLicensed()) {
     log.info('License found, revalidating...');
     const stillValid = await revalidateIfNeeded();

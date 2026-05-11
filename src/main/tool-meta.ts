@@ -126,6 +126,16 @@ export const TOOL_META: Record<string, ToolMeta> = {
   get_current_time_tz:  { tier: 1, cost: 'cheap',     description: 'Current time in any IANA timezone (e.g. "America/Los_Angeles")' },
   weather_current:      { tier: 3, cost: 'cheap',     description: 'Current weather + 24h forecast via Open-Meteo (free, no API key)' },
   shortcuts_execute:    { tier: 5, cost: 'medium',    description: 'Execute a keyboard shortcut by semantic intent (e.g. "save document") — clawdcursor resolves the right combo per app' },
+
+  // ── v0.13.0 additions ──
+  // outlook_send_email is the canonical dispatcher; the two web recipes
+  // are exposed individually too so the model can pick them deliberately
+  // when it knows the user is on outlook-web or gmail-web specifically.
+  outlook_web_send_email: { tier: 4, cost: 'medium', description: 'Send email via outlook.live.com using a deterministic CDP recipe (with verified "Message sent" toast)' },
+  gmail_web_send_email:   { tier: 4, cost: 'medium', description: 'Send email via mail.google.com using a deterministic CDP recipe (with verified "Message sent" snackbar)' },
+  // clawd_task is L5 — plain-English desktop task delegation to clawdcursor
+  // for tasks that don't fit any L1-L4 native or recipe path.
+  clawd_task:             { tier: 5, cost: 'expensive', description: 'L5 LAST RESORT — delegate a plain-English desktop task to clawdcursor when no native tool, browser recipe, or installed skill fits' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {

@@ -146,6 +146,7 @@ function layer1() {
     'show-reminder.ps1',  // v0.11.25 — new helper for cmd-injection fix
     '_outlook-com-precheck.ps1',  // v0.11.29 — discriminates classic vs new Outlook
     'olk-send-email-uia.ps1',     // v0.12.2 — single-shot UIA fallback for new Outlook
+    'olk-send-email-direct.ps1',  // v0.13.0 — AppX direct launch (bypasses mailto handler)
     '_path-guard.ps1',            // v0.12.3 — shared filesystem read guard
     'zip-files.ps1',              // v0.12.4
     'unzip-files.ps1',            // v0.12.4
@@ -683,6 +684,75 @@ function layer1() {
     pass('v0.12.6: cdp_click/cdp_type never confirm send + clickByText restricts destructive-verb anchors');
   } else {
     fail('v0.12.6: false-positive guard', `nc=${cdpInNeverConfirms}, verbs=${hasDestructiveVerbs}, anchor-restrict=${restrictsAnchors}`);
+  }
+
+  // ────────── v0.13.0 email-dispatcher + new tools ──────────
+  // outlookSendEmail is now a dispatcher across all 6 paths
+  const dispatchBlock = toolsSrcNow.match(/async function outlookSendEmail[\s\S]*?\nasync function outlookWebSendEmailTool/);
+  const dispatchBody = dispatchBlock ? dispatchBlock[0] : '';
+  const hasOlkDirect = /olk-send-email-direct\.ps1/.test(dispatchBody);
+  const hasWebRecipe = /outlookWebSendEmail\(/.test(dispatchBody);
+  const hasGmailRecipe = /gmailWebSendEmail\(/.test(dispatchBody);
+  const hasClawdFallback = /submitClawdTask/.test(dispatchBody);
+  if (hasOlkDirect && hasWebRecipe && hasGmailRecipe && hasClawdFallback) {
+    pass('v0.13.0: outlookSendEmail dispatcher wires COM + olk-mailto + olk-direct + web recipes + clawd-task fallback');
+  } else {
+    fail('v0.13.0: dispatcher', `olk-direct=${hasOlkDirect}, web=${hasWebRecipe}, gmail=${hasGmailRecipe}, clawd=${hasClawdFallback}`);
+  }
+
+  // New v0.13.0 tools registered in TOOL_MAP, tool-meta, and server prompt
+  const v130Tools = ['outlook_web_send_email', 'gmail_web_send_email', 'clawd_task'];
+  const v130InMap = v130Tools.every((t) => tmKeys.includes(t));
+  const v130InMeta = v130Tools.every((t) => new RegExp(`^\\s+${t}:`, 'm').test(metaSrc));
+  const v130InServer = v130Tools.every((t) => new RegExp(`name:\\s*'${t}'`).test(apiToolsSrc));
+  if (v130InMap && v130InMeta && v130InServer) {
+    pass('v0.13.0: 3 new tools (outlook_web_send_email, gmail_web_send_email, clawd_task) registered everywhere');
+  } else {
+    fail('v0.13.0: tool registration', `map=${v130InMap}, meta=${v130InMeta}, server=${v130InServer}`);
+  }
+
+  // mail-env probe exists + client sends mail_env in /v1/turn payload
+  const mailEnvPath = path.join(ROOT, 'src', 'main', 'mail-env.ts');
+  if (fs.existsSync(mailEnvPath)) {
+    const mailEnvSrc = fs.readFileSync(mailEnvPath, 'utf8');
+    const hasProbe = /probeMailEnvironment/.test(mailEnvSrc);
+    const checksAppx = /Microsoft\.OutlookForWindows/.test(mailEnvSrc);
+    const checksMailto = /mailto\\?\\\\UserChoice/.test(mailEnvSrc) || /mailto.{0,5}UserChoice/.test(mailEnvSrc);
+    const brainSendsMailEnv = /mail_env/.test(brainSrcNow);
+    if (hasProbe && checksAppx && checksMailto && brainSendsMailEnv) {
+      pass('v0.13.0: mail-env probe + payload plumbing');
+    } else {
+      fail('v0.13.0: mail-env', `probe=${hasProbe}, appx=${checksAppx}, mailto=${checksMailto}, brainSends=${brainSendsMailEnv}`);
+    }
+  } else {
+    fail('v0.13.0: mail-env.ts', 'file missing');
+  }
+
+  // olk-send-email-direct.ps1 uses AppsFolder + UIA + Ctrl+N + Ctrl+Enter
+  const olkDirectPath = path.join(ROOT, 'assets', 'scripts', 'olk-send-email-direct.ps1');
+  if (fs.existsSync(olkDirectPath)) {
+    const src = fs.readFileSync(olkDirectPath, 'utf8');
+    const usesAppsFolder = /shell:AppsFolder\\Microsoft\.OutlookForWindows/.test(src);
+    const usesCtrlN = /\^n/.test(src);
+    const usesCtrlEnter = /\^\{ENTER\}/.test(src);
+    if (usesAppsFolder && usesCtrlN && usesCtrlEnter) {
+      pass('v0.13.0: olk-send-email-direct.ps1 uses AppsFolder + Ctrl+N + Ctrl+Enter');
+    } else {
+      fail('v0.13.0: olk-direct script', `appx=${usesAppsFolder}, ctrl-n=${usesCtrlN}, ctrl-enter=${usesCtrlEnter}`);
+    }
+  } else {
+    fail('v0.13.0: olk-send-email-direct.ps1', 'file missing');
+  }
+
+  // submitClawdTask wraps /task with returnPartial
+  const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
+  const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);
+  const callsTaskEndpoint = /path:\s*['"]\/task['"]/.test(clawdSrc);
+  const usesReturnPartial = /returnPartial:\s*true/.test(clawdSrc);
+  if (hasSubmitTask && callsTaskEndpoint && usesReturnPartial) {
+    pass('v0.13.0: submitClawdTask hits POST /task with returnPartial');
+  } else {
+    fail('v0.13.0: clawd /task wrapper', `submit=${hasSubmitTask}, path=${callsTaskEndpoint}, partial=${usesReturnPartial}`);
   }
 
   // proactiveCooldownMs is a setting (not hardcoded 600_000)

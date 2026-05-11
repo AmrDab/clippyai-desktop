@@ -426,3 +426,92 @@ export async function callClawdTool(
     req.end();
   });
 }
+
+/**
+ * v0.13.0 — submit a plain-English task to clawd-cursor's `/task` endpoint.
+ * Per the OpenClaw integration recommendations: this is L4 — only used when
+ * L1 (native), L2 (browser-direct), and L3 (downloaded skill) all fail or
+ * don't fit. clawd-cursor's agent runs the task internally; we poll for
+ * completion via `/task-status` or rely on returnPartial mode.
+ *
+ * Args:
+ *   task — short imperative sentence ("Open Notepad and write Hello")
+ *   appHint — optional process name to focus first (e.g. "olk", "msedge")
+ *   timeoutMs — overall budget; default 120s
+ *
+ * Returns: ToolResult with text=summary or (error:CLAWD_TASK_FAILED).
+ */
+export async function submitClawdTask(
+  task: string,
+  opts: { appHint?: string; timeoutMs?: number } = {},
+): Promise<ToolResult> {
+  const h = handle;
+  if (!h) return { text: '(error:CLAWD_FAILED) clawdcursor not ready. Install: npm i -g clawdcursor && clawdcursor consent --accept' };
+  if (!task || task.trim().length === 0) return { text: '(error:MISSING_TASK) task description is required' };
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+
+  // Per clawd README + SKILL.md: POST /task with {"task": "..."} returns
+  // {status, taskId}. We use returnPartial:true so we get a single
+  // round-trip with the result (or partial state if it times out).
+  return new Promise<ToolResult>((resolve) => {
+    const reqBody = JSON.stringify({
+      task: task.trim(),
+      returnPartial: true,
+      ...(opts.appHint ? { appHint: opts.appHint } : {}),
+    });
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: h.port,
+        path: '/task',
+        method: 'POST',
+        timeout: timeoutMs,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(reqBody),
+          Authorization: `Bearer ${h.token}`,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode !== undefined && res.statusCode >= 400) {
+            resolve({ text: `(error:CLAWD_TASK_FAILED) HTTP ${res.statusCode}: ${raw.slice(0, 300)}` });
+            return;
+          }
+          try {
+            const parsed = JSON.parse(raw) as {
+              status?: string;
+              result?: unknown;
+              summary?: string;
+              text?: string;
+              taskId?: string;
+              error?: string;
+            };
+            if (parsed.error) {
+              resolve({ text: `(error:CLAWD_TASK_FAILED) ${parsed.error}` });
+              return;
+            }
+            const summary = parsed.summary || parsed.text
+              || (typeof parsed.result === 'string' ? parsed.result : JSON.stringify(parsed.result ?? ''));
+            const status = parsed.status || 'unknown';
+            resolve({ text: `clawd_task status=${status}: ${summary?.toString().slice(0, 1500) || '(no summary)'}` });
+          } catch {
+            resolve({ text: raw.slice(0, 1500) });
+          }
+        });
+      },
+    );
+    req.on('error', (err) => {
+      resolve({ text: `(error:CLAWD_TASK_FAILED) ${err.message}` });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ text: `(error:CLAWD_TASK_FAILED) request timed out after ${timeoutMs}ms` });
+    });
+    req.write(reqBody);
+    req.end();
+  });
+}

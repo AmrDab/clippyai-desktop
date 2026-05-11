@@ -1307,7 +1307,17 @@ export class Brain {
       // tool_tiers — see buildToolTiers above. Server appends "[Tn]" to each
       // declared function's description and adds a "prefer lowest tier" line
       // to the system prompt. Forward-compatible: ignored if not yet wired.
-      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), ...opts }));
+      // v0.13.0 — include mail-environment hint so server can inject it
+      // into prompt context. Lets the model pick the right email backend
+      // on the first call rather than trial-and-error.
+      let mail_env: unknown = undefined;
+      try {
+        // Lazy import — keeps brain.ts startup decoupled from mail-env.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getCachedMailEnvironment } = require('./mail-env') as typeof import('./mail-env');
+        mail_env = getCachedMailEnvironment() || undefined;
+      } catch { /* probe may not have run yet at first turn */ }
+      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), mail_env, ...opts }));
       req.end();
     });
   }
