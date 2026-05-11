@@ -17,6 +17,7 @@
       <button class="settings-nav-item" data-section="appearance" style="display:none">Appearance</button>
       <button class="settings-nav-item" data-section="voice">Voice</button>
       <button class="settings-nav-item" data-section="brain">Brain</button>
+      <button class="settings-nav-item" data-section="skills">Skills</button>
       <button class="settings-nav-item" data-section="tools">Tools</button>
       <button class="settings-nav-item" data-section="license">License</button>
       <button class="settings-nav-item" data-section="about">About</button>
@@ -121,6 +122,47 @@
           <button id="btn-fire-tip" type="button" style="padding:6px 14px;font-size:13px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">Try a tip now</button>
           <span id="fire-tip-status" style="font-size:12px;color:#888;margin-left:8px;"></span>
         </div>
+
+        <!-- v0.14.1 — Mail Setup status. Surfaces the boot-time probe of
+             classic Outlook / new Outlook / default mailto handler so users
+             troubleshooting email send can self-diagnose. -->
+        <div class="settings-group" style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;">
+          <label>Mail Setup</label>
+          <div id="mail-env-status" style="font-size:12px;color:#555;line-height:1.7;margin-top:6px;">Probing…</div>
+        </div>
+      </div>
+
+      <!-- v0.14.1 — Skills tab. Shows installed ClawHub skills with version
+           + install date + uninstall, plus inline search/install. Once
+           installed, a skill is callable on the very next turn as
+           skill__<slug> (the L1 promotion mechanism). -->
+      <div class="settings-section" data-section="skills">
+        <h2>Skills</h2>
+        <div class="settings-group">
+          <p style="font-size:13px;color:#666;line-height:1.6;">
+            Skills are deterministic capabilities downloaded from <a href="#" id="link-clawhub" style="color:#4CAF50;">ClawHub</a>.
+            Once installed, Clippy can call them like any built-in tool. Skills survive across restarts.
+          </p>
+        </div>
+
+        <!-- Installed list -->
+        <div class="settings-group" style="margin-top:12px;">
+          <label style="display:flex;align-items:center;justify-content:space-between;">
+            <span>Installed Skills</span>
+            <button id="btn-refresh-skills" type="button" style="font-size:11px;padding:2px 8px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;cursor:pointer;">↻ Refresh</button>
+          </label>
+          <div id="installed-skills-list" style="margin-top:8px;font-size:12px;color:#555;">Loading…</div>
+        </div>
+
+        <!-- Search ClawHub -->
+        <div class="settings-group" style="margin-top:20px;padding-top:14px;border-top:1px solid #eee;">
+          <label for="skill-search-input">Browse ClawHub</label>
+          <div style="display:flex;gap:6px;margin-top:4px;">
+            <input id="skill-search-input" type="text" placeholder="e.g. weather, calendar, twitter" style="flex:1;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:13px;" />
+            <button id="btn-skill-search" type="button" style="padding:6px 14px;font-size:13px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">Search</button>
+          </div>
+          <div id="skill-search-results" style="margin-top:8px;font-size:12px;color:#555;"></div>
+        </div>
       </div>
 
       <!-- Desktop Tools -->
@@ -173,6 +215,11 @@
         <h2>About ClippyAI</h2>
         <div class="settings-group">
           <p style="font-size: 14px; margin-bottom: 12px;"><strong id="app-version">ClippyAI</strong></p>
+          <!-- v0.14.1 — active AI model. Server returns it in Turn.ok; we
+               populate this on first response. Surfaces K2.5 vs K2.6 routing. -->
+          <p style="font-size: 12px; color: #888; margin-bottom: 12px;">
+            AI: <span id="active-model">resolving…</span>
+          </p>
           <p style="font-size: 13px; color: #666; line-height: 1.7;">
             Your AI desktop buddy — the modern reincarnation of the classic Microsoft Office Assistant, now with real AI superpowers.
           </p>

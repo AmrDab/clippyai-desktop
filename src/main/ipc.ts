@@ -291,6 +291,113 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
   });
 
+  // v0.14.1 — Settings → Skills tab support. Lists installed ClawHub skills,
+  // searches ClawHub for new ones, installs, and uninstalls. Each lands in
+  // ~/.clippyai/skills/<slug>/ and the registry is refreshed so newly-
+  // installed skills are callable as skill__<slug> on the very next /v1/turn.
+  ipcMain.handle('skills-list', async () => {
+    try {
+      const reg = await import('./skill-registry');
+      const manifests = [...reg.getRegistry().values()];
+      return manifests.map((m) => ({
+        slug: m.slug,
+        name: m.name,
+        description: m.description,
+        version: m.version,
+        installedAt: m.installedAt,
+        toolName: reg.slugToToolName(m.slug),
+        installPath: m.installPath,
+        capability_tags: m.capability_tags,
+      }));
+    } catch (err) {
+      log.warn('skills-list failed', serializeErr(err));
+      return [];
+    }
+  });
+
+  ipcMain.handle('skills-search', async (_event, query: string) => {
+    try {
+      const ch = await import('./clawhub');
+      if (!query || !query.trim()) return [];
+      const results = await ch.searchSkills(query.trim(), 10);
+      // Enrich with safety classification so the UI can show a colored badge.
+      const enriched = await Promise.all(results.map(async (r) => {
+        const scan = await ch.getSkillScan(r.slug);
+        return {
+          slug: r.slug,
+          name: r.displayName,
+          summary: r.summary,
+          version: r.version,
+          score: r.score,
+          safety: ch.classifySkillSafety(scan),
+          capability_tags: scan?.capability_tags || [],
+        };
+      }));
+      return enriched;
+    } catch (err) {
+      log.warn('skills-search failed', serializeErr(err));
+      return [];
+    }
+  });
+
+  ipcMain.handle('skills-install', async (_event, slug: string, version?: string) => {
+    try {
+      const ch = await import('./clawhub');
+      const reg = await import('./skill-registry');
+      const manifest = await ch.installSkill(slug, version);
+      await reg.refreshSkillRegistry();
+      return { ok: true, slug: manifest.slug, name: manifest.name, version: manifest.version };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('skills-uninstall', async (_event, slug: string) => {
+    try {
+      const ch = await import('./clawhub');
+      const reg = await import('./skill-registry');
+      const skillsDir = ch.getSkillsDir();
+      const targetDir = path.join(skillsDir, slug);
+      // Path-confinement: must be inside skillsDir + must exist + must be a directory.
+      const resolved = path.resolve(targetDir);
+      if (!resolved.startsWith(path.resolve(skillsDir) + path.sep)) {
+        return { ok: false, error: 'invalid_slug' };
+      }
+      if (!fs.existsSync(resolved)) return { ok: false, error: 'not_installed' };
+      await fs.promises.rm(resolved, { recursive: true, force: true });
+      await reg.refreshSkillRegistry();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // v0.14.1 — Settings → Brain "Mail Setup" status. Surfaces the boot-time
+  // mail-env probe result so users troubleshooting email send can see
+  // "olk installed but NOT default mailto" without sending a log report.
+  // v0.14.1 — Settings → About shows which Kimi model served the last
+  // /v1/turn response. Cached at module level in brain.ts; returns null
+  // before the first turn (user hasn't chatted yet).
+  ipcMain.handle('active-model', async () => {
+    try {
+      const b = await import('./brain');
+      return b.getLastSeenModel();
+    } catch (err) {
+      log.warn('active-model failed', serializeErr(err));
+      return null;
+    }
+  });
+
+  ipcMain.handle('mail-env-status', async () => {
+    try {
+      const m = await import('./mail-env');
+      return m.getCachedMailEnvironment();
+    } catch (err) {
+      log.warn('mail-env-status failed', serializeErr(err));
+      return null;
+    }
+  });
+
   ipcMain.handle('clear-log-file', async () => {
     // v0.12.5 — clear ALL clippy-*.log files in the log directory plus
     // their rotated *.log.N siblings, not just today's. Per support

@@ -45,6 +45,16 @@ contextBridge.exposeInMainWorld('clippy', {
   // v0.12.5 — manual proactive trigger from Settings UI.
   fireProactiveTip: () => ipcRenderer.invoke('fire-proactive-tip'),
 
+  // v0.14.1 — Settings → Skills tab
+  skillsList: () => ipcRenderer.invoke('skills-list'),
+  skillsSearch: (query: string) => ipcRenderer.invoke('skills-search', query),
+  skillsInstall: (slug: string, version?: string) => ipcRenderer.invoke('skills-install', slug, version),
+  skillsUninstall: (slug: string) => ipcRenderer.invoke('skills-uninstall', slug),
+  // v0.14.1 — Settings → Brain "Mail Setup" status
+  mailEnvStatus: () => ipcRenderer.invoke('mail-env-status'),
+  // v0.14.1 — Settings → About active-model display
+  activeModel: () => ipcRenderer.invoke('active-model'),
+
   setClickThrough: (enabled: boolean) => {
     ipcRenderer.send('set-click-through', enabled);
   },

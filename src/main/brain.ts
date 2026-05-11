@@ -176,7 +176,15 @@ type TurnSuccess = {
   /** v0.11.27 — typed to remove the `as any` cast in the log line.
    * Server always sets this to "kimi" (Kimi-only post-v0.11.27). */
   provider?: string;
+  /** v0.12.5 — specific model identifier (kimi-k2.5 / kimi-k2.6 / ...).
+   * Captured into a module-level cache so Settings can display it. */
+  model?: string;
 };
+
+// v0.14.1 — last model identifier seen in a successful Turn.ok. Updated on
+// every successful /v1/turn response. Settings displays it in the About tab.
+let lastSeenModel: string | null = null;
+export function getLastSeenModel(): string | null { return lastSeenModel; }
 
 type TurnError = { error: string; detail?: string; message?: string };
 type TurnResponse = TurnSuccess | TurnError;
@@ -587,6 +595,8 @@ export class Brain {
 
         // Structured API response log — the missing piece for diagnosing performance
         const okResp = resp as TurnSuccess;
+        // v0.14.1 — cache the model id so Settings → About can display it.
+        if (okResp.model) lastSeenModel = okResp.model;
         log.info('Turn.ok', {
           step: step + 1,
           elapsed_ms: turnMs,

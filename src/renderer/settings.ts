@@ -357,6 +357,187 @@ window.clippy.onUpdateFailed(({ reason, manualUrl }) => {
   }
 });
 
+// ───────────────────────────────────────────────────────────────────
+// v0.14.1 — Skills tab + Mail Setup status + active model display
+// ───────────────────────────────────────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function renderInstalledSkills(): Promise<void> {
+  const container = document.getElementById('installed-skills-list');
+  if (!container || !window.clippy.skillsList) return;
+  container.textContent = 'Loading…';
+  try {
+    const skills = await window.clippy.skillsList();
+    if (!skills || skills.length === 0) {
+      container.innerHTML = '<p style="color:#888;font-style:italic;">No skills installed yet. Search ClawHub below to add one.</p>';
+      return;
+    }
+    container.innerHTML = skills.map((s) => {
+      const tagsHtml = (s.capability_tags || []).slice(0, 4).map((t) =>
+        `<span style="display:inline-block;font-size:10px;padding:1px 6px;margin-right:4px;background:#eef;color:#446;border-radius:8px;">${escapeHtml(t)}</span>`,
+      ).join('');
+      const installedAt = s.installedAt ? new Date(s.installedAt).toLocaleDateString() : 'unknown';
+      return `
+        <div style="padding:10px;margin-bottom:6px;border:1px solid #eee;border-radius:6px;background:#fafafa;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;color:#333;">${escapeHtml(s.name)} <span style="font-size:11px;color:#999;font-weight:normal;">v${escapeHtml(s.version)}</span></div>
+              <div style="font-size:12px;color:#666;margin-top:2px;">${escapeHtml(s.description).slice(0, 200)}</div>
+              <div style="margin-top:6px;">${tagsHtml}</div>
+              <div style="font-size:10px;color:#aaa;margin-top:4px;">Installed ${escapeHtml(installedAt)} · callable as <code>${escapeHtml(s.toolName)}</code></div>
+            </div>
+            <button class="btn-skill-uninstall" data-slug="${escapeHtml(s.slug)}" style="font-size:11px;padding:3px 10px;border:1px solid #d33;color:#d33;border-radius:3px;background:#fff;cursor:pointer;">Uninstall</button>
+          </div>
+        </div>`;
+    }).join('');
+    container.querySelectorAll('.btn-skill-uninstall').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        const slug = (e.currentTarget as HTMLElement).dataset.slug;
+        if (!slug || !window.clippy.skillsUninstall) return;
+        if (!confirm(`Uninstall "${slug}"?\n\nThis removes the skill from your local cache. You can re-install from ClawHub anytime.`)) return;
+        (e.currentTarget as HTMLButtonElement).disabled = true;
+        await window.clippy.skillsUninstall(slug);
+        await renderInstalledSkills();
+      });
+    });
+  } catch (err) {
+    container.innerHTML = `<p style="color:#d33;">Failed to load skills: ${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`;
+  }
+}
+
+async function runSkillSearch(): Promise<void> {
+  const input = document.getElementById('skill-search-input') as HTMLInputElement | null;
+  const results = document.getElementById('skill-search-results');
+  if (!input || !results || !window.clippy.skillsSearch) return;
+  const q = input.value.trim();
+  if (!q) { results.innerHTML = ''; return; }
+  results.textContent = 'Searching…';
+  try {
+    const hits = await window.clippy.skillsSearch(q);
+    if (!hits || hits.length === 0) {
+      results.innerHTML = `<p style="color:#888;font-style:italic;">No matches for "${escapeHtml(q)}".</p>`;
+      return;
+    }
+    results.innerHTML = hits.map((h) => {
+      const safetyColor = h.safety === 'safe' ? '#16a34a' : h.safety === 'consent' ? '#d97706' : '#dc2626';
+      const safetyLabel = h.safety === 'safe' ? '✓ safe' : h.safety === 'consent' ? '⚠ asks permission' : '✗ rejected';
+      const installable = h.safety !== 'reject';
+      return `
+        <div style="padding:10px;margin-bottom:6px;border:1px solid #eee;border-radius:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;color:#333;">${escapeHtml(h.name)} <span style="font-size:11px;color:#999;font-weight:normal;">v${escapeHtml(h.version)}</span></div>
+              <div style="font-size:12px;color:#666;margin-top:2px;">${escapeHtml((h.summary || '').slice(0, 200))}</div>
+              <div style="margin-top:6px;">
+                <span style="display:inline-block;font-size:10px;padding:1px 6px;margin-right:4px;background:#f0f0f0;color:${safetyColor};border-radius:8px;font-weight:600;">${safetyLabel}</span>
+                ${(h.capability_tags || []).slice(0, 4).map((t) => `<span style="display:inline-block;font-size:10px;padding:1px 6px;margin-right:4px;background:#eef;color:#446;border-radius:8px;">${escapeHtml(t)}</span>`).join('')}
+              </div>
+            </div>
+            ${installable
+              ? `<button class="btn-skill-install" data-slug="${escapeHtml(h.slug)}" style="font-size:11px;padding:3px 10px;border:1px solid #16a34a;color:#16a34a;border-radius:3px;background:#fff;cursor:pointer;">Install</button>`
+              : `<button disabled style="font-size:11px;padding:3px 10px;border:1px solid #ccc;color:#aaa;border-radius:3px;background:#f5f5f5;">Blocked</button>`}
+          </div>
+        </div>`;
+    }).join('');
+    results.querySelectorAll('.btn-skill-install').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        const slug = (e.currentTarget as HTMLElement).dataset.slug;
+        if (!slug || !window.clippy.skillsInstall) return;
+        const btnEl = e.currentTarget as HTMLButtonElement;
+        btnEl.disabled = true;
+        btnEl.textContent = 'Installing…';
+        const r = await window.clippy.skillsInstall(slug);
+        if (r.ok) {
+          btnEl.textContent = '✓ Installed';
+          btnEl.style.color = '#999';
+          await renderInstalledSkills();
+        } else {
+          btnEl.textContent = 'Failed';
+          btnEl.title = r.error || 'Unknown error';
+          btnEl.style.borderColor = '#dc2626';
+          btnEl.style.color = '#dc2626';
+          setTimeout(() => { btnEl.disabled = false; btnEl.textContent = 'Install'; btnEl.style.color = '#16a34a'; btnEl.style.borderColor = '#16a34a'; }, 3000);
+        }
+      });
+    });
+  } catch (err) {
+    results.innerHTML = `<p style="color:#d33;">Search failed: ${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`;
+  }
+}
+
+const skillSearchBtn = document.getElementById('btn-skill-search');
+const skillSearchInput = document.getElementById('skill-search-input') as HTMLInputElement | null;
+if (skillSearchBtn) skillSearchBtn.addEventListener('click', () => void runSkillSearch());
+if (skillSearchInput) skillSearchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') void runSkillSearch(); });
+const refreshSkillsBtn = document.getElementById('btn-refresh-skills');
+if (refreshSkillsBtn) refreshSkillsBtn.addEventListener('click', () => void renderInstalledSkills());
+const clawhubLink = document.getElementById('link-clawhub');
+if (clawhubLink) clawhubLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.clippy.openExternalUrl('https://clawhub.ai');
+});
+// Lazy-load installed skills when the Skills tab is opened (not on app launch)
+// so we don't hit the disk on every Settings open.
+let skillsLoadedOnce = false;
+document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+  if (item.dataset.section !== 'skills') return;
+  item.addEventListener('click', () => {
+    if (skillsLoadedOnce) return;
+    skillsLoadedOnce = true;
+    void renderInstalledSkills();
+  });
+});
+
+// Mail Setup status display (Brain tab)
+async function renderMailEnv(): Promise<void> {
+  const el = document.getElementById('mail-env-status');
+  if (!el || !window.clippy.mailEnvStatus) return;
+  try {
+    const env = await window.clippy.mailEnvStatus();
+    if (!env) {
+      el.textContent = 'Probe not yet run.';
+      return;
+    }
+    const lines: string[] = [];
+    lines.push(env.classic_outlook_com
+      ? '<span style="color:#16a34a;">✓</span> Classic Outlook (COM)'
+      : '<span style="color:#999;">✗</span> Classic Outlook (COM) — not installed');
+    if (env.new_outlook_installed) {
+      const olkOk = env.default_is_olk;
+      lines.push(olkOk
+        ? '<span style="color:#16a34a;">✓</span> New Outlook (olk) — default mail handler'
+        : '<span style="color:#d97706;">⚠</span> New Outlook (olk) — installed, but NOT default mailto');
+    } else {
+      lines.push('<span style="color:#999;">✗</span> New Outlook (olk) — not installed');
+    }
+    if (env.default_mailto_handler) {
+      lines.push(`<span style="color:#888;font-size:11px;">Default mailto: <code>${escapeHtml(env.default_mailto_handler)}</code></span>`);
+    } else {
+      lines.push('<span style="color:#888;font-size:11px;">No default mailto handler set.</span>');
+    }
+    el.innerHTML = lines.join('<br>');
+  } catch {
+    el.textContent = 'Probe unavailable.';
+  }
+}
+void renderMailEnv();
+
+// Active model display (About tab)
+async function renderActiveModel(): Promise<void> {
+  const el = document.getElementById('active-model');
+  if (!el || !window.clippy.activeModel) return;
+  try {
+    const model = await window.clippy.activeModel();
+    el.textContent = model || 'kimi (not yet served a turn)';
+  } catch {
+    el.textContent = 'unknown';
+  }
+}
+void renderActiveModel();
+
 // Init
 loadConfig();
 testConnection();

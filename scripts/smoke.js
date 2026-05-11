@@ -792,6 +792,53 @@ function layer1() {
     fail('v0.14.0: clawhub.ts or skill-registry.ts', 'missing file');
   }
 
+  // ────────── v0.14.1 Settings UI loose-end audit ──────────
+  // Skills tab, Mail Setup status, active-model display — all wired
+  // through preload → ipc.ts → underlying modules.
+  const settingsHtmlPath = path.join(ROOT, 'src', 'renderer', 'settings.html');
+  const settingsTsPath = path.join(ROOT, 'src', 'renderer', 'settings.ts');
+  const preloadPathV141 = path.join(ROOT, 'src', 'preload', 'index.ts');
+  const ipcPathV141 = path.join(ROOT, 'src', 'main', 'ipc.ts');
+  const htmlSrc = fs.readFileSync(settingsHtmlPath, 'utf8');
+  const settingsTsSrc = fs.readFileSync(settingsTsPath, 'utf8');
+  const preloadSrcV141 = fs.readFileSync(preloadPathV141, 'utf8');
+  const ipcSrcV141 = fs.readFileSync(ipcPathV141, 'utf8');
+
+  // Skills tab fully wired: nav item + HTML section + IPC handlers + preload
+  const hasSkillsNav = /data-section="skills"/.test(htmlSrc);
+  const hasInstalledList = /id="installed-skills-list"/.test(htmlSrc);
+  const hasSkillSearch = /id="skill-search-input"/.test(htmlSrc);
+  const hasIpcSkillsList = /.skills-list./.test(ipcSrcV141) && /'skills-search'/.test(ipcSrcV141) && /'skills-install'/.test(ipcSrcV141) && /'skills-uninstall'/.test(ipcSrcV141);
+  const hasPreloadSkills = /skillsList:/.test(preloadSrcV141) && /skillsSearch:/.test(preloadSrcV141) && /skillsInstall:/.test(preloadSrcV141) && /skillsUninstall:/.test(preloadSrcV141);
+  const hasRenderInstalled = /async function renderInstalledSkills/.test(settingsTsSrc);
+  if (hasSkillsNav && hasInstalledList && hasSkillSearch && hasIpcSkillsList && hasPreloadSkills && hasRenderInstalled) {
+    pass('v0.14.1: Skills tab fully wired (nav + list + search + 4 IPC + preload + renderer)');
+  } else {
+    fail('v0.14.1: Skills tab', `nav=${hasSkillsNav}, list=${hasInstalledList}, search=${hasSkillSearch}, ipc=${hasIpcSkillsList}, preload=${hasPreloadSkills}, render=${hasRenderInstalled}`);
+  }
+
+  // Mail Setup status panel (Brain tab)
+  const hasMailStatusHtml = /id="mail-env-status"/.test(htmlSrc);
+  const hasMailEnvIpc = /'mail-env-status'/.test(ipcSrcV141);
+  const hasMailEnvPreload = /mailEnvStatus:/.test(preloadSrcV141);
+  const hasMailEnvRenderer = /renderMailEnv/.test(settingsTsSrc);
+  if (hasMailStatusHtml && hasMailEnvIpc && hasMailEnvPreload && hasMailEnvRenderer) {
+    pass('v0.14.1: Mail Setup status panel wired');
+  } else {
+    fail('v0.14.1: Mail Setup', `html=${hasMailStatusHtml}, ipc=${hasMailEnvIpc}, preload=${hasMailEnvPreload}, renderer=${hasMailEnvRenderer}`);
+  }
+
+  // Active model display (About tab) + last-seen-model cache in brain.ts
+  const hasActiveModelHtml = /id="active-model"/.test(htmlSrc);
+  const hasActiveModelIpc = /'active-model'/.test(ipcSrcV141);
+  const hasActiveModelPreload = /activeModel:/.test(preloadSrcV141);
+  const hasLastSeenCache = /getLastSeenModel|lastSeenModel\s*=/.test(brainSrcNow);
+  if (hasActiveModelHtml && hasActiveModelIpc && hasActiveModelPreload && hasLastSeenCache) {
+    pass('v0.14.1: Active-model display wired (HTML + IPC + preload + brain cache)');
+  } else {
+    fail('v0.14.1: active model', `html=${hasActiveModelHtml}, ipc=${hasActiveModelIpc}, preload=${hasActiveModelPreload}, cache=${hasLastSeenCache}`);
+  }
+
   // submitClawdTask wraps /task with returnPartial
   const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
   const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);

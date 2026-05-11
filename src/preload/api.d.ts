@@ -54,6 +54,39 @@ interface Window {
     /** v0.12.5 — manual proactive trigger from Settings UI */
     fireProactiveTip?: () => Promise<{ ok: boolean; reason?: string }>;
 
+    // v0.14.1 — Skills tab
+    skillsList?: () => Promise<Array<{
+      slug: string;
+      name: string;
+      description: string;
+      version: string;
+      installedAt: string;
+      toolName: string;
+      installPath: string;
+      capability_tags: string[];
+    }>>;
+    skillsSearch?: (query: string) => Promise<Array<{
+      slug: string;
+      name: string;
+      summary: string;
+      version: string;
+      score: number;
+      safety: 'safe' | 'consent' | 'reject';
+      capability_tags: string[];
+    }>>;
+    skillsInstall?: (slug: string, version?: string) => Promise<{ ok: boolean; slug?: string; name?: string; version?: string; error?: string }>;
+    skillsUninstall?: (slug: string) => Promise<{ ok: boolean; error?: string }>;
+    /** v0.14.1 — Brain → Mail Setup status panel */
+    mailEnvStatus?: () => Promise<{
+      classic_outlook_com: boolean;
+      new_outlook_installed: boolean;
+      default_mailto_handler: string | null;
+      default_is_olk: boolean;
+      probed_at: string;
+    } | null>;
+    /** v0.14.1 — About → active AI model string (kimi-k2.5 / kimi-k2.6 / ...) */
+    activeModel?: () => Promise<string | null>;
+
     // ── Window control
     setClickThrough: (enabled: boolean) => void;
     openSettings: () => void;
