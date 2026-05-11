@@ -33,6 +33,8 @@ import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, submitCl
 import { outlookWebSendEmail } from './skills/outlook-web-send';
 import { gmailWebSendEmail } from './skills/gmail-web-send';
 import { getCachedMailEnvironment } from './mail-env';
+import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
+import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 import type { ToolResult } from './types/tool-result';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
@@ -1754,6 +1756,93 @@ async function gmailWebSendEmailTool(params: Record<string, unknown>): Promise<T
   });
 }
 
+// ── v0.14.0 ClawHub skill registry tools ──────────────────────────
+
+/**
+ * find_skill — search ClawHub for skills matching a plain-English intent.
+ * Returns top-N matches with summaries + safety classification so the
+ * model can decide whether to call install_skill next.
+ */
+async function findSkillTool(params: Record<string, unknown>): Promise<ToolResult> {
+  const query = String(params.query || params.intent || '');
+  if (!query.trim()) return { text: '(error:MISSING_QUERY) find_skill needs a `query` describing what you want to do.' };
+  const limit = Math.min(Math.max(Number(params.limit) || 5, 1), 10);
+
+  try {
+    const results = await searchSkills(query, limit);
+    if (results.length === 0) {
+      return { text: `No ClawHub skills found for "${query}". No public skill matches the user's request — fall back to clawd_task or surface the limitation to the user.` };
+    }
+    // For each result, also fetch its scan classification so the model knows
+    // whether install_skill will need user consent.
+    const enriched = await Promise.all(results.map(async (r) => {
+      const scan = await getSkillScan(r.slug);
+      const safety = classifySkillSafety(scan);
+      return {
+        slug: r.slug,
+        name: r.displayName,
+        summary: r.summary,
+        version: r.version,
+        match_score: r.score,
+        safety, // 'safe' / 'consent' / 'reject'
+        capability_tags: scan?.capability_tags || [],
+      };
+    }));
+    return { text: JSON.stringify({ query, results: enriched }, null, 2) };
+  } catch (err) {
+    return { text: `(error:CLAWHUB_SEARCH_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * install_skill — download + extract a skill into ~/.clippyai/skills/<slug>/
+ * and refresh the runtime registry so the skill becomes callable as
+ * `skill__<slug>` on the model's NEXT turn (the L1 promotion mechanism
+ * the user asked for).
+ *
+ * For skills classified 'consent' (capability tags include shell-exec,
+ * etc.), the model must pass `userConsent: true` after asking the user
+ * verbally. Skills classified 'reject' (suspicious/malicious scan
+ * verdict) are refused regardless of consent.
+ */
+async function installSkillTool(params: Record<string, unknown>): Promise<ToolResult> {
+  const slug = String(params.slug || '');
+  if (!slug.trim()) return { text: '(error:MISSING_SLUG) install_skill needs a `slug`. Call find_skill first to discover slugs.' };
+  const version = params.version ? String(params.version) : undefined;
+  const userConsent = params.userConsent === true || params.userConsent === 'true';
+
+  try {
+    const scan = await getSkillScan(slug);
+    const safety = classifySkillSafety(scan);
+    if (safety === 'reject') {
+      return { text: `(error:SKILL_REJECTED) ${slug} cannot be installed (scan verdict: ${scan?.verdict || 'unknown'}, tags: ${scan?.capability_tags?.join(',') || 'none'}).` };
+    }
+    if (safety === 'consent' && !userConsent) {
+      const tags = scan?.capability_tags?.join(', ') || 'unknown capabilities';
+      return {
+        text: `(error:USER_CONSENT_REQUIRED) ${slug} requests potentially sensitive capabilities: ${tags}. Ask the user to confirm, then call install_skill again with userConsent=true.`,
+      };
+    }
+    const manifest = await installSkill(slug, version);
+    // L1 PROMOTION: refresh the registry so subsequent turns see this
+    // skill as a first-class tool (skill__<slug>).
+    await refreshSkillRegistry();
+    return {
+      text: JSON.stringify({
+        ok: true,
+        slug: manifest.slug,
+        name: manifest.name,
+        version: manifest.version,
+        tool_name: slugToToolName(manifest.slug),
+        installed_at: manifest.installedAt,
+        message: `Skill "${manifest.name}" installed. Call it as ${slugToToolName(manifest.slug)}(...) on the next turn.`,
+      }),
+    };
+  } catch (err) {
+    return { text: `(error:SKILL_INSTALL_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 /**
  * v0.13.0 — clawd_task: L4 fallback for any task that doesn't fit L1-L3.
  * Submits a plain-English instruction to clawd-cursor's /task endpoint.
@@ -2388,6 +2477,9 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   outlook_web_send_email: outlookWebSendEmailTool,
   gmail_web_send_email: gmailWebSendEmailTool,
   clawd_task: clawdTaskTool,
+  // v0.14.0 — ClawHub skill registry
+  find_skill: findSkillTool,
+  install_skill: installSkillTool,
   // Agent loop
   plan: planTool,
   // System / network
@@ -2482,6 +2574,11 @@ export async function initTools(): Promise<void> {
   } catch (err) {
     log.warn('Screen scale detection failed', serializeErr(err));
   }
+  // v0.14.0 — populate the skill registry from the on-disk cache so any
+  // previously-installed ClawHub skills are callable from the first turn.
+  // Non-blocking — never delay startup just because skills enumeration
+  // hits a slow disk.
+  refreshSkillRegistry().catch((err) => log.warn('Skill registry refresh failed', serializeErr(err)));
   // PSBridge warmup is SLOW (~12s on fresh Windows installs) and blocking
   // it here makes Clippy show nothing for ~12s after click-to-launch. Start
   // it in the background and let psCommand() fall back to one-off PowerShell
@@ -2508,6 +2605,14 @@ export async function initTools(): Promise<void> {
 }
 
 export async function executeTool(tool: string, params: Record<string, unknown> = {}): Promise<ToolResult> {
+  // v0.14.0 — skill__<slug> tools are dispatched via the ClawHub registry.
+  // These tools are dynamic — they're added at runtime when install_skill
+  // finishes, so they aren't in the static TOOL_MAP. We check this BEFORE
+  // the TOOL_MAP lookup so a freshly-installed skill is callable on the
+  // very next turn without restart.
+  if (isSkillTool(tool)) {
+    return await executeSkillTool(tool, params);
+  }
   const fn = TOOL_MAP[tool];
   if (!fn) {
     log.warn(`Unknown tool: ${tool}`);

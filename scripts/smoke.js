@@ -744,6 +744,54 @@ function layer1() {
     fail('v0.13.0: olk-send-email-direct.ps1', 'file missing');
   }
 
+  // ────────── v0.14.0 ClawHub skill registry ──────────
+  const clawhubPath = path.join(ROOT, 'src', 'main', 'clawhub.ts');
+  const registryPath = path.join(ROOT, 'src', 'main', 'skill-registry.ts');
+  if (fs.existsSync(clawhubPath) && fs.existsSync(registryPath)) {
+    const ch = fs.readFileSync(clawhubPath, 'utf8');
+    const reg = fs.readFileSync(registryPath, 'utf8');
+    const hasSearch    = /export async function searchSkills/.test(ch);
+    const hasInstall   = /export async function installSkill/.test(ch);
+    const hasScan      = /export async function getSkillScan/.test(ch);
+    const hasRunner    = /export async function runSkill/.test(ch);
+    const hasParser    = /parseSkillMd/.test(ch);
+    const hasSafety    = /UNSAFE_CAPABILITY_TAGS|classifySkillSafety/.test(ch);
+    const hasSlugToTool = /export function slugToToolName/.test(reg);
+    const hasIsSkillTool = /export function isSkillTool/.test(reg);
+    const hasRefresh   = /export async function refreshSkillRegistry/.test(reg);
+    const hasExecute   = /export async function executeSkillTool/.test(reg);
+    const hasPromptList = /export function getInstalledSkillsForPrompt/.test(reg);
+    // The L1-promotion ask: skill__<slug> tools route through registry in executeTool
+    const promotionWired = /isSkillTool\(tool\)/.test(toolsSrcNow) && /executeSkillTool\(tool, params\)/.test(toolsSrcNow);
+    // Brain sends installed_skills in /v1/turn
+    const brainSendsSkills = /installed_skills/.test(brainSrcNow);
+    // Server accepts installed_skills + merges into tool list
+    const serverAcceptsSkills = /installed_skills\?:|installed_skills\?: /.test(apiToolsSrc) === false; // turn.ts not tools.ts
+    const apiTurnSrc = fs.readFileSync(path.join(ROOT, '..', 'clippyai-api', 'src', 'routes', 'turn.ts'), 'utf8');
+    const serverWiresSkills = /installed_skills/.test(apiTurnSrc) && /skillTools/.test(apiTurnSrc);
+
+    const allWired = hasSearch && hasInstall && hasScan && hasRunner && hasParser && hasSafety
+      && hasSlugToTool && hasIsSkillTool && hasRefresh && hasExecute && hasPromptList
+      && promotionWired && brainSendsSkills && serverWiresSkills;
+    if (allWired) {
+      pass('v0.14.0: ClawHub client + registry wired; skill__<slug> tools auto-promote to L1');
+    } else {
+      fail('v0.14.0: ClawHub plumbing', `search=${hasSearch}, install=${hasInstall}, scan=${hasScan}, runner=${hasRunner}, parser=${hasParser}, safety=${hasSafety}, slugToTool=${hasSlugToTool}, isSkillTool=${hasIsSkillTool}, refresh=${hasRefresh}, executeSkill=${hasExecute}, promptList=${hasPromptList}, promotion=${promotionWired}, brainSends=${brainSendsSkills}, server=${serverWiresSkills}`);
+    }
+
+    // find_skill + install_skill registered in TOOL_MAP
+    const v140Tools = ['find_skill', 'install_skill'];
+    const v140InMap = v140Tools.every((t) => tmKeys.includes(t));
+    const v140InServer = v140Tools.every((t) => new RegExp(`name:\\s*'${t}'`).test(apiToolsSrc));
+    if (v140InMap && v140InServer) {
+      pass('v0.14.0: find_skill + install_skill registered (TOOL_MAP + server prompt)');
+    } else {
+      fail('v0.14.0: skill tools', `map=${v140InMap}, server=${v140InServer}`);
+    }
+  } else {
+    fail('v0.14.0: clawhub.ts or skill-registry.ts', 'missing file');
+  }
+
   // submitClawdTask wraps /task with returnPartial
   const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
   const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);

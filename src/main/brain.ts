@@ -1317,7 +1317,20 @@ export class Brain {
         const { getCachedMailEnvironment } = require('./mail-env') as typeof import('./mail-env');
         mail_env = getCachedMailEnvironment() || undefined;
       } catch { /* probe may not have run yet at first turn */ }
-      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), mail_env, ...opts }));
+      // v0.14.0 — ClawHub skill registry. Send the list of installed skills
+      // so the server can expose them as first-class tools to the model.
+      // This is the L1-promotion mechanism: once a skill is installed via
+      // install_skill, it appears in the tool list on the NEXT /v1/turn
+      // request and stays there for every subsequent turn — no re-search,
+      // no re-download.
+      let installed_skills: unknown = undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const reg = require('./skill-registry') as typeof import('./skill-registry');
+        const list = reg.getInstalledSkillsForPrompt();
+        if (list.length > 0) installed_skills = list;
+      } catch { /* registry not ready yet — first-boot path */ }
+      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), mail_env, installed_skills, ...opts }));
       req.end();
     });
   }

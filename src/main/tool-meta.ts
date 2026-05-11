@@ -136,6 +136,10 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // clawd_task is L5 — plain-English desktop task delegation to clawdcursor
   // for tasks that don't fit any L1-L4 native or recipe path.
   clawd_task:             { tier: 5, cost: 'expensive', description: 'L5 LAST RESORT — delegate a plain-English desktop task to clawdcursor when no native tool, browser recipe, or installed skill fits' },
+
+  // ── v0.14.0 additions: ClawHub skill registry ──
+  find_skill:             { tier: 3, cost: 'cheap',     description: 'Search ClawHub (public skill registry) for a skill matching a user intent. Returns top results with safety classification.' },
+  install_skill:          { tier: 3, cost: 'medium',    description: 'Download + install a ClawHub skill into ~/.clippyai/skills/. After install, the skill is callable as skill__<slug> on the next turn — promoted to L1.' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {
