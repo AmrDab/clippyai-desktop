@@ -280,13 +280,49 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch { return null; }
   });
 
-  ipcMain.handle('clear-log-file', async () => {
+  // v0.12.5 — manual proactive trigger. Bypasses the interval timer +
+  // screen_unchanged guard so the user can validate Brain settings without
+  // waiting. Wired to the "Try a tip now" button in Settings → Brain.
+  ipcMain.handle('fire-proactive-tip', async () => {
     try {
-      const today = new Date().toISOString().split('T')[0];
-      const logFile = path.join(logDir, `clippy-${today}.log`);
-      if (fs.existsSync(logFile)) fs.writeFileSync(logFile, '');
+      return await brain.fireProactiveTipManually();
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('clear-log-file', async () => {
+    // v0.12.5 — clear ALL clippy-*.log files in the log directory plus
+    // their rotated *.log.N siblings, not just today's. Per support
+    // report fabb85b7: user clicked "Clear" and yesterday's log was
+    // still on disk + still in the next report bundle. The View Logs
+    // window's Clear button now matches the user's mental model: all
+    // history goes.
+    try {
+      if (!fs.existsSync(logDir)) return true;
+      const files = fs.readdirSync(logDir);
+      let cleared = 0;
+      for (const f of files) {
+        // Match clippy-2026-05-10.log + clippy-2026-05-10.log.1 etc.
+        if (!/^clippy-\d{4}-\d{2}-\d{2}\.log(\.\d+)?$/.test(f)) continue;
+        try {
+          const fullPath = path.join(logDir, f);
+          // Truncate today's active log to empty; delete any rotated
+          // siblings outright (the writer doesn't hold them open).
+          if (/\.\d+$/.test(f)) {
+            fs.unlinkSync(fullPath);
+          } else {
+            fs.writeFileSync(fullPath, '');
+          }
+          cleared++;
+        } catch { /* skip unreadable file, continue */ }
+      }
+      log.info('Logs cleared', { cleared, logDir });
       return true;
-    } catch { return false; }
+    } catch (err) {
+      log.warn('clear-log-file failed', serializeErr(err));
+      return false;
+    }
   });
 
   // Report logs to backend (with optional user description).
@@ -445,6 +481,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       {
         label: '📋 View Logs',
         click: () => createLogWindow(),
+      },
+      {
+        // v0.12.5 — rescue when Clippy is dragged off-screen.
+        label: '🎯 Center on Screen',
+        click: () => {
+          if (!mainWindow.isVisible()) mainWindow.show();
+          mainWindow.center();
+        },
       },
       {
         label: '⚙️ Settings',

@@ -137,6 +137,29 @@ body.clippy-window {
 }
 #bubble-text::-webkit-scrollbar-track { background: transparent; }
 
+/* v0.12.5 — error reply styling. Red left border + faint pink tint so the
+   user instantly distinguishes an error from a normal tip. */
+#bubble-text.bubble-error {
+  border-left: 3px solid #dc2626;
+  background: rgba(220, 38, 38, 0.04);
+  padding-left: 10px;
+  border-radius: 3px;
+}
+.bubble-retry-btn {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.bubble-retry-btn:hover { background: rgba(220, 38, 38, 0.15); }
+.bubble-retry-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* Chat history mode */
 #bubble-text.chat-history {
   max-height: 180px;

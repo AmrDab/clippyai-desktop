@@ -166,6 +166,46 @@ if (bubbleHideSelect) {
   });
 }
 
+// v0.12.5 — manual proactive trigger. Useful for validating Brain settings
+// without waiting for the next interval to elapse. Disables for 5s to
+// prevent spam-clicking.
+const fireTipBtn = document.getElementById('btn-fire-tip') as HTMLButtonElement | null;
+const fireTipStatus = document.getElementById('fire-tip-status');
+if (fireTipBtn) {
+  fireTipBtn.addEventListener('click', async () => {
+    fireTipBtn.disabled = true;
+    if (fireTipStatus) fireTipStatus.textContent = 'Triggering…';
+    try {
+      const res = await window.clippy.fireProactiveTip?.();
+      if (fireTipStatus) fireTipStatus.textContent = (res && (res as { ok?: boolean }).ok) ? 'Triggered — check the bubble' : 'No tip fired (model returned silent, or in cooldown)';
+    } catch (err) {
+      if (fireTipStatus) fireTipStatus.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    setTimeout(() => {
+      fireTipBtn.disabled = false;
+      if (fireTipStatus) fireTipStatus.textContent = '';
+    }, 5000);
+  });
+}
+
+// v0.12.5 — TTS voice preview. Uses the renderer's own Web Speech API
+// directly so no IPC roundtrip; respects whatever voice + rate the user
+// currently has selected in this Settings window even before they save.
+const testVoiceBtn = document.getElementById('btn-test-voice') as HTMLButtonElement | null;
+if (testVoiceBtn) {
+  testVoiceBtn.addEventListener('click', () => {
+    try {
+      const utterance = new SpeechSynthesisUtterance('Hi! I\'m Clippy, your AI desktop assistant.');
+      const voices = window.speechSynthesis.getVoices();
+      const selected = voices.find((v) => v.name === voiceSelect.value);
+      if (selected) utterance.voice = selected;
+      utterance.rate = Number(speechRateRange.value) || 1.1;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    } catch { /* SpeechSynthesis unavailable — silent fail */ }
+  });
+}
+
 // Launch on startup toggle
 const launchToggle = document.getElementById('setting-launch-startup') as HTMLInputElement;
 if (launchToggle) {

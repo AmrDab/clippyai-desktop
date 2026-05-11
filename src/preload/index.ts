@@ -42,6 +42,9 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('bubble-auto-hide', (_e, ms) => cb(ms));
   },
 
+  // v0.12.5 — manual proactive trigger from Settings UI.
+  fireProactiveTip: () => ipcRenderer.invoke('fire-proactive-tip'),
+
   setClickThrough: (enabled: boolean) => {
     ipcRenderer.send('set-click-through', enabled);
   },

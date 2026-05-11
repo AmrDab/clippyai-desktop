@@ -91,6 +91,31 @@ if ($mailto.Length -gt 2000) {
     Fail 'body_too_long' 'mailto: URI exceeds 2000 chars; use COM or send a shorter body' 'compose_uri'
 }
 
+# v0.12.5 — pre-flight check the default mailto handler BEFORE launching.
+# Per support reports b6e81644 + fabb85b7 (both v0.12.4): when no mail
+# handler is set (or handler is Edge/Chrome PWA rather than olk), the
+# Start-Process below silently launches a browser or does nothing, then
+# the UIA wait below burns 15s before failing with "compose window not
+# found". Faster, cleaner: check the registry and fail fast.
+$mailtoProgId = $null
+try {
+    $reg = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\mailto\UserChoice' -ErrorAction SilentlyContinue
+    if ($reg) { $mailtoProgId = $reg.ProgId }
+} catch { }
+
+# Known new-Outlook ProgIds. The user-choice registry uses a hashed value
+# pinning Microsoft.OutlookForWindows AppX progid like:
+#   "OutlookForWindowsLP" or "Microsoft.OutlookForWindows_8wekyb3d8bbwe!..."
+# Classic Outlook is "Outlook.URL.mailto" or similar.
+$looksLikeOlk    = $mailtoProgId -and ($mailtoProgId -match 'OutlookForWindows' -or $mailtoProgId -match 'OutlookMail')
+$looksLikeOther  = $mailtoProgId -and -not $looksLikeOlk
+if (-not $mailtoProgId) {
+    Fail 'no_mailto_handler' 'No default mailto handler is set in Windows. Set new Outlook (or Mail) as the default mail app via Settings > Apps > Default apps > Mail.' 'precheck'
+}
+if ($looksLikeOther) {
+    Fail 'wrong_mailto_handler' ("Default mailto handler is '" + $mailtoProgId + "', not new Outlook. Either change the default in Settings > Apps > Default apps > Mail to 'Outlook (new)', or send via the browser path.") 'precheck'
+}
+
 # Load UIA assemblies. Both available on every Windows 10+ install via .NET FW.
 try {
     Add-Type -AssemblyName UIAutomationClient
@@ -99,10 +124,17 @@ try {
     Fail 'uia_unavailable' "Failed to load System.Windows.Automation: $($_.Exception.Message)" 'load_uia'
 }
 
-# Snapshot olk windows BEFORE launching so we can detect the new compose window.
-$priorOlkPids = @()
+# Snapshot olk window HANDLES (not pids — new Outlook reuses one PID across
+# multiple windows) BEFORE launching so we can identify the new compose
+# window even when olk is already running with an inbox window open.
+$priorOlkHwnds = @{}
 try {
-    $priorOlkPids = (Get-Process -Name 'olk' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    foreach ($p in (Get-Process -Name 'olk' -ErrorAction SilentlyContinue)) {
+        try {
+            $h = $p.MainWindowHandle
+            if ($h -ne 0) { $priorOlkHwnds[[int64]$h] = $true }
+        } catch { }
+    }
 } catch { }
 
 # Launch the mailto: URI. ShellExecute handles default-mail-client routing.
@@ -112,38 +144,47 @@ try {
     Fail 'launch_failed' "Could not launch mailto handler: $($_.Exception.Message). Ensure new Outlook is the default mail client." 'launch'
 }
 
-# Wait for the compose window. Two-phase detection: any new olk process OR
-# a UIA window whose Name contains the subject substring.
+# Wait for the compose window. Two-phase detection: any new olk HWND not in
+# the prior snapshot, OR a UIA window whose Name contains the subject.
+# v0.12.5 — bumped timeout cap 15s → 25s (olk cold-start is slow on some
+# machines) and switched HWND detection to use -ArgumentList for all
+# New-Object PropertyCondition / AndCondition calls. Per code audit
+# finding: positional-args-via-backtick-continuation parses cleanly but
+# is fragile across PowerShell versions; -ArgumentList is the canonical
+# form.
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $composeWindow = $null
-$deadline = (Get-Date).AddSeconds([Math]::Min($timeoutSec, 15))
+$deadline = (Get-Date).AddSeconds([Math]::Min($timeoutSec, 25))
+
+# Build the "find all top-level Windows" condition once, outside the poll
+# loop, so we don't re-allocate it 50 times.
+$ctrlProp  = [System.Windows.Automation.AutomationElement]::ControlTypeProperty
+$nameProp  = [System.Windows.Automation.AutomationElement]::NameProperty
+$winType   = [System.Windows.Automation.ControlType]::Window
+$btnType   = [System.Windows.Automation.ControlType]::Button
+$windowCondition = New-Object System.Windows.Automation.PropertyCondition -ArgumentList $ctrlProp, $winType
 
 while ((Get-Date) -lt $deadline -and -not $composeWindow) {
     Start-Sleep -Milliseconds 500
     try {
-        # Find any window owned by an olk.exe process
-        $allTopWindows = $root.FindAll(
-            [System.Windows.Automation.TreeScope]::Children,
-            (New-Object System.Windows.Automation.PropertyCondition `
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty, `
-                [System.Windows.Automation.ControlType]::Window)
-        )
+        $allTopWindows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $windowCondition)
         foreach ($w in $allTopWindows) {
             try {
                 $procId = $w.Current.ProcessId
                 $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
                 if (-not $proc) { continue }
                 if ($proc.ProcessName -ne 'olk') { continue }
-                $name = $w.Current.Name
-                # Compose windows for olk typically include the subject in the
-                # window title once it's been populated by the mailto: handler.
-                if ($name -and ($name -like "*$subject*" -or $name -like '*Compose*' -or $name -like '*New mail*')) {
+                $hwnd = [int64]$w.Current.NativeWindowHandle
+                # Primary: any olk HWND not in the prior snapshot is the new
+                # compose window (works whether olk was already running or not).
+                if ($hwnd -ne 0 -and -not $priorOlkHwnds.ContainsKey($hwnd)) {
                     $composeWindow = $w
                     break
                 }
-                # Fallback: if there's only ONE olk window matching a "new" pid
-                # not in the prior snapshot, take it.
-                if ($priorOlkPids -notcontains $procId) {
+                # Secondary: title match (covers some olk versions where
+                # compose reuses an existing HWND).
+                $name = $w.Current.Name
+                if ($name -and ($name -like "*$subject*" -or $name -like '*Compose*' -or $name -like '*New mail*' -or $name -like '*New message*')) {
                     $composeWindow = $w
                     break
                 }
@@ -153,32 +194,23 @@ while ((Get-Date) -lt $deadline -and -not $composeWindow) {
 }
 
 if (-not $composeWindow) {
-    Fail 'compose_window_not_found' 'New Outlook compose window did not open within timeout. olk may not be the default mail handler.' 'wait_compose'
+    Fail 'compose_window_not_found' 'New Outlook compose window did not open within timeout. olk may not be the default mail handler, or the compose window may have a different HWND/title than expected.' 'wait_compose'
 }
 
 # Find the Send button. UIA lets us search descendants by control type + name.
 $sendButton = $null
 try {
-    $buttonCondition = New-Object System.Windows.Automation.AndCondition(
-        (New-Object System.Windows.Automation.PropertyCondition `
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty, `
-            [System.Windows.Automation.ControlType]::Button),
-        (New-Object System.Windows.Automation.PropertyCondition `
-            [System.Windows.Automation.AutomationElement]::NameProperty, `
-            'Send')
-    )
+    $btnCondition = New-Object System.Windows.Automation.PropertyCondition -ArgumentList $ctrlProp, $btnType
+    $sendNameCondition = New-Object System.Windows.Automation.PropertyCondition -ArgumentList $nameProp, 'Send'
+    $buttonCondition = New-Object System.Windows.Automation.AndCondition -ArgumentList $btnCondition, $sendNameCondition
     $sendButton = $composeWindow.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
 } catch { }
 
 if (-not $sendButton) {
     # Fallback: case-insensitive name scan across all descendant buttons
     try {
-        $allButtons = $composeWindow.FindAll(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            (New-Object System.Windows.Automation.PropertyCondition `
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty, `
-                [System.Windows.Automation.ControlType]::Button)
-        )
+        $btnCondition2 = New-Object System.Windows.Automation.PropertyCondition -ArgumentList $ctrlProp, $btnType
+        $allButtons = $composeWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCondition2)
         foreach ($b in $allButtons) {
             try {
                 $n = $b.Current.Name

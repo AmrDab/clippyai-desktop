@@ -89,6 +89,37 @@ export class BubbleController {
   }
 
   /**
+   * v0.12.5 — visually distinct error reply with optional retry. Per polish
+   * audit: error responses ("Hmm, that didn't work — try again!") used to
+   * render identically to normal tips, leaving the user to retype manually.
+   * The bubble now gets a `.bubble-error` class (red left-border tint) and
+   * shows a "Try again" pill if the caller provides a retry handler.
+   */
+  speakError(text: string, onRetry?: () => void): void {
+    this.chatHistory.push({ role: 'clippy', text, time: new Date() });
+    this.showingHistory = false;
+    this.show();
+    this.bubbleText.textContent = text;
+    this.bubbleText.className = 'bubble-error';
+    this.clearTypeTimer();
+
+    if (onRetry) {
+      const btn = document.createElement('button');
+      btn.className = 'bubble-retry-btn';
+      btn.textContent = 'Try again';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        btn.disabled = true;
+        btn.textContent = 'Retrying…';
+        try { onRetry(); } catch { /* swallow — caller logs */ }
+      });
+      this.bubbleText.appendChild(document.createElement('br'));
+      this.bubbleText.appendChild(btn);
+    }
+    this.resetAutoHide();
+  }
+
+  /**
    * v0.12.3 — runtime override for the auto-hide timeout. Called from
    * settings IPC when the user changes the "Bubble dismiss" setting.
    * 0 = manual (never auto-hide); positive value = ms.

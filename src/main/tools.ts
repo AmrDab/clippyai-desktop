@@ -954,7 +954,16 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     }
     return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"` };
   } catch (err) {
-    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${err instanceof Error ? err.message : String(err)}` };
+    // v0.12.5 — classify timeouts as TIMEOUT (fallback-eligible) instead of
+    // forcing them to UI_NOT_FOUND. A 15s execFileAsync rejection on the
+    // PSBridge wrapper is a transient condition Tier-5 clawdcursor can
+    // recover from, whereas UI_NOT_FOUND implies "we tried and the element
+    // genuinely isn't there." Per code audit finding #2.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/ETIMEDOUT|timed out|timeout/i.test(msg)) {
+      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}` };
+    }
+    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}` };
   }
 }
 

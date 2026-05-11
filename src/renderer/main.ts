@@ -66,7 +66,9 @@ async function init(): Promise<void> {
     if (config.ttsEnabled === false) tts.setEnabled(false);
   } catch {}
 
+  let lastUserText = '';
   const bubbleCtrl = new BubbleController(async (userText) => {
+    lastUserText = userText;
     clippyCtrl.think();
     try {
       // v0.11.29 — fire-and-forget the IPC. Brain emits 'clippy-speak' for
@@ -76,7 +78,10 @@ async function init(): Promise<void> {
       // bubble + speak TWICE through TTS. Per support report 573d7579.
       await window.clippy.sendMessage(userText);
     } catch {
-      bubbleCtrl.speak("Sorry, I couldn't connect right now.");
+      // v0.12.5 — visually distinct error reply + retry button.
+      bubbleCtrl.speakError("Sorry, I couldn't connect right now.", () => {
+        if (lastUserText) void window.clippy.sendMessage(lastUserText);
+      });
       clippyCtrl.alert();
     }
   });

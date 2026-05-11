@@ -90,6 +90,25 @@ const DESTRUCTIVE_TOOLS = new Set([
 ]);
 
 /**
+ * v0.12.5 — tools whose successful return value indicates ATTEMPT, not
+ * CONFIRMATION. Per code audit finding #3: `type_text` returns
+ * `"Typed \"...\" at cursor"` — the prior heuristic ("no failure words →
+ * succeeded=true") would mark this as a confirmed destructive success.
+ * That inverted the guard for keyboard-driven sends: model types
+ * "Email sent!" as message body, types Ctrl+Enter, claims "Sent!" — the
+ * ledger sees two type_text+key_press successes and stands down.
+ *
+ * Tools in this set are ALWAYS ledgered as `succeeded:false`. The hall-
+ * ucination guard then trips on any confident-success claim because no
+ * destructive attempt was actually confirmed.
+ */
+const NEVER_CONFIRMS_SUCCESS = new Set([
+  'type_text',
+  'key_press',
+  'write_clipboard',
+]);
+
+/**
  * Heuristic: does this string sound like the model claiming a destructive
  * action succeeded? Conservative — we only trip on confident past-tense
  * verbs. Future-tense ("I'll send", "let me send") is fine.
@@ -286,6 +305,13 @@ export class Brain {
   private static readonly MAX_PROACTIVE_HISTORY = 8;
   private noRepeatUntil = 0;
   private lastScreenFingerprint = '';
+  // v0.12.5 — count of consecutive screen_unchanged skips since the last
+  // proactive utterance. When this hits PROACTIVE_FORCE_FIRE_AFTER_SKIPS
+  // we override the unchanged guard and try to fire one tip with looser
+  // filters. Per UX audit: users were going hours without proactive tips
+  // because the screen-unchanged heuristic was always-on.
+  private proactiveSkipStreak = 0;
+  private static readonly PROACTIVE_FORCE_FIRE_AFTER_SKIPS = 30;
   private greetedOnWake = false;
   private isExecuting = false;
   // Set by a NEW handleUserMessage call arriving while a previous one is
@@ -308,6 +334,7 @@ export class Brain {
       // marker from before sleep doesn't permanently silence proactive on
       // the SAME app. Per user report: "proactive on, 300s, Clippy silent."
       this.lastScreenFingerprint = '';
+      this.proactiveSkipStreak = 0;
       this.startLoop();
     } else {
       // Sleep is a hard stop. Three layers, in order:
@@ -344,6 +371,33 @@ export class Brain {
     if (this.mode === 'awake') {
       log.info('Proactive loop restarted (settings changed)');
       this.startLoop();
+    }
+  }
+
+  /**
+   * v0.12.5 — manual proactive trigger from Settings "Try a tip now" button.
+   * Bypasses noRepeatUntil cooldown + screen_unchanged guard + greetedOnWake
+   * so the user can verify proactive is wired correctly without waiting for
+   * the next interval. Still respects mode=awake (no firing while asleep)
+   * and isExecuting (no firing during a user task).
+   */
+  async fireProactiveTipManually(): Promise<{ ok: boolean; reason?: string }> {
+    if (this.mode !== 'awake') return { ok: false, reason: 'sleeping' };
+    if (this.isExecuting) return { ok: false, reason: 'user_task_in_flight' };
+    log.info('Proactive.manual.trigger', { source: 'settings_ui' });
+    const priorRepeatUntil = this.noRepeatUntil;
+    const priorFingerprint = this.lastScreenFingerprint;
+    this.noRepeatUntil = 0;
+    this.lastScreenFingerprint = ''; // force "screen changed" so the guard skips
+    try {
+      await this.proactiveCheck();
+      return { ok: true };
+    } catch (err) {
+      // Restore the prior cooldown/fingerprint so we don't leave the loop
+      // in a different state than it was in before the manual trigger.
+      this.noRepeatUntil = priorRepeatUntil;
+      this.lastScreenFingerprint = priorFingerprint;
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -737,9 +791,13 @@ export class Brain {
             // attempt. The guard then cross-checks the model's final
             // claim against this ledger.
             if (DESTRUCTIVE_TOOLS.has(call.name)) {
+              const heuristicSucceeded = !looksLikeError && !/\b(failed|not found|unavailable|timeout|denied|refused)\b/i.test(resultText);
+              // v0.12.5 — NEVER_CONFIRMS_SUCCESS tools force succeeded=false
+              // regardless of result text. See set definition above.
+              const succeeded = NEVER_CONFIRMS_SUCCESS.has(call.name) ? false : heuristicSucceeded;
               destructiveAttempts.push({
                 name: call.name,
-                succeeded: !looksLikeError && !/\b(failed|not found|unavailable|timeout|denied|refused)\b/i.test(resultText),
+                succeeded,
                 resultPreview: resultText.substring(0, 120),
               });
             }
@@ -847,6 +905,18 @@ export class Brain {
     this.stopLoop();
     setTimeout(() => this.proactiveCheck(), 2000);
     const interval = settingsStore.get('proactiveInterval');
+    const cooldown = settingsStore.get('proactiveCooldownMs');
+    const enabled = settingsStore.get('proactiveEnabled');
+    // v0.12.5 — log the resolved config every time the loop starts.
+    // Per support report fabb85b7: user reported "proactive menu in
+    // settings not changing anything." A code audit confirmed startLoop
+    // reads fresh from the store on every restart, so the change SHOULD
+    // take effect — but the user can't see that from the prior logs.
+    // This explicit "applied" line removes the ambiguity for the next
+    // bundle: if interval and enabled differ from what the user set,
+    // there's a write-side bug; if they match, the issue is downstream
+    // filters (screen_unchanged, narration, cooldown).
+    log.info('Proactive.config.applied', { interval_ms: interval, enabled, cooldown_ms: cooldown });
     this.intervalId = setInterval(() => this.proactiveCheck(), interval);
   }
 
@@ -909,12 +979,27 @@ export class Brain {
       // tripping false-identical on every interval when the user was
       // sitting on the same app, leading to permanent silence.
       const fingerprint = context.substring(0, 800);
-      if (fingerprint === this.lastScreenFingerprint) {
-        // Was DEBUG (invisible in production) — promoted to INFO so users
-        // who report "Clippy never speaks" can see this in their bundle.
-        log.info('Proactive.skip', { reason: 'screen_unchanged', fingerprint_len: fingerprint.length });
+      const fingerprintMatches = fingerprint === this.lastScreenFingerprint;
+      // v0.12.5 — force-fire-after-skips: if we've skipped because the
+      // screen hasn't changed N times in a row, override once and try.
+      // Without this, users sitting on the same window for hours got zero
+      // proactive tips. The streak resets after any successful utterance
+      // (line that sets noRepeatUntil) and after force-fire fires.
+      const forceFire = fingerprintMatches
+        && this.proactiveSkipStreak >= Brain.PROACTIVE_FORCE_FIRE_AFTER_SKIPS;
+      if (fingerprintMatches && !forceFire) {
+        this.proactiveSkipStreak++;
+        log.info('Proactive.skip', {
+          reason: 'screen_unchanged',
+          skip_streak: this.proactiveSkipStreak,
+          force_fire_at: Brain.PROACTIVE_FORCE_FIRE_AFTER_SKIPS,
+        });
         return;
       }
+      if (forceFire) {
+        log.info('Proactive.forceFire', { after_skip_streak: this.proactiveSkipStreak });
+      }
+      this.proactiveSkipStreak = 0;
       this.lastScreenFingerprint = fingerprint;
 
       // D2: max_tokens was 120 which truncated legitimate one-sentence tips

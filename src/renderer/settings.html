@@ -9,7 +9,12 @@
   <div class="settings-layout">
     <nav class="settings-nav">
       <button class="settings-nav-item active" data-section="general">General</button>
-      <button class="settings-nav-item" data-section="appearance">Appearance</button>
+      <!-- v0.12.5 — Appearance tab hidden. Was a dead stub ("Clippy's
+           appearance is fixed in this version. Custom sizes and themes
+           coming soon!") + a permanently-disabled toggle. Per polish
+           audit: visible-but-empty tab screams "unfinished." Re-enable
+           when we ship a real character/size/theme picker. -->
+      <button class="settings-nav-item" data-section="appearance" style="display:none">Appearance</button>
       <button class="settings-nav-item" data-section="voice">Voice</button>
       <button class="settings-nav-item" data-section="brain">Brain</button>
       <button class="settings-nav-item" data-section="tools">Tools</button>
@@ -67,6 +72,9 @@
         <div class="settings-group">
           <label for="setting-voice">Voice</label>
           <select id="setting-voice"></select>
+          <!-- v0.12.5 — preview button so user can hear the chosen voice
+               without closing settings and waiting for Clippy to speak. -->
+          <button id="btn-test-voice" type="button" style="margin-top:6px;padding:4px 10px;font-size:12px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">▶ Play sample</button>
         </div>
         <div class="settings-group">
           <label for="setting-speech-rate">Speech Rate</label>
@@ -106,6 +114,12 @@
             <option value="60000">1 minute</option>
             <option value="0">Manual (never auto-hide)</option>
           </select>
+        </div>
+        <!-- v0.12.5 — manual proactive trigger for testing settings without
+             waiting for the next interval. -->
+        <div class="settings-group">
+          <button id="btn-fire-tip" type="button" style="padding:6px 14px;font-size:13px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">Try a tip now</button>
+          <span id="fire-tip-status" style="font-size:12px;color:#888;margin-left:8px;"></span>
         </div>
       </div>
 

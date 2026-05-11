@@ -39,6 +39,16 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       },
       { type: 'separator' },
       {
+        label: 'Center on Screen',
+        // v0.12.5 — rescue affordance when Clippy gets dragged off-screen
+        // (multi-monitor disconnect, snap-to-edge gone wrong). Per polish
+        // audit: previously only recovery was reinstall.
+        click: () => {
+          if (!win.isVisible()) win.show();
+          win.center();
+        },
+      },
+      {
         label: 'Settings...',
         click: () => createSettingsWindow(),
       },

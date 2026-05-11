@@ -66,7 +66,19 @@ class CDPClient {
   async connect(port?: number): Promise<{ ok: boolean; url?: string; title?: string; error?: string }> {
     if (port) this.port = port;
     try { await this.disconnect(); } catch { /* ignore */ }
-    const targets = await this.listTargets();
+    // v0.12.5 — wrap listTargets so ECONNREFUSED (no browser on the debug
+    // port) returns a clean {ok:false} instead of throwing. Previously
+    // this rejected up to executeTool's catch which returned
+    // (error:TOOL_THREW) — that code is not in FALLBACK_ELIGIBLE_CODES so
+    // the model never saw the auto-launch retry path. Now cdpConnect's
+    // OWN retry logic (spawnCdpBrowser → reconnect) reliably runs.
+    let targets: DevToolsTarget[] = [];
+    try {
+      targets = await this.listTargets();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: `Could not reach CDP discovery endpoint on port ${this.port}: ${msg}` };
+    }
     if (targets.length === 0) {
       return { ok: false, error: `No browser tabs found. Launch Edge/Chrome with --remote-debugging-port=${this.port}.` };
     }
