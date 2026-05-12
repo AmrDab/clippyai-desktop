@@ -86,6 +86,23 @@ interface Window {
     } | null>;
     /** v0.14.1 — About → active AI model string (kimi-k2.5 / kimi-k2.6 / ...) */
     activeModel?: () => Promise<string | null>;
+    /** v0.15.0 — Settings → Web → mcp-chrome extension status */
+    mcpChromeStatus?: () => Promise<{
+      ready: boolean;
+      url: string;
+      detected_at: string | null;
+      tool_count: number;
+      tools: string[];
+      error?: string;
+    } | null>;
+    mcpChromeRefresh?: () => Promise<{
+      ready: boolean;
+      url: string;
+      detected_at: string | null;
+      tool_count: number;
+      tools: string[];
+      error?: string;
+    } | null>;
 
     // ── Window control
     setClickThrough: (enabled: boolean) => void;

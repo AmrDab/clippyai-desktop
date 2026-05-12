@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld('clippy', {
   // v0.14.1 — Settings → About active-model display
   activeModel: () => ipcRenderer.invoke('active-model'),
 
+  // v0.15.0 — Settings → Web mcp-chrome status + refresh
+  mcpChromeStatus: () => ipcRenderer.invoke('mcp-chrome-status'),
+  mcpChromeRefresh: () => ipcRenderer.invoke('mcp-chrome-refresh'),
+
   setClickThrough: (enabled: boolean) => {
     ipcRenderer.send('set-click-through', enabled);
   },

@@ -1,6 +1,6 @@
 {
   "name": "clippyai",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "productName": "ClippyAI",
   "description": "ClippyAI — Your AI desktop buddy",
   "homepage": "https://clippyai.app",
@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/rest": "^21.0.0",
     "docx": "^8.5.0",
     "electron-store": "^8.2.0",

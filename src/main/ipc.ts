@@ -388,6 +388,26 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
   });
 
+  // v0.15.0 — Settings → Web tab: mcp-chrome status + on-demand refresh.
+  ipcMain.handle('mcp-chrome-status', async () => {
+    try {
+      const m = await import('./mcp-chrome');
+      return m.getMcpChromeStatus();
+    } catch (err) {
+      log.warn('mcp-chrome-status failed', serializeErr(err));
+      return null;
+    }
+  });
+  ipcMain.handle('mcp-chrome-refresh', async () => {
+    try {
+      const m = await import('./mcp-chrome');
+      return await m.refreshMcpChromeStatus();
+    } catch (err) {
+      log.warn('mcp-chrome-refresh failed', serializeErr(err));
+      return null;
+    }
+  });
+
   ipcMain.handle('mail-env-status', async () => {
     try {
       const m = await import('./mail-env');

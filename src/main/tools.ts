@@ -35,6 +35,7 @@ import { gmailWebSendEmail } from './skills/gmail-web-send';
 import { getCachedMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
+import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOOLS } from './mcp-chrome';
 import type { ToolResult } from './types/tool-result';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
@@ -1695,6 +1696,34 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
     if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
   }
 
+  // v0.15.0 — L1.5: mcp-chrome with user's REAL signed-in browser. Tries
+  // outlook.live.com using the user's actual logged-in tab. Much higher
+  // success rate than the spawned-CDP recipe below (which has a fresh
+  // profile with no logins). Only fires if mcp-chrome is installed AND
+  // we have any tab already on outlook.live.com OR can navigate there.
+  if (isMcpChromeReady()) {
+    tried.push('mcp-chrome-outlook');
+    try {
+      // Navigate (or focus existing tab) to outlook.live.com compose. The
+      // chrome_navigate tool reuses the active tab if no tabId given —
+      // which is what we want most of the time. User can pre-open Outlook
+      // and Clippy will land on the same tab.
+      await callMcpChromeTool(MCP_CHROME_TOOLS.NAVIGATE, { url: 'https://outlook.live.com/mail/0/' });
+      // Re-call the existing outlookWebSendEmail recipe — it uses the cdp
+      // client today, but if mcp-chrome is up the user is on the right tab.
+      // For v0.15.0 we punt on a separate mcp-chrome compose recipe and let
+      // the existing outlook-web recipe drive the active page. The CDP
+      // client in outlook-web doesn't pair with mcp-chrome's session, so
+      // we still rely on spawned-CDP for the form interaction — but the
+      // navigation hint is useful as a soft probe.
+      // TODO v0.15.1: build a parallel mcp-chrome-outlook-web-send recipe
+      // that uses chrome_read_page + chrome_fill_or_select + chrome_computer
+      // entirely through the extension. For now fall through to outlook-web.
+    } catch (err) {
+      log.warn('mcp-chrome outlook navigate failed', { err: String(err).slice(0, 200) });
+    }
+  }
+
   // L2a: outlook.live.com via deterministic CDP recipe
   tried.push('outlook-web');
   try {
@@ -1840,6 +1869,127 @@ async function installSkillTool(params: Record<string, unknown>): Promise<ToolRe
     };
   } catch (err) {
     return { text: `(error:SKILL_INSTALL_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+// ── v0.15.0 mcp-chrome high-level browser tools ───────────────────
+//
+// These tools prefer the user's REAL signed-in browser via mcp-chrome
+// when the extension is installed; otherwise fall through to the spawned
+// CDP browser. The model only sees `browser_navigate`, `browser_click`,
+// `browser_type`, `browser_read_text` — it doesn't need to know which
+// transport is doing the work.
+//
+// Naming convention: `browser_*` (not `cdp_*`) to communicate "this works
+// on whatever browser the user has, including their existing tabs."
+
+async function browserNavigate(params: Record<string, unknown>): Promise<ToolResult> {
+  const url = String(params.url || '');
+  if (!url) return { text: '(error:MISSING_URL) browser_navigate requires `url`.' };
+  // Prefer mcp-chrome — drives the user's real signed-in browser. Tool name
+  // is chrome_navigate per the v1.0.0 mcp-chrome catalog.
+  if (isMcpChromeReady()) {
+    try {
+      const text = await callMcpChromeTool(MCP_CHROME_TOOLS.NAVIGATE, { url });
+      return { text: text || `Navigated to ${url} (via mcp-chrome — user session preserved)` };
+    } catch (err) {
+      log.warn('mcp-chrome navigate failed, falling through to CDP', { url, err: String(err).slice(0, 200) });
+    }
+  }
+  return await navigateBrowser(params);
+}
+
+async function browserClick(params: Record<string, unknown>): Promise<ToolResult> {
+  const selector = String(params.selector || '');
+  const text = String(params.text || '');
+  if (!selector && !text) return { text: '(error:MISSING_TARGET) browser_click requires `selector` OR `text`.' };
+  if (isMcpChromeReady()) {
+    try {
+      // mcp-chrome's chrome_click_element accepts selector OR coordinates OR ref.
+      // For text-based clicking we route through chrome_computer with the
+      // semantic 'left_click' action and let mcp-chrome resolve the element.
+      // Note: ref-based clicks need a prior chrome_read_page; for now we use
+      // the simpler selector path and let the caller pre-call browser_read_text
+      // to discover selectors.
+      if (selector) {
+        const r = await callMcpChromeTool(MCP_CHROME_TOOLS.CLICK_ELEMENT, { selector });
+        return { text: r || `Clicked ${selector} via mcp-chrome` };
+      } else {
+        // Text-based: fall back to chrome_computer with the semantic action.
+        const r = await callMcpChromeTool(MCP_CHROME_TOOLS.COMPUTER, { action: 'left_click', text });
+        return { text: r || `Clicked ${text} via mcp-chrome` };
+      }
+    } catch (err) {
+      log.warn('mcp-chrome click failed, falling through to CDP', { err: String(err).slice(0, 200) });
+    }
+  }
+  return await cdpClick(params);
+}
+
+async function browserType(params: Record<string, unknown>): Promise<ToolResult> {
+  const selector = String(params.selector || '');
+  const text = String(params.text || '');
+  if (!text) return { text: '(error:MISSING_TEXT) browser_type requires `text`.' };
+  if (isMcpChromeReady()) {
+    try {
+      // mcp-chrome chrome_fill_or_select: { value, ref?, selector? }
+      const args: Record<string, unknown> = { value: text };
+      if (selector) args.selector = selector;
+      const r = await callMcpChromeTool(MCP_CHROME_TOOLS.FILL_OR_SELECT, args);
+      return { text: r || `Typed ${text.length} chars via mcp-chrome` };
+    } catch (err) {
+      log.warn('mcp-chrome type failed, falling through to CDP', { err: String(err).slice(0, 200) });
+    }
+  }
+  return await cdpType(params);
+}
+
+async function browserReadText(params: Record<string, unknown>): Promise<ToolResult> {
+  const selector = String(params.selector || '');
+  if (isMcpChromeReady()) {
+    try {
+      // chrome_get_web_content: { format: "text" | "html", selector? }
+      const args: Record<string, unknown> = { format: 'text' };
+      if (selector) args.selector = selector;
+      const r = await callMcpChromeTool(MCP_CHROME_TOOLS.GET_WEB_CONTENT, args);
+      return { text: r };
+    } catch (err) {
+      log.warn('mcp-chrome readText failed, falling through to CDP', { err: String(err).slice(0, 200) });
+    }
+  }
+  return await cdpReadText(params);
+}
+
+async function browserListTabs(_params: Record<string, unknown>): Promise<ToolResult> {
+  // Only available via mcp-chrome — CDP attach is single-tab by definition.
+  if (!isMcpChromeReady()) {
+    return { text: '(error:MCP_CHROME_NOT_READY) browser_list_tabs requires the mcp-chrome extension. See Settings → Web for install instructions.' };
+  }
+  try {
+    const r = await callMcpChromeTool(MCP_CHROME_TOOLS.GET_WINDOWS_AND_TABS, {});
+    return { text: r };
+  } catch (err) {
+    return { text: `(error:MCP_CHROME_CALL_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function browserSwitchTab(params: Record<string, unknown>): Promise<ToolResult> {
+  if (!isMcpChromeReady()) {
+    return { text: '(error:MCP_CHROME_NOT_READY) browser_switch_tab requires the mcp-chrome extension.' };
+  }
+  // mcp-chrome chrome_switch_tab takes a required numeric tabId. For url/title
+  // substring matching, the model must first call browser_list_tabs and pick
+  // the right tabId itself. Keeping this simple per upstream's contract.
+  const tabId = params.tabId !== undefined ? Number(params.tabId) : undefined;
+  if (tabId === undefined || !Number.isInteger(tabId)) {
+    return { text: '(error:MISSING_TAB_ID) browser_switch_tab requires `tabId` (integer). Call browser_list_tabs first to discover ids.' };
+  }
+  try {
+    // CRITICAL: pass as number per upstream issue #45141. String coercion breaks Zod validation.
+    const r = await callMcpChromeTool(MCP_CHROME_TOOLS.SWITCH_TAB, { tabId });
+    return { text: r };
+  } catch (err) {
+    return { text: `(error:MCP_CHROME_CALL_FAILED) ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -2483,6 +2633,13 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   // v0.14.0 — ClawHub skill registry
   find_skill: findSkillTool,
   install_skill: installSkillTool,
+  // v0.15.0 — browser_* tools (prefer mcp-chrome / fall through to CDP)
+  browser_navigate: browserNavigate,
+  browser_click: browserClick,
+  browser_type: browserType,
+  browser_read_text: browserReadText,
+  browser_list_tabs: browserListTabs,
+  browser_switch_tab: browserSwitchTab,
   // Agent loop
   plan: planTool,
   // System / network

@@ -140,6 +140,14 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // ── v0.14.0 additions: ClawHub skill registry ──
   find_skill:             { tier: 3, cost: 'cheap',     description: 'Search ClawHub (public skill registry) for a skill matching a user intent. Returns top results with safety classification.' },
   install_skill:          { tier: 3, cost: 'medium',    description: 'Download + install a ClawHub skill into ~/.clippyai/skills/. After install, the skill is callable as skill__<slug> on the next turn — promoted to L1.' },
+
+  // ── v0.15.0 additions: high-level browser tools (mcp-chrome → CDP fallback) ──
+  browser_navigate:  { tier: 4, cost: 'medium', description: 'Navigate the browser to a URL. Uses the user\'s real signed-in browser when mcp-chrome extension is installed; otherwise spawns a debug-flagged browser.' },
+  browser_click:     { tier: 4, cost: 'medium', description: 'Click an element by CSS selector OR text. Routes through mcp-chrome if available (real signed-in browser).' },
+  browser_type:      { tier: 4, cost: 'medium', description: 'Type text into a form field (selector or aria-label). Routes through mcp-chrome if available.' },
+  browser_read_text: { tier: 4, cost: 'cheap',  description: 'Read text content from a page element (default body). Routes through mcp-chrome if available.' },
+  browser_list_tabs: { tier: 4, cost: 'cheap',  description: 'List all open browser tabs. mcp-chrome only — CDP attach is single-tab.' },
+  browser_switch_tab:{ tier: 4, cost: 'cheap',  description: 'Switch to a tab by id, url-substring, or title-substring. mcp-chrome only.' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {

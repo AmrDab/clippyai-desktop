@@ -173,6 +173,17 @@ app.whenReady().then(async () => {
     m.probeMailEnvironment().catch((err) => log.warn('mail-env probe failed (non-fatal)', err.message)),
   );
 
+  // v0.15.0 — mcp-chrome probe. Detects whether the user has the mcp-chrome
+  // extension running on localhost:12306. When present, browser tools route
+  // through the user's REAL signed-in tabs instead of a spawned debug
+  // browser. Non-blocking; the extension is optional.
+  import('./mcp-chrome').then((m) =>
+    m.probeMcpChrome().then((s) => {
+      if (s.ready) log.info('mcp-chrome ready — browser tools will use user session');
+      else log.info('mcp-chrome not detected — browser tools will use spawned CDP fallback');
+    }).catch((err) => log.warn('mcp-chrome probe failed (non-fatal)', err.message)),
+  );
+
   if (isLicensed()) {
     log.info('License found, revalidating...');
     const stillValid = await revalidateIfNeeded();

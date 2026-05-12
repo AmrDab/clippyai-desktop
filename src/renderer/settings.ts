@@ -525,6 +525,63 @@ async function renderMailEnv(): Promise<void> {
 }
 void renderMailEnv();
 
+// v0.15.0 — Settings → Web tab: mcp-chrome status display + refresh button
+async function renderMcpChromeStatus(): Promise<void> {
+  const el = document.getElementById('mcp-chrome-status');
+  if (!el || !window.clippy.mcpChromeStatus) return;
+  try {
+    const s = await window.clippy.mcpChromeStatus();
+    if (!s) { el.textContent = 'Probe not available.'; return; }
+    if (s.ready) {
+      const detectedAt = s.detected_at ? new Date(s.detected_at).toLocaleString() : '';
+      el.innerHTML = `
+        <span style="color:#16a34a;font-weight:600;">✓ Connected</span>
+        <span style="color:#888;"> via ${escapeHtml(s.url)}</span><br>
+        <span style="font-size:11px;color:#666;">${s.tool_count} tools available · detected ${escapeHtml(detectedAt)}</span><br>
+        <span style="font-size:11px;color:#16a34a;">Clippy will use your real browser session for web tasks.</span>
+      `;
+    } else {
+      el.innerHTML = `
+        <span style="color:#d97706;font-weight:600;">⚠ Not detected</span>
+        <span style="color:#888;"> at ${escapeHtml(s.url)}</span><br>
+        <span style="font-size:11px;color:#666;">${escapeHtml(s.error || 'extension + bridge not connected')}</span><br>
+        <span style="font-size:11px;color:#666;">Web tasks will use a spawned debug browser (fresh profile, no logins).</span>
+      `;
+    }
+  } catch {
+    el.textContent = 'Status check failed.';
+  }
+}
+const mcpRefreshBtn = document.getElementById('btn-refresh-mcp-chrome');
+if (mcpRefreshBtn) mcpRefreshBtn.addEventListener('click', async () => {
+  if (window.clippy.mcpChromeRefresh) {
+    (mcpRefreshBtn as HTMLButtonElement).disabled = true;
+    await window.clippy.mcpChromeRefresh();
+    await renderMcpChromeStatus();
+    (mcpRefreshBtn as HTMLButtonElement).disabled = false;
+  }
+});
+const mcpChromeLink = document.getElementById('link-mcp-chrome');
+if (mcpChromeLink) mcpChromeLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.clippy.openExternalUrl('https://github.com/hangwin/mcp-chrome');
+});
+const mcpChromeReleasesLink = document.getElementById('link-mcp-chrome-releases');
+if (mcpChromeReleasesLink) mcpChromeReleasesLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.clippy.openExternalUrl('https://github.com/hangwin/mcp-chrome/releases');
+});
+// Lazy-load: probe when user opens the Web tab.
+let webLoadedOnce = false;
+document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+  if (item.dataset.section !== 'web') return;
+  item.addEventListener('click', () => {
+    if (webLoadedOnce) return;
+    webLoadedOnce = true;
+    void renderMcpChromeStatus();
+  });
+});
+
 // Active model display (About tab)
 async function renderActiveModel(): Promise<void> {
   const el = document.getElementById('active-model');

@@ -18,6 +18,7 @@
       <button class="settings-nav-item" data-section="voice">Voice</button>
       <button class="settings-nav-item" data-section="brain">Brain</button>
       <button class="settings-nav-item" data-section="skills">Skills</button>
+      <button class="settings-nav-item" data-section="web">Web</button>
       <button class="settings-nav-item" data-section="tools">Tools</button>
       <button class="settings-nav-item" data-section="license">License</button>
       <button class="settings-nav-item" data-section="about">About</button>
@@ -162,6 +163,41 @@
             <button id="btn-skill-search" type="button" style="padding:6px 14px;font-size:13px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">Search</button>
           </div>
           <div id="skill-search-results" style="margin-top:8px;font-size:12px;color:#555;"></div>
+        </div>
+      </div>
+
+      <!-- v0.15.0 — Web tab. Surfaces mcp-chrome extension status + install
+           steps. When the extension is connected, Clippy's browser_* tools
+           drive the user's REAL signed-in browser (cookies, logins intact)
+           instead of a spawned debug-flagged Chromium. -->
+      <div class="settings-section" data-section="web">
+        <h2>Web Control</h2>
+        <div class="settings-group">
+          <p style="font-size:13px;color:#666;line-height:1.6;">
+            Clippy can drive any browser tab via the Chrome DevTools Protocol. By default we spawn a separate debug-flagged browser when needed — that's a <strong>fresh profile</strong> with none of your cookies or logged-in sessions.
+            <br><br>
+            For Clippy to use your <strong>real signed-in tabs</strong> (Outlook web, Gmail, anything you're already authenticated to), install the <a href="#" id="link-mcp-chrome" style="color:#4CAF50;">mcp-chrome extension</a>.
+          </p>
+        </div>
+
+        <div class="settings-group" style="margin-top:14px;">
+          <label>Status</label>
+          <div id="mcp-chrome-status" style="font-size:12px;color:#555;line-height:1.7;margin-top:6px;">Probing…</div>
+          <button id="btn-refresh-mcp-chrome" type="button" style="margin-top:8px;font-size:11px;padding:3px 12px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;cursor:pointer;">↻ Refresh</button>
+        </div>
+
+        <div class="settings-group" style="margin-top:20px;padding-top:14px;border-top:1px solid #eee;">
+          <label>Install Steps</label>
+          <ol style="font-size:12px;color:#555;line-height:1.8;padding-left:18px;margin-top:6px;">
+            <li>Download the latest extension <code>.zip</code> from <a href="#" id="link-mcp-chrome-releases" style="color:#4CAF50;">github.com/hangwin/mcp-chrome/releases</a></li>
+            <li>Open <code>chrome://extensions</code>, enable <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, point at the unzipped folder</li>
+            <li>Open a terminal and run: <code>npm install -g mcp-chrome-bridge</code></li>
+            <li>Click the mcp-chrome icon in your browser toolbar → <strong>Connect</strong></li>
+            <li>Click <strong>↻ Refresh</strong> above to confirm Clippy detects it</li>
+          </ol>
+          <p style="font-size:11px;color:#aaa;margin-top:8px;">
+            Why so many steps? mcp-chrome isn't in the Chrome Web Store yet — it ships as an unpacked extension + a small Node bridge. We're tracking it: once they publish to the Store this becomes one click.
+          </p>
         </div>
       </div>
 

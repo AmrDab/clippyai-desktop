@@ -330,7 +330,7 @@ function layer1() {
   else fail('v0.11.27: Gemini code reappeared', 'found live Gemini reference in brain.ts');
 
   // 1.21 Tool count sanity (catches accidental mass-deletion or duplication)
-  if (tmKeys.length >= 30 && tmKeys.length <= 80) pass(`TOOL_MAP: ${tmKeys.length} tools registered (within sane bounds 30-80)`);
+  if (tmKeys.length >= 30 && tmKeys.length <= 100) pass(`TOOL_MAP: ${tmKeys.length} tools registered (within sane bounds 30-100)`);
   else fail('TOOL_MAP tool count', `${tmKeys.length} is out of expected range`);
 
   // ────────── v0.11.28 logging-overhaul invariants ──────────
@@ -872,6 +872,44 @@ function layer1() {
     pass('v0.14.2: server-side 300-char post-truncate + prompt 40-word cap');
   } else {
     fail('v0.14.2: verbosity cap', `300char=${has300CharTruncate}, 40word=${has40WordCap}`);
+  }
+
+  // ────────── v0.15.0 mcp-chrome integration ──────────
+  const mcpChromePath = path.join(ROOT, 'src', 'main', 'mcp-chrome.ts');
+  if (fs.existsSync(mcpChromePath)) {
+    const mcpSrc = fs.readFileSync(mcpChromePath, 'utf8');
+    const usesSdk = /@modelcontextprotocol\/sdk/.test(mcpSrc);
+    const usesStreamableHttp = /StreamableHTTPClientTransport/.test(mcpSrc);
+    const hasProbe = /export async function probeMcpChrome/.test(mcpSrc);
+    const hasCorrectTools = /chrome_navigate|chrome_computer|chrome_get_web_content/.test(mcpSrc);
+    const hasRefresh = /export async function refreshMcpChromeStatus/.test(mcpSrc);
+    if (usesSdk && usesStreamableHttp && hasProbe && hasCorrectTools && hasRefresh) {
+      pass('v0.15.0: mcp-chrome client uses SDK + StreamableHTTP + correct upstream tool names');
+    } else {
+      fail('v0.15.0: mcp-chrome client', `sdk=${usesSdk}, stream=${usesStreamableHttp}, probe=${hasProbe}, tools=${hasCorrectTools}, refresh=${hasRefresh}`);
+    }
+  } else {
+    fail('v0.15.0: mcp-chrome.ts', 'file missing');
+  }
+
+  // browser_* tools registered + use correct upstream tool names
+  const v150BrowserTools = ['browser_navigate', 'browser_click', 'browser_type', 'browser_read_text', 'browser_list_tabs', 'browser_switch_tab'];
+  const v150InMap = v150BrowserTools.every((t) => tmKeys.includes(t));
+  const usesUpstreamNames = /MCP_CHROME_TOOLS\.NAVIGATE|MCP_CHROME_TOOLS\.COMPUTER|MCP_CHROME_TOOLS\.FILL_OR_SELECT/.test(toolsSrcNow);
+  if (v150InMap && usesUpstreamNames) {
+    pass('v0.15.0: 6 browser_* tools registered + use upstream chrome_* tool names');
+  } else {
+    fail('v0.15.0: browser tools', `map=${v150InMap}, upstreamNames=${usesUpstreamNames}`);
+  }
+
+  // Settings → Web tab wired (HTML + IPC + preload)
+  const hasWebTab = /data-section="web"/.test(htmlSrc);
+  const hasWebIpc = /'mcp-chrome-status'/.test(ipcSrcV141) && /'mcp-chrome-refresh'/.test(ipcSrcV141);
+  const hasWebPreload = /mcpChromeStatus:/.test(preloadSrcV141) && /mcpChromeRefresh:/.test(preloadSrcV141);
+  if (hasWebTab && hasWebIpc && hasWebPreload) {
+    pass('v0.15.0: Settings → Web tab wired (status display + refresh)');
+  } else {
+    fail('v0.15.0: Web tab', `html=${hasWebTab}, ipc=${hasWebIpc}, preload=${hasWebPreload}`);
   }
 
   // submitClawdTask wraps /task with returnPartial
