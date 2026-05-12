@@ -2187,7 +2187,10 @@ async function killProcess(params: Record<string, unknown>): Promise<ToolResult>
 const CDP_PORT = DEFAULT_CDP_PORT;
 
 /** Spawn Edge or Chrome with a remote-debugging port enabled. */
-async function spawnCdpBrowser(): Promise<{ ok: boolean; error?: string }> {
+// v0.14.2 — exported so web recipe skills (outlook_web_send, gmail_web_send)
+// can auto-launch a debug-flagged browser when CDP attach fails, instead of
+// failing fast and making the email dispatcher appear to "not fall back."
+export async function spawnCdpBrowser(): Promise<{ ok: boolean; error?: string }> {
   // Try Edge first (default Windows browser), fall back to Chrome.
   const candidates: Array<{ exe: string; args: string[] }> = [
     {

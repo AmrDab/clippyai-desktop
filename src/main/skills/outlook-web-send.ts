@@ -56,11 +56,32 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
     return { text: '(error:MISSING_FIELDS) outlook_web_send_email needs to, subject, body' };
   }
 
+  // v0.14.2 — auto-spawn the browser if no CDP endpoint is live, then retry.
+  // Per support report 45e25158: the old path returned CDP_NOT_AVAILABLE in
+  // ~50ms when the user's normal Edge wasn't launched with --remote-debugging-
+  // port. The dispatcher fell through every web layer in <2s and the user
+  // perceived "no fallback." We now mirror the auto-spawn logic from the
+  // standalone cdp_connect tool so the recipe actually tries.
   const client = getCdpClient();
   if (!client.isConnected()) {
-    const connectRes = await client.connect();
+    let connectRes = await client.connect();
     if (!connectRes.ok) {
-      return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}` };
+      // Lazy import to avoid circular dep with tools.ts.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { spawnCdpBrowser } = require('../tools') as { spawnCdpBrowser?: () => Promise<{ ok: boolean; error?: string }> };
+      if (spawnCdpBrowser) {
+        const spawned = await spawnCdpBrowser();
+        if (spawned.ok) {
+          // Give the browser a moment to bind the debug port
+          await new Promise((r) => setTimeout(r, 1200));
+          connectRes = await client.connect();
+        } else {
+          return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}. Browser auto-launch also failed: ${spawned.error || 'unknown'}` };
+        }
+      }
+      if (!connectRes.ok) {
+        return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'} (browser launched but not reachable yet — try again in a second)` };
+      }
     }
   }
 

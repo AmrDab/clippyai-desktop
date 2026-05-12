@@ -624,9 +624,21 @@ export class Brain {
           const summary = String(
             (completeCall.args as { summary?: string }).summary || 'Done!',
           );
-          log.info('Clippy.say', { text: summary, animation: 'Congratulate', trigger: 'task_complete', step: step + 1 });
-          this.emit('clippy-speak', { text: summary, animate: 'Congratulate' });
-          finalSpoken = summary;
+          // v0.14.2 — if the model ALREADY spoke a reply this step, suppress
+          // the task_complete summary's TTS+bubble emission. We still log it
+          // for telemetry. Per support report 45e25158: model produced both
+          // a reply ("looks like all paths failed...") AND a task_complete
+          // summary ("Attempted to send introduction email..."), TTS read
+          // both, user reported "reads the entire thing which can get annoying."
+          // The summary is internal context anyway — it's redundant with the
+          // user-facing reply.
+          if (spoken) {
+            log.info('Clippy.say.suppressed', { text: summary, reason: 'duplicate_after_reply', trigger: 'task_complete', step: step + 1 });
+          } else {
+            log.info('Clippy.say', { text: summary, animation: 'Congratulate', trigger: 'task_complete', step: step + 1 });
+            this.emit('clippy-speak', { text: summary, animate: 'Congratulate' });
+            finalSpoken = summary;
+          }
           taskCompleted = true;
           break;
         }

@@ -839,6 +839,41 @@ function layer1() {
     fail('v0.14.1: active model', `html=${hasActiveModelHtml}, ipc=${hasActiveModelIpc}, preload=${hasActiveModelPreload}, cache=${hasLastSeenCache}`);
   }
 
+  // ────────── v0.14.2 hotfix invariants ──────────
+  // Auto-spawn browser in BOTH web recipes so the email dispatcher doesn't
+  // appear to "not fall back." Per support report 45e25158.
+  const outlookWebSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'skills', 'outlook-web-send.ts'), 'utf8');
+  const gmailWebSrc   = fs.readFileSync(path.join(ROOT, 'src', 'main', 'skills', 'gmail-web-send.ts'), 'utf8');
+  const outlookSpawns = /spawnCdpBrowser/.test(outlookWebSrc);
+  const gmailSpawns   = /spawnCdpBrowser/.test(gmailWebSrc);
+  const exportSpawn   = /^export async function spawnCdpBrowser/m.test(toolsSrcNow);
+  if (outlookSpawns && gmailSpawns && exportSpawn) {
+    pass('v0.14.2: outlook-web + gmail-web recipes auto-spawn browser on connect failure');
+  } else {
+    fail('v0.14.2: auto-spawn', `outlook=${outlookSpawns}, gmail=${gmailSpawns}, exported=${exportSpawn}`);
+  }
+
+  // task_complete Clippy.say suppressed when reply was already spoken
+  const taskCompleteBlock = brainSrcNow.match(/SENTINEL: task_complete[\s\S]*?taskCompleted = true/);
+  const tcBlockSrc = taskCompleteBlock ? taskCompleteBlock[0] : '';
+  const suppressesDouble = /if \(spoken\)[\s\S]{0,200}Clippy\.say\.suppressed/.test(tcBlockSrc);
+  if (suppressesDouble) {
+    pass('v0.14.2: task_complete Clippy.say suppressed when reply already spoken (no double TTS)');
+  } else {
+    fail('v0.14.2: double-TTS suppression', 'task_complete still always emits clippy-speak');
+  }
+
+  // 300-char post-truncate in server turn.ts
+  const apiTurnSrc = fs.readFileSync(path.join(ROOT, '..', 'clippyai-api', 'src', 'routes', 'turn.ts'), 'utf8');
+  const has300CharTruncate = /t\.length > 300/.test(apiTurnSrc) && /lastBoundary/.test(apiTurnSrc);
+  // Prompt has the hard 40-word cap
+  const has40WordCap = /HARD CAP: 40 words/.test(apiToolsSrc);
+  if (has300CharTruncate && has40WordCap) {
+    pass('v0.14.2: server-side 300-char post-truncate + prompt 40-word cap');
+  } else {
+    fail('v0.14.2: verbosity cap', `300char=${has300CharTruncate}, 40word=${has40WordCap}`);
+  }
+
   // submitClawdTask wraps /task with returnPartial
   const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
   const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);

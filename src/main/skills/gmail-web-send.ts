@@ -42,11 +42,26 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
     return { text: '(error:MISSING_FIELDS) gmail_web_send_email needs to, subject, body' };
   }
 
+  // v0.14.2 — auto-spawn the browser on connect failure (see outlook-web-send.ts
+  // for the full rationale — same pattern, same fix, same support report).
   const client = getCdpClient();
   if (!client.isConnected()) {
-    const connectRes = await client.connect();
+    let connectRes = await client.connect();
     if (!connectRes.ok) {
-      return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}` };
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { spawnCdpBrowser } = require('../tools') as { spawnCdpBrowser?: () => Promise<{ ok: boolean; error?: string }> };
+      if (spawnCdpBrowser) {
+        const spawned = await spawnCdpBrowser();
+        if (spawned.ok) {
+          await new Promise((r) => setTimeout(r, 1200));
+          connectRes = await client.connect();
+        } else {
+          return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}. Browser auto-launch also failed: ${spawned.error || 'unknown'}` };
+        }
+      }
+      if (!connectRes.ok) {
+        return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'} (browser launched but not reachable yet)` };
+      }
     }
   }
 
