@@ -17,17 +17,93 @@ export interface AgentData {
   sounds: string[];
 }
 
-const AWAKE_IDLES = ['Idle1_1', 'IdleRopePile', 'IdleAtom', 'IdleSideToSide', 'IdleHeadScratch', 'IdleFingerTap', 'IdleEyeBrowRaise'];
+// v0.16.1 — Mood states drive idle weighting + greeting selection.
+//   neutral: normal 1-4 interactions/hr
+//   happy:   ≥5 interactions in last 30 min — picks Congratulate / GetArtsy more
+//   grumpy:  0 interactions in last hour — sighs (RestPose) + head-scratch more
+//   drowsy:  no cursor delta for 90s — biased toward yawny anims (EyeBrowRaise, RestPose)
+//   dozing:  no cursor delta for 240s — locked to IdleSnooze loop until woken
+export type Mood = 'neutral' | 'happy' | 'grumpy' | 'drowsy' | 'dozing';
+
+// Per-animation base weights for the idle picker. Higher = more often.
+// All animations listed must actually exist in agent.mjs (verified for Clippy
+// sprite sheet — see assets/agents/clippy/agent.mjs).
+const IDLE_BASE_WEIGHTS: Record<string, number> = {
+  Idle1_1: 6,
+  IdleRopePile: 3,
+  IdleAtom: 3,
+  IdleSideToSide: 3,
+  IdleHeadScratch: 3,
+  IdleFingerTap: 3,
+  IdleEyeBrowRaise: 3,
+  RestPose: 2,
+};
+
+// Mood multipliers applied on top of base weights. Default 1.0 if absent.
+const MOOD_MULT: Record<Mood, Record<string, number>> = {
+  neutral: {},
+  happy: {
+    Idle1_1: 1.5,
+    IdleSideToSide: 1.6,
+    IdleAtom: 1.4,
+    IdleFingerTap: 1.4,
+    RestPose: 0.3,
+    IdleHeadScratch: 0.6,
+  },
+  grumpy: {
+    RestPose: 3.5,
+    IdleHeadScratch: 2.5,
+    IdleEyeBrowRaise: 2.0,
+    IdleSideToSide: 0.4,
+    IdleAtom: 0.4,
+    Idle1_1: 0.6,
+  },
+  drowsy: {
+    RestPose: 4.0,
+    IdleEyeBrowRaise: 3.0,
+    IdleRopePile: 1.5, // settled / static
+    IdleSideToSide: 0.2,
+    IdleAtom: 0.2,
+    IdleFingerTap: 0.2,
+  },
+  dozing: {
+    // dozing is handled separately (forces IdleSnooze) — weights unused
+  },
+};
+
+// Hour-of-day modifiers. Night ramps RestPose/EyeBrowRaise up, morning ramps
+// active anims up. Awake hours (10-21) get neutral 1.0 across the board.
+function circadianMult(hour: number): Record<string, number> {
+  if (hour >= 22 || hour < 5) {
+    // Late night
+    return { RestPose: 2.5, IdleEyeBrowRaise: 1.8, IdleAtom: 0.4, IdleSideToSide: 0.4 };
+  }
+  if (hour >= 5 && hour < 9) {
+    // Early morning — wake-up energy
+    return { IdleSideToSide: 1.6, IdleAtom: 1.5, IdleFingerTap: 1.4, RestPose: 0.5 };
+  }
+  return {};
+}
+
 const SLEEP_IDLES = ['IdleSnooze', 'RestPose'];
 const IDLE_CYCLE_MIN = 8000;
 const IDLE_CYCLE_MAX = 15000;
+
+// v0.16.1 — Sleep cascade thresholds. Triggered by cursor-pos pump silence —
+// renderer sees no meaningful cursor delta for N ms and steps Clippy down.
+// Resets on any user message or cursor delta > 5px.
+const DROWSY_AFTER_MS = 90_000;   // 1.5 min idle → drowsy
+const DOZING_AFTER_MS = 240_000;  // 4 min idle → dozing (locked snooze loop)
 
 // v0.16.0 — "Clippy is working" animation pool. Cycles continuously while
 // the brain is mid-task so the user sees activity instead of a frozen
 // paperclip during long tool chains (30s olk-direct-send, 60s word_to_pdf).
 const WORKING_ANIMS = ['Processing', 'CheckingSomething', 'GetTechy', 'Writing', 'Searching', 'GetWizardy'];
-const WORKING_CYCLE_MIN = 1800;
-const WORKING_CYCLE_MAX = 3200;
+
+// v0.16.1 — minimum gap before the SAME idle animation can play again.
+// Without this, weighted-random can still produce visible repeats (RestPose
+// → RestPose → RestPose looks broken even if statistically correct).
+const SAME_ANIM_MIN_GAP_MS = 25_000;
 
 export class ClippyController {
   private canvas: HTMLCanvasElement;
@@ -46,6 +122,13 @@ export class ClippyController {
   // Set via startWorkingLoop() / cleared via stopWorkingLoop().
   private isWorking: boolean = false;
   private workingCycleTimer: number | null = null;
+
+  // v0.16.1 — mood + cascade state
+  private mood: Mood = 'neutral';
+  private lastIdlePlayedAt: Record<string, number> = {};
+  // last time the cursor moved meaningfully OR user interacted. Drives the
+  // drowsy/dozing cascade. Set on construct to avoid instant-drowsy on launch.
+  private lastActivityAt: number = Date.now();
 
   constructor(canvas: HTMLCanvasElement, spriteSrc: string, agentData: AgentData) {
     this.canvas = canvas;
@@ -135,14 +218,61 @@ export class ClippyController {
     this.animTimer = window.setTimeout(() => this.renderFrame(), duration);
   }
 
+  // v0.16.1 — replaces flat uniform pick with mood × circadian × min-gap
+  // weighted random selection. Brain-emitted mood (from main.ts interaction
+  // tracker) flows in via setMood; hour-of-day is read here.
   private playRandomIdle(): void {
-    const pool = this.isSleeping ? SLEEP_IDLES : AWAKE_IDLES;
-    const available = pool.filter((a) => a in this.agentData.animations);
-    if (available.length === 0) {
-      this.play('Idle1_1');
+    // Sleeping (real brain-driven sleep) — keep prior behavior, lock to SLEEP_IDLES.
+    if (this.isSleeping) {
+      const available = SLEEP_IDLES.filter((a) => a in this.agentData.animations);
+      const pick = available[Math.floor(Math.random() * available.length)] || 'Idle1_1';
+      this.play(pick);
       return;
     }
-    const pick = available[Math.floor(Math.random() * available.length)];
+
+    // Dozing (cascade-driven sleep) — same effect as real sleep, but reversible
+    // by activity instead of a brain wake() call. Cleaner UX than calling
+    // brain.sleep() which would also gate IPC + TTS off.
+    if (this.mood === 'dozing') {
+      const pick = ('IdleSnooze' in this.agentData.animations) ? 'IdleSnooze' : 'RestPose';
+      this.play(pick);
+      return;
+    }
+
+    const now = Date.now();
+    const hour = new Date().getHours();
+    const moodMult = MOOD_MULT[this.mood] || {};
+    const circ = circadianMult(hour);
+
+    const candidates: Array<{ name: string; weight: number }> = [];
+    for (const [name, base] of Object.entries(IDLE_BASE_WEIGHTS)) {
+      if (!(name in this.agentData.animations)) continue;
+      // Min-gap: if this anim played within SAME_ANIM_MIN_GAP_MS, zero its weight.
+      const last = this.lastIdlePlayedAt[name] || 0;
+      if (now - last < SAME_ANIM_MIN_GAP_MS) continue;
+
+      const mMult = moodMult[name] ?? 1;
+      const cMult = circ[name] ?? 1;
+      const weight = base * mMult * cMult;
+      if (weight > 0) candidates.push({ name, weight });
+    }
+
+    if (candidates.length === 0) {
+      // All animations on cooldown OR missing — fallback to safe default
+      this.play('Idle1_1');
+      this.lastIdlePlayedAt['Idle1_1'] = now;
+      return;
+    }
+
+    const totalWeight = candidates.reduce((s, c) => s + c.weight, 0);
+    let roll = Math.random() * totalWeight;
+    let pick = candidates[0].name;
+    for (const c of candidates) {
+      roll -= c.weight;
+      if (roll <= 0) { pick = c.name; break; }
+    }
+
+    this.lastIdlePlayedAt[pick] = now;
     this.play(pick);
   }
 
@@ -252,6 +382,63 @@ export class ClippyController {
       this.play(name);
     } else {
       this.playAction(name);
+    }
+  }
+
+  // ── v0.16.1 — Mood / activity / sleep cascade public surface ──────────
+
+  /**
+   * Update mood from the renderer-side interaction tracker. Caller is
+   * src/renderer/main.ts which counts clicks + onSpeak events in a rolling
+   * 1hr window. Drowsy/dozing are managed internally — caller should pass
+   * neutral/happy/grumpy only; passing drowsy/dozing is allowed but
+   * non-idiomatic (use noteActivity() to clear cascade instead).
+   */
+  setMood(m: Mood): void {
+    this.mood = m;
+  }
+
+  getMood(): Mood {
+    return this.mood;
+  }
+
+  /**
+   * Called by the cursor-pos pump in main.ts on every meaningful cursor
+   * delta and by the bubble controller on every user message. Resets the
+   * sleep cascade — if Clippy was drowsy/dozing he perks back up.
+   *
+   * Note: this only manages cascade-driven sleep states (drowsy/dozing).
+   * Brain-driven real sleep (isSleeping) is untouched — the user
+   * explicitly putting Clippy to sleep via tray should not be overridden
+   * by mouse movement.
+   */
+  noteActivity(): void {
+    this.lastActivityAt = Date.now();
+    if (this.mood === 'drowsy' || this.mood === 'dozing') {
+      // Snap back to neutral; main.ts's interaction tracker will re-elevate
+      // to happy/grumpy on its next tick if warranted.
+      this.mood = 'neutral';
+    }
+  }
+
+  /**
+   * Called periodically (~once/sec) from the cursor-pos pump in main.ts.
+   * Reads idle-since timestamp and steps Clippy down the cascade ladder.
+   * Pure renderer logic — no IPC, no brain involvement. Safe to call
+   * even while working/sleeping (no-ops in those cases).
+   */
+  tickSleepCascade(): void {
+    if (this.isSleeping || this.isWorking) return;
+    const idleFor = Date.now() - this.lastActivityAt;
+    if (idleFor >= DOZING_AFTER_MS && this.mood !== 'dozing') {
+      this.mood = 'dozing';
+    } else if (idleFor >= DROWSY_AFTER_MS && idleFor < DOZING_AFTER_MS && this.mood !== 'drowsy') {
+      // Only auto-set drowsy if not already in a stronger user-mood. Happy
+      // shouldn't get overridden by 90s idle (user might be reading their
+      // last reply); grumpy gives way to drowsy as a softer state.
+      if (this.mood === 'neutral' || this.mood === 'grumpy') {
+        this.mood = 'drowsy';
+      }
     }
   }
 }

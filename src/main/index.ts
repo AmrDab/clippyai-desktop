@@ -73,6 +73,7 @@ import { isProfileSetUp } from './brain';
 import { initTools, cleanupTools } from './tools';
 import { createLogger, cleanOldLogs, serializeErr } from './logger';
 import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater';
+import { startScheduler, stopScheduler } from './scheduler';
 
 bootLog('IMPORTS_LOADED');
 
@@ -225,6 +226,11 @@ function launchMainApp(): void {
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
 
+  // v0.16.1 — time-based liveliness pings (morning greet, stretch reminder,
+  // wrap-up tip). Setinterval-based, gated on brain.getMode() === 'awake'
+  // and once-per-day for daily events. See src/main/scheduler.ts.
+  startScheduler(mainWindow, brain);
+
   if (!isProfileSetUp()) {
     setTimeout(() => {
       // D9: log direct webContents.send so the audit trail matches what
@@ -259,6 +265,7 @@ function launchWithOnboarding(): void {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  stopScheduler();
   // Stop clawdcursor first — SIGTERM is async, so this fires the signal
   // and returns immediately. clawdcursor exits cleanly on SIGTERM thanks
   // to the MCP server lifecycle changes; if it's slow, stopClawd's 2s

@@ -66,9 +66,43 @@ async function init(): Promise<void> {
     if (config.ttsEnabled === false) tts.setEnabled(false);
   } catch {}
 
+  // v0.16.1 — Interaction-frequency mood tracker. Every user-initiated
+  // interaction (click on Clippy, sent message, drag) appends a timestamp
+  // to interactionLog. Every 60s we prune to a 1hr window and recompute
+  // mood: 0 in last 60min = grumpy, 5+ in last 30min = happy, else neutral.
+  // The controller's own cascade can override this with drowsy/dozing
+  // when truly idle; noteActivity() resets cascade so user actions always
+  // win over cascade decay.
+  const interactionLog: number[] = [];
+  function noteUserInteraction(): void {
+    interactionLog.push(Date.now());
+    clippyCtrl.noteActivity();
+  }
+  function recomputeMood(): void {
+    const now = Date.now();
+    // Prune anything older than 1hr in-place
+    while (interactionLog.length > 0 && now - interactionLog[0] > 3_600_000) {
+      interactionLog.shift();
+    }
+    const inLastHour = interactionLog.length;
+    const inLast30 = interactionLog.filter((t) => now - t <= 1_800_000).length;
+    let next: 'happy' | 'grumpy' | 'neutral';
+    if (inLast30 >= 5) next = 'happy';
+    else if (inLastHour === 0) next = 'grumpy';
+    else next = 'neutral';
+    // Only override mood if controller isn't cascade-sleeping. drowsy/dozing
+    // take precedence — user has been quiet AND no cursor movement, that's
+    // a stronger signal than "0 interactions in the last hour".
+    const cur = clippyCtrl.getMood();
+    if (cur !== 'drowsy' && cur !== 'dozing') clippyCtrl.setMood(next);
+  }
+  // Recompute every 60s. Cheap (array filter on at most a few dozen entries).
+  setInterval(recomputeMood, 60_000);
+
   let lastUserText = '';
   const bubbleCtrl = new BubbleController(async (userText) => {
     lastUserText = userText;
+    noteUserInteraction(); // v0.16.1 — sent message counts as engagement
     clippyCtrl.think();
     try {
       // v0.11.29 — fire-and-forget the IPC. Brain emits 'clippy-speak' for
@@ -140,15 +174,38 @@ async function init(): Promise<void> {
   // idle; we periodically (max once per 8s) glance toward the cursor with
   // the appropriate Look* animation. High-lifelikeness, low cost.
   // During play-tag mode, this listener is overridden by the tag controller.
+  // v0.16.1 — also drives the sleep-cascade ticker: any cursor delta > 5px
+  // counts as "activity" and resets drowsy/dozing back to neutral.
   let lastLookAt = 0;
   let playTagActive = false;
+  let lastCursorMx = -9999;
+  let lastCursorMy = -9999;
 
   function handleCursorPos(pos: { cx: number; cy: number; mx: number; my: number }): void {
+    // v0.16.1 — activity detection (runs even when Clippy is mid-action so
+    // sleep cascade still resets while a "What can I help you with" bubble
+    // is showing). Threshold 5px filters out noise like sub-pixel jitter
+    // and tablet-stylus jitter.
+    if (lastCursorMx !== -9999) {
+      const moveDist = Math.hypot(pos.mx - lastCursorMx, pos.my - lastCursorMy);
+      if (moveDist > 5) clippyCtrl.noteActivity();
+    }
+    lastCursorMx = pos.mx;
+    lastCursorMy = pos.my;
+    // v0.16.1 — step the sleep cascade each tick. Cheap (just a Date.now()
+    // diff + maybe a mood mutation). Happens regardless of working/sleeping
+    // because the controller's own guards handle those cases internally.
+    clippyCtrl.tickSleepCascade();
+
     if (playTagActive) return; // tag controller handles cursor below
     // Don't interrupt: skip if Clippy is mid-action or mid-working-loop or sleeping
     if ((clippyCtrl as unknown as { isPlayingAction: boolean }).isPlayingAction) return;
     if ((clippyCtrl as unknown as { isWorking: boolean }).isWorking) return;
     if ((clippyCtrl as unknown as { isSleeping: boolean }).isSleeping) return;
+    // v0.16.1 — also skip look-glances when dozing (Clippy is "asleep" via
+    // cascade; a passing cursor shouldn't yank him alert without real
+    // activity, which already reset mood above).
+    if (clippyCtrl.getMood() === 'dozing') return;
     if (Date.now() - lastLookAt < 8000) return; // throttle to once per 8s
     const dx = pos.mx - pos.cx;
     const dy = pos.my - pos.cy;
@@ -234,17 +291,35 @@ async function init(): Promise<void> {
   });
 
   // === Drag + Click handling ===
+  // v0.16.1 — Drag inertia. Capture per-mousemove (timestamp, dx, dy) in a
+  // small ring buffer; on mouseup compute velocity from the last ~120ms of
+  // motion and apply a friction+gravity loop until vx,vy < 0.5. Calls
+  // window.clippy.moveWindow with integer deltas just like a live drag.
+  // The main process bounds-clamps so we can't fling Clippy offscreen.
   let isDragging = false;
   let dragStartX = 0;
   let dragStartY = 0;
   let hasMoved = false;
+  // Ring buffer of recent drag samples for velocity calculation.
+  type DragSample = { t: number; dx: number; dy: number };
+  const dragSamples: DragSample[] = [];
+  let inertiaRAF: number | null = null;
+
+  function stopInertia(): void {
+    if (inertiaRAF !== null) {
+      cancelAnimationFrame(inertiaRAF);
+      inertiaRAF = null;
+    }
+  }
 
   canvas.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
+    stopInertia(); // grabbing during inertia cancels it
     isDragging = true;
     hasMoved = false;
     dragStartX = e.screenX;
     dragStartY = e.screenY;
+    dragSamples.length = 0;
     canvas.style.cursor = 'grabbing';
   });
 
@@ -255,15 +330,59 @@ async function init(): Promise<void> {
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
       hasMoved = true;
       window.clippy.moveWindow(dx, dy);
+      // Record sample for velocity. Keep ring buffer ≤ 8 entries (200-300ms
+      // of motion at 60Hz mousemove); older samples get dropped to keep
+      // velocity reactive to recent flick direction, not the whole drag.
+      dragSamples.push({ t: performance.now(), dx, dy });
+      if (dragSamples.length > 8) dragSamples.shift();
       dragStartX = e.screenX;
       dragStartY = e.screenY;
     }
   });
 
   document.addEventListener('mouseup', () => {
+    if (isDragging && hasMoved) {
+      // v0.16.1 — End of a real drag: launch inertia from buffered velocity.
+      // Compute average dx/dy per ms over the last ~120ms of samples, then
+      // feed that into the RAF-driven flick loop. Friction 0.92 per frame
+      // gives a ~500ms decay at 60Hz; that's snappy without feeling broken.
+      const now = performance.now();
+      const recent = dragSamples.filter((s) => now - s.t < 120);
+      if (recent.length >= 2) {
+        const span = Math.max(16, recent[recent.length - 1].t - recent[0].t);
+        const sumDx = recent.reduce((s, p) => s + p.dx, 0);
+        const sumDy = recent.reduce((s, p) => s + p.dy, 0);
+        // Velocity in px per 16ms-frame
+        let vx = (sumDx / span) * 16;
+        let vy = (sumDy / span) * 16;
+        // Cap fling speed so a vigorous flick can't teleport Clippy.
+        const MAX_V = 40;
+        const mag = Math.hypot(vx, vy);
+        if (mag > MAX_V) { vx = vx / mag * MAX_V; vy = vy / mag * MAX_V; }
+        // Only animate inertia if the user actually flicked, not a slow lift.
+        if (mag > 4) {
+          const FRICTION = 0.92;
+          const GRAVITY = 0.6; // px/frame² — gentle settling, not heavy
+          const step = () => {
+            vx *= FRICTION;
+            vy = vy * FRICTION + GRAVITY;
+            window.clippy.moveWindow(Math.round(vx), Math.round(vy));
+            if (Math.abs(vx) < 0.5 && Math.abs(vy) < 1.0) {
+              inertiaRAF = null;
+              return;
+            }
+            inertiaRAF = requestAnimationFrame(step);
+          };
+          inertiaRAF = requestAnimationFrame(step);
+        }
+      }
+      dragSamples.length = 0;
+      noteUserInteraction(); // dragging counts as engagement
+    }
     if (isDragging && !hasMoved) {
       // Single click on Clippy
       console.log('[Main] Clippy clicked!');
+      noteUserInteraction(); // v0.16.1 — click counts as engagement
 
       if (pendingUpdate === 'download') {
         // User explicitly clicked after seeing "click me to download"
