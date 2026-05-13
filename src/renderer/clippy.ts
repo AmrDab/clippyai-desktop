@@ -22,6 +22,13 @@ const SLEEP_IDLES = ['IdleSnooze', 'RestPose'];
 const IDLE_CYCLE_MIN = 8000;
 const IDLE_CYCLE_MAX = 15000;
 
+// v0.16.0 — "Clippy is working" animation pool. Cycles continuously while
+// the brain is mid-task so the user sees activity instead of a frozen
+// paperclip during long tool chains (30s olk-direct-send, 60s word_to_pdf).
+const WORKING_ANIMS = ['Processing', 'CheckingSomething', 'GetTechy', 'Writing', 'Searching', 'GetWizardy'];
+const WORKING_CYCLE_MIN = 1800;
+const WORKING_CYCLE_MAX = 3200;
+
 export class ClippyController {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -34,6 +41,11 @@ export class ClippyController {
   private isLoaded: boolean = false;
   private isPlayingAction: boolean = false;
   private isSleeping: boolean = false;
+  // v0.16.0 — "working" mode: when true, after each animation completes the
+  // controller picks another from WORKING_ANIMS instead of returning to idle.
+  // Set via startWorkingLoop() / cleared via stopWorkingLoop().
+  private isWorking: boolean = false;
+  private workingCycleTimer: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, spriteSrc: string, agentData: AgentData) {
     this.canvas = canvas;
@@ -82,8 +94,16 @@ export class ClippyController {
   private renderFrame(): void {
     const anim = this.agentData.animations[this.currentAnimation];
     if (!anim || this.frameIndex >= anim.frames.length) {
-      // Animation ended — return to idle cycle
+      // Animation ended — return to idle cycle, OR cycle to next working
+      // animation if we're mid-task. v0.16.0 fix: previously Clippy froze
+      // for ~27s during a 30s tool because the in-progress animation
+      // (Thinking / Processing) finished in 3s and the controller went
+      // back to idle even though the brain was still working.
       this.isPlayingAction = false;
+      if (this.isWorking) {
+        this.playRandomWorking();
+        return;
+      }
       this.startIdleCycle();
       this.playRandomIdle();
       return;
@@ -169,6 +189,43 @@ export class ClippyController {
     } else {
       this.playAction('Wave');
     }
+  }
+
+  // v0.16.0 — task-in-progress loop. Brain.ts emits 'working-start' when a
+  // tool chain begins and 'working-stop' when it ends; the controller
+  // continuously cycles WORKING_ANIMS in between so the user always sees
+  // Clippy doing SOMETHING.
+  startWorkingLoop(): void {
+    if (this.isWorking) return;
+    this.isWorking = true;
+    this.stopIdleCycle();
+    this.playRandomWorking();
+  }
+
+  stopWorkingLoop(): void {
+    if (!this.isWorking) return;
+    this.isWorking = false;
+    if (this.workingCycleTimer !== null) {
+      clearTimeout(this.workingCycleTimer);
+      this.workingCycleTimer = null;
+    }
+    // Don't snap-cut — let the current animation finish, the renderFrame
+    // tail will route back to idle since isWorking is now false.
+  }
+
+  private playRandomWorking(): void {
+    const available = WORKING_ANIMS.filter((a) => a in this.agentData.animations);
+    if (available.length === 0) {
+      this.play('Thinking');
+      return;
+    }
+    const pick = available[Math.floor(Math.random() * available.length)];
+    // Use play() directly (not playAction) so we don't toggle the
+    // isPlayingAction flag that would interfere with renderFrame tail logic.
+    this.currentAnimation = pick;
+    this.frameIndex = 0;
+    this.stopAnimTimer();
+    this.renderFrame();
   }
 
   wave(): void { this.playAction('Wave'); }

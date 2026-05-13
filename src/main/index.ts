@@ -210,6 +210,14 @@ function launchMainApp(): void {
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
 
+  // v0.16.0 — start the cursor position pump at 1Hz so Clippy can glance
+  // toward the user's cursor. Renderer's cursor-look logic throttles
+  // glances to one per 8s. Bumps to 30Hz briefly during play-tag mode
+  // via the play-tag IPC handlers in ipc.ts.
+  import('./window').then((w) => {
+    if (mainWindow) w.startCursorPoll(mainWindow);
+  });
+
   brain.setMode('awake');
   mainWindow.webContents.send('mode-change', 'awake');
 

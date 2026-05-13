@@ -108,6 +108,42 @@ export function createWindow(): BrowserWindow {
   return win;
 }
 
+// v0.16.0 — cursor position pump. Sends {cx, cy, mx, my} to renderer so
+// Clippy can glance toward the cursor (cursor-look) and chase it (play-tag).
+// Default: 1Hz (cursor-look only). startPlayTag() bumps to 30Hz briefly,
+// stopPlayTag() returns to 1Hz. Cleaned up on win.destroy.
+let cursorPollInterval: NodeJS.Timeout | null = null;
+let cursorPollHzMs = 1000;
+
+function tickCursor(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  try {
+    const cursor = screen.getCursorScreenPoint();
+    const [wx, wy] = win.getPosition();
+    const [ww, wh] = win.getSize();
+    win.webContents.send('cursor-pos', {
+      cx: wx + ww / 2,
+      cy: wy + wh / 2,
+      mx: cursor.x,
+      my: cursor.y,
+    });
+  } catch { /* screen API can fail during display change — non-fatal */ }
+}
+
+export function startCursorPoll(win: BrowserWindow): void {
+  stopCursorPoll();
+  cursorPollInterval = setInterval(() => tickCursor(win), cursorPollHzMs);
+}
+
+export function stopCursorPoll(): void {
+  if (cursorPollInterval) { clearInterval(cursorPollInterval); cursorPollInterval = null; }
+}
+
+export function setCursorPollHz(win: BrowserWindow, hz: number): void {
+  cursorPollHzMs = Math.max(33, Math.round(1000 / hz));
+  if (cursorPollInterval) startCursorPoll(win); // restart with new rate
+}
+
 export function setClickThrough(win: BrowserWindow, enabled: boolean): void {
   // No-op on Windows — we don't use click-through anymore
 }

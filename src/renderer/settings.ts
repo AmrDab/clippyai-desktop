@@ -85,6 +85,19 @@ async function loadConfig(): Promise<void> {
     speechRateRange.value = String(config.speechRate);
     speechRateValue.textContent = `${config.speechRate}x`;
   }
+  // v0.16.0 — load pitch + volume
+  const pitchEl = document.getElementById('setting-speech-pitch') as HTMLInputElement | null;
+  const pitchValueEl = document.getElementById('speech-pitch-value');
+  if (pitchEl && pitchValueEl && typeof config.speechPitch === 'number') {
+    pitchEl.value = String(config.speechPitch);
+    pitchValueEl.textContent = String(config.speechPitch);
+  }
+  const volEl = document.getElementById('setting-speech-volume') as HTMLInputElement | null;
+  const volValueEl = document.getElementById('speech-volume-value');
+  if (volEl && volValueEl && typeof config.speechVolume === 'number') {
+    volEl.value = String(config.speechVolume);
+    volValueEl.textContent = `${Math.round(config.speechVolume * 100)}%`;
+  }
 
   // Launch on startup
   const launchEl = document.getElementById('setting-launch-startup') as HTMLInputElement;
@@ -137,6 +150,31 @@ voiceSelect.addEventListener('change', () => {
 speechRateRange.addEventListener('input', () => {
   speechRateValue.textContent = `${speechRateRange.value}x`;
   debounceSave({ speechRate: Number(speechRateRange.value) });
+});
+
+// v0.16.0 — pitch + volume + engine picker. Three new controls in the
+// Voice tab so users can dial in their preferred TTS without waiting for
+// Piper / ElevenLabs to land.
+const pitchRange = document.getElementById('setting-speech-pitch') as HTMLInputElement | null;
+const pitchValue = document.getElementById('speech-pitch-value');
+if (pitchRange && pitchValue) {
+  pitchRange.addEventListener('input', () => {
+    pitchValue.textContent = pitchRange.value;
+    debounceSave({ speechPitch: Number(pitchRange.value) });
+  });
+}
+const volumeRange = document.getElementById('setting-speech-volume') as HTMLInputElement | null;
+const volumeValue = document.getElementById('speech-volume-value');
+if (volumeRange && volumeValue) {
+  volumeRange.addEventListener('input', () => {
+    volumeValue.textContent = `${Math.round(Number(volumeRange.value) * 100)}%`;
+    debounceSave({ speechVolume: Number(volumeRange.value) });
+  });
+}
+const voicesFeedbackLink = document.getElementById('link-voices-feedback');
+if (voicesFeedbackLink) voicesFeedbackLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.clippy.openExternalUrl('https://clippyai.app');
 });
 
 // TTS Enable toggle — this IS the "AI voice toggle" the user sees in Voice tab

@@ -46,14 +46,25 @@ export class TTS {
       .trim();
   }
 
+  // v0.16.0 — pitch + volume become user-configurable via Settings → Voice.
+  private pitch: number = 1.0;
+  private volume: number = 0.9;
+
+  setPitch(pitch: number): void {
+    this.pitch = Math.max(0.5, Math.min(2.0, pitch));
+  }
+  setVolume(volume: number): void {
+    this.volume = Math.max(0, Math.min(1, volume));
+  }
+
   speak(text: string): void {
     const clean = this.stripEmoji(text);
     if (!this.enabled || !clean) return;
     this.synth.cancel();
     const utt = new SpeechSynthesisUtterance(clean);
     utt.rate = this.rate;
-    utt.pitch = 1.0;
-    utt.volume = 0.9;
+    utt.pitch = this.pitch;
+    utt.volume = this.volume;
     if (this.voice) utt.voice = this.voice;
     this.synth.speak(utt);
   }

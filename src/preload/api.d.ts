@@ -45,6 +45,9 @@ interface Window {
     onSpeak: (cb: (payload: { text: string; animate: string }) => void) => void;
     onTtsToggle: (cb: (enabled: boolean) => void) => void;
     onSpeechRate: (cb: (rate: number) => void) => void;
+    /** v0.16.0 — pitch + volume live updates */
+    onSpeechPitch?: (cb: (pitch: number) => void) => void;
+    onSpeechVolume?: (cb: (volume: number) => void) => void;
 
     // ── Mode
     onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
@@ -86,6 +89,14 @@ interface Window {
     } | null>;
     /** v0.14.1 — About → active AI model string (kimi-k2.5 / kimi-k2.6 / ...) */
     activeModel?: () => Promise<string | null>;
+    /** v0.16.0 — task-in-progress animation loop signals */
+    onWorkingStart?: (cb: () => void) => void;
+    onWorkingStop?: (cb: () => void) => void;
+    /** v0.16.0 — cursor position pump for liveliness (cursor-look + play-tag) */
+    onCursorPos?: (cb: (pos: { cx: number; cy: number; mx: number; my: number }) => void) => void;
+    /** v0.16.0 — play-tag mode toggle */
+    onPlayTagStart?: (cb: () => void) => void;
+    onPlayTagStop?: (cb: () => void) => void;
     /** v0.15.0 — Settings → Web → mcp-chrome extension status */
     mcpChromeStatus?: () => Promise<{
       ready: boolean;

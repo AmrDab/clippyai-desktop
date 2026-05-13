@@ -302,7 +302,12 @@ const settingsStore = new Store<BrainSettings>({
   defaults: {
     proactiveInterval: 300000, // 5 minutes — was 30s, way too frequent
     proactiveEnabled: true,
-    proactiveCooldownMs: 600000, // 10 min default — preserves prior behavior
+    // v0.16.0 — was 600_000 (10 min). Per proactive-silence diagnostic:
+    // across 5 reports zero successful proactive utterances reached the
+    // user, partly because the default 10-min cooldown after every fire
+    // capped throughput. New default 60s; users who want quieter can
+    // raise via Settings → Brain → Quiet Time slider.
+    proactiveCooldownMs: 60000,
     bubbleAutoHideMs: 30000,     // 30s default (was hardcoded 20s, too short)
     ttsEnabled: true,
     speechRate: 1.1,
@@ -328,7 +333,12 @@ export class Brain {
   // filters. Per UX audit: users were going hours without proactive tips
   // because the screen-unchanged heuristic was always-on.
   private proactiveSkipStreak = 0;
-  private static readonly PROACTIVE_FORCE_FIRE_AFTER_SKIPS = 30;
+  // v0.16.0 — was 30. Per proactive-silence diagnostic: across 5 reports
+  // including a 69-tick session, zero Proactive.forceFire events fired.
+  // Threshold 30 × default 5-min interval = 2.5 hours of same-screen
+  // before force-fire — unrealistic. New value 5 gives force-fire after
+  // ~25 minutes at default cadence, or ~100s at 20s cadence.
+  private static readonly PROACTIVE_FORCE_FIRE_AFTER_SKIPS = 5;
   private greetedOnWake = false;
   private isExecuting = false;
   // Set by a NEW handleUserMessage call arriving while a previous one is
@@ -351,7 +361,11 @@ export class Brain {
       // marker from before sleep doesn't permanently silence proactive on
       // the SAME app. Per user report: "proactive on, 300s, Clippy silent."
       this.lastScreenFingerprint = '';
-      this.proactiveSkipStreak = 0;
+      // v0.16.0 — DO NOT reset proactiveSkipStreak on wake. Per diagnostic:
+      // users sleep+wake Clippy frequently; resetting on wake meant the
+      // force-fire threshold (5 ticks) was never reached because the
+      // counter zeroed every wake. Streak now only resets on successful
+      // utterance (line ~1050) or after force-fire fires.
       this.startLoop();
     } else {
       // Sleep is a hard stop. Three layers, in order:
@@ -428,6 +442,40 @@ export class Brain {
     setCurrentTaskId(task_id);
     log.info('User.message', { text: text.substring(0, 200), length: text.length, task_id });
 
+    // v0.16.0 — play-tag detection. Cheap client-side regex so we don't burn
+    // a model turn on a game request. Catches "wanna play tag", "let's play
+    // tag", "tag, you're it", "play tag with me". Stops with "stop tag" / "I
+    // give up" / any non-tag user message (renderer flag is already cleared
+    // by then because brain handles it as a new task).
+    if (/\b(play|playing|start|wanna|want to|let'?s).{0,12}\btag\b/i.test(text)
+        || /\btag,?\s*(you'?re|youre)\s*it\b/i.test(text)) {
+      log.info('Game.start', { game: 'tag' });
+      // Bump cursor pump from 1Hz → 30Hz so the chase is smooth.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const w = require('./window') as typeof import('./window');
+        w.setCursorPollHz(this.win, 30);
+      } catch { /* non-fatal */ }
+      this.emit('play-tag-start');
+      const greeting = "Tag, I'm running! Try to catch me! 📎";
+      this.emit('clippy-speak', { text: greeting, animate: 'Searching' });
+      return greeting;
+    }
+    if (/\b(stop|end|quit|done|enough).{0,10}\btag\b/i.test(text)
+        || /\bgive up\b/i.test(text)) {
+      log.info('Game.stop', { game: 'tag' });
+      // Return cursor pump to 1Hz idle rate.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const w = require('./window') as typeof import('./window');
+        w.setCursorPollHz(this.win, 1);
+      } catch { /* non-fatal */ }
+      this.emit('play-tag-stop');
+      const reply = "Aw, no fun! 📎";
+      this.emit('clippy-speak', { text: reply, animate: 'GestureDown' });
+      return reply;
+    }
+
     // Name introduction — handled client-side for deterministic UX.
     // Matches "my name is X", "call me X", "I'm X", or just a bare name
     // (user responding to "What should I call you? Just type your name!")
@@ -479,7 +527,12 @@ export class Brain {
     this.cancelRequested = false;
 
     try {
-      this.emit('play-animation', 'Thinking');
+      // v0.16.0 — kick off the continuous "working" animation loop on the
+      // renderer. The renderer cycles Processing / CheckingSomething /
+      // GetTechy / Writing / Searching / GetWizardy every 1.8-3.2s until
+      // we emit 'working-stop' in the finally block. Replaces the prior
+      // one-shot 'Thinking' which left Clippy frozen during long tasks.
+      this.emit('working-start');
 
       // Build initial user message — add screen context if we can grab it
       // fast. Pass userText so memory.lookupWorkflow can match learned
@@ -925,6 +978,8 @@ export class Brain {
       // Clear task correlation id so subsequent proactive/idle log lines
       // don't carry a stale id from a finished task.
       setCurrentTaskId(undefined);
+      // v0.16.0 — stop the renderer's working-animation loop.
+      this.emit('working-stop');
       // Clippy stays always-on-top throughout — no re-assert needed.
       // The window was never lowered during the loop.
     }
@@ -1041,7 +1096,12 @@ export class Brain {
       // produced empty content. 800 gives room to think (~500) + tip (~50).
       const resp = await this.callTurn(
         [{ role: 'user', parts: [{ text: `Current screen:\n${context}` }] }],
-        { proactive: true, max_tokens: 800 },
+        // v0.16.0 — was 800. Per proactive-silence diagnostic: K2.6 thinking
+        // mode burns 700-1200 tokens reasoning BEFORE producing a tip,
+        // pushing the response over budget. Server then filters the
+        // truncated output as __SILENT__. 1500 gives ~1000 for reasoning
+        // + ~400 for a tip (cap below enforces brevity).
+        { proactive: true, max_tokens: 1500 },
       );
 
       if (isError(resp)) { log.info('Proactive.error', { error: (resp as TurnError).error }); return; }
@@ -1246,8 +1306,10 @@ export class Brain {
     return map[error] || detail || 'Something went wrong.';
   }
 
-  private emit(channel: string, payload: unknown): void {
-    if (!this.win.isDestroyed()) this.win.webContents.send(channel, payload);
+  private emit(channel: string, payload?: unknown): void {
+    if (this.win.isDestroyed()) return;
+    if (payload === undefined) this.win.webContents.send(channel);
+    else this.win.webContents.send(channel, payload);
   }
 
   // ========== API call with retry (NanoClaw pattern) ==========

@@ -143,6 +143,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       bubbleAutoHideMs: brainSettingsStore.get('bubbleAutoHideMs'),
       ttsEnabled: licenseStore.get('ttsEnabled', true),
       speechRate: licenseStore.get('speechRate', 1.1),
+      // v0.16.0 — pitch + volume
+      speechPitch: licenseStore.get('speechPitch', 1.0),
+      speechVolume: licenseStore.get('speechVolume', 0.9),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
     };
@@ -189,6 +192,17 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const rate = Math.max(0.5, Math.min(2.0, Number(settings.speechRate) || 1.1));
       licenseStore.set('speechRate', rate);
       mainWindow.webContents.send('speech-rate', rate);
+    }
+    // v0.16.0 — pitch + volume customization
+    if (settings.speechPitch !== undefined) {
+      const pitch = Math.max(0.5, Math.min(2.0, Number(settings.speechPitch) || 1.0));
+      licenseStore.set('speechPitch', pitch);
+      mainWindow.webContents.send('speech-pitch', pitch);
+    }
+    if (settings.speechVolume !== undefined) {
+      const vol = Math.max(0, Math.min(1, Number(settings.speechVolume) || 0.9));
+      licenseStore.set('speechVolume', vol);
+      mainWindow.webContents.send('speech-volume', vol);
     }
     return true;
   });

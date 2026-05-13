@@ -111,6 +111,15 @@ async function init(): Promise<void> {
 
   window.clippy.onTtsToggle((enabled) => tts.setEnabled(enabled));
   window.clippy.onSpeechRate((rate) => tts.setRate(rate));
+
+  // v0.16.0 — load pitch + volume on launch + listen for live updates.
+  try {
+    const cfg2 = await window.clippy.getConfig();
+    if (typeof cfg2.speechPitch === 'number') tts.setPitch(cfg2.speechPitch);
+    if (typeof cfg2.speechVolume === 'number') tts.setVolume(cfg2.speechVolume);
+  } catch { /* defaults applied */ }
+  window.clippy.onSpeechPitch?.((p) => tts.setPitch(p));
+  window.clippy.onSpeechVolume?.((v) => tts.setVolume(v));
   // v0.12.3 — apply persisted bubble auto-hide on startup + on change.
   try {
     const cfg = await window.clippy.getConfig();
@@ -120,6 +129,75 @@ async function init(): Promise<void> {
   window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
+
+  // v0.16.0 — task-in-progress animation loop. Replaces the prior one-shot
+  // 'Thinking' that froze Clippy during long tasks. Brain emits at handleUser
+  // Message entry and finally{}.
+  window.clippy.onWorkingStart?.(() => clippyCtrl.startWorkingLoop());
+  window.clippy.onWorkingStop?.(() => clippyCtrl.stopWorkingLoop());
+
+  // v0.16.0 — cursor-look. Main process pumps cursor position at 1Hz when
+  // idle; we periodically (max once per 8s) glance toward the cursor with
+  // the appropriate Look* animation. High-lifelikeness, low cost.
+  // During play-tag mode, this listener is overridden by the tag controller.
+  let lastLookAt = 0;
+  let playTagActive = false;
+
+  function handleCursorPos(pos: { cx: number; cy: number; mx: number; my: number }): void {
+    if (playTagActive) return; // tag controller handles cursor below
+    // Don't interrupt: skip if Clippy is mid-action or mid-working-loop or sleeping
+    if ((clippyCtrl as unknown as { isPlayingAction: boolean }).isPlayingAction) return;
+    if ((clippyCtrl as unknown as { isWorking: boolean }).isWorking) return;
+    if ((clippyCtrl as unknown as { isSleeping: boolean }).isSleeping) return;
+    if (Date.now() - lastLookAt < 8000) return; // throttle to once per 8s
+    const dx = pos.mx - pos.cx;
+    const dy = pos.my - pos.cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 80) return; // cursor on top of Clippy — don't look "at self"
+    lastLookAt = Date.now();
+    const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (angleDeg > -45 && angleDeg <= 45) clippyCtrl.playNamed('LookRight');
+    else if (angleDeg > 45 && angleDeg <= 135) clippyCtrl.playNamed('LookDown');
+    else if (angleDeg > 135 || angleDeg <= -135) clippyCtrl.playNamed('LookLeft');
+    else clippyCtrl.playNamed('LookUp');
+  }
+
+  // v0.16.0 — play-tag. Brain detects "wanna play tag" / "let's play tag"
+  // / "tag, you're it" in the user's message and emits play-tag-start.
+  // Renderer then chases the cursor by calling window.clippy.moveWindow
+  // with a flee/seek vector. Caught when overlap < 30px.
+  window.clippy.onPlayTagStart?.(() => {
+    playTagActive = true;
+    clippyCtrl.playNamed('Searching');
+    bubbleCtrl.speak("You can't catch me! 📎");
+  });
+  window.clippy.onPlayTagStop?.(() => {
+    playTagActive = false;
+  });
+  function handleTagCursor(pos: { cx: number; cy: number; mx: number; my: number }): void {
+    if (!playTagActive) return;
+    const dx = pos.mx - pos.cx;
+    const dy = pos.my - pos.cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 35) {
+      // Caught!
+      playTagActive = false;
+      clippyCtrl.playNamed('Congratulate');
+      bubbleCtrl.speak(`Tag! You got me! 📎`);
+      return;
+    }
+    // Flee — move opposite to cursor + a touch of jitter so Clippy doesn't
+    // run dead-straight (boring) and doesn't get cornered against the edge.
+    const speed = 10;
+    const nx = -(dx / dist) * speed + (Math.random() - 0.5) * 6;
+    const ny = -(dy / dist) * speed + (Math.random() - 0.5) * 6;
+    window.clippy.moveWindow(Math.round(nx), Math.round(ny));
+  }
+
+  window.clippy.onCursorPos?.((pos) => {
+    handleCursorPos(pos);
+    handleTagCursor(pos);
+  });
 
   // === Auto-update (state-based, NO canvas click hijacking) ===
   // Previous bug: addEventListener('click') on canvas for updates would

@@ -31,6 +31,13 @@ contextBridge.exposeInMainWorld('clippy', {
   onSpeechRate: (cb: (rate: number) => void) => {
     ipcRenderer.on('speech-rate', (_e, rate) => cb(rate));
   },
+  // v0.16.0 — pitch + volume live updates
+  onSpeechPitch: (cb: (pitch: number) => void) => {
+    ipcRenderer.on('speech-pitch', (_e, pitch) => cb(pitch));
+  },
+  onSpeechVolume: (cb: (volume: number) => void) => {
+    ipcRenderer.on('speech-volume', (_e, volume) => cb(volume));
+  },
 
   onProactiveToggle: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('proactive-toggle', (_e, enabled) => cb(enabled));
@@ -73,6 +80,30 @@ contextBridge.exposeInMainWorld('clippy', {
 
   onPlayAnimation: (cb: (name: string) => void) => {
     ipcRenderer.on('play-animation', (_e, name) => cb(name));
+  },
+
+  // v0.16.0 — task-in-progress animation loop. Brain emits 'working-start'
+  // at handleUserMessage entry and 'working-stop' in its finally{}. Renderer
+  // cycles WORKING_ANIMS continuously between them so Clippy never freezes.
+  onWorkingStart: (cb: () => void) => {
+    ipcRenderer.on('working-start', () => cb());
+  },
+  onWorkingStop: (cb: () => void) => {
+    ipcRenderer.on('working-stop', () => cb());
+  },
+
+  // v0.16.0 — periodic cursor position pump (main → renderer). At 1Hz when
+  // idle (so Clippy can glance at the cursor), 30Hz during play-tag.
+  onCursorPos: (cb: (pos: { cx: number; cy: number; mx: number; my: number }) => void) => {
+    ipcRenderer.on('cursor-pos', (_e, pos) => cb(pos));
+  },
+
+  // v0.16.0 — play-tag mode toggle.
+  onPlayTagStart: (cb: () => void) => {
+    ipcRenderer.on('play-tag-start', () => cb());
+  },
+  onPlayTagStop: (cb: () => void) => {
+    ipcRenderer.on('play-tag-stop', () => cb());
   },
 
   moveWindow: (deltaX: number, deltaY: number) => {

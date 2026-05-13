@@ -83,6 +83,29 @@
           <input id="setting-speech-rate" type="range" min="0.5" max="2" step="0.1" value="1.1" />
           <span id="speech-rate-value" style="font-size: 12px; color: #888;">1.1x</span>
         </div>
+        <div class="settings-group">
+          <label for="setting-speech-pitch">Pitch</label>
+          <input id="setting-speech-pitch" type="range" min="0.5" max="2" step="0.1" value="1.0" />
+          <span id="speech-pitch-value" style="font-size: 12px; color: #888;">1.0</span>
+        </div>
+        <div class="settings-group">
+          <label for="setting-speech-volume">Volume</label>
+          <input id="setting-speech-volume" type="range" min="0" max="1" step="0.05" value="0.9" />
+          <span id="speech-volume-value" style="font-size: 12px; color: #888;">90%</span>
+        </div>
+        <!-- v0.16.0 — engine picker placeholder. SAPI is the only engine
+             shipped today; Piper TTS (neural, more natural) coming in a
+             future patch as an opt-in download. The menu exists now so
+             users can see the roadmap and don't have to guess. -->
+        <div class="settings-group" style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;">
+          <label for="setting-tts-engine">Voice Engine</label>
+          <select id="setting-tts-engine">
+            <option value="sapi" selected>Windows (SAPI) — built-in</option>
+            <option value="piper" disabled>Piper TTS (neural) — coming soon</option>
+            <option value="elevenlabs" disabled>ElevenLabs (cloud) — coming soon</option>
+          </select>
+          <p style="font-size:11px;color:#888;margin-top:4px;">More natural voices are on the roadmap. Vote at <a href="#" id="link-voices-feedback" style="color:#4CAF50;">clippyai.app/voices</a>.</p>
+        </div>
       </div>
 
       <!-- Brain -->
