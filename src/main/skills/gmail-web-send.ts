@@ -7,6 +7,7 @@
  */
 
 import { getCdpClient } from '../cdp-client';
+import { spawnCdpBrowser } from '../cdp-spawn';
 import { createLogger } from '../logger';
 import type { ToolResult } from '../types/tool-result';
 
@@ -48,16 +49,14 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
   if (!client.isConnected()) {
     let connectRes = await client.connect();
     if (!connectRes.ok) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { spawnCdpBrowser } = require('../tools') as { spawnCdpBrowser?: () => Promise<{ ok: boolean; error?: string }> };
-      if (spawnCdpBrowser) {
-        const spawned = await spawnCdpBrowser();
-        if (spawned.ok) {
-          await new Promise((r) => setTimeout(r, 1200));
-          connectRes = await client.connect();
-        } else {
-          return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}. Browser auto-launch also failed: ${spawned.error || 'unknown'}` };
-        }
+      // v0.16.2 — previously a runtime CommonJS lookup against ../tools;
+      // crashed in packed app.asar. See cdp-spawn.ts header for details.
+      const spawned = await spawnCdpBrowser();
+      if (spawned.ok) {
+        await new Promise((r) => setTimeout(r, 1200));
+        connectRes = await client.connect();
+      } else {
+        return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}. Browser auto-launch also failed: ${spawned.error || 'unknown'}` };
       }
       if (!connectRes.ok) {
         return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'} (browser launched but not reachable yet)` };

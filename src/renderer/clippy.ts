@@ -86,8 +86,13 @@ function circadianMult(hour: number): Record<string, number> {
 }
 
 const SLEEP_IDLES = ['IdleSnooze', 'RestPose'];
-const IDLE_CYCLE_MIN = 8000;
-const IDLE_CYCLE_MAX = 15000;
+// v0.16.2 — bumped up from 8-15s to 18-30s per user feedback ("clippy
+// over doing the animations"). Previous timing produced a near-constant
+// fidget — every 8s Clippy did SOMETHING, plus working-loop, plus cursor-
+// look, plus brain-emitted per-reply animations — too much movement on
+// the periphery of vision. 18-30s feels closer to a real desk pet.
+const IDLE_CYCLE_MIN = 18000;
+const IDLE_CYCLE_MAX = 30000;
 
 // v0.16.1 — Sleep cascade thresholds. Triggered by cursor-pos pump silence —
 // renderer sees no meaningful cursor delta for N ms and steps Clippy down.
@@ -98,7 +103,12 @@ const DOZING_AFTER_MS = 240_000;  // 4 min idle → dozing (locked snooze loop)
 // v0.16.0 — "Clippy is working" animation pool. Cycles continuously while
 // the brain is mid-task so the user sees activity instead of a frozen
 // paperclip during long tool chains (30s olk-direct-send, 60s word_to_pdf).
-const WORKING_ANIMS = ['Processing', 'CheckingSomething', 'GetTechy', 'Writing', 'Searching', 'GetWizardy'];
+// v0.16.2 — trimmed pool. Processing + Thinking + CheckingSomething are
+// visually distinct "I'm thinking" anims. GetTechy/Writing/GetWizardy/
+// Searching are more energetic and were firing every ~2s during ANY tool
+// call, making short replies (5s think) look like a slot-machine. Keep
+// the energetic ones available via playNamed but don't cycle them.
+const WORKING_ANIMS = ['Processing', 'Thinking', 'CheckingSomething'];
 
 // v0.16.1 — minimum gap before the SAME idle animation can play again.
 // Without this, weighted-random can still produce visible repeats (RestPose

@@ -842,15 +842,25 @@ function layer1() {
   // ────────── v0.14.2 hotfix invariants ──────────
   // Auto-spawn browser in BOTH web recipes so the email dispatcher doesn't
   // appear to "not fall back." Per support report 45e25158.
+  //
+  // v0.16.2 — spawnCdpBrowser was moved to its own module (src/main/cdp-spawn.ts)
+  // because the previous `require('../tools')` at runtime crashed in the packed
+  // app.asar (report e8f2fb63). Invariants updated accordingly:
+  //   - skills import from '../cdp-spawn' (static), NOT require('../tools')
+  //   - the function lives in src/main/cdp-spawn.ts and is exported
   const outlookWebSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'skills', 'outlook-web-send.ts'), 'utf8');
   const gmailWebSrc   = fs.readFileSync(path.join(ROOT, 'src', 'main', 'skills', 'gmail-web-send.ts'), 'utf8');
+  const cdpSpawnPath  = path.join(ROOT, 'src', 'main', 'cdp-spawn.ts');
+  const cdpSpawnSrc   = fs.existsSync(cdpSpawnPath) ? fs.readFileSync(cdpSpawnPath, 'utf8') : '';
   const outlookSpawns = /spawnCdpBrowser/.test(outlookWebSrc);
   const gmailSpawns   = /spawnCdpBrowser/.test(gmailWebSrc);
-  const exportSpawn   = /^export async function spawnCdpBrowser/m.test(toolsSrcNow);
-  if (outlookSpawns && gmailSpawns && exportSpawn) {
-    pass('v0.14.2: outlook-web + gmail-web recipes auto-spawn browser on connect failure');
+  const exportSpawn   = /^export async function spawnCdpBrowser/m.test(cdpSpawnSrc);
+  const outlookStatic = /from ['"]\.\.\/cdp-spawn['"]/.test(outlookWebSrc) && !/require\(['"]\.\.\/tools['"]\)/.test(outlookWebSrc);
+  const gmailStatic   = /from ['"]\.\.\/cdp-spawn['"]/.test(gmailWebSrc)   && !/require\(['"]\.\.\/tools['"]\)/.test(gmailWebSrc);
+  if (outlookSpawns && gmailSpawns && exportSpawn && outlookStatic && gmailStatic) {
+    pass('v0.14.2+v0.16.2: web recipes auto-spawn browser via static cdp-spawn import (no runtime require)');
   } else {
-    fail('v0.14.2: auto-spawn', `outlook=${outlookSpawns}, gmail=${gmailSpawns}, exported=${exportSpawn}`);
+    fail('v0.14.2+v0.16.2: auto-spawn', `outlook=${outlookSpawns}, gmail=${gmailSpawns}, exported=${exportSpawn}, outlookStatic=${outlookStatic}, gmailStatic=${gmailStatic}`);
   }
 
   // task_complete Clippy.say suppressed when reply was already spoken

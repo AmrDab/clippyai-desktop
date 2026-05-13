@@ -2336,36 +2336,12 @@ async function killProcess(params: Record<string, unknown>): Promise<ToolResult>
 
 const CDP_PORT = DEFAULT_CDP_PORT;
 
-/** Spawn Edge or Chrome with a remote-debugging port enabled. */
-// v0.14.2 — exported so web recipe skills (outlook_web_send, gmail_web_send)
-// can auto-launch a debug-flagged browser when CDP attach fails, instead of
-// failing fast and making the email dispatcher appear to "not fall back."
-export async function spawnCdpBrowser(): Promise<{ ok: boolean; error?: string }> {
-  // Try Edge first (default Windows browser), fall back to Chrome.
-  const candidates: Array<{ exe: string; args: string[] }> = [
-    {
-      exe: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-      args: [`--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${path.join(os.tmpdir(), 'clippy-cdp-edge')}`],
-    },
-    {
-      exe: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      args: [`--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${path.join(os.tmpdir(), 'clippy-cdp-chrome')}`],
-    },
-  ];
-  for (const c of candidates) {
-    if (!fs.existsSync(c.exe)) continue;
-    try {
-      const child = spawn(c.exe, c.args, { detached: true, stdio: 'ignore', windowsHide: false });
-      child.unref();
-      // Give the browser ~1.5s to bind the debug port
-      await new Promise((r) => setTimeout(r, 1500));
-      return { ok: true };
-    } catch (err) {
-      log.warn('CDP browser spawn failed', serializeErr(err));
-    }
-  }
-  return { ok: false, error: 'Neither Edge nor Chrome was found in their default install paths.' };
-}
+// v0.16.2 — spawnCdpBrowser moved to ./cdp-spawn so the web-send skills can
+// import it statically (no more runtime `require('../tools')` that crashed
+// in the packed app.asar). Re-exported here for backward compat with any
+// other module that already imports it from this path.
+import { spawnCdpBrowser } from './cdp-spawn';
+export { spawnCdpBrowser };
 
 async function cdpConnect(_params: Record<string, unknown>): Promise<ToolResult> {
   const client = getCdpClient();

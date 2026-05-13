@@ -38,7 +38,11 @@ const state: SchedulerState = {
   lastStretchAt: 0,
 };
 
-const STRETCH_INTERVAL_MS = 55 * 60 * 1000;
+// v0.16.2 — was 55 min, bumped to 2hr per user feedback that v0.16.1 was
+// over-animating. A stretch chime every 55 min while the user is heads-down
+// on a task is more annoying than helpful. 2hr lines up with the "Pomodoro
+// long break" cadence — three 25-min focus blocks plus shorter breaks.
+const STRETCH_INTERVAL_MS = 120 * 60 * 1000;
 const TICK_MS = 60 * 1000; // 1 minute resolution is plenty for daily events
 
 let timer: NodeJS.Timeout | null = null;

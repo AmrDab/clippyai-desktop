@@ -14,6 +14,7 @@
  */
 
 import { getCdpClient } from '../cdp-client';
+import { spawnCdpBrowser } from '../cdp-spawn';
 import { createLogger } from '../logger';
 import type { ToolResult } from '../types/tool-result';
 
@@ -66,18 +67,16 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
   if (!client.isConnected()) {
     let connectRes = await client.connect();
     if (!connectRes.ok) {
-      // Lazy import to avoid circular dep with tools.ts.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { spawnCdpBrowser } = require('../tools') as { spawnCdpBrowser?: () => Promise<{ ok: boolean; error?: string }> };
-      if (spawnCdpBrowser) {
-        const spawned = await spawnCdpBrowser();
-        if (spawned.ok) {
-          // Give the browser a moment to bind the debug port
-          await new Promise((r) => setTimeout(r, 1200));
-          connectRes = await client.connect();
-        } else {
-          return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}. Browser auto-launch also failed: ${spawned.error || 'unknown'}` };
-        }
+      // v0.16.2 — previously a runtime CommonJS lookup against ../tools to
+      // dodge the circular dep. That crashed in the packed app (report
+      // e8f2fb63). Static import from cdp-spawn (no cycle) is the fix.
+      const spawned = await spawnCdpBrowser();
+      if (spawned.ok) {
+        // Give the browser a moment to bind the debug port
+        await new Promise((r) => setTimeout(r, 1200));
+        connectRes = await client.connect();
+      } else {
+        return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'}. Browser auto-launch also failed: ${spawned.error || 'unknown'}` };
       }
       if (!connectRes.ok) {
         return { text: `(error:CDP_NOT_AVAILABLE) ${connectRes.error || 'CDP connect failed'} (browser launched but not reachable yet — try again in a second)` };

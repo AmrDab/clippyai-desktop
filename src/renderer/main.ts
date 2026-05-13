@@ -206,7 +206,12 @@ async function init(): Promise<void> {
     // cascade; a passing cursor shouldn't yank him alert without real
     // activity, which already reset mood above).
     if (clippyCtrl.getMood() === 'dozing') return;
-    if (Date.now() - lastLookAt < 8000) return; // throttle to once per 8s
+    // v0.16.2 — bumped from 8s to 25s. Was too eager: Clippy glanced every
+    // 8s any time the cursor was > 80px away, which on a 1440p monitor is
+    // ALWAYS. Combined with idle cycle + working loop this made Clippy
+    // feel jittery. 25s + the cursor-pos pump only firing on actual cursor
+    // delta means a stationary user gets a calm Clippy.
+    if (Date.now() - lastLookAt < 25000) return;
     const dx = pos.mx - pos.cx;
     const dy = pos.my - pos.cy;
     const dist = Math.hypot(dx, dy);
@@ -361,13 +366,23 @@ async function init(): Promise<void> {
         if (mag > MAX_V) { vx = vx / mag * MAX_V; vy = vy / mag * MAX_V; }
         // Only animate inertia if the user actually flicked, not a slow lift.
         if (mag > 4) {
+          // BUG FIX from v0.16.1: previously we added GRAVITY=0.6 per frame to
+          // vy. With FRICTION=0.92, gravity's terminal velocity is
+          // 0.6/(1-0.92) = 7.5 px/frame — well above the 1.0 termination
+          // threshold. Result: ANY drag triggered an infinite vy=7.5 fall
+          // until the main-process window-bounds clamp parked Clippy at the
+          // bottom of the screen. Per support report e8f2fb63 — "when clippy
+          // is moved, he falls to the bottom of the desktop".
+          //
+          // Friction-only inertia: a flick decays naturally, Clippy stays
+          // where you put him. Desktop pets don't need gravity — the window
+          // is alwaysOnTop, no floor metaphor applies.
           const FRICTION = 0.92;
-          const GRAVITY = 0.6; // px/frame² — gentle settling, not heavy
           const step = () => {
             vx *= FRICTION;
-            vy = vy * FRICTION + GRAVITY;
+            vy *= FRICTION;
             window.clippy.moveWindow(Math.round(vx), Math.round(vy));
-            if (Math.abs(vx) < 0.5 && Math.abs(vy) < 1.0) {
+            if (Math.abs(vx) < 0.5 && Math.abs(vy) < 0.5) {
               inertiaRAF = null;
               return;
             }

@@ -1047,7 +1047,12 @@ export class Brain {
         const greeting = `Hi ${name}! Click me to chat — I can help with whatever you're working on.`;
         log.info('Clippy.say', { text: greeting, animation: 'Wave', trigger: 'wake_greeting' });
         this.emit('clippy-speak', { text: greeting, animate: 'Wave' });
-        this.noRepeatUntil = Date.now() + 120_000;
+        // v0.16.2 — was 120_000 (2 min). Per support report e8f2fb63 the user
+        // saw the wake greeting and then 2 min of silence before any real
+        // proactive tip could fire. With the user explicitly sleeping Clippy
+        // ~2 min in, they NEVER saw a proactive tip. 30s post-greeting lets
+        // a real tip land while the user is still actively engaging.
+        this.noRepeatUntil = Date.now() + 30_000;
         return;
       }
 
