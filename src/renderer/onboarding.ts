@@ -75,6 +75,11 @@ btnNext.addEventListener('click', async () => {
         validatedPlan = result.plan;
         licenseInput.value = key;
         showStep(3);
+      } else if ((result as { reason?: string }).reason === 'unreachable') {
+        // v0.17.1 — distinguish "server down" from "bad key". Showing
+        // "Invalid license" when the worker had a 5xx was painful UX
+        // and the actual bug we shipped this hotfix for.
+        licenseError.textContent = "Couldn't reach our validation server. Check your connection and try again — your key isn't necessarily wrong.";
       } else {
         licenseError.textContent = 'Invalid license key. Please check and try again.';
       }

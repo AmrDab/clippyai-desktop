@@ -104,9 +104,16 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Window drag movement — handled in window.ts with bounds checking
   // (removed duplicate handler here that lacked bounds checks)
 
-  // License validation
+  // License validation. Returns `{valid, plan, reason?}` to keep the
+  // renderer's existing shape working; `reason: 'unreachable'` lets
+  // onboarding show "Couldn't reach validation server — check your
+  // internet" instead of "Invalid license" when the worker is down.
   ipcMain.handle('validate-license', async (_event, key: string) => {
-    return validateLicenseKey(key);
+    const result = await validateLicenseKey(key);
+    if (result.state === 'valid') {
+      return { valid: true, plan: result.plan };
+    }
+    return { valid: false, plan: '', reason: result.state };
   });
 
   // Save license data from onboarding

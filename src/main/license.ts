@@ -82,21 +82,19 @@ export function isFirstRun(): boolean {
 
 const REVALIDATION_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
+/**
+ * BUG FIX v0.17.1 — previously this function returned false when the
+ * stored key was more than 24 hours stale, even though the key was
+ * still in the store. src/main/index.ts read that as "no license,
+ * show onboarding" and never even tried to revalidate. Every cold
+ * start more than a day apart sent the user back to re-enter their
+ * key. The intent of isLicensed() was always "do we have a stored
+ * key to work with" — the freshness check belongs in
+ * revalidateIfNeeded(), and the cold-start flow in index.ts already
+ * calls that after a true-return.
+ */
 export function isLicensed(): boolean {
-  const key = store.get('licenseKey');
-  if (!key) return false;
-
-  // Validated recently? Trust it.
-  if (store.get('validated')) {
-    const lastCheck = store.get('lastValidated');
-    if (lastCheck > 0 && Date.now() - lastCheck < REVALIDATION_INTERVAL) return true;
-  }
-
-  // Within grace period? (API was unreachable but had a valid key before)
-  const graceExpiry = store.get('graceExpiry');
-  if (graceExpiry > 0 && Date.now() < graceExpiry) return true;
-
-  return false;
+  return !!store.get('licenseKey');
 }
 
 // ── Save / clear ─────────────────────────────────────────────────────
@@ -125,7 +123,27 @@ export function setGracePeriod(): void {
 
 // ── API validation ───────────────────────────────────────────────────
 
-export async function validateLicenseKey(key: string): Promise<{ valid: boolean; plan: string }> {
+/**
+ * Result of an API validation call.
+ *   - 'valid'       — server explicitly said key is good
+ *   - 'invalid'     — server explicitly said key is bad (revoked, expired,
+ *                     wrong-format). Only this state should clear the key.
+ *   - 'unreachable' — anything else: network error, HTTP 5xx, malformed
+ *                     response, timeout. Caller treats this as "trust the
+ *                     stored state, grant grace" — NOT "user's key is bad".
+ *
+ * Why the discriminated state: pre-v0.17.1 the function returned
+ * `{valid: boolean}` and any non-2xx or parse-error collapsed to
+ * `{valid: false}`. revalidateIfNeeded() then cleared the license on
+ * the first 5xx from our worker — one transient incident permanently
+ * kicked the user back to onboarding.
+ */
+export interface ValidationResult {
+  state: 'valid' | 'invalid' | 'unreachable';
+  plan: string;
+}
+
+export async function validateLicenseKey(key: string): Promise<ValidationResult> {
   return new Promise((resolve) => {
     const req = net.request({
       url: `${API_BASE}/validate`,
@@ -133,33 +151,55 @@ export async function validateLicenseKey(key: string): Promise<{ valid: boolean;
     });
     req.setHeader('Content-Type', 'application/json');
 
+    const grantGraceIfPossible = (): ValidationResult => {
+      // API unreachable / 5xx / parse failure — only grant grace if a
+      // key already exists in the store. Otherwise the caller is
+      // validating a freshly-typed key and we have no fallback state.
+      const existingKey = store.get('licenseKey');
+      if (existingKey) {
+        setGracePeriod();
+        return { state: 'unreachable', plan: store.get('plan') || 'grace' };
+      }
+      return { state: 'unreachable', plan: '' };
+    };
+
     req.on('response', (response) => {
       let data = '';
       response.on('data', (chunk) => { data += chunk.toString(); });
       response.on('end', () => {
+        // HTTP 5xx → server is sick. Don't trust the body, don't revoke.
+        if (response.statusCode && response.statusCode >= 500) {
+          resolve(grantGraceIfPossible());
+          return;
+        }
         try {
-          const result = JSON.parse(data) as { valid: boolean; plan: string };
-          if (result.valid) {
+          const parsed = JSON.parse(data) as { valid?: boolean; plan?: string };
+          if (parsed && parsed.valid === true) {
             store.set('validated', true);
             store.set('lastValidated', Date.now());
-            if (result.plan) store.set('plan', result.plan);
+            if (parsed.plan) store.set('plan', parsed.plan);
+            resolve({ state: 'valid', plan: parsed.plan || store.get('plan') });
+          } else if (parsed && parsed.valid === false) {
+            // Server explicitly rejected — this is the ONLY path that
+            // clears the license in revalidateIfNeeded(). 4xx with a
+            // proper {valid:false} body counts; HTML error pages don't.
+            resolve({ state: 'invalid', plan: '' });
+          } else {
+            // Body parsed but didn't have `valid` boolean — malformed
+            // response, treat as unreachable so we don't revoke on a
+            // server-side bug we don't control.
+            resolve(grantGraceIfPossible());
           }
-          resolve(result);
         } catch {
-          resolve({ valid: false, plan: '' });
+          // Body wasn't JSON (HTML 404 page, gateway error page, empty).
+          // Don't revoke — server's having a bad day.
+          resolve(grantGraceIfPossible());
         }
       });
     });
 
     req.on('error', () => {
-      // API unreachable — only grant grace if a key already exists
-      const existingKey = store.get('licenseKey');
-      if (existingKey) {
-        setGracePeriod();
-        resolve({ valid: true, plan: store.get('plan') || 'grace' });
-      } else {
-        resolve({ valid: false, plan: '' });
-      }
+      resolve(grantGraceIfPossible());
     });
 
     req.write(JSON.stringify({ key }));
@@ -169,7 +209,17 @@ export async function validateLicenseKey(key: string): Promise<{ valid: boolean;
 
 /**
  * Revalidate the stored key with the API. Call at app startup.
- * Returns true if still valid, false if key was revoked/expired.
+ *
+ * Returns true to mean "let the user keep using the app". The only
+ * path that clears the stored license is an EXPLICIT 'invalid' state
+ * from the server — i.e. the worker said {valid: false}. Transient
+ * failures ('unreachable') keep the license in place and the user
+ * keeps working under grace.
+ *
+ * Pre-v0.17.1 this cleared the license on any non-valid result,
+ * including server 5xx and malformed responses. Combined with the
+ * isLicensed() 24h staleness bug, that meant either a worker hiccup
+ * OR a >24h gap between launches kicked the user back to onboarding.
  */
 export async function revalidateIfNeeded(): Promise<boolean> {
   const key = store.get('licenseKey');
@@ -181,9 +231,14 @@ export async function revalidateIfNeeded(): Promise<boolean> {
   }
 
   const result = await validateLicenseKey(key);
-  if (result.valid) return true;
-
-  // Key is invalid — clear it so onboarding shows
+  if (result.state === 'valid') return true;
+  if (result.state === 'unreachable') {
+    // Grace already set inside validateLicenseKey via setGracePeriod().
+    // Let the user keep going; we'll retry on the next launch.
+    return true;
+  }
+  // result.state === 'invalid' — server explicitly revoked. Clear so
+  // onboarding shows and the user gets a chance to enter a fresh key.
   clearLicense();
   return false;
 }
