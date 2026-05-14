@@ -155,6 +155,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       speechVolume: licenseStore.get('speechVolume', 0.9),
       // v0.17.0 — voice input (offline whisper.cpp)
       voiceEnabled: licenseStore.get('voiceEnabled', true),
+      // v0.17.2 — wake-word preference (UI works now, runtime stub until
+      // we ship the on-device wake-word model)
+      wakeWordEnabled: licenseStore.get('wakeWordEnabled', false),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
     };
@@ -217,6 +220,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (settings.voiceEnabled !== undefined) {
       licenseStore.set('voiceEnabled', Boolean(settings.voiceEnabled));
       mainWindow.webContents.send('voice-toggle', Boolean(settings.voiceEnabled));
+    }
+    // v0.17.2 — wake-word preference. Persisted but not yet honored at
+    // runtime; saving here so when the on-device wake-word model ships,
+    // existing-user preferences carry over without a fresh prompt.
+    if (settings.wakeWordEnabled !== undefined) {
+      licenseStore.set('wakeWordEnabled', Boolean(settings.wakeWordEnabled));
     }
     return true;
   });

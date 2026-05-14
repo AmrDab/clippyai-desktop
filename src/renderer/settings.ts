@@ -89,6 +89,19 @@ async function loadConfig(): Promise<void> {
       window.clippy.updateSettings({ voiceEnabled: voiceEl.checked });
     });
   }
+  // v0.17.2 — wake-word preference. Pre-v0.17.2 the toggle was `disabled`
+  // and stuck off, which made it look broken. Now it's interactive — the
+  // preference is persisted to licenseStore, and once the on-device
+  // wake-word model ships in a later patch, it'll start respecting the
+  // saved value automatically. Honest "it works, just not implemented
+  // yet" beats "looks broken".
+  const wakeEl = document.getElementById('setting-wake-word') as HTMLInputElement | null;
+  if (wakeEl) {
+    wakeEl.checked = config.wakeWordEnabled === true; // default off
+    wakeEl.addEventListener('change', () => {
+      window.clippy.updateSettings({ wakeWordEnabled: wakeEl.checked });
+    });
+  }
   // Probe STT availability and surface a status banner. If whisper-cli
   // failed to install (rare but possible if user antivirus quarantined
   // it), users need to see why voice isn't working before they file a
@@ -241,16 +254,35 @@ if (fireTipBtn) {
   fireTipBtn.addEventListener('click', async () => {
     fireTipBtn.disabled = true;
     if (fireTipStatus) fireTipStatus.textContent = 'Triggering…';
+    // v0.17.2 — defensive wall-clock unstick. The previous code awaited
+    // window.clippy.fireProactiveTip and only re-enabled the button + reset
+    // status text inside a post-await setTimeout. If the IPC handler ever
+    // hung (main-side exception, brain stuck mid-task), the await never
+    // resolved, the setTimeout never scheduled, and the button stayed
+    // "Triggering…" forever — exact symptom in the user's report. Wall-
+    // clock timer runs independently of the await so the UI is never
+    // stranded regardless of what main does.
+    let settled = false;
+    const finishUi = (text: string) => {
+      if (settled) return;
+      settled = true;
+      if (fireTipStatus) fireTipStatus.textContent = text;
+      setTimeout(() => {
+        fireTipBtn.disabled = false;
+        if (fireTipStatus && fireTipStatus.textContent === text) fireTipStatus.textContent = '';
+      }, 5000);
+    };
+    const watchdog = setTimeout(() => finishUi('No response from background — try again.'), 15000);
     try {
       const res = await window.clippy.fireProactiveTip?.();
-      if (fireTipStatus) fireTipStatus.textContent = (res && (res as { ok?: boolean }).ok) ? 'Triggered — check the bubble' : 'No tip fired (model returned silent, or in cooldown)';
+      clearTimeout(watchdog);
+      finishUi((res && (res as { ok?: boolean }).ok)
+        ? 'Triggered — check the bubble'
+        : 'No tip fired (model returned silent, or in cooldown).');
     } catch (err) {
-      if (fireTipStatus) fireTipStatus.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
+      clearTimeout(watchdog);
+      finishUi(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
-    setTimeout(() => {
-      fireTipBtn.disabled = false;
-      if (fireTipStatus) fireTipStatus.textContent = '';
-    }, 5000);
   });
 }
 
@@ -346,27 +378,49 @@ for (const [id, url] of [
   }
 }
 
-// Check for updates — wire both Tools tab and About tab buttons
+// Check for updates — wire both Tools tab and About tab buttons.
+//
+// v0.17.2 — Two fixes for "Clippy verbally says 'update available' but
+// the menu says 'couldn't reach update server'":
+//   1. Cancel the pending fallback timeout whenever ANY result event
+//      fires (update-available / update-not-available / update-failed).
+//      Before this, the 30s "couldn't reach" fallback would clobber a
+//      successful "v0.17.x available!" state if the user re-clicked the
+//      search button before the timer expired.
+//   2. The fallback now refuses to overwrite a status that already
+//      contains "available", "ready", "Downloading", or "latest" — even
+//      if there's a stale timer somehow still scheduled.
+// Tracked as module-local so both updateButton instances share state
+// and the event listeners below can clear timers from either button.
+const _updateTimeouts: number[] = [];
+function clearAllUpdateTimeouts(): void {
+  while (_updateTimeouts.length) {
+    const id = _updateTimeouts.pop();
+    if (id !== undefined) clearTimeout(id);
+  }
+}
+function statusLooksLikeResult(text: string | null): boolean {
+  if (!text) return false;
+  return /available|ready|Downloading|latest/i.test(text);
+}
 function wireUpdateButton(btnId: string, statusId: string): void {
   const btn = document.getElementById(btnId) as HTMLButtonElement | null;
   const status = document.getElementById(statusId);
   if (!btn) return;
   btn.addEventListener('click', async () => {
+    // Any previous in-flight fallback could land on top of a fresh
+    // search — cancel them up front.
+    clearAllUpdateTimeouts();
     if (status) status.textContent = 'Searching for updates...';
     btn.disabled = true;
     await window.clippy.checkForUpdates();
-    // OLD: 5s timeout falsely declared "latest version" before the async
-    // GitHub check completed. Customers on slow networks saw "latest" and
-    // closed the dialog before the real result arrived.
-    // NEW: 30s timeout with honest "couldn't check" fallback. The real
-    // result (update-available or update-not-available) fires via IPC
-    // and overrides this text before the timeout in most cases.
-    setTimeout(() => {
+    const timeoutId = window.setTimeout(() => {
       btn.disabled = false;
-      if (status && status.textContent === 'Searching for updates...') {
+      if (status && !statusLooksLikeResult(status.textContent)) {
         status.textContent = 'Couldn\'t reach the update server — try again later.';
       }
     }, 30000);
+    _updateTimeouts.push(timeoutId);
   });
 }
 wireUpdateButton('btn-check-update', 'update-status');
@@ -382,6 +436,7 @@ function setAllUpdateStatus(html: string): void {
 
 // Server confirmed: no newer version exists. Only NOW can we say "latest."
 window.clippy.onUpdateNotAvailable(() => {
+  clearAllUpdateTimeouts();
   setAllUpdateStatus('You\'re on the latest version!');
   // Re-enable the buttons
   for (const id of ['btn-check-update', 'btn-check-update-about']) {
@@ -391,7 +446,12 @@ window.clippy.onUpdateNotAvailable(() => {
 });
 
 window.clippy.onUpdateAvailable((version: string) => {
+  clearAllUpdateTimeouts();
   setAllUpdateStatus(`<strong>v${version} available!</strong> <button class="btn-dl-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`);
+  for (const id of ['btn-check-update', 'btn-check-update-about']) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (btn) btn.disabled = false;
+  }
   document.querySelectorAll('.btn-dl-update').forEach((btn) => {
     btn.addEventListener('click', () => {
       setAllUpdateStatus('Downloading...');
@@ -413,6 +473,7 @@ window.clippy.onUpdateReady((version: string) => {
 // message — even when the actual error was already known. Now we surface the
 // real reason immediately and re-enable the button.
 window.clippy.onUpdateFailed(({ reason, manualUrl }) => {
+  clearAllUpdateTimeouts();
   const friendly = reason === 'previous-install-failed'
     ? `Auto-update keeps failing on this machine. <a href="${manualUrl}" target="_blank">Download manually</a> — that fixes it permanently.`
     : `Couldn't reach the update server (${reason}). <a href="${manualUrl}" target="_blank">Manual download</a>.`;
@@ -627,15 +688,17 @@ if (mcpRefreshBtn) mcpRefreshBtn.addEventListener('click', async () => {
     (mcpRefreshBtn as HTMLButtonElement).disabled = false;
   }
 });
-const mcpChromeLink = document.getElementById('link-mcp-chrome');
-if (mcpChromeLink) mcpChromeLink.addEventListener('click', (e) => {
+// v0.17.2 — replaced the bare github.com/hangwin/mcp-chrome links with
+// our hosted install page at clippyai.app/extension. The user reported
+// that pointing prospects at a third-party GitHub repo felt
+// unprofessional and intimidating — terminal commands, dev-mode flipping,
+// and an open-source repo logo all in the same flow. The hosted page on
+// clippyai-web is a guided walkthrough with our branding and an inline
+// "What this extension does + why it's safe" section.
+const mcpChromeInstallLink = document.getElementById('link-mcp-chrome-install');
+if (mcpChromeInstallLink) mcpChromeInstallLink.addEventListener('click', (e) => {
   e.preventDefault();
-  window.clippy.openExternalUrl('https://github.com/hangwin/mcp-chrome');
-});
-const mcpChromeReleasesLink = document.getElementById('link-mcp-chrome-releases');
-if (mcpChromeReleasesLink) mcpChromeReleasesLink.addEventListener('click', (e) => {
-  e.preventDefault();
-  window.clippy.openExternalUrl('https://github.com/hangwin/mcp-chrome/releases');
+  window.clippy.openExternalUrl('https://clippyai.app/extension');
 });
 // Lazy-load: probe when user opens the Web tab.
 let webLoadedOnce = false;

@@ -54,19 +54,25 @@ export class BubbleController {
     this.micLevel = this.micBtn ? this.micBtn.querySelector('.mic-level') : null;
     this.onSend = onSend;
 
-    // Wire mic button (push-to-talk semantics)
+    // Wire mic button — v0.17.2 changed from hold-to-talk to click-toggle
+    // semantics per user feedback. Click once → start recording. Click
+    // again → stop + transcribe. ESC → cancel without transcribing.
+    // The previous mousedown/mouseup-on-document approach felt finicky
+    // (mouseup outside the button window was inconsistent) and required
+    // the user to keep a button pressed for what's often a 5-15s clip.
     if (this.micBtn) {
-      this.micBtn.addEventListener('mousedown', (e) => {
+      this.micBtn.addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();
-        void this.startVoice();
+        if (this.isRecording()) {
+          void this.stopVoice();
+        } else if (this.recorder?.getState() === 'encoding') {
+          // mid-transcription — no-op, button is in busy state anyway
+          return;
+        } else {
+          void this.startVoice();
+        }
       });
-      // Release ANYWHERE ends recording. Listen on document since mouseup
-      // outside the button is the common "drag-release" pattern.
-      const releaseHandler = () => {
-        if (this.isRecording()) void this.stopVoice();
-      };
-      document.addEventListener('mouseup', releaseHandler);
-      // ESC while recording → cancel without transcribing
+      // ESC while recording → cancel (different from "stop": doesn't transcribe)
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && this.isRecording()) {
           e.preventDefault();

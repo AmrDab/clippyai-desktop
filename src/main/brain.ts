@@ -564,9 +564,38 @@ export class Brain {
         activeProcessAtStart,
         task_id,
       });
-      const initialText = screenContextOk
+      // v0.17.2 — inject installed-skill awareness directly into the
+      // user-turn preamble so the model SEES the skills it has.
+      // Previously the brain only sent `installed_skills` server-side
+      // (where the worker should expose them as tools), but the model
+      // got no contextual heads-up — it would deny having capabilities
+      // it actually had and randomly list_files trying to find evidence
+      // of itself. Per support report f1acc15e: user installed a
+      // claw-boston-email skill, Clippy then claimed it didn't have an
+      // email address. This single-line preamble fixes that class of
+      // bug across every skill.
+      let skillsPreamble = '';
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const reg = require('./skill-registry') as typeof import('./skill-registry');
+        const skills = reg.getInstalledSkillsForPrompt();
+        if (Array.isArray(skills) && skills.length > 0) {
+          // Compact form: "name (purpose) · name (purpose)". Keep this
+          // short — the model already gets the full tool definitions
+          // from the server's tool list; this is just a "you have these,
+          // don't deny it" reminder.
+          const summary = skills.map((s: { name?: string; slug?: string; description?: string; summary?: string }) => {
+            const n = s.name || s.slug || 'unnamed';
+            const d = (s.summary || s.description || '').trim().slice(0, 80);
+            return d ? `${n} — ${d}` : n;
+          }).join('; ');
+          skillsPreamble = `\n\n[You have these installed skills from ClawHub: ${summary}. Use them when relevant — the corresponding tool functions are already in your tool list.]`;
+        }
+      } catch { /* registry not ready — first-boot path, fine */ }
+
+      const initialText = (screenContextOk
         ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
-        : text;
+        : text) + skillsPreamble;
 
       // Working contents for this turn's function-call loop
       const contents: Content[] = [

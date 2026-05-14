@@ -11,9 +11,11 @@
     <div id="bubble-text"></div>
     <div id="bubble-input-area" class="hidden">
       <input id="bubble-input" type="text" placeholder="Type to Clippy..." />
-      <!-- v0.17.0 — voice input. Click to push-to-talk; release click or
-           press Esc to cancel. Hidden when voiceEnabled is false. -->
-      <button id="bubble-mic" type="button" title="Hold to speak (Ctrl+Shift+Space)" aria-label="Voice input">
+      <!-- v0.17.2 — click-to-toggle voice input. Click to start, click
+           again to stop & transcribe, Esc to cancel. (Pre-v0.17.2 was
+           hold-to-talk, which felt finicky for clips longer than a few
+           seconds.) Hidden when voiceEnabled is false. -->
+      <button id="bubble-mic" type="button" title="Click to speak (Ctrl+Shift+Space) · Esc cancels" aria-label="Voice input">
         <span class="mic-icon" aria-hidden="true">🎤</span>
         <span class="mic-level" aria-hidden="true"></span>
       </button>
