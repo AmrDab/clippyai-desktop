@@ -92,6 +92,12 @@ interface Window {
     /** v0.16.0 — task-in-progress animation loop signals */
     onWorkingStart?: (cb: () => void) => void;
     onWorkingStop?: (cb: () => void) => void;
+    /** v0.17.0 — Voice input (offline whisper.cpp transcription) */
+    transcribeAudio?: (wav: Uint8Array, initialPrompt?: string) => Promise<{ ok: boolean; text?: string; error?: string; elapsedMs?: number }>;
+    sttStatus?: () => Promise<{ ready: boolean; reason?: string }>;
+    onVoiceStart?: (cb: () => void) => void;
+    onVoiceStop?: (cb: () => void) => void;
+    onVoiceToggle?: (cb: (enabled: boolean) => void) => void;
     /** v0.16.0 — cursor position pump for liveliness (cursor-look + play-tag) */
     onCursorPos?: (cb: (pos: { cx: number; cy: number; mx: number; my: number }) => void) => void;
     /** v0.16.0 — play-tag mode toggle */

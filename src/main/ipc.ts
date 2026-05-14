@@ -146,6 +146,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       // v0.16.0 — pitch + volume
       speechPitch: licenseStore.get('speechPitch', 1.0),
       speechVolume: licenseStore.get('speechVolume', 0.9),
+      // v0.17.0 — voice input (offline whisper.cpp)
+      voiceEnabled: licenseStore.get('voiceEnabled', true),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
     };
@@ -203,6 +205,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const vol = Math.max(0, Math.min(1, Number(settings.speechVolume) || 0.9));
       licenseStore.set('speechVolume', vol);
       mainWindow.webContents.send('speech-volume', vol);
+    }
+    // v0.17.0 — voice input on/off
+    if (settings.voiceEnabled !== undefined) {
+      licenseStore.set('voiceEnabled', Boolean(settings.voiceEnabled));
+      mainWindow.webContents.send('voice-toggle', Boolean(settings.voiceEnabled));
     }
     return true;
   });
@@ -399,6 +406,39 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch (err) {
       log.warn('active-model failed', serializeErr(err));
       return null;
+    }
+  });
+
+  // v0.17.0 — Voice input. Renderer captures audio via getUserMedia,
+  // encodes 16 kHz mono PCM WAV, sends the Uint8Array over IPC. Main
+  // process spawns bundled whisper-cli, returns the transcript. We do
+  // NOT auto-route to handleUserMessage from here — the renderer gets
+  // the transcript back so it can show it in the bubble first, let the
+  // user edit/cancel, then explicitly send. That mirrors Siri/Whisper
+  // dictation patterns and avoids stuck-recording → unwanted-action.
+  ipcMain.handle('transcribe-audio', async (_event, wavBytes: unknown, initialPrompt?: unknown) => {
+    try {
+      const stt = await import('./stt');
+      // wavBytes comes over IPC as either Uint8Array (typed array) or a
+      // plain object {0: byte, 1: byte, ...} when serialized through
+      // structured clone — coerce to Buffer for safety.
+      const buf = Buffer.isBuffer(wavBytes)
+        ? wavBytes
+        : Buffer.from(wavBytes as ArrayBufferLike);
+      const prompt = typeof initialPrompt === 'string' ? initialPrompt : undefined;
+      return await stt.transcribeWav(buf, { initialPrompt: prompt, timeoutMs: 30_000 });
+    } catch (err) {
+      log.warn('transcribe-audio failed', serializeErr(err));
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('stt-status', async () => {
+    try {
+      const stt = await import('./stt');
+      return stt.isSttReady();
+    } catch {
+      return { ready: false, reason: 'stt module load failed' };
     }
   });
 

@@ -284,6 +284,72 @@ body.clippy-window {
     inset 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
+/* v0.17.0 — voice input mic button (hold-to-talk). The .mic-level span
+   inside it is what pulses with mic volume; CSS var --lvl is updated
+   from JS each ~150ms in src/renderer/recorder.ts. */
+#bubble-mic {
+  position: relative;
+  background: rgba(255, 255, 255, 0.08);
+  color: #2C3E50;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-right: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.12s ease, transform 0.08s ease;
+  -webkit-app-region: no-drag;
+  overflow: hidden;
+}
+#bubble-mic:hover { background: rgba(0, 0, 0, 0.06); }
+#bubble-mic:active { transform: translateY(0.5px); }
+#bubble-mic .mic-icon { position: relative; z-index: 2; }
+#bubble-mic .mic-level {
+  /* Radial pulse that scales with mic RMS. Sits behind the icon. */
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: radial-gradient(circle at center, rgba(244, 67, 54, 0.55) 0%, rgba(244, 67, 54, 0.0) 70%);
+  transform: scale(var(--lvl, 0));
+  transition: transform 0.12s ease-out;
+  pointer-events: none;
+  z-index: 1;
+}
+#bubble-mic.recording {
+  background: rgba(244, 67, 54, 0.15);
+  border-color: rgba(244, 67, 54, 0.45);
+  animation: mic-record-pulse 1.4s ease-in-out infinite;
+}
+#bubble-mic.encoding {
+  background: rgba(255, 193, 7, 0.18);
+  border-color: rgba(255, 193, 7, 0.55);
+}
+#bubble-mic.encoding .mic-icon::after {
+  /* Tiny spinner-replacement: three pulsing dots inside the button while
+     whisper-cli is transcribing. Avoids dragging in a spinner asset. */
+  content: '…';
+  margin-left: 4px;
+  animation: mic-dots 0.9s steps(4, end) infinite;
+}
+@keyframes mic-record-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.55); }
+  50%      { box-shadow: 0 0 0 6px rgba(244, 67, 54, 0.0); }
+}
+@keyframes mic-dots {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-color-scheme: dark) {
+  #bubble-mic {
+    background: rgba(255, 255, 255, 0.05);
+    color: #e2e8f0;
+    border-color: rgba(255, 255, 255, 0.10);
+  }
+  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); }
+}
+
 @media (prefers-color-scheme: dark) {
   /* Dark-mode path — defensive even though Clippy's window has no
      system theme, in case Electron honors it on some setups. Kept

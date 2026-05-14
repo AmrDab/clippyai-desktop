@@ -10,7 +10,7 @@
  * No separate process for the common path, no HTTP, no port 3847.
  */
 
-import { execFile, ChildProcess, spawn } from 'child_process';
+import { execFile, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';

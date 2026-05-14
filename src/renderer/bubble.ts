@@ -1,3 +1,5 @@
+import { Recorder } from './recorder';
+
 // v0.12.3 — auto-hide is now configurable via Settings.bubbleAutoHideMs.
 // 0 = "Manual" (never auto-hide). Default 30000 (was 20000 — 20s stole long
 // replies mid-read per UX audit finding #4).
@@ -20,6 +22,8 @@ export class BubbleController {
   private inputArea: HTMLElement;
   private input: HTMLInputElement;
   private sendBtn: HTMLButtonElement;
+  private micBtn: HTMLButtonElement | null;
+  private micLevel: HTMLElement | null;
   private onSend: (text: string) => void;
   private typeTimer: number | null = null;
   private hideTimer: number | null = null;
@@ -28,6 +32,17 @@ export class BubbleController {
   // v0.12.3 — runtime-configurable auto-hide. Set via setAutoHideMs() from
   // settings IPC. 0 = manual / never auto-hide.
   private autoHideMs: number = DEFAULT_AUTO_HIDE_MS;
+  // v0.17.0 — voice input. Recorder lives here so the same instance
+  // handles both the mic button (hold-to-talk) and global hotkey paths.
+  // Created lazily on first voice attempt to avoid asking for mic
+  // permission until the user actually wants voice.
+  private recorder: Recorder | null = null;
+  private voiceEnabled: boolean = true;
+  // Renderer-local hook for the Hearing_1 / Idle1_1 animations while
+  // recording. Set via setAnimCallback() from main.ts where the
+  // ClippyController lives. CustomEvent would work too but a direct
+  // callback is one less indirection and easier to type.
+  private animCb: ((name: string) => void) | null = null;
 
   constructor(onSend: (text: string) => void) {
     this.bubble = document.getElementById('bubble')!;
@@ -35,7 +50,30 @@ export class BubbleController {
     this.inputArea = document.getElementById('bubble-input-area')!;
     this.input = document.getElementById('bubble-input') as HTMLInputElement;
     this.sendBtn = document.getElementById('bubble-send') as HTMLButtonElement;
+    this.micBtn = document.getElementById('bubble-mic') as HTMLButtonElement | null;
+    this.micLevel = this.micBtn ? this.micBtn.querySelector('.mic-level') : null;
     this.onSend = onSend;
+
+    // Wire mic button (push-to-talk semantics)
+    if (this.micBtn) {
+      this.micBtn.addEventListener('mousedown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        void this.startVoice();
+      });
+      // Release ANYWHERE ends recording. Listen on document since mouseup
+      // outside the button is the common "drag-release" pattern.
+      const releaseHandler = () => {
+        if (this.isRecording()) void this.stopVoice();
+      };
+      document.addEventListener('mouseup', releaseHandler);
+      // ESC while recording → cancel without transcribing
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && this.isRecording()) {
+          e.preventDefault();
+          this.cancelVoice();
+        }
+      });
+    }
 
     // Click bubble text → toggle between history and input
     this.bubbleText.addEventListener('click', (e) => {
@@ -233,5 +271,122 @@ export class BubbleController {
       clearInterval(this.typeTimer);
       this.typeTimer = null;
     }
+  }
+
+  // ── v0.17.0 — Voice input (push-to-talk) ─────────────────────────
+
+  /** Public so the global hotkey can call it from main.ts. */
+  isRecording(): boolean {
+    return this.recorder?.getState() === 'recording' || this.recorder?.getState() === 'requesting';
+  }
+
+  setVoiceEnabled(enabled: boolean): void {
+    this.voiceEnabled = enabled;
+    if (this.micBtn) this.micBtn.style.display = enabled ? '' : 'none';
+    if (!enabled && this.recorder) this.recorder.cancel();
+  }
+
+  /** main.ts (renderer) calls this to register a hook that drives the
+   *  Clippy sprite animation while recording. */
+  setAnimCallback(cb: (name: string) => void): void {
+    this.animCb = cb;
+  }
+
+  private requestAnim(name: string): void {
+    if (this.animCb) this.animCb(name);
+  }
+
+  /** Begin recording from the mic. Idempotent — calling while already
+   *  recording is a no-op (avoids double-fire on hotkey+button overlap). */
+  async startVoice(): Promise<void> {
+    if (!this.voiceEnabled) return;
+    if (this.isRecording()) return;
+    // Make sure the bubble + input area are visible so the user can see
+    // the level meter + the transcribed text when it lands.
+    this.show();
+    if (this.inputArea.classList.contains('hidden')) this.toggleInput();
+
+    if (!this.recorder) {
+      this.recorder = new Recorder({
+        onLevel: (level) => {
+          if (this.micLevel) {
+            // Scale 0..1 → CSS variable; transform: scale uses it.
+            this.micLevel.style.setProperty('--lvl', String(0.4 + level * 1.4));
+          }
+        },
+        onStateChange: (s) => {
+          if (this.micBtn) {
+            this.micBtn.classList.toggle('recording', s === 'recording');
+            this.micBtn.classList.toggle('encoding', s === 'encoding');
+          }
+          // Tell the agent's animation: play Hearing_1 while recording.
+          if (s === 'recording') this.requestAnim('Hearing_1');
+          else if (s === 'idle') this.requestAnim('Idle1_1');
+        },
+        onResult: (wav, durationMs) => {
+          // Show "transcribing..." placeholder while whisper-cli runs
+          this.input.placeholder = 'Transcribing...';
+          this.input.disabled = true;
+          void window.clippy.transcribeAudio?.(wav)
+            .then((res) => {
+              this.input.disabled = false;
+              this.input.placeholder = 'Type to Clippy...';
+              if (!res || !res.ok) {
+                this.speakError(`Voice failed: ${(res && res.error) || 'unknown error'}`);
+                return;
+              }
+              const text = (res.text || '').trim();
+              if (!text) {
+                this.speakError("I didn't catch that.");
+                return;
+              }
+              // Drop transcript into the input field. User reviews +
+              // presses Enter / clicks send to confirm. This mirrors
+              // Siri/Whisper dictation patterns and prevents accidental
+              // actions from mid-transcript noise.
+              this.input.value = text;
+              this.input.focus();
+              // Auto-submit if recording was clearly intentional (>= 600ms
+              // and result looks like a real phrase, not a fragment).
+              if (durationMs >= 600 && text.length >= 4 && /\s/.test(text)) {
+                // Tiny delay so the user sees the transcript flash before submit
+                setTimeout(() => this.submit(), 350);
+              }
+            })
+            .catch((err) => {
+              this.input.disabled = false;
+              this.input.placeholder = 'Type to Clippy...';
+              this.speakError(`Voice failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+        },
+        onError: (msg) => {
+          this.speakError(msg);
+        },
+      });
+    }
+
+    try {
+      await this.recorder.start();
+    } catch {
+      // Recorder already emitted onError; nothing more to do
+    }
+  }
+
+  async stopVoice(): Promise<void> {
+    if (!this.recorder) return;
+    if (this.recorder.getState() === 'recording') {
+      await this.recorder.stop();
+    }
+  }
+
+  cancelVoice(): void {
+    if (!this.recorder) return;
+    this.recorder.cancel();
+    this.input.placeholder = 'Type to Clippy...';
+    this.input.disabled = false;
+    if (this.micBtn) {
+      this.micBtn.classList.remove('recording', 'encoding');
+    }
+    this.requestAnim('Idle1_1');
   }
 }

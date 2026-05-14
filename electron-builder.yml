@@ -2,7 +2,7 @@ appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
 # Shown in the "File description" field of Properties → Details
-buildVersion: 0.16.2
+buildVersion: 0.17.0
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -72,6 +72,20 @@ extraResources:
     to: clawdcursor-guides
     filter:
       - "*.json"
+  # v0.17.0 — whisper.cpp + quantized base.en model for offline STT.
+  # Total ~60 MB (~57 MB model, ~2.3 MB binaries). Used by src/main/stt.ts
+  # which spawns whisper-cli.exe with the bundled model and a WAV file
+  # recorded in the renderer via Web Audio API. Lives at runtime under
+  # process.resourcesPath/whisper/.
+  - from: vendor/whisper/bin
+    to: whisper
+    filter:
+      - "*.exe"
+      - "*.dll"
+  - from: vendor/whisper/models
+    to: whisper/models
+    filter:
+      - "*.bin"
   # brain/*.md removed from extraResources — GUIDANCE prompt assembly was
   # deleted in v0.8.0 when we moved identity/prompts server-side. The .md
   # files remain in the repo as documentation but are NOT bundled anymore.

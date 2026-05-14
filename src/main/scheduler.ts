@@ -16,8 +16,8 @@ const log = createLogger('Scheduler');
  *
  * Events:
  *   - 09:00 daily, app awake → morning greeting (Wave, "Good morning!")
- *   - Every 55 min during 9-17 weekdays, app awake → stretch reminder
- *   - 17:30 daily, app awake → wrap-up tip
+ *   - Every 2 hr during 9-17 weekdays, app awake → stretch reminder
+ *   - 17:30 weekdays, app awake → wrap-up tip
  *
  * Once-per-day gating: each event tracks its last-fired YYYY-MM-DD locally.
  * If the app is closed when an event would have fired, it does NOT fire on
@@ -104,7 +104,7 @@ function tick(win: BrowserWindow, brain: Brain): void {
     return;
   }
 
-  // ── Stretch break: every 55 min, weekdays 9-17, app awake. Interval-based
+  // ── Stretch break: every 2 hr, weekdays 9-17, app awake. Interval-based
   //    so it adapts to when the user actually opened the app.
   if (dow >= 1 && dow <= 5 && hour >= 9 && hour < 17) {
     if (state.lastStretchAt === 0) {

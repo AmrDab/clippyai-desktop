@@ -1,6 +1,6 @@
 {
   "name": "clippyai",
-  "version": "0.16.2",
+  "version": "0.17.0",
   "productName": "ClippyAI",
   "description": "ClippyAI — Your AI desktop buddy",
   "homepage": "https://clippyai.app",
@@ -16,7 +16,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "vendor": "node scripts/vendor-clawdcursor.js",
+    "vendor": "node scripts/vendor-clawdcursor.js && node scripts/vendor-whisper.js",
     "rebuild-natives": "electron-rebuild -f -w keytar",
     "pack": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder --dir",
     "dist": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder",

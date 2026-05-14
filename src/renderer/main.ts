@@ -170,6 +170,19 @@ async function init(): Promise<void> {
   window.clippy.onWorkingStart?.(() => clippyCtrl.startWorkingLoop());
   window.clippy.onWorkingStop?.(() => clippyCtrl.stopWorkingLoop());
 
+  // v0.17.0 — voice input wiring. Bubble owns the Recorder; main wires
+  // the sprite animation hook (so Hearing_1 plays while we record) and
+  // the global push-to-talk hotkey IPC (main → renderer voice-start/stop).
+  bubbleCtrl.setAnimCallback((name) => clippyCtrl.playNamed(name));
+  // Apply persisted voice-enabled config
+  try {
+    const cfgV = await window.clippy.getConfig();
+    if (cfgV.voiceEnabled === false) bubbleCtrl.setVoiceEnabled(false);
+  } catch { /* defaults — voice enabled */ }
+  window.clippy.onVoiceToggle?.((enabled) => bubbleCtrl.setVoiceEnabled(enabled));
+  window.clippy.onVoiceStart?.(() => { void bubbleCtrl.startVoice(); });
+  window.clippy.onVoiceStop?.(() => { void bubbleCtrl.stopVoice(); });
+
   // v0.16.0 — cursor-look. Main process pumps cursor position at 1Hz when
   // idle; we periodically (max once per 8s) glance toward the cursor with
   // the appropriate Look* animation. High-lifelikeness, low cost.
@@ -298,9 +311,10 @@ async function init(): Promise<void> {
   // === Drag + Click handling ===
   // v0.16.1 — Drag inertia. Capture per-mousemove (timestamp, dx, dy) in a
   // small ring buffer; on mouseup compute velocity from the last ~120ms of
-  // motion and apply a friction+gravity loop until vx,vy < 0.5. Calls
+  // motion and apply a friction-only decay loop until vx,vy < 0.5. Calls
   // window.clippy.moveWindow with integer deltas just like a live drag.
   // The main process bounds-clamps so we can't fling Clippy offscreen.
+  // v0.16.2 — removed gravity from the loop (was causing infinite fall).
   let isDragging = false;
   let dragStartX = 0;
   let dragStartY = 0;

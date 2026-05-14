@@ -106,6 +106,35 @@
           </select>
           <p style="font-size:11px;color:#888;margin-top:4px;">More natural voices are on the roadmap. Vote at <a href="#" id="link-voices-feedback" style="color:#4CAF50;">clippyai.app/voices</a>.</p>
         </div>
+
+        <!-- v0.17.0 — Voice input (speech-to-text). Bundled whisper.cpp +
+             quantized base.en model, ~60 MB, runs locally. No audio
+             leaves the machine. Wake-word is stubbed coming-soon. -->
+        <div class="settings-group" style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;">
+          <h3 style="margin:0 0 8px 0;font-size:14px;">🎤 Voice Input</h3>
+        </div>
+        <div class="settings-toggle">
+          <label>Enable voice input</label>
+          <label class="toggle-switch" for="setting-voice-enabled">
+            <input type="checkbox" id="setting-voice-enabled" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <p style="font-size:11px;color:#888;margin-top:0;">Click and hold the 🎤 in the chat bubble, or press the hotkey to dictate. Local-only: powered by bundled whisper.cpp, never sends audio to a server.</p>
+        <div class="settings-group" style="margin-top:10px;">
+          <label for="setting-voice-hotkey">Push-to-talk hotkey</label>
+          <input id="setting-voice-hotkey" type="text" value="CommandOrControl+Shift+Space" readonly style="background:#f5f5f5;font-family:monospace;font-size:12px;" />
+          <p style="font-size:11px;color:#888;margin-top:4px;">Press once to start, press again to stop. <kbd>Esc</kbd> cancels.</p>
+        </div>
+        <div class="settings-toggle" style="opacity:0.55;">
+          <label>Wake word — "Hey Clippy"</label>
+          <label class="toggle-switch" for="setting-wake-word" style="cursor:not-allowed;">
+            <input type="checkbox" id="setting-wake-word" disabled />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <p style="font-size:11px;color:#888;margin-top:0;">Always-on wake-word listening is coming in a future patch. Privacy-preserving (the wake-word model runs locally too).</p>
+        <div id="stt-status" style="margin-top:10px;padding:8px;border-radius:6px;font-size:12px;background:#f5f5f5;color:#666;">Checking STT availability…</div>
       </div>
 
       <!-- Brain -->

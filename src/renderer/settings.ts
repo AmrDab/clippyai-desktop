@@ -81,6 +81,34 @@ async function loadConfig(): Promise<void> {
   // TTS enabled toggle + speech rate
   const ttsEl = document.getElementById('setting-tts-enabled') as HTMLInputElement;
   if (ttsEl) ttsEl.checked = config.ttsEnabled !== false; // default true
+  // v0.17.0 — voice input enabled toggle + STT-ready status panel
+  const voiceEl = document.getElementById('setting-voice-enabled') as HTMLInputElement | null;
+  if (voiceEl) {
+    voiceEl.checked = config.voiceEnabled !== false; // default true
+    voiceEl.addEventListener('change', () => {
+      window.clippy.updateSettings({ voiceEnabled: voiceEl.checked });
+    });
+  }
+  // Probe STT availability and surface a status banner. If whisper-cli
+  // failed to install (rare but possible if user antivirus quarantined
+  // it), users need to see why voice isn't working before they file a
+  // support ticket.
+  const sttStatusEl = document.getElementById('stt-status');
+  if (sttStatusEl && window.clippy.sttStatus) {
+    window.clippy.sttStatus().then((s) => {
+      if (s.ready) {
+        sttStatusEl.textContent = '✓ Voice ready — bundled whisper.cpp (base.en, 5-bit quantized, ~57 MB) loaded';
+        (sttStatusEl as HTMLElement).style.color = '#2e7d32';
+        (sttStatusEl as HTMLElement).style.background = '#e8f5e9';
+      } else {
+        sttStatusEl.textContent = `✗ Voice unavailable: ${s.reason || 'unknown'}`;
+        (sttStatusEl as HTMLElement).style.color = '#c62828';
+        (sttStatusEl as HTMLElement).style.background = '#ffebee';
+      }
+    }).catch((err) => {
+      sttStatusEl.textContent = `✗ STT probe failed: ${err.message}`;
+    });
+  }
   if (config.speechRate) {
     speechRateRange.value = String(config.speechRate);
     speechRateValue.textContent = `${config.speechRate}x`;

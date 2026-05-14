@@ -82,6 +82,22 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('play-animation', (_e, name) => cb(name));
   },
 
+  // v0.17.0 — Voice input. Renderer encodes WAV in src/renderer/recorder.ts
+  // and calls this to transcribe via bundled whisper.cpp in main.
+  transcribeAudio: (wav: Uint8Array, initialPrompt?: string) =>
+    ipcRenderer.invoke('transcribe-audio', wav, initialPrompt),
+  sttStatus: () => ipcRenderer.invoke('stt-status'),
+  // v0.17.0 — global push-to-talk hotkey signals from main process
+  onVoiceStart: (cb: () => void) => {
+    ipcRenderer.on('voice-start', () => cb());
+  },
+  onVoiceStop: (cb: () => void) => {
+    ipcRenderer.on('voice-stop', () => cb());
+  },
+  // v0.17.0 — voice enable/disable from Settings → push to renderer
+  onVoiceToggle: (cb: (enabled: boolean) => void) => {
+    ipcRenderer.on('voice-toggle', (_e, enabled) => cb(enabled));
+  },
   // v0.16.0 — task-in-progress animation loop. Brain emits 'working-start'
   // at handleUserMessage entry and 'working-stop' in its finally{}. Renderer
   // cycles WORKING_ANIMS continuously between them so Clippy never freezes.
