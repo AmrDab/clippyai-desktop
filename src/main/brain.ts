@@ -1448,7 +1448,22 @@ export class Brain {
         const list = reg.getInstalledSkillsForPrompt();
         if (list.length > 0) installed_skills = list;
       } catch { /* registry not ready yet — first-boot path */ }
-      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), mail_env, installed_skills, ...opts }));
+      // v0.17.3 — mcp-chrome status sent to worker so the system prompt
+      // can tell the model whether browser tools route through the
+      // user's real signed-in tabs (extension active) or a spawned
+      // debug-flagged browser (no logins). Without this hint the model
+      // either over-promises ("I'll send from your Gmail!" when no
+      // extension is installed and the spawned browser is anonymous)
+      // or under-uses what's there (does a debug-browser dance when
+      // mcp-chrome is one cdp call away).
+      let mcp_chrome: unknown = undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const m = require('./mcp-chrome') as typeof import('./mcp-chrome');
+        const s = m.getMcpChromeStatus();
+        if (s) mcp_chrome = { ready: !!s.ready, tool_count: s.tool_count || 0 };
+      } catch { /* probe may not have run yet */ }
+      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), mail_env, installed_skills, mcp_chrome, ...opts }));
       req.end();
     });
   }
