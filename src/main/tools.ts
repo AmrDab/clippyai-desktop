@@ -2343,12 +2343,23 @@ const CDP_PORT = DEFAULT_CDP_PORT;
 import { spawnCdpBrowser } from './cdp-spawn';
 export { spawnCdpBrowser };
 
-async function cdpConnect(_params: Record<string, unknown>): Promise<ToolResult> {
+async function cdpConnect(params: Record<string, unknown>): Promise<ToolResult> {
+  // v0.17.5 — visibility is now intent-driven. Default false (silent
+  // headless spawn) so "look up X" / "what's the weather" / "fetch this
+  // data" tasks don't pop a browser window the user never asked to see.
+  // Model sets visible=true when the user needs to consume the page
+  // afterward (play YouTube video, sign into a banking page, "show me
+  // the Wikipedia article", "watch this work").
+  const visible = params.visible === true;
   const client = getCdpClient();
   let result = await client.connect();
   if (!result.ok) {
-    // Try to spawn a browser with CDP enabled, then retry.
-    const spawned = await spawnCdpBrowser();
+    // Try to spawn a browser with CDP enabled, then retry. Headless
+    // mirrors the inverse of visible — silent by default, visible by
+    // intent. If a CDP endpoint is already live (user pre-launched
+    // Edge with --remote-debugging-port, or a previous spawn is still
+    // alive), this branch is skipped entirely and we reuse it as-is.
+    const spawned = await spawnCdpBrowser({ headless: !visible });
     if (!spawned.ok) {
       // v0.11.27 — explicit anti-retry guidance. Per log analysis (May 7),
       // 4/5 recent reports showed the model burning the runaway guard
