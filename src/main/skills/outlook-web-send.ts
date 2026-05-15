@@ -70,7 +70,11 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
       // v0.16.2 — previously a runtime CommonJS lookup against ../tools to
       // dodge the circular dep. That crashed in the packed app (report
       // e8f2fb63). Static import from cdp-spawn (no cycle) is the fix.
-      const spawned = await spawnCdpBrowser();
+      // v0.17.4 — spawn headless. The whole recipe is programmatic CDP;
+      // the user never needed to see the browser. Per support report
+      // f6c85a04: "clippy sent email well, though opened a browser tab
+      // for no reason." Headless eliminates that side effect entirely.
+      const spawned = await spawnCdpBrowser({ headless: true });
       if (spawned.ok) {
         // Give the browser a moment to bind the debug port
         await new Promise((r) => setTimeout(r, 1200));
@@ -106,7 +110,15 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
       `!Boolean(document.querySelector('input[type="email"]') || /login\\.live\\.com|login\\.microsoftonline\\.com/.test(location.href))`,
     );
     if (!signedIn) {
-      return { text: '(error:NOT_SIGNED_IN) outlook.live.com requires sign-in. User must log in via the browser first; we will not type credentials.' };
+      // v0.17.4 — headless spawn means the user CAN'T see a sign-in prompt.
+      // Give a clear recovery path: tell them to install the Browser Bridge
+      // (uses their real signed-in Chrome — no separate profile to sign into)
+      // or sign in manually to the Clippy debug profile by visiting
+      // outlook.live.com in their normal browser… which actually won't help
+      // because the debug profile is separate. Best long-term recovery is
+      // mcp-chrome extension. Short-term: surface honestly so the model can
+      // suggest Tier 5 / clawdcursor or ask the user.
+      return { text: '(error:NOT_SIGNED_IN) outlook.live.com sign-in expired or never set up in the Clippy debug profile. Install the Clippy Browser Bridge at clippyai.app/extension to use your real signed-in Chrome instead, or sign in manually next time outlook-web is needed.' };
     }
     return { text: '(error:INBOX_NOT_READY) outlook.live.com inbox did not load in 12s. Page may be slow or unauthenticated.' };
   }

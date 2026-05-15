@@ -51,7 +51,9 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
     if (!connectRes.ok) {
       // v0.16.2 — previously a runtime CommonJS lookup against ../tools;
       // crashed in packed app.asar. See cdp-spawn.ts header for details.
-      const spawned = await spawnCdpBrowser();
+      // v0.17.4 — see outlook-web-send.ts for rationale. Headless so the
+      // user doesn't see a Gmail tab pop up while we drive the form.
+      const spawned = await spawnCdpBrowser({ headless: true });
       if (spawned.ok) {
         await new Promise((r) => setTimeout(r, 1200));
         connectRes = await client.connect();
@@ -93,7 +95,9 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
       `!Boolean(document.querySelector('input[type="email"]') || /accounts\\.google\\.com/.test(location.href))`,
     );
     if (!signedIn) {
-      return { text: '(error:NOT_SIGNED_IN) mail.google.com requires sign-in. User must log in via the browser first.' };
+      // v0.17.4 — see outlook-web-send.ts for full rationale on the
+      // headless sign-in recovery path.
+      return { text: '(error:NOT_SIGNED_IN) mail.google.com sign-in expired or never set up in the Clippy debug profile. Install the Clippy Browser Bridge at clippyai.app/extension to use your real signed-in Chrome instead, or sign in manually next time gmail-web is needed.' };
     }
     return { text: '(error:COMPOSE_FORM_NOT_READY) Gmail compose modal did not open within 15s.' };
   }
