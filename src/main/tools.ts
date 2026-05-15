@@ -1797,13 +1797,33 @@ async function findSkillTool(params: Record<string, unknown>): Promise<ToolResul
   if (!query.trim()) return { text: '(error:MISSING_QUERY) find_skill needs a `query` describing what you want to do.' };
   const limit = Math.min(Math.max(Number(params.limit) || 5, 1), 10);
 
+  // ── v0.17.6 — Local-first search ────────────────────────────────
+  // The previous implementation only queried the remote ClawHub registry.
+  // Per support report 955a0093: user installed `twitter-post`, then on
+  // the next turn asked Clippy to tweet — Clippy called find_skill("post
+  // a tweet"), got NO MATCHES from remote, told the user "no Twitter
+  // skill on ClawHub yet" while a perfectly good twitter-post was sitting
+  // in the local registry. The model never checked locally first.
+  //
+  // Fix: always include local matches at the top of the results. They're
+  // already installed, immediately callable, and almost always more
+  // relevant than whatever the remote search returns.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const reg = require('./skill-registry') as typeof import('./skill-registry');
+  const localMatches = scoreLocalSkills(query, reg.getInstalledSkillsForPrompt());
+
   try {
-    const results = await searchSkills(query, limit);
-    if (results.length === 0) {
-      return { text: `No ClawHub skills found for "${query}". No public skill matches the user's request — fall back to clawd_task or surface the limitation to the user.` };
+    // Try the remote search too, but only as additional candidates —
+    // don't let an empty remote response mask a perfectly good local hit.
+    // Also broaden the query: ClawHub's search seems keyword-narrow, so
+    // extract a shorter keyword query alongside the full natural-language
+    // version. "post a tweet on twitter x" → also try "twitter".
+    const broaderQuery = broadenSearchQuery(query);
+    let results = await searchSkills(query, limit);
+    if (results.length === 0 && broaderQuery && broaderQuery !== query) {
+      results = await searchSkills(broaderQuery, limit);
     }
-    // For each result, also fetch its scan classification so the model knows
-    // whether install_skill will need user consent.
+
     const enriched = await Promise.all(results.map(async (r) => {
       const scan = await getSkillScan(r.slug);
       const safety = classifySkillSafety(scan);
@@ -1813,14 +1833,105 @@ async function findSkillTool(params: Record<string, unknown>): Promise<ToolResul
         summary: r.summary,
         version: r.version,
         match_score: r.score,
-        safety, // 'safe' / 'consent' / 'reject'
+        safety,
         capability_tags: scan?.capability_tags || [],
+        source: 'clawhub-remote' as const,
       };
     }));
-    return { text: JSON.stringify({ query, results: enriched }, null, 2) };
+
+    // Combine: local matches first (they're installed + callable now),
+    // then remote candidates. Dedupe by slug — if a skill is both
+    // installed and on the remote, we only show it as local.
+    const seenSlugs = new Set(localMatches.map((m) => m.slug));
+    const remoteOnly = enriched.filter((e) => !seenSlugs.has(e.slug));
+    const allResults = [...localMatches, ...remoteOnly];
+
+    if (allResults.length === 0) {
+      // Neutral message — no model-instructive prose. The CAPABILITIES
+      // preamble already covers what to do when a skill isn't found;
+      // we don't restate it in every tool output.
+      return {
+        text: JSON.stringify({
+          query,
+          results: [],
+          note: `No matches in the local installed-skill registry OR in the public ClawHub catalog. The user may not have a skill for this — offer to do the task manually instead.`,
+        }, null, 2),
+      };
+    }
+    return { text: JSON.stringify({ query, results: allResults }, null, 2) };
   } catch (err) {
+    // Remote failed but we may still have local matches — never drop
+    // those on the floor just because clawhub.ai is unreachable.
+    if (localMatches.length > 0) {
+      return { text: JSON.stringify({ query, results: localMatches, note: 'remote ClawHub unreachable; showing local matches only.' }, null, 2) };
+    }
     return { text: `(error:CLAWHUB_SEARCH_FAILED) ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/**
+ * v0.17.6 — score installed skills against a natural-language query so
+ * find_skill can return relevant local matches without a network round-
+ * trip. Simple bag-of-words scoring: tokenize both query and skill
+ * metadata, count overlapping non-stopword tokens, return top-3.
+ *
+ * Why bag-of-words: we don't have an embedding model client-side and
+ * the registry is small (typically < 20 skills per user). Even crude
+ * matching beats the previous behavior of "no local check at all."
+ */
+function scoreLocalSkills(
+  query: string,
+  prompt: Array<{ name: string; description: string; slug: string; version: string }>,
+): Array<{
+  slug: string;
+  name: string;
+  summary: string;
+  version: string;
+  match_score: number;
+  safety: 'safe' | 'consent' | 'reject';
+  capability_tags: string[];
+  source: 'local-installed';
+}> {
+  const STOPWORDS = new Set(['the', 'a', 'an', 'i', 'me', 'my', 'to', 'for', 'and', 'or', 'of', 'in', 'on', 'is', 'can', 'you', 'do', 'this', 'that', 'how']);
+  const tokenize = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/[\s-]+/).filter((t) => t && !STOPWORDS.has(t));
+  const qTokens = new Set(tokenize(query));
+  if (qTokens.size === 0) return [];
+
+  const scored = prompt.map((p) => {
+    const haystack = tokenize(`${p.slug} ${p.name} ${p.description}`);
+    let hits = 0;
+    for (const tok of haystack) if (qTokens.has(tok)) hits++;
+    return { ...p, hits };
+  }).filter((p) => p.hits > 0);
+  scored.sort((a, b) => b.hits - a.hits);
+  return scored.slice(0, 3).map((p) => ({
+    slug: p.slug,
+    name: p.name,
+    summary: p.description,
+    version: p.version,
+    match_score: p.hits,
+    // Installed skills already passed the install-time safety gate.
+    safety: 'safe' as const,
+    capability_tags: [],
+    source: 'local-installed' as const,
+  }));
+}
+
+/**
+ * Broaden a long natural-language query into a short keyword query for
+ * the remote ClawHub search. The remote endpoint behaves more like a
+ * keyword search than semantic — long phrases ("post a tweet on twitter
+ * x") return zero hits while single-word queries ("twitter") find the
+ * skill. Pull out the most-distinctive word as a fallback query.
+ */
+function broadenSearchQuery(query: string): string {
+  const STOPWORDS = new Set(['the', 'a', 'an', 'i', 'me', 'my', 'to', 'for', 'and', 'or', 'of', 'in', 'on', 'is', 'can', 'you', 'do', 'this', 'that', 'how', 'post', 'send', 'create', 'make']);
+  const tokens = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((t) => t.length > 2 && !STOPWORDS.has(t));
+  // Pick the longest remaining token — typically the most specific noun.
+  if (tokens.length === 0) return query;
+  tokens.sort((a, b) => b.length - a.length);
+  return tokens[0];
 }
 
 /**

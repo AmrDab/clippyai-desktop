@@ -74,13 +74,53 @@ export function getInstalledSkillsForPrompt(): Array<{
   version: string;
   required_env: string[];
 }> {
-  return [...registry.values()].map((m) => ({
-    name: slugToToolName(m.slug),
-    description: `[skill] ${m.description} (installed from ClawHub: ${m.slug} v${m.version}). Pass params as a JSON object.`,
-    slug: m.slug,
-    version: m.version,
-    required_env: m.requires.env || [],
-  }));
+  return [...registry.values()].map((m) => {
+    // v0.17.6 — beef up the description the model sees. The previous
+    // version emitted "[skill] (no description in SKILL.md) (installed
+    // from ClawHub: twitter-post v0.0.0)" when the downloaded skill had
+    // empty frontmatter — useless for intent matching. Now we ALWAYS
+    // include the slug (which usually carries strong intent: "twitter-
+    // post" → tweet, "send-discord" → discord) and synthesize a default
+    // from the slug when no real description exists.
+    const hasRealDescription =
+      m.description && !m.description.startsWith('(no description');
+    const slugAsHint = slugToHumanReadable(m.slug);
+    const effective = hasRealDescription
+      ? m.description
+      : `Likely: ${slugAsHint}. (No SKILL.md description provided by the skill author; intent inferred from slug.)`;
+    return {
+      name: slugToToolName(m.slug),
+      // Surface the slug prominently so the model can pattern-match user
+      // intent against it directly. "twitter-post" being in the
+      // description means a user asking "tweet this" lights up.
+      description: `[skill] ${effective} · slug: ${m.slug} · v${m.version}. Call as ${slugToToolName(m.slug)}({...params}) — pass arguments as a JSON object.`,
+      slug: m.slug,
+      version: m.version,
+      required_env: m.requires.env || [],
+    };
+  });
+}
+
+/** Convert a slug like "twitter-post" → "post to twitter" for use as
+ *  a description fallback when SKILL.md has no description. The output
+ *  is intentionally lossy but readable; we just want a few extra words
+ *  for the model to keyword-match on. */
+function slugToHumanReadable(slug: string): string {
+  // "twitter-post" → "post to twitter" (action verb usually trails)
+  // "send-discord" → "send discord"
+  // "fetch-rss" → "fetch rss"
+  const words = slug.split('-').filter(Boolean);
+  if (words.length === 0) return slug;
+  // Heuristic: if a common action verb is anywhere in the slug, lead
+  // with it. Otherwise leave order as-is and prepend "use".
+  const VERBS = new Set(['post', 'send', 'fetch', 'get', 'create', 'list', 'search', 'read', 'write', 'open', 'play', 'install', 'check']);
+  const verbIdx = words.findIndex((w) => VERBS.has(w.toLowerCase()));
+  if (verbIdx >= 0 && verbIdx !== 0) {
+    const verb = words[verbIdx];
+    const rest = [...words.slice(0, verbIdx), ...words.slice(verbIdx + 1)];
+    return `${verb} to ${rest.join(' ')}`;
+  }
+  return words.join(' ');
 }
 
 /**
