@@ -146,6 +146,18 @@ process.on('unhandledRejection', (reason) => {
 
 app.whenReady().then(async () => {
   bootLog('APP_READY');
+  // v0.17.7 — single canonical startup line with OS + version + node info so
+  // every support report has unambiguous platform attribution. Before this,
+  // os_platform only appeared in the system-info bundle header — JSONL log
+  // lines had no OS marker, making mac-vs-windows triage harder.
+  log.info('System.startup', {
+    app_version: app.getVersion(),
+    os_platform: process.platform,        // 'win32' | 'darwin' | 'linux'
+    os_release: require('os').release(),
+    os_arch: process.arch,
+    electron_version: process.versions.electron,
+    node_version: process.versions.node,
+  });
   log.info('ClippyAI starting', { version: app.getVersion() });
   log.info('Crash dumps path', crashReporter.getUploadedReports()
     ? app.getPath('crashDumps')

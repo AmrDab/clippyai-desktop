@@ -40,6 +40,14 @@
     <!-- Step 3: Personalize -->
     <div class="onboarding-step" data-step="3">
       <h2>Personalize Your Buddy</h2>
+      <!-- v0.17.7 — capture the user's OWN name here instead of relying on
+           a post-onboarding "Hey! What should I call you?" prompt that
+           could race against renderer init and silently miss. Atomic
+           saveUserProfile happens alongside the license save. -->
+      <div>
+        <label for="user-name">What should we call you?</label>
+        <input id="user-name" type="text" placeholder="Your name" maxlength="40" />
+      </div>
       <div>
         <label for="buddy-name">Name your buddy</label>
         <input id="buddy-name" type="text" value="Clippy" maxlength="20" />

@@ -160,6 +160,12 @@ export function buildBundle(content: string): { logs: string; manifest: Record<s
     schema_version: 1,
     created_at: new Date().toISOString(),
     app_version: sys.app_version,
+    // v0.17.7 — surface OS in the manifest itself so triage doesn't have
+    // to scan the system-info header. The KV report viewer keys by
+    // manifest fields; having os_platform here makes mac-vs-windows
+    // filtering trivial.
+    os_platform: sys.os_platform,
+    os_release: sys.os_release,
     last_task_id: task_id,
     has_boot_log: !!boot,
     crash_dump_count: dumps.length,

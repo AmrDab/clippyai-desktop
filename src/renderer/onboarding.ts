@@ -95,12 +95,24 @@ btnNext.addEventListener('click', async () => {
     const buddyName = buddyNameInput.value.trim() || 'Clippy';
     const ttsVoice = voiceSelect.value;
     const key = licenseInput.value.trim().toUpperCase();
+    // v0.17.7 — capture user's name atomically with the license save.
+    // Blank field is allowed; the post-onboarding fallback prompt picks
+    // it up later. But when the user fills it here, the name lands in
+    // user.md BEFORE the main window opens, so the brain greets by name
+    // on the very first reply — no race condition, no missed prompt.
+    const userNameInput = document.getElementById('user-name') as HTMLInputElement | null;
+    const userName = (userNameInput?.value || '').trim();
 
     btnNext.disabled = true;
     btnNext.textContent = 'Saving...';
 
     try {
       await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
+      if (userName) {
+        // Best-effort: a save failure here shouldn't block onboarding.
+        try { await window.clippy.saveUserProfile({ Name: userName }); }
+        catch (err) { console.warn('[onboarding] saveUserProfile failed (non-fatal)', err); }
+      }
       await window.clippy.onOnboardingComplete();
       window.close();
     } catch {

@@ -282,19 +282,42 @@ async function init(): Promise<void> {
   let pendingUpdate: 'download' | 'install' | 'manual' | null = null;
   let pendingUpdateVersion = '';
 
+  // v0.17.7 — the "click Clippy to confirm an update" prompt now AUTO-EXPIRES
+  // after 20 seconds. Users naturally click Clippy to start a chat; an update
+  // notification that scrolled past minutes (or hours) ago should not still
+  // be consenting to a restart-and-install on the next innocent click.
+  // Clearing pendingUpdate just restores normal click semantics — the bubble
+  // text may still be on screen but the click no longer triggers anything.
+  // User can retry via Settings → About → Check for updates whenever they
+  // genuinely want to update.
+  let updateConsentTimer: number | null = null;
+  function armConsentTimeout(): void {
+    if (updateConsentTimer !== null) clearTimeout(updateConsentTimer);
+    updateConsentTimer = window.setTimeout(() => {
+      if (pendingUpdate !== null) {
+        console.log('[Main] Update click-consent expired (20s) — restoring normal click');
+        pendingUpdate = null;
+        pendingUpdateVersion = '';
+      }
+      updateConsentTimer = null;
+    }, 20_000);
+  }
+
   window.clippy.onUpdateAvailable((version) => {
     pendingUpdate = 'download';
     pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`v${version} is available! Click me to download it. 📎`);
+    bubbleCtrl.speak(`v${version} is available! Click me within 20s to download. 📎`);
+    armConsentTimeout();
   });
 
   window.clippy.onUpdateReady((version) => {
     pendingUpdate = 'install';
     pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`v${version} is ready! Click me to restart and update. 📎`);
+    bubbleCtrl.speak(`v${version} is ready! Click me within 20s to restart & update. 📎`);
     tts.speak('Update ready!');
+    armConsentTimeout();
   });
 
   // Auto-update silent-failure fallback: after two failed quitAndInstall
@@ -305,7 +328,8 @@ async function init(): Promise<void> {
     pendingUpdate = 'manual';
     pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`Auto-update to v${version} isn't working on this machine. Click me to open the download page. 📎`);
+    bubbleCtrl.speak(`Auto-update to v${version} isn't working. Click me within 20s to open the download page. 📎`);
+    armConsentTimeout();
   });
 
   // === Drag + Click handling ===

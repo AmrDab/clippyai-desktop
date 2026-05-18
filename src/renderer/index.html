@@ -9,6 +9,13 @@
   <!-- Speech bubble (above Clippy) -->
   <div id="bubble" class="bubble hidden">
     <div id="bubble-text"></div>
+    <!-- v0.17.7 — explicit action row for things like update prompts.
+         The previous flow hijacked clicking Clippy himself to confirm
+         updates, which led to accidental restarts. Buttons rendered
+         here are the ONLY way to confirm an action; clicking Clippy
+         is back to "open chat." Hidden by default; populated by
+         BubbleController.speakWithActions. -->
+    <div id="bubble-actions" class="hidden"></div>
     <div id="bubble-input-area" class="hidden">
       <input id="bubble-input" type="text" placeholder="Type to Clippy..." />
       <!-- v0.17.2 — click-to-toggle voice input. Click to start, click
