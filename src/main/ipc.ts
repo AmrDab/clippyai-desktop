@@ -122,6 +122,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
 
+  // Brain orientation status — onboarding step 3 calls this to render the
+  // per-file ✓/✗ list. The check itself ran at app-ready (see index.ts);
+  // this just exposes the cached result.
+  ipcMain.handle('orient-brain', async () => {
+    const { orient } = await import('./orient');
+    return orient();
+  });
+
   // Get stored config.
   // SECURITY: license key is NEVER returned raw to the renderer — only a
   // masked display string. The main process owns the key for API calls.

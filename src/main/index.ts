@@ -150,6 +150,14 @@ app.whenReady().then(async () => {
   log.info('Crash dumps path', crashReporter.getUploadedReports()
     ? app.getPath('crashDumps')
     : '(not available)');
+
+  // Clippy reads his own brain files before doing anything else. The
+  // result is cached; the same OrientationResult is what the onboarding
+  // window queries via the orient-brain IPC. See src/main/orient.ts for
+  // the canonical-truth rationale.
+  const { orient } = await import('./orient');
+  orient();
+
   initStartup();
   cleanOldLogs();
 

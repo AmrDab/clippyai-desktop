@@ -433,6 +433,38 @@ body.onboarding-window {
   margin-bottom: 4px;
 }
 
+/* Brain orientation status — shown during onboarding step 3 while Clippy
+   reads soul.md → identity.md → core-behavior.md → … */
+.orient-status {
+  background: #f6f7f9;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 6px 0 14px;
+  font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  display: grid;
+  gap: 4px;
+}
+.orient-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+}
+.orient-row .orient-tick {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  color: #9ca3af;
+}
+.orient-row.orient-ok { color: #1f2937; }
+.orient-row.orient-ok .orient-tick { color: #16a34a; }
+.orient-row.orient-bad { color: #991b1b; }
+.orient-row.orient-bad .orient-tick { color: #dc2626; }
+
 .onboarding-step input,
 .onboarding-step select {
   width: 100%;

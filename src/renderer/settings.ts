@@ -14,7 +14,6 @@ navItems.forEach((item) => {
 });
 
 // Elements
-const buddyNameInput = document.getElementById('setting-buddy-name') as HTMLInputElement;
 const proactiveIntervalRange = document.getElementById('setting-proactive-interval') as HTMLInputElement;
 const proactiveIntervalValue = document.getElementById('proactive-interval-value')!;
 const proactiveToggle = document.getElementById('setting-proactive') as HTMLInputElement;
@@ -47,7 +46,6 @@ populateVoices();
 // Load config
 async function loadConfig(): Promise<void> {
   const config = await window.clippy.getConfig();
-  buddyNameInput.value = (config.buddyName as string) || 'Clippy';
   proactiveToggle.checked = config.proactiveEnabled as boolean;
 
   // Dynamic version from app
@@ -168,9 +166,9 @@ function debounceSave(settings: Record<string, unknown>): void {
   }, 500);
 }
 
-buddyNameInput.addEventListener('input', () => {
-  debounceSave({ buddyName: buddyNameInput.value.trim() });
-});
+// Buddy-name input was removed in fix/orientation-not-name — Clippy is
+// always named "Clippy". The config key remains in the store for back-
+// compat (read by tray.ts, brain.ts) but is no longer user-editable.
 
 // aiEndpoint field removed — locked to official API
 

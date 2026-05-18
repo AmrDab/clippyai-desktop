@@ -37,6 +37,9 @@ interface Window {
     openOnboarding: () => void;
     onOnboardingComplete: () => Promise<void>;
 
+    // ── Brain orientation (soul.md → identity.md → …)
+    orientBrain: () => Promise<{ ok: boolean; files: Record<string, boolean>; bytesRead: number; brainDir: string }>;
+
     // ── Settings
     getConfig: () => Promise<Record<string, unknown>>;
     updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;

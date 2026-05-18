@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('clippy', {
   saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) =>
     ipcRenderer.invoke('save-license', key, plan, buddyName, ttsVoice),
 
+  orientBrain: () => ipcRenderer.invoke('orient-brain'),
+
   getConfig: () => ipcRenderer.invoke('get-config'),
 
   updateSettings: (settings: Record<string, unknown>) =>

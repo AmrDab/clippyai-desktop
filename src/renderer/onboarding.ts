@@ -12,7 +12,6 @@ const btnNext = document.getElementById('btn-next') as HTMLButtonElement;
 const btnBack = document.getElementById('btn-back') as HTMLButtonElement;
 const licenseInput = document.getElementById('license-key') as HTMLInputElement;
 const licenseError = document.getElementById('license-error')!;
-const buddyNameInput = document.getElementById('buddy-name') as HTMLInputElement;
 const voiceSelect = document.getElementById('voice-select') as HTMLSelectElement;
 
 function showStep(step: number): void {
@@ -29,6 +28,31 @@ function showStep(step: number): void {
 
   if (step === 3) {
     populateVoices();
+    runOrientation();
+  }
+}
+
+// Brain orientation — runs when user reaches step 3. Asks main to confirm
+// every brain file Clippy needs is present and loadable. Each row ticks
+// (or X's) as the main process reports back. Pure UI sugar over the real
+// orientation check in main/orient.ts, which is also run at every app
+// startup independently.
+async function runOrientation(): Promise<void> {
+  const rows = document.querySelectorAll<HTMLElement>('.orient-row');
+  try {
+    const result = await window.clippy.orientBrain();
+    for (const row of rows) {
+      const file = row.dataset.file!;
+      const tick = row.querySelector<HTMLElement>('.orient-tick')!;
+      const ok = result.files[file];
+      tick.textContent = ok ? '✓' : '✗';
+      row.classList.toggle('orient-ok', ok);
+      row.classList.toggle('orient-bad', !ok);
+    }
+  } catch {
+    rows.forEach((row) => {
+      row.querySelector<HTMLElement>('.orient-tick')!.textContent = '?';
+    });
   }
 }
 
@@ -92,7 +116,9 @@ btnNext.addEventListener('click', async () => {
   }
 
   if (currentStep === 3) {
-    const buddyName = buddyNameInput.value.trim() || 'Clippy';
+    // Clippy is always Clippy — no user-chosen name. The 4th saveLicense
+    // arg is kept on the IPC for back-compat with older preload bridges
+    // (and existing license stores), but it's hardcoded here.
     const ttsVoice = voiceSelect.value;
     const key = licenseInput.value.trim().toUpperCase();
 
@@ -100,7 +126,7 @@ btnNext.addEventListener('click', async () => {
     btnNext.textContent = 'Saving...';
 
     try {
-      await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
+      await window.clippy.saveLicense(key, validatedPlan, 'Clippy', ttsVoice);
       await window.clippy.onOnboardingComplete();
       window.close();
     } catch {
