@@ -13,6 +13,15 @@ contextBridge.exposeInMainWorld('clippy', {
 
   getConfig: () => ipcRenderer.invoke('get-config'),
 
+  // ── v0.17.8 — Guardrails (permission policy + action history)
+  guardrails: {
+    getPolicy: () => ipcRenderer.invoke('guardrails:get-policy'),
+    setPolicy: (next: { mode?: string; classOverrides?: Record<string, string> }) =>
+      ipcRenderer.invoke('guardrails:set-policy', next),
+    getHistory: () => ipcRenderer.invoke('guardrails:get-history'),
+    clearHistory: () => ipcRenderer.invoke('guardrails:clear-history'),
+  },
+
   updateSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke('update-settings', settings),
 

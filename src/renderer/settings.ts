@@ -724,6 +724,154 @@ async function renderActiveModel(): Promise<void> {
 }
 void renderActiveModel();
 
+// ─────────────────────────────────────────────────────────────────────
+// v0.17.8 — Guardrails tab
+// ─────────────────────────────────────────────────────────────────────
+
+// Mirror of permission-policy.ts:ActionClass — kept in sync manually since
+// the renderer is sandboxed and can't import main-process types directly.
+// If you add a new class in tool-meta.ts, add a row to GUARDRAIL_CLASSES.
+const GUARDRAIL_CLASSES: Array<{ id: string; label: string; desc: string }> = [
+  { id: 'destructive_file',     label: 'File changes',      desc: 'Save, overwrite, rename, move, delete' },
+  { id: 'destructive_send',     label: 'Send communication', desc: 'Email, calendar invites, messages' },
+  { id: 'destructive_purchase', label: 'Purchases',         desc: 'Anything that commits money' },
+  { id: 'share_public',         label: 'Public sharing',    desc: 'Post, tweet, file GitHub issue, share link' },
+  { id: 'system_control',       label: 'System control',    desc: 'Kill processes, stop services' },
+  { id: 'browser_navigate',     label: 'Browser navigation', desc: 'Open a URL or external link' },
+  { id: 'desktop_input',        label: 'Cursor & keyboard',  desc: 'Synthesized clicks and key presses (visible)' },
+];
+
+const DECISION_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '',        label: 'Use policy default' },
+  { value: 'allow',   label: 'Allow' },
+  { value: 'approve', label: 'Ask first' },
+  { value: 'block',   label: 'Block' },
+];
+
+async function loadGuardrails(): Promise<void> {
+  if (!window.clippy.guardrails) return;
+  const policy = await window.clippy.guardrails.getPolicy();
+  document.querySelectorAll<HTMLInputElement>('input[name="permission-mode"]').forEach((r) => {
+    r.checked = r.value === policy.mode;
+    r.addEventListener('change', async () => {
+      if (!r.checked || !window.clippy.guardrails) return;
+      await window.clippy.guardrails.setPolicy({ mode: r.value as 'cautious' | 'standard' | 'trusted' });
+    });
+  });
+  buildClassOverrides(policy.classOverrides);
+  await refreshHistory();
+}
+
+function buildClassOverrides(current: Record<string, string>): void {
+  const root = document.getElementById('class-overrides');
+  if (!root) return;
+  root.innerHTML = '';
+  for (const cls of GUARDRAIL_CLASSES) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid #eee;border-radius:6px;background:#fff;';
+    const left = document.createElement('div');
+    left.innerHTML = `<div style="font-size:12.5px;font-weight:600;color:#1a1a1a;">${cls.label}</div><div style="font-size:11px;color:#777;">${cls.desc}</div>`;
+    const select = document.createElement('select');
+    select.style.cssText = 'font-size:12px;padding:4px 8px;border:1px solid #d0d4da;border-radius:4px;background:#fff;';
+    for (const opt of DECISION_OPTIONS) {
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      if ((current[cls.id] ?? '') === opt.value) o.selected = true;
+      select.appendChild(o);
+    }
+    select.addEventListener('change', async () => {
+      if (!window.clippy.guardrails) return;
+      // Send the full overrides object so the main side replaces cleanly.
+      const overrides: Record<string, 'allow' | 'approve' | 'block'> = {};
+      document.querySelectorAll<HTMLSelectElement>('#class-overrides select').forEach((s, i) => {
+        const v = s.value;
+        if (v) overrides[GUARDRAIL_CLASSES[i].id] = v as 'allow' | 'approve' | 'block';
+      });
+      await window.clippy.guardrails.setPolicy({ classOverrides: overrides });
+    });
+    row.appendChild(left);
+    row.appendChild(select);
+    root.appendChild(row);
+  }
+}
+
+function fmtRelTime(iso: string): string {
+  const t = new Date(iso).getTime();
+  const diff = Date.now() - t;
+  if (diff < 60_000) return Math.max(1, Math.round(diff / 1000)) + 's ago';
+  if (diff < 3_600_000) return Math.round(diff / 60_000) + 'm ago';
+  if (diff < 86_400_000) return Math.round(diff / 3_600_000) + 'h ago';
+  return Math.round(diff / 86_400_000) + 'd ago';
+}
+
+function outcomeBadge(o: string): string {
+  const map: Record<string, [string, string]> = {
+    success:         ['#107c41', '✓'],
+    failure:         ['#c53030', '✗'],
+    unverified:      ['#b76b00', '?'],
+    blocked:         ['#888',    '⊘'],
+    approval_denied: ['#888',    '✗'],
+  };
+  const [color, glyph] = map[o] || ['#888', '·'];
+  return `<span style="color:${color};font-weight:700;margin-right:6px;">${glyph}</span>`;
+}
+
+async function refreshHistory(): Promise<void> {
+  if (!window.clippy.guardrails) return;
+  const rows = await window.clippy.guardrails.getHistory();
+  const root = document.getElementById('action-history-list');
+  if (!root) return;
+  const empty = document.getElementById('action-history-empty');
+  if (!rows || rows.length === 0) {
+    if (empty) empty.style.display = '';
+    // Clear any stale rendered rows
+    Array.from(root.querySelectorAll('.action-row')).forEach((n) => n.remove());
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  Array.from(root.querySelectorAll('.action-row')).forEach((n) => n.remove());
+  for (const r of rows) {
+    const div = document.createElement('div');
+    div.className = 'action-row';
+    div.style.cssText = 'display:grid;grid-template-columns:18px 1fr auto;gap:6px;padding:6px 10px;border-bottom:1px solid #eef0f3;align-items:start;';
+    const escTool = String(r.tool).replace(/[<>&]/g, '');
+    const escDetail = String(r.detail || '').replace(/[<>&]/g, '');
+    const escClass = r.actionClass ? `<span style="color:#888;margin-left:6px;font-size:10.5px;">·${r.actionClass}·T${r.tier}</span>` : `<span style="color:#888;margin-left:6px;font-size:10.5px;">·T${r.tier}</span>`;
+    div.innerHTML = `
+      ${outcomeBadge(r.outcome)}
+      <div style="overflow:hidden;">
+        <div style="color:#1a1a1a;font-weight:600;font-size:11.5px;">${escTool}${escClass}</div>
+        <div style="color:#555;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escDetail}</div>
+      </div>
+      <div style="color:#888;font-size:10.5px;white-space:nowrap;">${fmtRelTime(r.ts)}</div>
+    `;
+    root.appendChild(div);
+  }
+}
+
+document.getElementById('btn-clear-history')?.addEventListener('click', async () => {
+  if (!window.clippy.guardrails) return;
+  if (!confirm('Clear the activity log? This only deletes the in-app history; your real logs stay.')) return;
+  await window.clippy.guardrails.clearHistory();
+  await refreshHistory();
+});
+
+// Lazy-load Guardrails when tab opens — keeps the settings window snappy on cold start.
+let guardrailsLoadedOnce = false;
+document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+  if (item.dataset.section !== 'guardrails') return;
+  item.addEventListener('click', () => {
+    if (guardrailsLoadedOnce) {
+      // Refresh history on re-entry so new actions show up.
+      void refreshHistory();
+      return;
+    }
+    guardrailsLoadedOnce = true;
+    void loadGuardrails();
+  });
+});
+
 // Init
 loadConfig();
 testConnection();

@@ -816,6 +816,40 @@ export class Brain {
             tool: call.name,
             step: step + 1,
           });
+
+          // v0.17.8 — guardrail gate. Single chokepoint. Looks up the tool's
+          // actionClass via permission-policy.decide(), which honors both
+          // the active mode (cautious/standard/trusted) and per-class
+          // overrides set in Settings → Guardrails.
+          //   'allow'   → proceed.
+          //   'block'   → refuse outright. Tool result records as blocked,
+          //               audit log captures it, model sees the error and
+          //               must adapt.
+          //   'approve' → not yet wired to a UI prompt (TODO v0.17.9).
+          //               For this PR we proceed but mark requires-approval
+          //               in the audit log; renderer dialog ships next PR.
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const policy = require('./permission-policy') as typeof import('./permission-policy');
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const history = require('./action-history') as typeof import('./action-history');
+          const decision = policy.decide(call.name);
+          if (decision === 'block') {
+            log.warn('Tool.blocked_by_policy', { step: step + 1, tool: call.name, class: policy.classFor(call.name) });
+            history.record({
+              tool: call.name,
+              args: call.args,
+              outcome: 'blocked',
+              detail: `Blocked by permission policy (class=${policy.classFor(call.name)})`,
+            });
+            // Feed a synthetic "blocked" result back into the model so it
+            // adapts rather than retrying forever.
+            contents.push({
+              role: 'function',
+              parts: [{ functionResponse: { name: call.name, response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${policy.classFor(call.name)}). Suggest an alternative or tell the user how to enable it.` } } }],
+            } as Content);
+            continue;
+          }
+
           try {
             const result = await executeTool(call.name, call.args);
             const toolElapsed = Date.now() - toolStart;
@@ -879,6 +913,29 @@ export class Brain {
                 },
               },
             });
+
+            // v0.17.8 — audit log. Every executed tool gets a row so users
+            // can see in Settings → Guardrails → Activity exactly what
+            // happened. Outcome heuristic: error-prefixed strings count as
+            // failure, "(error:UNVERIFIED|unverified|sent:'unverified')"
+            // count as unverified, anything else = success. We don't try
+            // to recover structured outcome here; the audit log is for
+            // human review, not state-machine reasoning.
+            try {
+              const lc = resultText.toLowerCase();
+              const outcome: 'success' | 'failure' | 'unverified' =
+                lc.startsWith('(error:') ? 'failure'
+                : lc.includes('unverified') ? 'unverified'
+                : 'success';
+              history.record({
+                tool: call.name,
+                args: call.args,
+                outcome,
+                detail: resultText.substring(0, 200),
+              });
+            } catch (err) {
+              log.warn('audit log append failed (non-fatal)', { err: serializeErr(err) });
+            }
 
             // === VISION: pass screenshot images to the model ===
             // When desktop_screenshot returns an image, include it as an

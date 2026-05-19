@@ -41,6 +41,20 @@ interface Window {
     getConfig: () => Promise<Record<string, unknown>>;
     updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
 
+    // ── Guardrails (v0.17.8)
+    guardrails: {
+      getPolicy: () => Promise<{ mode: 'cautious' | 'standard' | 'trusted'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
+      setPolicy: (next: { mode?: 'cautious' | 'standard' | 'trusted'; classOverrides?: Record<string, 'allow' | 'approve' | 'block'> }) =>
+        Promise<{ mode: 'cautious' | 'standard' | 'trusted'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
+      getHistory: () => Promise<Array<{
+        id: string; ts: string; tool: string; tier: number;
+        actionClass: string | null; argsSummary: string;
+        outcome: 'success' | 'failure' | 'unverified' | 'approval_denied' | 'blocked';
+        detail: string; taskId?: string;
+      }>>;
+      clearHistory: () => Promise<boolean>;
+    };
+
     // ── Speech / TTS
     onSpeak: (cb: (payload: { text: string; animate: string }) => void) => void;
 
