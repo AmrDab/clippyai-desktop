@@ -268,10 +268,36 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
     return { text: '(error:SEND_BUTTON_NOT_FOUND) Located compose form but could not find the Send button. The email is in your drafts.' };
   }
 
-  // Step 10: verify the send. Two signals:
-  //   (a) compose window closed (no more compose form on the page)
-  //   (b) "Message sent" toast OR sent-items count incremented
-  // We wait for (a); (b) is a stronger but optional confirmation.
+  // Step 10: verify the send.
+  //
+  // History — see support report 543ff234 (2026-05-11) and the same
+  // false-positive pattern still firing in v0.17.5 (2026-05-15). Previous
+  // implementation treated "compose form is gone" as proof of send and
+  // returned `sent: true`. That's wrong. Outlook closes the compose form
+  // on multiple events: Send-clicked-successfully, Cancel-clicked,
+  // Discard-clicked, accidental Esc, even network-blip + auto-save +
+  // dismiss. Returning `sent: true` on bare compose-closed produced the
+  // "Clippy claimed to send the email but no email was sent" bug.
+  //
+  // New rule: a "compose closed" signal is NECESSARY but NOT SUFFICIENT.
+  // We require ONE of three positive signals within ~6s of compose
+  // closing, AND we check for negative signals (error toasts / blocked
+  // dialogs) before claiming success:
+  //
+  //   POSITIVE — any one of:
+  //     • "Sent" or "Message sent" toast appears
+  //     • Sent Items folder badge count increments (sentAfter > sentBefore)
+  //     • URL navigates to /mail/sentitems
+  //
+  //   NEGATIVE — any one of:
+  //     • Error toast: /couldn't send|unable to send|failed to send|recipient.+(invalid|not found)/i
+  //     • A dialog/alert appears containing similar text
+  //
+  // If no positive signal AND no negative signal land in time, return
+  // sent: 'unverified' with the actual observed state. The brain has a
+  // matching instruction not to claim success on unverified — the user
+  // is told "I clicked Send but couldn't confirm it actually went out;
+  // please check your Sent Items."
   log.info('Step 10: verify send');
   const composeClosed = await pollUntil(
     client,
@@ -282,21 +308,85 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
     return { text: '(error:UNVERIFIED) Send button clicked but compose form is still open. The send may have been blocked by a confirmation dialog (recipient validation, missing attachment).' };
   }
 
-  // Soft confirmation: look for sent-items count increment or "Message sent" toast.
-  let confirmation = 'compose_closed';
-  try {
-    const sentAfter = await client.evaluate<number>(`
-      (function(){
-        const sentLink = Array.from(document.querySelectorAll('a, button')).find(
-          (el) => /sent items/i.test(el.textContent || '') || /sent items/i.test(el.getAttribute('aria-label') || '')
-        );
-        if (!sentLink) return -1;
+  // After compose closes, race positive and negative confirmations.
+  // Whichever fires first wins. ~6s total budget.
+  const VERIFY_MS = 6_000;
+  const POSITIVE_JS = `
+    (function(){
+      // (a) explicit toast or live-region announcement
+      const toastText = Array.from(document.querySelectorAll(
+        '[role="alert"], [role="status"], [aria-live], .ms-MessageBar-text, [class*="Toast"], [class*="Snackbar"]'
+      )).map(n => (n.textContent || '').trim()).join(' | ').toLowerCase();
+      if (/\\b(sent|message sent|email sent|your message has been sent|sending)\\b/.test(toastText)) return 'toast';
+      // (b) navigation to Sent Items view (URL is the authoritative source)
+      const path = (location.pathname || '').toLowerCase();
+      if (path.includes('/mail/sentitems') || path.includes('/sent%20items') || path.endsWith('/sentitems')) return 'url_sentitems';
+      // (c) sent-items folder badge incremented
+      const sentLink = Array.from(document.querySelectorAll('a, button, [role="treeitem"]')).find(
+        (el) => /sent items/i.test(el.textContent || '') || /sent items/i.test(el.getAttribute('aria-label') || '')
+      );
+      if (sentLink) {
         const m = (sentLink.textContent || '').match(/(\\d+)/);
-        return m ? parseInt(m[1], 10) : -1;
-      })()
-    `);
-    if (sentBefore >= 0 && sentAfter >= 0 && sentAfter > sentBefore) confirmation = 'sent_items_incremented';
-  } catch { /* sent-items badge not always visible; that's fine */ }
+        const n = m ? parseInt(m[1], 10) : -1;
+        if (n > __SENT_BEFORE__) return 'sent_items_incremented';
+      }
+      return null;
+    })()
+  `.replace('__SENT_BEFORE__', String(sentBefore));
+
+  const NEGATIVE_JS = `
+    (function(){
+      const toastText = Array.from(document.querySelectorAll(
+        '[role="alert"], [role="status"], [role="dialog"], [aria-live], .ms-MessageBar-text, [class*="Toast"], [class*="Snackbar"]'
+      )).map(n => (n.textContent || '').trim()).join(' | ');
+      const m = toastText.match(/(?:couldn['\\u2019]?t|unable to|failed to|cannot)\\s+send|recipient.+(?:invalid|not found|unknown)|message (?:wasn['\\u2019]?t|was not) sent/i);
+      return m ? m[0] : null;
+    })()
+  `;
+
+  let confirmation: string | null = null;
+  let blockingError: string | null = null;
+  const deadline = Date.now() + VERIFY_MS;
+  while (Date.now() < deadline) {
+    try {
+      const neg = await client.evaluate<string | null>(NEGATIVE_JS);
+      if (neg) { blockingError = neg; break; }
+      const pos = await client.evaluate<string | null>(POSITIVE_JS);
+      if (pos) { confirmation = pos; break; }
+    } catch { /* page churn during navigation; retry */ }
+    await new Promise((res) => setTimeout(res, 350));
+  }
+
+  if (blockingError) {
+    return {
+      text: JSON.stringify({
+        ok: false,
+        via: 'outlook-web',
+        to,
+        subject,
+        sent: false,
+        error: 'send_blocked',
+        detail: blockingError.slice(0, 200),
+      }),
+    };
+  }
+
+  if (!confirmation) {
+    // Compose closed but no positive signal in 6s and no error. The most
+    // common cause is that Outlook routed to Inbox without showing a
+    // toast (no badge animation either). We refuse to claim success.
+    return {
+      text: JSON.stringify({
+        ok: true,
+        via: 'outlook-web',
+        to,
+        subject,
+        sent: 'unverified',
+        confirmation: 'compose_closed_only',
+        warning: 'compose_form_closed_but_send_not_confirmed — verify by checking Sent Items',
+      }),
+    };
+  }
 
   return {
     text: JSON.stringify({
