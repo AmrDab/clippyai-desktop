@@ -18,6 +18,30 @@
  * comment for the client/server split.
  */
 
+/**
+ * Action classes that the user can independently allow / require-approval /
+ * always-block in Settings → Guardrails. These are the buckets the model's
+ * tool catalog gets grouped into when policy is enforced. Tools without an
+ * actionClass are treated as read-only (always allowed, never logged as
+ * "destructive" in the audit log).
+ *
+ * Adding a new class:
+ *   1. Add it here.
+ *   2. Tag every relevant tool with `actionClass:` in TOOL_META below.
+ *   3. Add a default policy entry in src/main/permission-policy.ts:DEFAULTS.
+ *   4. Add a row in the Guardrails Settings UI (settings.html).
+ * The enforcement chokepoint (permission-policy.ts:checkAllowed) requires no
+ * changes — it just reads the metadata.
+ */
+export type ActionClass =
+  | 'destructive_file'    // file delete, move, overwrite, rename
+  | 'destructive_send'    // outbound communication (email, message, post)
+  | 'destructive_purchase'// payment, signup, irreversible commit-to-pay
+  | 'share_public'        // publishing to a public surface (post, tweet, share-link)
+  | 'system_control'      // process kill, service stop, registry change
+  | 'browser_navigate'    // navigation to an external URL
+  | 'desktop_input';      // synthesized mouse/keyboard (raw input — visible cursor)
+
 export interface ToolMeta {
   tier: 1 | 2 | 3 | 4 | 5;
   /** Hint for the router: 'cheap' = sub-100ms; 'medium' = 1-3s; 'expensive' = 5s+ */
@@ -26,6 +50,13 @@ export interface ToolMeta {
   description: string;
   /** Optional: alternate names of the same conceptual tool at higher tiers (for fallback) */
   fallback_alternative?: string;
+  /**
+   * If set, this tool is treated as taking a destructive / consequential
+   * action. Settings → Guardrails decides whether to allow, require explicit
+   * approval, or block. Read-only tools (list_files, read_screen, etc.)
+   * leave this undefined — they never gate.
+   */
+  actionClass?: ActionClass;
   /**
    * Present-progressive narration the renderer shows in Clippy's bubble while
    * this tool is running. Short — fits in a 300px bubble. No trailing punctuation;
@@ -81,14 +112,14 @@ export const TOOL_META: Record<string, ToolMeta> = {
   read_clipboard:     { tier: 2, cost: 'cheap',     description: 'Read the current Windows clipboard text', narration: 'Checking the clipboard' },
   write_clipboard:    { tier: 2, cost: 'cheap',     description: 'Write text to the Windows clipboard', narration: 'Copying to clipboard' },
   read_file:          { tier: 2, cost: 'cheap',     description: 'Read a local file from disk', narration: 'Reading the file' },
-  write_file:         { tier: 2, cost: 'cheap',     description: 'Write a local file to disk', narration: 'Saving the file' },
+  write_file:         { tier: 2, cost: 'cheap',     description: 'Write a local file to disk', narration: 'Saving the file', actionClass: 'destructive_file' },
   list_files:         { tier: 2, cost: 'cheap',     description: 'List files in a directory', narration: 'Listing files' },
   search_files_content:{ tier: 2, cost: 'medium',   description: 'Search file contents for a regex/string pattern', narration: 'Searching through files' },
   // run_powershell removed v0.12.3 — security audit (prompt-injection → RCE).
   // Bundled PS scripts (outlook_*, excel_*, file ops) cover legitimate use.
   system_info:        { tier: 2, cost: 'cheap',     description: 'Get OS / hardware / disk info', narration: 'Checking system info' },
   list_processes:     { tier: 2, cost: 'cheap',     description: 'List running processes', narration: 'Listing running processes' },
-  kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name or PID', narration: 'Stopping the process' },
+  kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name or PID', narration: 'Stopping the process', actionClass: 'system_control' },
   ping_host:          { tier: 2, cost: 'medium',    description: 'Ping a network host', narration: 'Pinging' },
   http_request:       { tier: 2, cost: 'medium',    description: 'Make an HTTP request to an arbitrary URL', narration: 'Fetching from the web' },
   speak_text:         { tier: 2, cost: 'medium',    description: 'Speak text via the OS TTS engine', narration: 'Speaking' },
@@ -100,23 +131,23 @@ export const TOOL_META: Record<string, ToolMeta> = {
   detect_webview_apps:{ tier: 2, cost: 'medium',    description: 'Detect Electron/CEF apps that may have a CDP port available', narration: 'Looking for browser-like apps' },
 
   // ── Tier 3a — COM application APIs ───────────────────────────────────
-  outlook_send_email:  { tier: 3, cost: 'medium',    description: 'Send an email via Outlook COM (no UI)', narration: 'Sending email' },
+  outlook_send_email:  { tier: 3, cost: 'medium',    description: 'Send an email via Outlook COM (no UI)', narration: 'Sending email', actionClass: 'destructive_send' },
   outlook_read_inbox:  { tier: 3, cost: 'medium',    description: 'Read recent inbox messages via Outlook COM', narration: 'Reading your inbox' },
-  outlook_create_event:{ tier: 3, cost: 'medium',    description: 'Create a calendar event via Outlook COM', narration: 'Adding to your calendar' },
+  outlook_create_event:{ tier: 3, cost: 'medium',    description: 'Create a calendar event via Outlook COM', narration: 'Adding to your calendar', actionClass: 'destructive_send' },
   outlook_upcoming:    { tier: 3, cost: 'medium',    description: 'List upcoming calendar events via Outlook COM', narration: 'Checking your calendar' },
   excel_read:          { tier: 3, cost: 'medium',    description: 'Read cells from an Excel workbook via COM', narration: 'Reading the spreadsheet' },
-  excel_write:         { tier: 3, cost: 'medium',    description: 'Write cells to an Excel workbook via COM', narration: 'Updating the spreadsheet' },
+  excel_write:         { tier: 3, cost: 'medium',    description: 'Write cells to an Excel workbook via COM', narration: 'Updating the spreadsheet', actionClass: 'destructive_file' },
   word_to_pdf:         { tier: 3, cost: 'expensive', description: 'Convert a Word document to PDF via Word COM', narration: 'Converting Word to PDF' },
   create_reminder:     { tier: 3, cost: 'medium',    description: 'Create a Windows reminder / scheduled toast', narration: 'Setting your reminder' },
 
   // ── Tier 3b — Web service APIs (added by PR 3) ───────────────────────
-  github_create_issue: { tier: 3, cost: 'medium',    description: 'Create a GitHub issue via REST API (requires PAT in keytar:clippy.github)', narration: 'Filing a GitHub issue' },
+  github_create_issue: { tier: 3, cost: 'medium',    description: 'Create a GitHub issue via REST API (requires PAT in keytar:clippy.github)', narration: 'Filing a GitHub issue', actionClass: 'share_public' },
   github_list_issues:  { tier: 3, cost: 'medium',    description: 'List GitHub issues for a repo via REST API', narration: 'Listing GitHub issues' },
   github_get_pr:       { tier: 3, cost: 'medium',    description: 'Fetch a GitHub pull request by number via REST API', narration: 'Reading the pull request' },
 
   // ── Tier 3c — URL scheme / shell.openExternal ────────────────────────
-  navigate_browser:    { tier: 3, cost: 'medium',    description: 'Open a URL in the default browser via shell.openExternal', narration: 'Opening the browser' },
-  open_url:            { tier: 3, cost: 'cheap',     description: 'Open a URL or deep-link via the OS handler — allowlisted schemes (mailto, spotify, vscode, slack, ms-teams, zoommtg, https, http, tel, sms)', narration: 'Opening the link' },
+  navigate_browser:    { tier: 3, cost: 'medium',    description: 'Open a URL in the default browser via shell.openExternal', narration: 'Opening the browser', actionClass: 'browser_navigate' },
+  open_url:            { tier: 3, cost: 'cheap',     description: 'Open a URL or deep-link via the OS handler — allowlisted schemes (mailto, spotify, vscode, slack, ms-teams, zoommtg, https, http, tel, sms)', narration: 'Opening the link', actionClass: 'browser_navigate' },
   spotify_play_uri:    { tier: 3, cost: 'cheap',     description: 'Play a Spotify track/album/playlist/artist by URI via the spotify: deep link', narration: 'Queueing Spotify' },
 
   // ── Tier 4 — Browser automation via CDP ──────────────────────────────
@@ -136,13 +167,13 @@ export const TOOL_META: Record<string, ToolMeta> = {
   smart_click:          { tier: 5, cost: 'expensive', description: 'Click an element by label using UIA fuzzy match (last-resort UI)', narration: 'Finding and clicking' },
   smart_type:           { tier: 5, cost: 'expensive', description: 'Type into a labeled element via UIA + keyboard (last-resort UI)', narration: 'Typing into the field' },
   focus_window:         { tier: 5, cost: 'medium',    description: 'Bring a window to the foreground via UIA / Win32', narration: 'Focusing the window' },
-  type_text:            { tier: 5, cost: 'medium',    description: 'Synthesize keystrokes to type literal text into the focused window', narration: 'Typing' },
-  key_press:            { tier: 5, cost: 'medium',    description: 'Synthesize a keyboard shortcut (e.g. Ctrl+S)', narration: 'Pressing the shortcut' },
-  mouse_click:          { tier: 5, cost: 'medium',    description: 'Click at absolute screen coordinates', narration: 'Clicking' },
-  mouse_double_click:   { tier: 5, cost: 'medium',    description: 'Double-click at absolute screen coordinates', narration: 'Double-clicking' },
-  mouse_right_click:    { tier: 5, cost: 'medium',    description: 'Right-click at absolute screen coordinates', narration: 'Right-clicking' },
+  type_text:            { tier: 5, cost: 'medium',    description: 'Synthesize keystrokes to type literal text into the focused window', narration: 'Typing', actionClass: 'desktop_input' },
+  key_press:            { tier: 5, cost: 'medium',    description: 'Synthesize a keyboard shortcut (e.g. Ctrl+S)', narration: 'Pressing the shortcut', actionClass: 'desktop_input' },
+  mouse_click:          { tier: 5, cost: 'medium',    description: 'Click at absolute screen coordinates', narration: 'Clicking', actionClass: 'desktop_input' },
+  mouse_double_click:   { tier: 5, cost: 'medium',    description: 'Double-click at absolute screen coordinates', narration: 'Double-clicking', actionClass: 'desktop_input' },
+  mouse_right_click:    { tier: 5, cost: 'medium',    description: 'Right-click at absolute screen coordinates', narration: 'Right-clicking', actionClass: 'desktop_input' },
   mouse_hover:          { tier: 5, cost: 'cheap',     description: 'Move the cursor to absolute screen coordinates', narration: 'Hovering' },
-  mouse_drag:           { tier: 5, cost: 'medium',    description: 'Drag from one set of screen coordinates to another', narration: 'Dragging' },
+  mouse_drag:           { tier: 5, cost: 'medium',    description: 'Drag from one set of screen coordinates to another', narration: 'Dragging', actionClass: 'desktop_input' },
   mouse_scroll:         { tier: 5, cost: 'cheap',     description: 'Scroll the mouse wheel at the cursor position', narration: 'Scrolling' },
 
   // ── Tier 5 diagnostic (added by PR 4) ────────────────────────────────
@@ -170,8 +201,8 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // Tell the user verbatim that you couldn't confirm the send and to check their
   // Sent Items. Never report a verified-send to the user when sent is 'unverified'
   // or false.
-  outlook_web_send_email: { tier: 4, cost: 'medium', description: 'Send email via outlook.live.com using a deterministic CDP recipe. Returns sent: true ONLY on positive confirmation (Sent toast, sent-items count incremented, or URL→/sentitems). Returns sent: \'unverified\' when compose closed but no positive signal — DO NOT claim success in that case.', narration: 'Sending via Outlook web' },
-  gmail_web_send_email:   { tier: 4, cost: 'medium', description: 'Send email via mail.google.com using a deterministic CDP recipe (with verified "Message sent" snackbar)', narration: 'Sending via Gmail' },
+  outlook_web_send_email: { tier: 4, cost: 'medium', description: 'Send email via outlook.live.com using a deterministic CDP recipe. Returns sent: true ONLY on positive confirmation (Sent toast, sent-items count incremented, or URL→/sentitems). Returns sent: \'unverified\' when compose closed but no positive signal — DO NOT claim success in that case.', narration: 'Sending via Outlook web', actionClass: 'destructive_send' },
+  gmail_web_send_email:   { tier: 4, cost: 'medium', description: 'Send email via mail.google.com using a deterministic CDP recipe (with verified "Message sent" snackbar)', narration: 'Sending via Gmail', actionClass: 'destructive_send' },
   // clawd_task is L5 — plain-English desktop task delegation to clawdcursor
   // for tasks that don't fit any L1-L4 native or recipe path.
   clawd_task:             { tier: 5, cost: 'expensive', description: 'L5 LAST RESORT — delegate a plain-English desktop task to clawdcursor when no native tool, browser recipe, or installed skill fits', narration: 'Handing off to the fallback agent' },

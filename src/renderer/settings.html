@@ -20,6 +20,7 @@
       <button class="settings-nav-item" data-section="skills">Skills</button>
       <button class="settings-nav-item" data-section="web">Web</button>
       <button class="settings-nav-item" data-section="tools">Tools</button>
+      <button class="settings-nav-item" data-section="guardrails">Guardrails</button>
       <button class="settings-nav-item" data-section="license">License</button>
       <button class="settings-nav-item" data-section="about">About</button>
     </nav>
@@ -270,6 +271,67 @@
           <label>Updates</label>
           <button class="btn-secondary" id="btn-check-update">Check for Updates</button>
           <p id="update-status" style="font-size: 12px; color: #888; margin-top: 6px;"></p>
+        </div>
+      </div>
+
+      <!-- Guardrails (v0.17.8) — permission policy + audit log -->
+      <div class="settings-section" data-section="guardrails">
+        <h2>Guardrails</h2>
+        <p style="font-size:13px;color:#555;margin-bottom:14px;line-height:1.55;">
+          Decide what Clippy can do on its own and what needs your sign-off.
+          Use <strong>Cautious</strong> while you're still learning to trust
+          Clippy, <strong>Standard</strong> for daily use, and
+          <strong>Trusted</strong> only after you've watched Clippy handle
+          your real workflows for a while.
+        </p>
+
+        <div class="settings-group">
+          <label style="font-weight:600;font-size:13px;">Permission policy</label>
+          <div class="policy-radios" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+            <label class="policy-row" style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid #e2e5ea;border-radius:8px;cursor:pointer;">
+              <input type="radio" name="permission-mode" value="cautious" style="margin-top:3px;" />
+              <span>
+                <strong style="font-size:13px;">Cautious</strong><br />
+                <span style="font-size:12px;color:#666;">Ask before every consequential action. Newer users start here.</span>
+              </span>
+            </label>
+            <label class="policy-row" style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid #e2e5ea;border-radius:8px;cursor:pointer;">
+              <input type="radio" name="permission-mode" value="standard" style="margin-top:3px;" />
+              <span>
+                <strong style="font-size:13px;">Standard <span style="font-size:11px;color:#888;font-weight:400;">— default</span></strong><br />
+                <span style="font-size:12px;color:#666;">Ask before sending/deleting/purchasing. Trust browser navigation and desktop input.</span>
+              </span>
+            </label>
+            <label class="policy-row" style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid #e2e5ea;border-radius:8px;cursor:pointer;">
+              <input type="radio" name="permission-mode" value="trusted" style="margin-top:3px;" />
+              <span>
+                <strong style="font-size:13px;">Trusted</strong><br />
+                <span style="font-size:12px;color:#666;">Let Clippy work autonomously. Purchases still require confirmation (hard floor).</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-group" style="margin-top:18px;padding-top:14px;border-top:1px solid #eee;">
+          <label style="font-weight:600;font-size:13px;">Per-action overrides</label>
+          <p style="font-size:12px;color:#777;margin:4px 0 10px;">
+            Override the policy above for specific action classes. Most users leave these alone.
+          </p>
+          <div id="class-overrides" style="display:flex;flex-direction:column;gap:6px;">
+            <!-- Rows injected by settings.ts buildClassOverrides() -->
+          </div>
+        </div>
+
+        <div class="settings-group" style="margin-top:18px;padding-top:14px;border-top:1px solid #eee;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <label style="font-weight:600;font-size:13px;margin:0;">Activity — last 50 actions</label>
+            <button class="btn-secondary" id="btn-clear-history" style="font-size:11px;padding:4px 10px;">Clear</button>
+          </div>
+          <div id="action-history-list" style="border:1px solid #eee;border-radius:8px;max-height:340px;overflow-y:auto;font-family:'SFMono-Regular',Menlo,Consolas,monospace;font-size:11.5px;background:#fafbfc;">
+            <div id="action-history-empty" style="padding:24px;text-align:center;color:#888;">
+              No actions yet — when Clippy runs a tool, it'll appear here.
+            </div>
+          </div>
         </div>
       </div>
 

@@ -703,4 +703,32 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
     menu.popup({ window: mainWindow });
   });
+
+  // ── v0.17.8 — Guardrails (permission policy + audit log) ──
+  ipcMain.handle('guardrails:get-policy', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = require('./permission-policy') as typeof import('./permission-policy');
+    return m.getPolicy();
+  });
+  ipcMain.handle('guardrails:set-policy', async (_event, payload: unknown) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = require('./permission-policy') as typeof import('./permission-policy');
+    // Defensive: take only the shape we expect; never trust raw IPC.
+    const p = payload as { mode?: import('./permission-policy').Mode; classOverrides?: Record<string, import('./permission-policy').ClassDecision> };
+    return m.setPolicy({
+      mode: p?.mode,
+      classOverrides: p?.classOverrides as Partial<Record<import('./tool-meta').ActionClass, import('./permission-policy').ClassDecision>>,
+    });
+  });
+  ipcMain.handle('guardrails:get-history', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = require('./action-history') as typeof import('./action-history');
+    return m.getAll();
+  });
+  ipcMain.handle('guardrails:clear-history', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = require('./action-history') as typeof import('./action-history');
+    m.clear();
+    return true;
+  });
 }
