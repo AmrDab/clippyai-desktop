@@ -19,8 +19,12 @@
  * (built-in) and `ws` (~190KB, no native bindings).
  *
  * Design cherry-picked from clawdcursor's cdp-driver.ts but reimplemented
- * in ~300 lines vs. their 1095, dropping the cursor-overlay injection,
- * Playwright dependency, and multi-context tab-switching.
+ * in ~300 lines vs. their 1095. Originally we dropped the cursor-overlay
+ * injection too; restored in v0.17.8 (see showCursorOverlay below) after
+ * support reports R10/R15/R16 — users couldn't see WHERE Clippy was
+ * clicking, so every browser-tier failure mode read as "Clippy froze."
+ * The overlay is a single in-page DOM node, no native window, no extra
+ * native dep — costs ~3KB injected JS per page lifetime.
  *
  * The browser must be launched with --remote-debugging-port=<port>. Clippy's
  * `cdp_connect` tool returns a clear error with relaunch instructions if it
@@ -162,8 +166,103 @@ class CDPClient {
     return await this.evaluate<string>(expr);
   }
 
+  /**
+   * Show Clippy's cursor overlay on the target element BEFORE the underlying
+   * action runs. Single chokepoint — both click() and typeInField() route
+   * through this so the user always sees where Clippy is about to act.
+   *
+   * Implementation: injects a fixed-position div into the page DOM (high
+   * z-index, transparent to pointer events, never persists past navigation
+   * because we re-inject on each call). Pulses for `holdMs` ms before
+   * returning so the user has time to register the target.
+   *
+   * Toggleable per-user via the `cursorOverlay` setting (default: on). When
+   * off, we no-op and the action runs immediately — kept as a setting because
+   * a tiny fraction of power users running long agentic workflows said the
+   * pulse animation slowed perceived throughput.
+   *
+   * Idempotent / fail-soft: if injection throws (page is mid-navigation,
+   * CSP forbids inline styles, etc.) we swallow the error and proceed with
+   * the action. Visibility is a feature, not a gate.
+   */
+  private async showCursorOverlay(
+    targetSelector: string | null,
+    label: string,
+    holdMs = 700,
+  ): Promise<void> {
+    if (!CDPClient.overlayEnabled) return;
+    const expr = `(function(){
+      try {
+        const targetSel = ${JSON.stringify(targetSelector)};
+        const label = ${JSON.stringify(label)};
+        // Find target rect: if a selector is given, locate the first visible
+        // match; otherwise center the overlay on the viewport (used for
+        // pre-typing prompts where the field already has focus).
+        let rect = null;
+        if (targetSel) {
+          const el = document.querySelector(targetSel);
+          if (el) {
+            el.scrollIntoView({block: 'center', behavior: 'instant'});
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) rect = r;
+          }
+        }
+        // Singleton overlay node — rebuild if missing (navigation cleared it).
+        let host = document.getElementById('__clippy_overlay');
+        if (!host) {
+          host = document.createElement('div');
+          host.id = '__clippy_overlay';
+          host.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:2147483647;font:13px -apple-system,Segoe UI,Roboto,sans-serif;';
+          document.documentElement.appendChild(host);
+        }
+        host.innerHTML = '';
+        if (rect) {
+          // Ring around target.
+          const ring = document.createElement('div');
+          ring.style.cssText = 'position:fixed;border:3px solid #FFC83D;border-radius:6px;box-shadow:0 0 0 2px rgba(255,200,61,0.25),0 8px 24px rgba(0,0,0,0.18);transition:opacity 0.18s ease,transform 0.22s cubic-bezier(0.22,1,0.36,1);';
+          ring.style.left = (rect.left - 4) + 'px';
+          ring.style.top = (rect.top - 4) + 'px';
+          ring.style.width = (rect.width + 8) + 'px';
+          ring.style.height = (rect.height + 8) + 'px';
+          ring.style.opacity = '0';
+          ring.style.transform = 'scale(1.06)';
+          host.appendChild(ring);
+          requestAnimationFrame(() => { ring.style.opacity = '1'; ring.style.transform = 'scale(1)'; });
+          // Label chevron — sits above target if there's room, below otherwise.
+          const pill = document.createElement('div');
+          const labelAbove = rect.top > 32;
+          pill.style.cssText = 'position:fixed;background:#FFC83D;color:#1a1a1a;font-weight:600;padding:3px 9px;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.18);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;';
+          pill.textContent = (labelAbove ? '↓ ' : '↑ ') + label;
+          pill.style.left = Math.max(8, rect.left) + 'px';
+          pill.style.top = (labelAbove ? rect.top - 26 : rect.bottom + 8) + 'px';
+          host.appendChild(pill);
+        }
+        // Auto-clean after the hold window so the page returns to normal.
+        setTimeout(() => { if (host) host.innerHTML = ''; }, ${JSON.stringify(holdMs + 400)});
+        return true;
+      } catch (e) {
+        return false;
+      }
+    })()`;
+    try {
+      await this.evaluate<boolean>(expr);
+      // Hold so the user can register the highlight before action.
+      await new Promise((res) => setTimeout(res, holdMs));
+    } catch {
+      // Page is mid-navigation or CSP-locked — silently skip the highlight.
+      // The action itself runs unaffected.
+    }
+  }
+
+  /** Globally toggle the cursor overlay. Settings → Tools toggles this. */
+  static overlayEnabled = true;
+  static setOverlayEnabled(on: boolean): void {
+    CDPClient.overlayEnabled = on;
+  }
+
   /** Click by CSS selector. */
   async click(selector: string): Promise<CdpResult> {
+    await this.showCursorOverlay(selector, 'click');
     const expr = `(function(){const el=document.querySelector(${JSON.stringify(selector)});if(!el)return 'not_found';el.scrollIntoView({block:'center'});el.click();return 'ok';})()`;
     try {
       const r = await this.evaluate<string>(expr);
@@ -176,6 +275,28 @@ class CDPClient {
 
   /** Click by visible text content (matches innerText). */
   async clickByText(text: string): Promise<CdpResult> {
+    // Highlight the matching target BEFORE the action.  We resolve the
+    // selector inline so the user sees the same element that's about to
+    // get clicked.
+    const findSelectorExpr = `(function(){
+      const target=${JSON.stringify(text)}.toLowerCase().trim();
+      const pool=Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"],input[type="button"],a,[role="link"]'));
+      const visible=(el)=>{const r=el.getBoundingClientRect();return r.width>0&&r.height>0;};
+      const matchEl=pool.find(el=>{
+        if(!visible(el))return false;
+        const t=(el.innerText||el.value||el.getAttribute('aria-label')||'').trim().toLowerCase();
+        return t===target||t.includes(target);
+      });
+      if(!matchEl) return null;
+      // Tag the element so showCursorOverlay can find the same one.
+      matchEl.setAttribute('data-clippy-overlay-id','__clippy_target__');
+      return '[data-clippy-overlay-id="__clippy_target__"]';
+    })()`;
+    try {
+      const sel = await this.evaluate<string | null>(findSelectorExpr);
+      if (sel) await this.showCursorOverlay(sel, text);
+    } catch { /* highlight is best-effort */ }
+
     // v0.12.6 — destructive verbs (Send, Submit, Delete, Discard, Save) must
     // prefer <button> / role=button over <a> / role=link / nav items. Per
     // support report 543ff234: cdp_click("Send") on outlook.live.com landed
@@ -235,6 +356,7 @@ class CDPClient {
 
   /** Type into an input field by selector. */
   async typeInField(selector: string, text: string): Promise<CdpResult> {
+    await this.showCursorOverlay(selector, `type "${text.length > 30 ? text.slice(0, 27) + '…' : text}"`);
     const expr = `(function(){
       const el=document.querySelector(${JSON.stringify(selector)});
       if(!el)return 'not_found';
@@ -257,6 +379,21 @@ class CDPClient {
 
   /** Type into the input associated with a <label> matching the given text. */
   async typeByLabel(labelText: string, text: string): Promise<CdpResult> {
+    // Highlight the field before typing into it.
+    const findFieldExpr = `(function(){
+      const target=${JSON.stringify(labelText)}.toLowerCase();
+      let input=null;
+      const lbl=Array.from(document.querySelectorAll('label')).find(l=>(l.innerText||'').trim().toLowerCase().includes(target));
+      if(lbl){const id=lbl.getAttribute('for');input=id?document.getElementById(id):lbl.querySelector('input,textarea,select');}
+      if(!input){input=Array.from(document.querySelectorAll('input,textarea,select')).find(el=>(el.getAttribute('aria-label')||el.getAttribute('placeholder')||'').toLowerCase().includes(target));}
+      if(!input)return null;
+      input.setAttribute('data-clippy-overlay-id','__clippy_target__');
+      return '[data-clippy-overlay-id="__clippy_target__"]';
+    })()`;
+    try {
+      const sel = await this.evaluate<string | null>(findFieldExpr);
+      if (sel) await this.showCursorOverlay(sel, `type into ${labelText}`);
+    } catch { /* highlight is best-effort */ }
     const expr = `(function(){
       const target=${JSON.stringify(labelText)}.toLowerCase();
       const labels=Array.from(document.querySelectorAll('label'));

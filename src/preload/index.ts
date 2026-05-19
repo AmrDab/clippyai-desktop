@@ -20,6 +20,14 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('clippy-speak', (_e, payload) => cb(payload));
   },
 
+  // v0.17.8 — short, present-progressive crumbs that update the bubble while
+  // a tool is running ("Reading your inbox", "Sending email"). Emitted by
+  // brain.ts on every Tool.call. Source of truth for the crumb string is
+  // tool-meta.ts:narration → narrationFor().
+  onClippyCrumb: (cb: (payload: { text: string; tool: string; step: number }) => void) => {
+    ipcRenderer.on('clippy-crumb', (_e, payload) => cb(payload));
+  },
+
   onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => {
     ipcRenderer.on('mode-change', (_e, mode) => cb(mode));
   },
