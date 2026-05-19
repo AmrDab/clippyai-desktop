@@ -20,7 +20,7 @@
 
 import { BrowserWindow, net, app } from 'electron';
 import { executeTool, abortAllInFlightTools } from './tools';
-import { TOOL_META } from './tool-meta';
+import { TOOL_META, narrationFor } from './tool-meta';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
@@ -806,6 +806,16 @@ export class Brain {
           // (up to 30s for Outlook/Excel) and the user can't tell anything
           // is happening. Map tool category → animation.
           this.emit('play-animation', animationForTool(call.name));
+          // v0.17.8 — also emit a narration crumb sourced from TOOL_META.
+          // Renderer's NarrationManager queues these with a 900ms min visible
+          // duration so the bubble stays current to actual work instead of
+          // freezing on the original "Working on it…". Closes the MID_TASK_
+          // BLACKBOX support-report category (5 of 12 substantive reports).
+          this.emit('clippy-crumb', {
+            text: narrationFor(call.name),
+            tool: call.name,
+            step: step + 1,
+          });
           try {
             const result = await executeTool(call.name, call.args);
             const toolElapsed = Date.now() - toolStart;
@@ -992,6 +1002,35 @@ export class Brain {
         } catch (err) {
           log.warn('recordWorkflow failed (non-fatal)', { error: serializeErr(err) });
         }
+      }
+
+      // v0.17.8 — structural capability-gap tip. When ANY browser tool ran
+      // during this task AND the mcp-chrome bridge wasn't ready, offer the
+      // extension once. Generic by design — extending to a future "no
+      // outlook installed → install Outlook web extension" tip is a one-
+      // line addition to CAPABILITY_GAPS in capability-tips.ts. Per-user
+      // pref `capabilityTip:<id>` tracks dismissal so we never nag.
+      try {
+        const browserToolsUsed = successfulActions.some((a) => /^(browser_|cdp_)/.test(a.name));
+        const bridgeReady = (() => {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const m = require('./mcp-chrome') as typeof import('./mcp-chrome');
+            return !!m.getMcpChromeStatus()?.ready;
+          } catch { return false; }
+        })();
+        if (browserToolsUsed && !bridgeReady && taskCompleted) {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { maybeOfferCapabilityTip } = require('./capability-tips') as typeof import('./capability-tips');
+          const tip = maybeOfferCapabilityTip('browser-extension');
+          if (tip && finalSpoken) {
+            const combined = `${finalSpoken}\n\n${tip}`;
+            this.emit('clippy-speak', { text: combined, animate: 'Suggest' });
+            finalSpoken = combined;
+          }
+        }
+      } catch (err) {
+        log.warn('capability tip check failed (non-fatal)', { error: serializeErr(err) });
       }
 
       if (finalSpoken) {

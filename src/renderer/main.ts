@@ -124,11 +124,64 @@ async function init(): Promise<void> {
   window.clippy.onSpeak(({ text, animate }) => {
     const safeText = text || '';
     if (safeText) {
+      // A real reply from the model — clear any pending narration crumbs so
+      // the bubble doesn't bounce back to "Reading inbox" after Clippy speaks.
+      narration.flush();
       bubbleCtrl.speak(safeText);
       tts.speak(safeText);
     }
     if (animate) clippyCtrl.playNamed(animate);
   });
+
+  // v0.17.8 — narration crumbs: short, present-progressive updates that keep
+  // the bubble synced to whatever tool is running RIGHT NOW. Closes the
+  // "Clippy went silent for 20s mid-task" support-report pattern (5/12
+  // substantive reports).
+  //
+  // Design notes:
+  // - Each crumb gets a 900ms minimum visible duration so back-to-back fast
+  //   tools (e.g. 3× list_files in 600ms) don't flicker. The next crumb
+  //   queues and renders after the minimum.
+  // - tts.speak intentionally NOT called for crumbs — they'd be too noisy
+  //   ("reading inbox", "reading inbox", "reading inbox"). The visible
+  //   bubble is the only modality.
+  // - A real Clippy.say message (above) flushes the queue so a model reply
+  //   wins over the last-running crumb without a stale-text flash.
+  const narration = {
+    queue: [] as { text: string; tool: string; step: number }[],
+    rendering: false,
+    lastRenderedAt: 0,
+    MIN_VISIBLE_MS: 900,
+    push(payload: { text: string; tool: string; step: number }) {
+      // Coalesce: if the queue's tail already says the same thing, skip.
+      const tail = this.queue[this.queue.length - 1];
+      if (tail && tail.text === payload.text) return;
+      this.queue.push(payload);
+      this.drain();
+    },
+    drain() {
+      if (this.rendering) return;
+      if (this.queue.length === 0) return;
+      this.rendering = true;
+      const next = this.queue.shift()!;
+      const remaining = Math.max(0, this.MIN_VISIBLE_MS - (Date.now() - this.lastRenderedAt));
+      const fire = () => {
+        bubbleCtrl.speak(next.text);
+        this.lastRenderedAt = Date.now();
+        setTimeout(() => {
+          this.rendering = false;
+          this.drain();
+        }, this.MIN_VISIBLE_MS);
+      };
+      if (remaining > 0) setTimeout(fire, remaining);
+      else fire();
+    },
+    flush() {
+      this.queue.length = 0;
+      this.rendering = false;
+    },
+  };
+  window.clippy.onClippyCrumb((payload) => narration.push(payload));
 
   window.clippy.onModeChange((mode) => {
     if (mode === 'sleep') {

@@ -43,6 +43,9 @@ interface Window {
 
     // ── Speech / TTS
     onSpeak: (cb: (payload: { text: string; animate: string }) => void) => void;
+
+    // ── Narration crumbs — short bubble updates fired on every Tool.call
+    onClippyCrumb: (cb: (payload: { text: string; tool: string; step: number }) => void) => void;
     onTtsToggle: (cb: (enabled: boolean) => void) => void;
     onSpeechRate: (cb: (rate: number) => void) => void;
     /** v0.16.0 — pitch + volume live updates */
