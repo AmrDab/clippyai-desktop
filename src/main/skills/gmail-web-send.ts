@@ -156,18 +156,86 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
     return { text: '(error:SEND_BUTTON_NOT_FOUND) Located compose but could not click Send. Email saved to drafts.' };
   }
 
-  // Step 5: verify via "Message sent" snackbar OR compose modal closed.
+  // Step 5: verify send. Matches the discipline added to outlook-web-send
+  // for support report 543ff234 — modal-closed alone is NOT proof of send
+  // (Discard / Cancel / accidental Esc all close the modal too). We need
+  // an explicit positive signal AND no error signal.
+  //
+  // POSITIVE: "Message sent" snackbar, "View message" link, or URL→/sent
+  // NEGATIVE: "couldn't send" / "message wasn't sent" / "Address not valid"
+  // If neither in ~6s after modal close: sent: 'unverified' so the brain
+  // tells the user to check Sent Items rather than reporting a fake send.
   log.info('Step 5: verify send');
-  const confirmed = await pollUntil(
+  const modalClosed = await pollUntil(
     client,
-    `Boolean(document.querySelector('span[role="alert"]')) && /message sent/i.test(document.querySelector('span[role="alert"]')?.textContent || '')
-     || !document.querySelector('div[role="dialog"][aria-label*="message" i]')`,
+    `!document.querySelector('div[role="dialog"][aria-label*="message" i]')`,
     8_000,
   );
-  if (!confirmed) {
-    return { text: '(error:UNVERIFIED) Send clicked but no "Message sent" toast or compose-modal-closed signal within 8s. The email may be queued or blocked.' };
+  if (!modalClosed) {
+    return { text: '(error:UNVERIFIED) Send clicked but the compose modal stayed open within 8s. The send may have been blocked by validation (recipient invalid, missing field).' };
   }
 
+  const VERIFY_MS = 6_000;
+  const POSITIVE_JS = `
+    (function(){
+      const alertText = Array.from(document.querySelectorAll('span[role="alert"], [aria-live]'))
+        .map(n => (n.textContent || '').trim()).join(' | ').toLowerCase();
+      if (/\\bmessage sent\\b/.test(alertText)) return 'toast_message_sent';
+      if (/\\bsent\\b/.test(alertText) && !/sending/.test(alertText)) return 'toast_sent';
+      if (document.querySelector('a, button')?.textContent?.match?.(/view message/i)) return 'view_message_link';
+      const hash = (location.hash || '').toLowerCase();
+      if (hash.includes('#sent')) return 'url_sent';
+      return null;
+    })()
+  `;
+  const NEGATIVE_JS = `
+    (function(){
+      const alertText = Array.from(document.querySelectorAll('span[role="alert"], [role="dialog"], [aria-live]'))
+        .map(n => (n.textContent || '').trim()).join(' | ');
+      const m = alertText.match(/(?:couldn['\\u2019]?t send|message (?:wasn['\\u2019]?t|was not) sent|address(?:es)? (?:not valid|not found|invalid)|please specify at least one)/i);
+      return m ? m[0] : null;
+    })()
+  `;
+
+  let confirmation: string | null = null;
+  let blockingError: string | null = null;
+  const deadline = Date.now() + VERIFY_MS;
+  while (Date.now() < deadline) {
+    try {
+      const neg = await client.evaluate<string | null>(NEGATIVE_JS);
+      if (neg) { blockingError = neg; break; }
+      const pos = await client.evaluate<string | null>(POSITIVE_JS);
+      if (pos) { confirmation = pos; break; }
+    } catch { /* page churn — retry */ }
+    await new Promise((res) => setTimeout(res, 350));
+  }
+
+  if (blockingError) {
+    return {
+      text: JSON.stringify({
+        ok: false,
+        via: 'gmail-web',
+        to,
+        subject,
+        sent: false,
+        error: 'send_blocked',
+        detail: blockingError.slice(0, 200),
+      }),
+    };
+  }
+  if (!confirmation) {
+    return {
+      text: JSON.stringify({
+        ok: true,
+        via: 'gmail-web',
+        to,
+        subject,
+        sent: 'unverified',
+        confirmation: 'modal_closed_only',
+        warning: 'compose_modal_closed_but_send_not_confirmed — verify by checking Sent',
+      }),
+    };
+  }
   return {
     text: JSON.stringify({
       ok: true,
@@ -175,7 +243,7 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
       to,
       subject,
       sent: true,
-      confirmation: 'message_sent_toast_or_compose_closed',
+      confirmation,
     }),
   };
 }

@@ -131,7 +131,12 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // outlook_send_email is the canonical dispatcher; the two web recipes
   // are exposed individually too so the model can pick them deliberately
   // when it knows the user is on outlook-web or gmail-web specifically.
-  outlook_web_send_email: { tier: 4, cost: 'medium', description: 'Send email via outlook.live.com using a deterministic CDP recipe (with verified "Message sent" toast)' },
+  // Result shape: { ok, via, to, subject, sent: true | false | 'unverified', confirmation, error?, warning? }.
+  // CRITICAL — if sent === 'unverified', the email may or may not have gone out.
+  // Tell the user verbatim that you couldn't confirm the send and to check their
+  // Sent Items. Never report a verified-send to the user when sent is 'unverified'
+  // or false.
+  outlook_web_send_email: { tier: 4, cost: 'medium', description: 'Send email via outlook.live.com using a deterministic CDP recipe. Returns sent: true ONLY on positive confirmation (Sent toast, sent-items count incremented, or URL→/sentitems). Returns sent: \'unverified\' when compose closed but no positive signal — DO NOT claim success in that case.' },
   gmail_web_send_email:   { tier: 4, cost: 'medium', description: 'Send email via mail.google.com using a deterministic CDP recipe (with verified "Message sent" snackbar)' },
   // clawd_task is L5 — plain-English desktop task delegation to clawdcursor
   // for tasks that don't fit any L1-L4 native or recipe path.
