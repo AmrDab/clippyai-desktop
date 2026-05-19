@@ -9,7 +9,23 @@ const log = createLogger('Updater');
 
 const GITHUB_OWNER = 'AmrDab';
 const GITHUB_REPO = 'clippyai-desktop';
-const RELEASE_PAGE = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+
+// Where we send the user when auto-update silently fails and they need to
+// install manually. Used to point at `github.com/.../releases/latest`,
+// which had two problems:
+//   1. While clippyai-desktop was private (pre-2026-05-15), end users got
+//      a flat 404 (see support report 51420569 — "directed me to github").
+//   2. Even now that the repo is public, the GitHub Releases UI is heavy,
+//      generic, and asks the user to scroll a Releases list to find the
+//      installer they want. That's not a recovery experience.
+//
+// /update-help on the marketing site does the recovery properly:
+// signed installer download buttons for all three platforms (Mac arm64,
+// Mac Intel, Windows), SmartScreen-bypass walkthrough, support contact.
+// All hosted on infrastructure we own (Cloudflare Pages + R2), so no
+// repo-visibility dependency.
+const RELEASE_PAGE = 'https://clippyai.app/update-help';
+const RELEASE_PAGE_LEGACY = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`; // kept for diagnostic logs only
 
 // A version is marked failed after this many silent-failure detections.
 //
@@ -370,14 +386,14 @@ export function openManualUpdatePage(): void {
     log.info('Opening cached installer (SmartScreen dialog will appear)', { cachedInstaller });
     shell.openPath(cachedInstaller).then((err) => {
       if (err) {
-        log.warn('shell.openPath failed, falling back to releases page', err);
+        log.warn('shell.openPath failed, falling back to recovery page', err);
         shell.openExternal(RELEASE_PAGE).catch(() => {});
       }
     });
   } else {
-    log.info('No cached installer — opening releases page', { url: RELEASE_PAGE });
+    log.info('No cached installer — opening recovery page', { url: RELEASE_PAGE });
     shell.openExternal(RELEASE_PAGE).catch((err) => {
-      log.warn('Failed to open release page', serializeErr(err));
+      log.warn('Failed to open recovery page', serializeErr(err));
     });
   }
 }

@@ -320,10 +320,12 @@ async function init(): Promise<void> {
     armConsentTimeout();
   });
 
-  // Auto-update silent-failure fallback: after two failed quitAndInstall
-  // attempts for the same version (usually AV/SmartScreen blocking the
-  // unsigned installer), we stop retrying and send the user to the GitHub
-  // release page to install manually. Breaks the update loop.
+  // Auto-update silent-failure fallback: after one failed quitAndInstall
+  // attempt for a version (usually AV/SmartScreen intercepting the silent
+  // NSIS install) we stop retrying and send the user to the dedicated
+  // recovery page at clippyai.app/update-help. Breaks the update loop AND
+  // gives them direct signed-installer download buttons — no GitHub auth,
+  // no repo visibility dependency, no 404. See updater.ts:RELEASE_PAGE.
   window.clippy.onUpdateFailed(({ version }) => {
     pendingUpdate = 'manual';
     pendingUpdateVersion = version;
@@ -449,7 +451,8 @@ async function init(): Promise<void> {
         bubbleCtrl.speak('Installing update, restarting...');
         window.clippy.installUpdate();
       } else if (pendingUpdate === 'manual') {
-        // Auto-update gave up — open GitHub release page in the browser.
+        // Auto-update gave up — open the clippyai.app/update-help recovery
+        // page in the browser.
         pendingUpdate = null;
         bubbleCtrl.speak(`Opening the download page for v${pendingUpdateVersion}...`);
         window.clippy.openManualUpdate();
