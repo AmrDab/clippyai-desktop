@@ -60,6 +60,14 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('proactive-toggle', (_e, enabled) => cb(enabled));
   },
 
+  // v0.18.0 — separate channel for interval changes so we don't reshape
+  // the boolean `proactive-toggle` channel (tray.ts:74 still sends a
+  // bool there). Listeners that care about either fact subscribe to
+  // both channels.
+  onProactiveInterval: (cb: (intervalMs: number) => void) => {
+    ipcRenderer.on('proactive-interval', (_e, ms) => cb(ms));
+  },
+
   // v0.12.3 — bubble auto-hide setting changed; bubble.ts updates its
   // internal autoHideMs without a window reload.
   onBubbleAutoHide: (cb: (ms: number) => void) => {

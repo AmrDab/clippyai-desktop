@@ -143,8 +143,16 @@
         <h2>Brain</h2>
         <div class="settings-group">
           <label for="setting-proactive-interval">Proactive Interval</label>
-          <input id="setting-proactive-interval" type="range" min="10" max="300" step="5" value="30" />
-          <span id="proactive-interval-value" style="font-size: 12px; color: #888;">30s</span>
+          <!--
+            v0.18.0 — slider default attribute aligned with brainSettingsStore
+            (`proactiveInterval` defaults to 300_000ms = 300s). Pre-v0.18.0
+            this attribute said value="30" while the actual store value was
+            300s, so users saw "30s" for the few milliseconds before
+            settings.ts:60 hydration overwrote it from the IPC fetch. First-
+            paint correctness; eliminates the brief UI lie.
+          -->
+          <input id="setting-proactive-interval" type="range" min="10" max="300" step="5" value="300" />
+          <span id="proactive-interval-value" style="font-size: 12px; color: #888;">300s</span>
         </div>
         <div class="settings-toggle">
           <label>Proactive Mode</label>

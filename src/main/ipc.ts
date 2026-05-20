@@ -177,10 +177,22 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const interval = Math.max(5000, Math.min(300000, Number(settings.proactiveInterval) || 30000));
       brainSettingsStore.set('proactiveInterval', interval);
       proactiveChanged = true;
+      // v0.18.0 — broadcast on the dedicated `proactive-interval` channel.
+      // We deliberately don't reuse the existing `proactive-toggle`
+      // channel because tray.ts:74 already sends a boolean on that
+      // channel (the on/off menu item). Mixing shapes there would
+      // silently break the tray path. Separate channels, separate
+      // shapes.
+      mainWindow.webContents.send('proactive-interval', interval);
     }
     if (settings.proactiveEnabled !== undefined) {
-      brainSettingsStore.set('proactiveEnabled', Boolean(settings.proactiveEnabled));
+      const enabled = Boolean(settings.proactiveEnabled);
+      brainSettingsStore.set('proactiveEnabled', enabled);
       proactiveChanged = true;
+      // v0.18.0 — broadcast on the existing boolean channel so any
+      // listener (renderer settings panel, tray menu sync, etc.) gets
+      // the same fact regardless of source. Matches tray.ts:74 shape.
+      mainWindow.webContents.send('proactive-toggle', enabled);
     }
     // v0.12.3 — proactive cooldown after speaking. 0 = no cooldown.
     if (settings.proactiveCooldownMs !== undefined) {

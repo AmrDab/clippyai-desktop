@@ -69,6 +69,8 @@ interface Window {
     // ── Mode
     onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
     onProactiveToggle: (cb: (enabled: boolean) => void) => void;
+    /** v0.18.0 — separate channel for interval-only changes */
+    onProactiveInterval: (cb: (intervalMs: number) => void) => void;
     /** v0.12.3 — bubble auto-hide ms; 0 = manual */
     onBubbleAutoHide: (cb: (ms: number) => void) => void;
     /** v0.12.5 — manual proactive trigger from Settings UI */
