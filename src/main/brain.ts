@@ -842,11 +842,16 @@ export class Brain {
               detail: `Blocked by permission policy (class=${policy.classFor(call.name)})`,
             });
             // Feed a synthetic "blocked" result back into the model so it
-            // adapts rather than retrying forever.
-            contents.push({
-              role: 'function',
-              parts: [{ functionResponse: { name: call.name, response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${policy.classFor(call.name)}). Suggest an alternative or tell the user how to enable it.` } } }],
-            } as Content);
+            // adapts rather than retrying forever. Pushed into responseParts
+            // so it commits with the rest of the step's tool results as one
+            // role:'user' message at line ~997 — matching the cancel/error
+            // paths above and below.
+            responseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: { error: `policy_blocked: the user's Guardrails forbid action class "${policy.classFor(call.name)}". Suggest an alternative or tell the user they can change this in Settings → Guardrails.` },
+              },
+            });
             continue;
           }
 

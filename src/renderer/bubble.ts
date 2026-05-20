@@ -19,6 +19,7 @@ interface ChatMessage {
 export class BubbleController {
   private bubble: HTMLElement;
   private bubbleText: HTMLElement;
+  private bubbleActions: HTMLElement;
   private inputArea: HTMLElement;
   private input: HTMLInputElement;
   private sendBtn: HTMLButtonElement;
@@ -47,6 +48,7 @@ export class BubbleController {
   constructor(onSend: (text: string) => void) {
     this.bubble = document.getElementById('bubble')!;
     this.bubbleText = document.getElementById('bubble-text')!;
+    this.bubbleActions = document.getElementById('bubble-actions')!;
     this.inputArea = document.getElementById('bubble-input-area')!;
     this.input = document.getElementById('bubble-input') as HTMLInputElement;
     this.sendBtn = document.getElementById('bubble-send') as HTMLButtonElement;
@@ -81,8 +83,20 @@ export class BubbleController {
       });
     }
 
-    // Click bubble text → toggle between history and input
-    this.bubbleText.addEventListener('click', (e) => {
+    // Click anywhere in the bubble → toggle between history and input.
+    // Listener lives on the bubble container (not just #bubble-text) so the
+    // entire visible surface is the hit target — including the padding, the
+    // tail, and the negative space around the text. Inner interactive
+    // elements (the input field, send button, mic button, action buttons)
+    // call stopPropagation in their own handlers, so clicks on them don't
+    // reach this listener. We also explicitly skip clicks that bubbled up
+    // from the input area or the action row as a defense in depth: those
+    // surfaces own their own UX and shouldn't trigger a chat toggle if a
+    // future child element forgets to stopPropagation.
+    this.bubble.addEventListener('click', (e) => {
+      const t = e.target as Node;
+      if (this.inputArea.contains(t)) return;
+      if (this.bubbleActions.contains(t)) return;
       e.stopPropagation();
       if (this.showingHistory) {
         this.toggleInput();
