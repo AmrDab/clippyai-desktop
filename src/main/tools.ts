@@ -2862,6 +2862,27 @@ export async function initTools(): Promise<void> {
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
 }
 
+/**
+ * v0.18.1 — tools that synthesize keyboard or mouse input on the user's
+ * actual desktop. Listed by name (NOT by `actionClass` in tool-meta,
+ * because actionClass is the security-policy taxonomy; this set is the
+ * "what resets the system idle timer" taxonomy and they don't overlap
+ * cleanly). When any of these dispatch, the user-takeover monitor is
+ * told to ignore idle resets for the next ~1.5s — otherwise Clippy
+ * would detect his own clicks as user takeover and abort itself.
+ */
+const INPUT_GENERATING_TOOLS = new Set([
+  'mouse_click', 'mouse_double_click', 'mouse_right_click', 'mouse_middle_click',
+  'mouse_triple_click', 'mouse_drag', 'mouse_hover', 'mouse_scroll', 'mouse_scroll_horizontal',
+  'mouse_down', 'mouse_up', 'mouse_move_relative',
+  'type_text', 'key_press', 'key_down', 'key_up',
+  'smart_click', 'smart_type',
+  'cdp_click', 'cdp_type', 'cdp_scroll', 'cdp_select_option',
+  'browser_click', 'browser_type',
+  'write_clipboard', 'set_field_value',
+  'invoke_element', 'focus_element',
+]);
+
 export async function executeTool(tool: string, params: Record<string, unknown> = {}): Promise<ToolResult> {
   // v0.14.0 — skill__<slug> tools are dispatched via the ClawHub registry.
   // These tools are dynamic — they're added at runtime when install_skill
@@ -2875,6 +2896,19 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   if (!fn) {
     log.warn(`Unknown tool: ${tool}`);
     return { text: `(error:UNKNOWN_TOOL) unknown tool: ${tool}` };
+  }
+
+  // v0.18.1 — flag this dispatch for the takeover monitor so it doesn't
+  // confuse Clippy's own input with organic user activity. Called both
+  // BEFORE and AFTER (in the finally below) so the grace window covers
+  // the OS-level event-registration tail.
+  const isInputTool = INPUT_GENERATING_TOOLS.has(tool);
+  if (isInputTool) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const t = require('./user-takeover') as typeof import('./user-takeover');
+      t.noteClippyInput(tool);
+    } catch { /* monitor may not be active outside of task execution */ }
   }
 
   const startTime = Date.now();
@@ -2891,6 +2925,20 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     // is a programming bug or transient I/O failure, not something a Tier 5
     // UI hop can recover from. Returning a clean code lets the model decide.
     primaryResult = { text: `(error:TOOL_THREW) ${tool} threw: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // v0.18.1 — refresh the takeover grace timestamp AFTER the input
+  // event lands too. macOS in particular can lag the idle-counter
+  // update by a few hundred ms past the synthesized event, and the
+  // pre-dispatch noteClippyInput call would have aged out of the
+  // grace window by then. Two calls (before + after) cover both
+  // ends of the OS event-registration latency.
+  if (isInputTool) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const t = require('./user-takeover') as typeof import('./user-takeover');
+      t.noteClippyInput(tool);
+    } catch { /* monitor may not be active */ }
   }
 
   // Tier 5 fallback: only if (a) result looks like a structured eligible
