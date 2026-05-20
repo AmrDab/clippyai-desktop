@@ -396,13 +396,24 @@ export class Brain {
   /**
    * Restart the proactive loop so a settings change (interval or on/off)
    * takes effect immediately instead of waiting for the next sleep/wake cycle.
-   * Safe to call even when Clippy is sleeping — it's a no-op then.
+   *
+   * Idempotent and safe in both modes:
+   *  - awake: stopLoop() clears the existing timer, startLoop() reads
+   *    fresh settings and re-arms.
+   *  - sleep: startLoop() ALSO short-circuits internally because
+   *    proactiveCheck() is gated on `this.mode === 'awake'`. Calling
+   *    startLoop() while sleeping just installs a timer whose first tick
+   *    will no-op until the next setMode('awake'). That sounds wasteful
+   *    but it's actually the correct behavior — the previous guard
+   *    (`if (mode === 'awake')`) silently dropped settings changes made
+   *    while sleeping, so the user toggled "proactive on" while Clippy
+   *    napped, woke him up, and the loop never ran until the NEXT
+   *    sleep/wake cycle. That was the dominant cause of "proactive
+   *    settings don't seem to do anything."
    */
   restartProactiveLoop(): void {
-    if (this.mode === 'awake') {
-      log.info('Proactive loop restarted (settings changed)');
-      this.startLoop();
-    }
+    log.info('Proactive loop restarted (settings changed)', { mode: this.mode });
+    this.startLoop();
   }
 
   /**
@@ -842,11 +853,16 @@ export class Brain {
               detail: `Blocked by permission policy (class=${policy.classFor(call.name)})`,
             });
             // Feed a synthetic "blocked" result back into the model so it
-            // adapts rather than retrying forever.
-            contents.push({
-              role: 'function',
-              parts: [{ functionResponse: { name: call.name, response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${policy.classFor(call.name)}). Suggest an alternative or tell the user how to enable it.` } } }],
-            } as Content);
+            // adapts rather than retrying forever. Pushed into
+            // responseParts so it commits with the rest of the step's
+            // tool results as one role:'user' message at the end of the
+            // call loop — matching the cancel/error paths.
+            responseParts.push({
+              functionResponse: {
+                name: call.name,
+                response: { error: `policy_blocked: the user's Guardrails forbid action class "${policy.classFor(call.name)}". Suggest an alternative or tell the user they can change this in Settings → Guardrails.` },
+              },
+            });
             continue;
           }
 
@@ -1317,7 +1333,13 @@ export class Brain {
           // activeText not JSON (e.g. "(no active window)") — skip extras
         }
 
-        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 2000)}${extras}`;
+        // v0.18.0 — screenText cap reduced 2000 → 800 chars. The first-
+        // turn screen-context bloats every initial user message (OCR
+        // dump + active window + skills preamble + workflow hint can
+        // total 5-10KB before the user's actual ask). 800 chars is
+        // enough to convey "what app/page is this" without dragging
+        // every menu/footer/toolbar label into the model's eyes.
+        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 800)}${extras}`;
       })();
       const timeout = new Promise<string>((r) => setTimeout(() => r('<screen-context-timeout>'), timeoutMs));
       return await Promise.race([promise, timeout]);
@@ -1452,7 +1474,15 @@ export class Brain {
     contents: Content[],
     opts: { user_profile?: string; proactive?: boolean; max_tokens?: number } = {},
   ): Promise<TurnResponse> {
-    const MAX_RETRIES = 2;
+    // v0.18.0 — retry budget cut. Was MAX_RETRIES=2 + BASE_DELAY_MS=1500
+    // + 60s per attempt, worst case ~184s for a hung first request
+    // (timeout × 3 attempts + 1.5+3 backoff). Per support report
+    // "youtube task took 1+ min": the dominant cost was step-1 timing
+    // out at 60s then retrying. With timeout reduced to 40s below AND
+    // MAX_RETRIES dropped to 1, worst case caps at ~81.5s — still
+    // tolerant of transient network blips, but a hung first call gives
+    // up in ~40s instead of dragging the whole task to ~3 minutes.
+    const MAX_RETRIES = 1;
     const BASE_DELAY_MS = 1500;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -1487,11 +1517,19 @@ export class Brain {
       req.setHeader('Authorization', `Bearer ${licenseKey}`);
       req.setHeader('X-Client-Version', app.getVersion());
 
+      // v0.18.0 — timeout reduced 60s → 40s per perf audit.
+      // 40s is the floor that still tolerates legitimately slow vision
+      // turns on Kimi K2.6 (first-token latencies seen in telemetry up
+      // to ~30s on screenshot-heavy steps). Below that we risk killing
+      // valid slow calls. Above 40s, hung sockets dominate task wall-
+      // clock. The matching MAX_RETRIES drop to 1 caps worst-case at
+      // ~81s instead of the previous ~184s.
       const timeout = setTimeout(() => {
-        log.error('Turn API timeout (60s)');
+        const elapsed = Date.now() - startTime;
+        log.error('Turn API timeout (40s)', { elapsed_ms: elapsed });
         req.abort();
         resolve({ error: 'timeout' });
-      }, 60_000);
+      }, 40_000);
 
       req.on('response', (response) => {
         let data = '';

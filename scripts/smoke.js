@@ -1025,6 +1025,75 @@ function layer1() {
   } else {
     fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
+
+  // ────────── v0.18.0 PR-A1 — perf + proactive correctness invariants ──────────
+  // These check that the five surgical fixes shipped together don't
+  // silently regress on a future refactor. Each invariant is a
+  // structural grep that fails loud if the fix is reverted.
+
+  const ipcSrcNow = fs.readFileSync(path.join(ROOT, 'src', 'main', 'ipc.ts'), 'utf8');
+  const settingsHtmlNow = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'settings.html'), 'utf8');
+  const preloadSrcNow = fs.readFileSync(path.join(ROOT, 'src', 'preload', 'index.ts'), 'utf8');
+
+  // 1. Turn API timeout is 40s (not 60s) and MAX_RETRIES is 1 (not 2).
+  //    Net effect: worst-case wall-clock for a hung call drops ~3x.
+  const timeout40 = /Turn API timeout \(40s\)/.test(brainSrcNow) && /\b40_000\b/.test(brainSrcNow);
+  const no60sTimeout = !/Turn API timeout \(60s\)/.test(brainSrcNow);
+  const retries1 = /const MAX_RETRIES = 1\b/.test(brainSrcNow);
+  if (timeout40 && no60sTimeout && retries1) {
+    pass('v0.18.0: API timeout 40s + MAX_RETRIES=1 (was 60s + 2)');
+  } else {
+    fail('v0.18.0: timeout/retry budget', `40s=${timeout40} no60s=${no60sTimeout} retries1=${retries1}`);
+  }
+
+  // 2. settings.html slider default value matches store default (300, not 30)
+  //    Store default is in the object-literal initializer for the
+  //    settingsStore in brain.ts — `proactiveInterval: 300000`.
+  const sliderMatch = /id="setting-proactive-interval"[^>]*value="(\d+)"/.exec(settingsHtmlNow);
+  const storeMatch = /proactiveInterval:\s*(\d+)/.exec(brainSrcNow);
+  const sliderVal = sliderMatch && sliderMatch[1];
+  const storeVal = storeMatch && storeMatch[1];
+  if (sliderVal === '300' && storeVal === '300000') {
+    pass('v0.18.0: settings.html slider default matches brainSettingsStore (both 300s)');
+  } else {
+    fail('v0.18.0: slider/store default', `slider="${sliderVal}" store="${storeVal}"`);
+  }
+
+  // 3. restartProactiveLoop no longer guards on `mode === 'awake'`.
+  //    Settings changes while sleeping should re-arm the loop too.
+  const restartFn = brainSrcNow.match(/restartProactiveLoop\(\):\s*void\s*\{([\s\S]*?)\n\s{2}\}/);
+  const fnBody = restartFn && restartFn[1];
+  const hasGuard = fnBody && /this\.mode\s*===\s*'awake'/.test(fnBody);
+  const callsStartLoop = fnBody && /this\.startLoop\(\)/.test(fnBody);
+  if (fnBody && !hasGuard && callsStartLoop) {
+    pass('v0.18.0: restartProactiveLoop drops sleep-mode guard');
+  } else {
+    fail('v0.18.0: restartProactiveLoop body', `hasGuard=${hasGuard} callsStart=${callsStartLoop}`);
+  }
+
+  // 4. ipc.ts emits BOTH the boolean `proactive-toggle` and the new
+  //    numeric `proactive-interval` channels on settings change.
+  //    Code reviewer flagged that reshaping the existing boolean channel
+  //    would silently break tray.ts:74; we add a separate channel for
+  //    the interval instead.
+  const emitsToggle = /webContents\.send\('proactive-toggle',\s*enabled\)/.test(ipcSrcNow);
+  const emitsInterval = /webContents\.send\('proactive-interval',\s*interval\)/.test(ipcSrcNow);
+  const preloadHasInterval = /onProactiveInterval:/.test(preloadSrcNow) && /'proactive-interval'/.test(preloadSrcNow);
+  if (emitsToggle && emitsInterval && preloadHasInterval) {
+    pass('v0.18.0: ipc emits proactive-toggle (bool) + proactive-interval (number); preload exposes both');
+  } else {
+    fail('v0.18.0: proactive IPC channels', `emit_toggle=${emitsToggle} emit_interval=${emitsInterval} preload=${preloadHasInterval}`);
+  }
+
+  // 5. screenText capped at 800 chars in captureScreenContext (was 2000).
+  //    Cuts ~5KB of OCR/UIA dump from every first-turn user message.
+  const screenCap800 = /screenText\s*\|\|\s*''\)\.substring\(0,\s*800\)/.test(brainSrcNow);
+  const no2000Cap = !/screenText\s*\|\|\s*''\)\.substring\(0,\s*2000\)/.test(brainSrcNow);
+  if (screenCap800 && no2000Cap) {
+    pass('v0.18.0: screenText capped at 800 chars (was 2000)');
+  } else {
+    fail('v0.18.0: screenText cap', `cap800=${screenCap800} no2000=${no2000Cap}`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
