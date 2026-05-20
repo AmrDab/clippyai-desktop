@@ -13,6 +13,8 @@
 import { execFile, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+// v0.18.3 — static import so Rollup bundles user-takeover.
+import * as userTakeover from './user-takeover';
 import fs from 'fs';
 import os from 'os';
 import http from 'http';
@@ -2905,9 +2907,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   const isInputTool = INPUT_GENERATING_TOOLS.has(tool);
   if (isInputTool) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const t = require('./user-takeover') as typeof import('./user-takeover');
-      t.noteClippyInput(tool);
+      userTakeover.noteClippyInput(tool);
     } catch { /* monitor may not be active outside of task execution */ }
   }
 
@@ -2935,9 +2935,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   // ends of the OS event-registration latency.
   if (isInputTool) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const t = require('./user-takeover') as typeof import('./user-takeover');
-      t.noteClippyInput(tool);
+      userTakeover.noteClippyInput(tool);
     } catch { /* monitor may not be active */ }
   }
 

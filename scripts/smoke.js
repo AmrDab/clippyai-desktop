@@ -1237,31 +1237,34 @@ function layer1() {
     fail('v0.18.1: user-takeover module', 'src/main/user-takeover.ts missing');
   }
 
-  // brain.ts: cancelReason field, takeover.start in task lifecycle,
-  // friendly stop message in finally, takeover.stop in finally
+  // brain.ts: cancelReason field, takeover start/stop, friendly stop
+  // message, AND a static import — the latter catches the v0.18.1
+  // Rollup bundle bug where a lazy require() slipped past the tree-
+  // shaker and the takeover module body never reached the bundle.
   const cancelReasonField = /private cancelReason:.*TakeoverReason/.test(brainSrcNow);
-  const startsTakeover = /takeover\.start\(\(reason, detail\) =>/.test(brainSrcNow);
-  const stopsTakeover = /takeover\.stop\(\)/.test(brainSrcNow);
+  const startsTakeover = /(takeover|userTakeover)\.start\(\(reason, detail\) =>/.test(brainSrcNow);
+  const stopsTakeover = /(takeover|userTakeover)\.stop\(\)/.test(brainSrcNow);
   const speaksReason = /'I'll stop'|"I'll stop — looks like you grabbed the mouse\."|grabbed the mouse|go ahead and type|taken over/.test(brainSrcNow);
-  if (cancelReasonField && startsTakeover && stopsTakeover && speaksReason) {
-    pass('v0.18.1: brain.ts wires takeover (start, stop, cancelReason field, friendly stop message)');
+  const userTakeoverStaticImport = /^import \* as userTakeover from ['"]\.\/user-takeover['"]/m.test(brainSrcNow);
+  if (cancelReasonField && startsTakeover && stopsTakeover && speaksReason && userTakeoverStaticImport) {
+    pass('v0.18.1: brain.ts wires takeover (static import + start + stop + cancelReason + stop message)');
   } else {
-    fail('v0.18.1: brain.ts takeover wiring', `field=${cancelReasonField} start=${startsTakeover} stop=${stopsTakeover} speak=${speaksReason}`);
+    fail('v0.18.1: brain.ts takeover wiring', `field=${cancelReasonField} start=${startsTakeover} stop=${stopsTakeover} speak=${speaksReason} staticImport=${userTakeoverStaticImport}`);
   }
 
   // tools.ts: INPUT_GENERATING_TOOLS set + noteClippyInput called
-  // both BEFORE and AFTER tool dispatch (covers OS event-registration
-  // tail-latency on macOS)
+  // pre AND post (covers OS event-registration tail-latency on macOS),
+  // AND a static import (Rollup bundle fix).
   const toolsSrcPRB = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
   const hasInputSet = /INPUT_GENERATING_TOOLS = new Set\(\[/.test(toolsSrcPRB);
   const inputSetIncludesCore = ['mouse_click', 'type_text', 'smart_click', 'cdp_type', 'key_press']
     .every((t) => new RegExp(`'${t}'`).test(toolsSrcPRB));
-  // Two distinct noteClippyInput call sites (pre + post) inside executeTool
-  const noteCallCount = (toolsSrcPRB.match(/t\.noteClippyInput\(tool\)/g) || []).length;
-  if (hasInputSet && inputSetIncludesCore && noteCallCount >= 2) {
-    pass('v0.18.1: tools.ts has INPUT_GENERATING_TOOLS set + noteClippyInput called pre AND post dispatch');
+  const noteCallCount = (toolsSrcPRB.match(/(userTakeover|t)\.noteClippyInput\(tool\)/g) || []).length;
+  const toolsStaticImport = /^import \* as userTakeover from ['"]\.\/user-takeover['"]/m.test(toolsSrcPRB);
+  if (hasInputSet && inputSetIncludesCore && noteCallCount >= 2 && toolsStaticImport) {
+    pass('v0.18.1: tools.ts has INPUT_GENERATING_TOOLS set + static import + noteClippyInput pre+post dispatch');
   } else {
-    fail('v0.18.1: tools.ts takeover wiring', `set=${hasInputSet} core=${inputSetIncludesCore} note_calls=${noteCallCount}`);
+    fail('v0.18.1: tools.ts takeover wiring', `set=${hasInputSet} core=${inputSetIncludesCore} note_calls=${noteCallCount} staticImport=${toolsStaticImport}`);
   }
 }
 

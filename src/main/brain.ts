@@ -24,6 +24,12 @@ import { TOOL_META, narrationFor } from './tool-meta';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
+// v0.18.3 — static import so Rollup bundles the user-takeover module.
+// Lazy `require('./user-takeover')` in v0.18.1 slipped past the tree-
+// shaker; the runtime require threw "Cannot find module" on every
+// task start, so the takeover monitor never actually ran. Caught
+// during the v0.18.2 macOS E2E test by inspecting the live bundle.
+import * as userTakeover from './user-takeover';
 import Store from 'electron-store';
 import { createLogger, serializeErr, setCurrentTaskId } from './logger';
 import { randomUUID } from 'crypto';
@@ -638,9 +644,7 @@ export class Brain {
     // 500ms cadence; Clippy's own input is filtered out via the
     // noteClippyInput() callbacks wired into the tool dispatcher.
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const takeover = require('./user-takeover') as typeof import('./user-takeover');
-      takeover.start((reason, detail) => {
+      userTakeover.start((reason, detail) => {
         if (this.cancelRequested) return;  // already cancelling for another reason
         log.warn('Takeover-driven cancel', { reason, idle_sec: detail.idleSec, cursor_delta: detail.cursorDelta });
         this.cancelRequested = true;
@@ -1241,9 +1245,7 @@ export class Brain {
       // user knows Clippy noticed them taking over instead of just
       // mysteriously going silent.
       try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const takeover = require('./user-takeover') as typeof import('./user-takeover');
-        takeover.stop();
+        userTakeover.stop();
       } catch { /* non-fatal */ }
       if (this.cancelReason) {
         const msg =
