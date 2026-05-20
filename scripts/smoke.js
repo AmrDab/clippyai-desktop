@@ -1286,13 +1286,20 @@ function layer1() {
     }
 
     // 2. brain.ts wires it into the first-user-turn build path.
-    const brainWires = /cv\.looksLikeCursorReference\(text\)/.test(brainSrcNow) &&
-                       /cv\.buildCursorVisionParts\(text\)/.test(brainSrcNow) &&
-                       /cursorParts/.test(brainSrcNow);
-    if (brainWires) {
-      pass('v0.18.2: brain.ts wires cursor-vision into the first user turn');
+    //    v0.18.3 changed from `cv.…` to `cursorVision.…` (static import
+    //    so Rollup bundles the module). Test both names so a future
+    //    refactor doesn't silently re-break the bundle.
+    const looksMatch = /(cv|cursorVision)\.looksLikeCursorReference\(text\)/.test(brainSrcNow);
+    const buildMatch = /(cv|cursorVision)\.buildCursorVisionParts\(text\)/.test(brainSrcNow);
+    const cursorPartsMatch = /cursorParts/.test(brainSrcNow);
+    // v0.18.3 — also require a STATIC import of the module, otherwise
+    // Rollup's tree-shaker may skip the body and the runtime require
+    // throws "Cannot find module."
+    const staticImport = /^import \* as cursorVision from ['"]\.\/cursor-vision['"]/m.test(brainSrcNow);
+    if (looksMatch && buildMatch && cursorPartsMatch && staticImport) {
+      pass('v0.18.2: brain.ts wires cursor-vision (static import + first-user-turn build)');
     } else {
-      fail('v0.18.2: brain.ts cursor-vision wiring', 'looks/build/cursorParts not all found');
+      fail('v0.18.2: brain.ts cursor-vision wiring', `looks=${looksMatch} build=${buildMatch} cursorParts=${cursorPartsMatch} staticImport=${staticImport}`);
     }
 
     // 3. Regex coverage — port the pattern in JS and verify it triggers

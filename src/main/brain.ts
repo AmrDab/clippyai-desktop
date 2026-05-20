@@ -21,6 +21,11 @@
 import { BrowserWindow, net, app } from 'electron';
 import { executeTool, abortAllInFlightTools } from './tools';
 import { TOOL_META, narrationFor } from './tool-meta';
+// v0.18.3 — static import so Rollup's tree-shaker pulls the module
+// body into the main bundle. The v0.18.2 build used a lazy require()
+// which slipped past the bundler and threw "Cannot find module" at
+// runtime on every cursor-vision match.
+import * as cursorVision from './cursor-vision';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
@@ -731,13 +736,20 @@ export class Brain {
       // CLI call ~50ms), conservative pattern (only fires on clear
       // deictic phrases), graceful fallback (capture failure just
       // drops the branch and proceeds with the normal screen context).
+      //
+      // v0.18.3 — uses the top-level `cursorVision` static import.
+      // Previously this was `require('./cursor-vision')` lazy-style,
+      // but Rollup's tree-shaker didn't follow that dynamic require
+      // for this particular file (it worked for user-takeover by
+      // coincidence of bundler heuristics, but not here), so the
+      // module body never made it into the bundle and every match
+      // threw "Cannot find module './cursor-vision'" at runtime.
+      // Static import → unambiguous to Rollup.
       let cursorParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> | null = null;
       try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const cv = require('./cursor-vision') as typeof import('./cursor-vision');
-        if (cv.looksLikeCursorReference(text)) {
+        if (cursorVision.looksLikeCursorReference(text)) {
           log.info('Cursor-vision intent matched, capturing area around cursor');
-          const built = await cv.buildCursorVisionParts(text);
+          const built = await cursorVision.buildCursorVisionParts(text);
           if (built) {
             cursorParts = built.parts;
             log.info('Cursor-vision capture ok', { cursor: built.cursor, parts: cursorParts.length });
