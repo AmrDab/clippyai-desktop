@@ -1263,6 +1263,78 @@ function layer1() {
   } else {
     fail('v0.18.1: tools.ts takeover wiring', `set=${hasInputSet} core=${inputSetIncludesCore} note_calls=${noteCallCount}`);
   }
+
+  // ────────── v0.18.2 — cursor-vision invariants ──────────
+  // "Can you see this?" → capture region around cursor → feed to model.
+
+  const cvPath = path.join(ROOT, 'src', 'main', 'cursor-vision.ts');
+  if (!fs.existsSync(cvPath)) {
+    fail('v0.18.2: cursor-vision module', 'src/main/cursor-vision.ts missing');
+  } else {
+    const cvSrc = fs.readFileSync(cvPath, 'utf8');
+
+    // 1. Module exports the expected API.
+    const hasLooks = /export function looksLikeCursorReference\(/.test(cvSrc);
+    const hasCapture = /export async function captureCursorArea\(/.test(cvSrc);
+    const hasBuild = /export async function buildCursorVisionParts\(/.test(cvSrc);
+    const hasMacPath = /screencapture'/.test(cvSrc) && /'-R'/.test(cvSrc);
+    const hasWinPath = /System\.Drawing\.Bitmap/.test(cvSrc);
+    if (hasLooks && hasCapture && hasBuild && hasMacPath && hasWinPath) {
+      pass('v0.18.2: cursor-vision module exports + dual-platform capture (mac screencapture, win System.Drawing)');
+    } else {
+      fail('v0.18.2: cursor-vision shape', `looks=${hasLooks} capture=${hasCapture} build=${hasBuild} mac=${hasMacPath} win=${hasWinPath}`);
+    }
+
+    // 2. brain.ts wires it into the first-user-turn build path.
+    const brainWires = /cv\.looksLikeCursorReference\(text\)/.test(brainSrcNow) &&
+                       /cv\.buildCursorVisionParts\(text\)/.test(brainSrcNow) &&
+                       /cursorParts/.test(brainSrcNow);
+    if (brainWires) {
+      pass('v0.18.2: brain.ts wires cursor-vision into the first user turn');
+    } else {
+      fail('v0.18.2: brain.ts cursor-vision wiring', 'looks/build/cursorParts not all found');
+    }
+
+    // 3. Regex coverage — port the pattern in JS and verify it triggers
+    //    on the intended positives and rejects clear negatives. If the
+    //    canonical regex in cursor-vision.ts drifts, this catches it.
+    const patternMatch = cvSrc.match(/CURSOR_REFERENCE_PATTERN\s*=\s*\/(.*)\/i;?/);
+    if (!patternMatch) {
+      fail('v0.18.2: cursor-vision regex extraction', 'cannot locate CURSOR_REFERENCE_PATTERN literal');
+    } else {
+      const pattern = new RegExp(patternMatch[1], 'i');
+      const positives = [
+        'can you see this',
+        'can you see this?',
+        'what is this?',
+        "what's this",
+        "what's that",
+        'look at this',
+        'look here',
+        'tell me what this is',
+        'hey clippy can you see this',
+        'describe this please',
+        'what do you see here',
+        'help me with this',
+      ];
+      const negatives = [
+        'what time is it',
+        'send the email',
+        'block 2pm tomorrow',
+        'this is taking forever',  // "this" is metonymy, not a visual referent
+        'open chrome',
+        'are you there',
+      ];
+      const stripWake = (s) => s.replace(/^\s*(?:hey\s+)?clippy[,:]?\s*/i, '').trim();
+      const posMisses = positives.filter((s) => !pattern.test(stripWake(s)));
+      const negHits = negatives.filter((s) => pattern.test(stripWake(s)));
+      if (posMisses.length === 0 && negHits.length === 0) {
+        pass(`v0.18.2: cursor-reference regex — ${positives.length}/${positives.length} positives, ${negatives.length}/${negatives.length} negatives correctly classified`);
+      } else {
+        fail('v0.18.2: cursor-reference regex coverage', `misses=[${posMisses.join('|')}] false_pos=[${negHits.join('|')}]`);
+      }
+    }
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────

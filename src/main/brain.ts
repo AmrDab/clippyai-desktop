@@ -722,13 +722,49 @@ export class Brain {
         ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
         : text) + skillsPreamble;
 
-      // Working contents for this turn's function-call loop
+      // v0.18.2 — cursor-vision intent. If the user said something like
+      // "can you see this?" / "what is this?" / "look here", grab a
+      // 600×400 screenshot centered on their cursor and prepend it
+      // to the first user turn. Gives the model direct visual access
+      // to exactly what they're pointing at, instead of forcing a
+      // full-screen OCR dump and a guess. Cheap (one screencapture
+      // CLI call ~50ms), conservative pattern (only fires on clear
+      // deictic phrases), graceful fallback (capture failure just
+      // drops the branch and proceeds with the normal screen context).
+      let cursorParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> | null = null;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const cv = require('./cursor-vision') as typeof import('./cursor-vision');
+        if (cv.looksLikeCursorReference(text)) {
+          log.info('Cursor-vision intent matched, capturing area around cursor');
+          const built = await cv.buildCursorVisionParts(text);
+          if (built) {
+            cursorParts = built.parts;
+            log.info('Cursor-vision capture ok', { cursor: built.cursor, parts: cursorParts.length });
+          } else {
+            log.warn('Cursor-vision capture failed; proceeding without it');
+          }
+        }
+      } catch (err) {
+        log.warn('Cursor-vision module error (non-fatal)', { err: err instanceof Error ? err.message : String(err) });
+      }
+
+      // Working contents for this turn's function-call loop. When the
+      // cursor-vision branch fired, prepend its parts (text hint + the
+      // cropped image) to the regular first user turn so the model
+      // gets the visual context before reasoning about the request.
+      const userParts: Part[] = cursorParts
+        ? [...cursorParts, { text: initialText }]
+        : [{ text: initialText }];
       const contents: Content[] = [
         ...this.history,
-        { role: 'user', parts: [{ text: initialText }] },
+        { role: 'user', parts: userParts },
       ];
 
-      // Persist the unaugmented user text to history
+      // Persist the unaugmented user text to history. We deliberately
+      // do NOT store the cursor-vision inlineData — pushHistory is the
+      // cross-task text-only buffer; binary screenshots have no value
+      // on a later task and would defeat the per-task pruning.
       this.pushHistory({ role: 'user', parts: [{ text }] });
 
       const profile = getUserProfile();
