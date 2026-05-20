@@ -1211,6 +1211,58 @@ function layer1() {
   } else {
     fail('v0.18.1: prune semantics', `A=${a_ok} B=${b_ok} C=${c_ok} D=${d_ok}`);
   }
+
+  // ────────── v0.18.1 PR-B — user-takeover invariants ──────────
+  // Powers the "Clippy stops when you grab the mouse / start typing"
+  // behavior. Module + wiring tests only — actual detection logic
+  // relies on Electron's powerMonitor + screen APIs which are not
+  // reachable from the layer-1 pure-Node runner.
+
+  const takeoverPath = path.join(ROOT, 'src', 'main', 'user-takeover.ts');
+  if (fs.existsSync(takeoverPath)) {
+    const takeoverSrc = fs.readFileSync(takeoverPath, 'utf8');
+    const exportsExpected = ['start', 'stop', 'noteClippyInput', 'pauseDetection', 'resumeDetection', 'isActive'];
+    const missingExports = exportsExpected.filter(
+      (name) => !new RegExp(`export function ${name}\\b`).test(takeoverSrc),
+    );
+    const hasPowerMonitor = /powerMonitor\.getSystemIdleTime\(\)/.test(takeoverSrc);
+    const hasCursorPoll = /screen\.getCursorScreenPoint\(\)/.test(takeoverSrc);
+    const hasGraceWindow = /GRACE_WINDOW_MS\s*=\s*1500\b/.test(takeoverSrc);
+    if (missingExports.length === 0 && hasPowerMonitor && hasCursorPoll && hasGraceWindow) {
+      pass('v0.18.1: user-takeover module exports the expected API + uses powerMonitor + cursor delta + 1.5s grace');
+    } else {
+      fail('v0.18.1: user-takeover module shape', `missing=${missingExports.join(',')} pm=${hasPowerMonitor} cur=${hasCursorPoll} grace=${hasGraceWindow}`);
+    }
+  } else {
+    fail('v0.18.1: user-takeover module', 'src/main/user-takeover.ts missing');
+  }
+
+  // brain.ts: cancelReason field, takeover.start in task lifecycle,
+  // friendly stop message in finally, takeover.stop in finally
+  const cancelReasonField = /private cancelReason:.*TakeoverReason/.test(brainSrcNow);
+  const startsTakeover = /takeover\.start\(\(reason, detail\) =>/.test(brainSrcNow);
+  const stopsTakeover = /takeover\.stop\(\)/.test(brainSrcNow);
+  const speaksReason = /'I'll stop'|"I'll stop — looks like you grabbed the mouse\."|grabbed the mouse|go ahead and type|taken over/.test(brainSrcNow);
+  if (cancelReasonField && startsTakeover && stopsTakeover && speaksReason) {
+    pass('v0.18.1: brain.ts wires takeover (start, stop, cancelReason field, friendly stop message)');
+  } else {
+    fail('v0.18.1: brain.ts takeover wiring', `field=${cancelReasonField} start=${startsTakeover} stop=${stopsTakeover} speak=${speaksReason}`);
+  }
+
+  // tools.ts: INPUT_GENERATING_TOOLS set + noteClippyInput called
+  // both BEFORE and AFTER tool dispatch (covers OS event-registration
+  // tail-latency on macOS)
+  const toolsSrcPRB = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
+  const hasInputSet = /INPUT_GENERATING_TOOLS = new Set\(\[/.test(toolsSrcPRB);
+  const inputSetIncludesCore = ['mouse_click', 'type_text', 'smart_click', 'cdp_type', 'key_press']
+    .every((t) => new RegExp(`'${t}'`).test(toolsSrcPRB));
+  // Two distinct noteClippyInput call sites (pre + post) inside executeTool
+  const noteCallCount = (toolsSrcPRB.match(/t\.noteClippyInput\(tool\)/g) || []).length;
+  if (hasInputSet && inputSetIncludesCore && noteCallCount >= 2) {
+    pass('v0.18.1: tools.ts has INPUT_GENERATING_TOOLS set + noteClippyInput called pre AND post dispatch');
+  } else {
+    fail('v0.18.1: tools.ts takeover wiring', `set=${hasInputSet} core=${inputSetIncludesCore} note_calls=${noteCallCount}`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
