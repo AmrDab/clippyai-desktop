@@ -167,6 +167,68 @@ type Content = {
   parts: Part[];
 };
 
+/**
+ * v0.18.1 — Prune `inlineData` (base64 screenshot) parts from older
+ * entries in the conversation `contents` array. Used just before each
+ * model API call to cap the per-turn vision-token budget within a task.
+ *
+ * **Why this exists**: Without pruning, every `desktop_screenshot` (or
+ * any tool that returns `result.image.data`) pushes a base64 PNG into
+ * `contents`, and `contents` is re-sent in full on every subsequent
+ * `callTurn` call up to MAX_STEPS. A task that takes 5 screenshots
+ * therefore carries 5 × ~500 KB of stale base64 into every later
+ * turn's wire payload. Kimi K2.6's vision encoder pays for each one
+ * regardless of whether the model still cares about it. This was the
+ * #1 root cause flagged by the Opus-model context-overstimulation
+ * audit on 2026-05-19.
+ *
+ * **Behavior**:
+ *  - Returns a NEW array; never mutates `contents`. Critical because
+ *    `contents` is the live working buffer used across the MAX_STEPS=40
+ *    loop, and mutating it would destroy the model's ability to ever
+ *    reference an older screenshot if a future change widens the keep
+ *    window.
+ *  - Recent entries (the last `keep` of them) stay intact, with their
+ *    `inlineData` parts. Older entries have ONLY their `inlineData`
+ *    parts stripped — `text` and `functionResponse` parts are kept so
+ *    the model's tool-call chain stays intact.
+ *  - `keep = 2` is the sensible default: the model can still cross-
+ *    reference "did the click land?" between two consecutive frames.
+ *
+ * **Observability**: returns `droppedCount` and `droppedBytes` so the
+ * caller can emit a single `Pruned.images` log line per pruned call.
+ *
+ * **Pure function**: no side effects, no module-level state. Exported
+ * for unit testing.
+ */
+export function pruneStaleInlineData(
+  contents: ReadonlyArray<Content>,
+  keep = 2,
+): { pruned: Content[]; droppedCount: number; droppedBytes: number } {
+  if (keep >= contents.length || keep < 0) {
+    return { pruned: contents.slice(), droppedCount: 0, droppedBytes: 0 };
+  }
+  const cutoff = contents.length - keep;
+  let droppedCount = 0;
+  let droppedBytes = 0;
+  const pruned = contents.map((entry, idx) => {
+    if (idx >= cutoff) return entry;
+    if (!entry.parts || entry.parts.length === 0) return entry;
+    const newParts = entry.parts.filter((part) => {
+      if ('inlineData' in part && part.inlineData?.data) {
+        droppedCount++;
+        droppedBytes += part.inlineData.data.length;
+        return false;
+      }
+      return true;
+    });
+    return newParts.length === entry.parts.length
+      ? entry
+      : { ...entry, parts: newParts };
+  });
+  return { pruned, droppedCount, droppedBytes };
+}
+
 type TurnSuccess = {
   parts: Part[];
   done: boolean;
@@ -295,6 +357,27 @@ interface BrainSettings {
   ttsEnabled: boolean;
   /** Utterance rate 0.5–2.0 (default 1.1). */
   speechRate: number;
+  /**
+   * v0.18.1 — how many recent conversation entries keep their inlineData
+   * (base64 screenshot) parts before each model API call. Older entries
+   * have their inlineData stripped to cap per-turn payload growth. The
+   * pre-v0.18.1 behavior was effectively `keep = Infinity` — every
+   * screenshot accumulated for the lifetime of a task (up to MAX_STEPS
+   * = 40 turns), and Kimi K2.6's vision encoder paid for each one on
+   * every subsequent call.
+   *
+   *   2 = sensible default — model can still cross-reference "did the
+   *       click land?" between two consecutive shots
+   *   1 = aggressive — only the latest shot; OK for chat-style tasks
+   *   0 = never send screenshots in history (model sees them once,
+   *       then they're gone)
+   *   Number.MAX_SAFE_INTEGER = legacy unbounded behavior; revert
+   *       lever for users who hit a regression
+   *
+   * Feature-flagged so a vision-chain regression can be rolled back
+   * without a redeploy.
+   */
+  imageHistoryKeep: number;
 }
 
 const settingsStore = new Store<BrainSettings>({
@@ -311,6 +394,7 @@ const settingsStore = new Store<BrainSettings>({
     bubbleAutoHideMs: 30000,     // 30s default (was hardcoded 20s, too short)
     ttsEnabled: true,
     speechRate: 1.1,
+    imageHistoryKeep: 2,         // v0.18.1 — see BrainSettings.imageHistoryKeep
   },
 });
 
@@ -1597,7 +1681,17 @@ export class Brain {
         const s = m.getMcpChromeStatus();
         if (s) mcp_chrome = { ready: !!s.ready, tool_count: s.tool_count || 0 };
       } catch { /* probe may not have run yet */ }
-      req.write(JSON.stringify({ contents, tool_tiers: buildToolTiers(), mail_env, installed_skills, mcp_chrome, ...opts }));
+      // v0.18.1 — Prune stale inlineData (screenshots) from history
+      // before serializing. Caps the per-turn wire payload growth that
+      // was the dominant overstimulation vector. `imageHistoryKeep`
+      // setting is the feature-flag revert lever — set to a huge
+      // number to disable pruning entirely without redeploy.
+      const keepImages = settingsStore.get('imageHistoryKeep') ?? 2;
+      const { pruned, droppedCount, droppedBytes } = pruneStaleInlineData(contents, keepImages);
+      if (droppedCount > 0) {
+        log.info('Pruned.images', { dropped: droppedCount, bytes_saved: droppedBytes, kept: keepImages, contents_len: contents.length });
+      }
+      req.write(JSON.stringify({ contents: pruned, tool_tiers: buildToolTiers(), mail_env, installed_skills, mcp_chrome, ...opts }));
       req.end();
     });
   }

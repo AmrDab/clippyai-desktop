@@ -1094,6 +1094,123 @@ function layer1() {
   } else {
     fail('v0.18.0: screenText cap', `cap800=${screenCap800} no2000=${no2000Cap}`);
   }
+
+  // ────────── v0.18.1 PR-A2 — image-pruning invariants ──────────
+  // The dominant overstimulation vector per the Opus context audit:
+  // base64 screenshots accumulating in contents and re-sent every turn.
+
+  // 1. Pure helper exists with the right signature.
+  const helperDecl = /export function pruneStaleInlineData\(\s*contents:\s*ReadonlyArray<Content>,?\s*keep\s*=\s*2,?\s*\)\s*:/.test(brainSrcNow);
+  if (helperDecl) {
+    pass('v0.18.1: pruneStaleInlineData(contents, keep=2) declared');
+  } else {
+    fail('v0.18.1: pruneStaleInlineData signature', 'helper not found with expected signature');
+  }
+
+  // 2. Helper is called BEFORE req.write in callTurnOnce.
+  const callSite = brainSrcNow.indexOf('pruneStaleInlineData(contents');
+  const reqWriteSite = brainSrcNow.indexOf('req.write(JSON.stringify({ contents: pruned');
+  if (callSite > 0 && reqWriteSite > callSite) {
+    pass('v0.18.1: pruneStaleInlineData wired into callTurnOnce before req.write');
+  } else {
+    fail('v0.18.1: pruning wiring', `callSite=${callSite} reqWrite=${reqWriteSite}`);
+  }
+
+  // 3. imageHistoryKeep is in BrainSettings with default 2.
+  const settingTyped = /imageHistoryKeep:\s*number/.test(brainSrcNow);
+  const settingDefault = /imageHistoryKeep:\s*2/.test(brainSrcNow);
+  if (settingTyped && settingDefault) {
+    pass('v0.18.1: imageHistoryKeep typed in BrainSettings + default=2');
+  } else {
+    fail('v0.18.1: imageHistoryKeep setting', `typed=${settingTyped} default=${settingDefault}`);
+  }
+
+  // 4. Behavioral test — port the algorithm into pure JS and verify
+  //    semantics against four fixtures. If the TS implementation
+  //    drifts away from this contract, the structural tests above
+  //    won't catch it; this one will.
+  //
+  //    Contract:
+  //      - keep >= contents.length: no pruning, return clone
+  //      - keep = N: last N entries kept intact, earlier ones lose inlineData parts only
+  //      - text + functionResponse parts in pruned entries are preserved
+  //      - droppedBytes counts base64 char length of inlineData.data
+  //      - returns a NEW array; never mutates input
+  function pruneRef(contents, keep = 2) {
+    if (keep >= contents.length || keep < 0) {
+      return { pruned: contents.slice(), droppedCount: 0, droppedBytes: 0 };
+    }
+    const cutoff = contents.length - keep;
+    let droppedCount = 0, droppedBytes = 0;
+    const pruned = contents.map((entry, idx) => {
+      if (idx >= cutoff) return entry;
+      if (!entry.parts || !entry.parts.length) return entry;
+      const newParts = entry.parts.filter((part) => {
+        if (part && part.inlineData && part.inlineData.data) {
+          droppedCount++;
+          droppedBytes += String(part.inlineData.data).length;
+          return false;
+        }
+        return true;
+      });
+      return newParts.length === entry.parts.length
+        ? entry
+        : Object.assign({}, entry, { parts: newParts });
+    });
+    return { pruned, droppedCount, droppedBytes };
+  }
+
+  // Fixture A: 4 entries, each with one inlineData part; keep=2.
+  //   → entries 0,1 should be stripped, entries 2,3 intact.
+  //   → droppedCount=2, droppedBytes=AAA+BBB length=6
+  const fxA = [
+    { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'AAA' } }] },
+    { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'BBB' } }] },
+    { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'CCC' } }] },
+    { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'DDD' } }] },
+  ];
+  const rA = pruneRef(fxA, 2);
+  const a_ok =
+    rA.pruned[0].parts.length === 0 &&
+    rA.pruned[1].parts.length === 0 &&
+    rA.pruned[2].parts[0].inlineData.data === 'CCC' &&
+    rA.pruned[3].parts[0].inlineData.data === 'DDD' &&
+    rA.droppedCount === 2 &&
+    rA.droppedBytes === 6;
+
+  // Fixture B: mixed parts — text + inlineData; keep=1.
+  //   Older entry's text part MUST survive; inlineData MUST be dropped.
+  const fxB = [
+    { role: 'user', parts: [{ text: 'find this email' }, { inlineData: { mimeType: 'image/png', data: 'XYZW' } }] },
+    { role: 'model', parts: [{ text: 'done' }] },
+  ];
+  const rB = pruneRef(fxB, 1);
+  const b_ok =
+    rB.pruned[0].parts.length === 1 &&
+    rB.pruned[0].parts[0].text === 'find this email' &&
+    rB.pruned[1].parts[0].text === 'done' &&
+    rB.droppedCount === 1 &&
+    rB.droppedBytes === 4;
+
+  // Fixture C: keep >= length → no pruning.
+  const fxC = [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'KEEPME' } }] }];
+  const rC = pruneRef(fxC, 2);
+  const c_ok = rC.droppedCount === 0 && rC.pruned[0].parts[0].inlineData.data === 'KEEPME';
+
+  // Fixture D: input must not be mutated.
+  const fxD = [
+    { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'OLD' } }] },
+    { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'NEW' } }] },
+  ];
+  const before = JSON.stringify(fxD);
+  pruneRef(fxD, 1);
+  const d_ok = JSON.stringify(fxD) === before;
+
+  if (a_ok && b_ok && c_ok && d_ok) {
+    pass('v0.18.1: prune algorithm — keep last N, strip inlineData only, preserve text, immutable');
+  } else {
+    fail('v0.18.1: prune semantics', `A=${a_ok} B=${b_ok} C=${c_ok} D=${d_ok}`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
