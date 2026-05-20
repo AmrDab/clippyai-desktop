@@ -180,7 +180,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // clawd_status reads the clawdcursor fallback subprocess state. Tagged
   // tier 2 because it is a status read with no UI driving — it just exposes
   // whether the Tier-5 fallback is ready, installing, or disabled.
-  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)' },
+  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)', narration: 'Checking fallback status' },
 
   // ── v0.12.4 additions ──
   zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive', narration: 'Zipping files' },
@@ -218,7 +218,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   browser_read_text: { tier: 4, cost: 'cheap',  description: 'Read text content from a page element (default body). Routes through mcp-chrome if available.', narration: 'Reading the page' },
   browser_list_tabs: { tier: 4, cost: 'cheap',  description: 'List all open browser tabs. mcp-chrome only — CDP attach is single-tab.', narration: 'Listing your tabs' },
   browser_switch_tab:{ tier: 4, cost: 'cheap',  description: 'Switch to a tab by id, url-substring, or title-substring. mcp-chrome only.', narration: 'Switching tabs' },
-  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)', narration: 'Checking fallback status' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {
