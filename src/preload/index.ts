@@ -91,9 +91,13 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.send('open-settings');
   },
 
-  showContextMenu: () => {
-    ipcRenderer.send('show-context-menu');
+  // v0.19.0 PR-3 — optional ruleId so main can add "Don't suggest this again"
+  // when the visible tip was fired by a deterministic rule.
+  showContextMenu: (ruleId?: string) => {
+    ipcRenderer.send('show-context-menu', ruleId);
   },
+  addSuggestionDenylist: (ruleId: string) =>
+    ipcRenderer.invoke('add-suggestion-denylist', ruleId),
 
   onPlayAnimation: (cb: (name: string) => void) => {
     ipcRenderer.on('play-animation', (_e, name) => cb(name));

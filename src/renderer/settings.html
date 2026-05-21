@@ -177,6 +177,35 @@
           <span id="fire-tip-status" style="font-size:12px;color:#888;margin-left:8px;"></span>
         </div>
 
+        <!-- v0.19.0 PR-3 — Clippy energy level for the contextual-suggestion rule engine -->
+        <div class="settings-group" style="margin-top:18px;padding-top:14px;border-top:1px solid #eee;">
+          <label style="font-weight:600;font-size:13px;">Clippy Energy</label>
+          <p style="font-size:11px;color:#888;margin:4px 0 10px 0;">Controls how often Clippy proactively suggests things. Higher energy = more suggestions.</p>
+          <div style="display:flex;gap:8px;flex-direction:column;" id="clippy-energy-group">
+            <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid #ddd;border-radius:6px;background:#fafafa;">
+              <input type="radio" name="clippy-energy" value="subtle" id="energy-subtle" style="margin-top:2px;" />
+              <span>
+                <strong style="font-size:13px;">Subtle</strong><br>
+                <span style="font-size:11px;color:#666;">Only the most obvious suggestions. Longer cooldown between tips.</span>
+              </span>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid #ddd;border-radius:6px;background:#fafafa;">
+              <input type="radio" name="clippy-energy" value="default" id="energy-default" checked style="margin-top:2px;" />
+              <span>
+                <strong style="font-size:13px;">Default</strong><br>
+                <span style="font-size:11px;color:#666;">Balanced — common suggestions at a moderate cadence.</span>
+              </span>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid #ddd;border-radius:6px;background:#fafafa;">
+              <input type="radio" name="clippy-energy" value="lively" id="energy-lively" style="margin-top:2px;" />
+              <span>
+                <strong style="font-size:13px;">Lively</strong><br>
+                <span style="font-size:11px;color:#666;">Every relevant suggestion, shorter cooldown. Great for power users.</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
         <!-- v0.14.1 — Mail Setup status. Surfaces the boot-time probe of
              classic Outlook / new Outlook / default mailto handler so users
              troubleshooting email send can self-diagnose. -->

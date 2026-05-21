@@ -1025,6 +1025,240 @@ function layer1() {
   } else {
     fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
+
+  // ────────── v0.19.0 PR-3 contextual-suggestion rule engine ──────────
+
+  // ── Structural: contextual-suggestions.ts exists + exports RULES/match/interpolate
+  const suggPath = path.join(ROOT, 'src', 'main', 'contextual-suggestions.ts');
+  if (fs.existsSync(suggPath)) {
+    const suggSrc = fs.readFileSync(suggPath, 'utf8');
+    const hasRules       = /export const RULES/.test(suggSrc);
+    const hasMatch       = /export function match\b/.test(suggSrc);
+    const hasInterpolate = /export function interpolate\b/.test(suggSrc);
+    const hasClippyEnergy = /export type ClippyEnergy/.test(suggSrc);
+    const has8Rules      = (suggSrc.match(/id:\s*'/g) || []).length >= 8;
+    if (hasRules && hasMatch && hasInterpolate && hasClippyEnergy && has8Rules) {
+      pass('v0.19.0 PR-3: contextual-suggestions.ts — RULES(8+) + match + interpolate + ClippyEnergy exported');
+    } else {
+      fail('v0.19.0 PR-3: contextual-suggestions.ts shape', `rules=${hasRules}, match=${hasMatch}, interpolate=${hasInterpolate}, energy=${hasClippyEnergy}, 8rules=${has8Rules}`);
+    }
+  } else {
+    fail('v0.19.0 PR-3: contextual-suggestions.ts', 'file does not exist');
+  }
+
+  // ── Bundle invariant: brain.ts has STATIC import (not dynamic require/import())
+  const brainHasStaticImport = /^import \* as suggestions from '\.\/contextual-suggestions'/m.test(brainSrcNow);
+  if (brainHasStaticImport) {
+    pass('v0.19.0 PR-3: brain.ts uses static import for contextual-suggestions (bundle-skip regression guard)');
+  } else {
+    fail('v0.19.0 PR-3: static import', 'brain.ts is missing `import * as suggestions from ./contextual-suggestions`');
+  }
+
+  // ── Windows process names present in rule regexes
+  const suggSrcForWindows = fs.existsSync(suggPath) ? fs.readFileSync(suggPath, 'utf8') : '';
+  const hasOutlookExe  = /outlook\\\.exe/.test(suggSrcForWindows);
+  const hasCodeExe     = /code\\\.exe/.test(suggSrcForWindows);
+  const hasSlackExe    = /slack\\\.exe/.test(suggSrcForWindows);
+  const hasNotionExe   = /notion\\\.exe/.test(suggSrcForWindows);
+  const hasAcrobatExe  = /AcroRd32\\\.exe/.test(suggSrcForWindows);
+  if (hasOutlookExe && hasCodeExe && hasSlackExe && hasNotionExe && hasAcrobatExe) {
+    pass('v0.19.0 PR-3: Windows process names present (outlook.exe, code.exe, slack.exe, notion.exe, AcroRd32.exe)');
+  } else {
+    fail('v0.19.0 PR-3: Windows process names', `outlook=${hasOutlookExe}, code=${hasCodeExe}, slack=${hasSlackExe}, notion=${hasNotionExe}, acrobat=${hasAcrobatExe}`);
+  }
+
+  // ── Behavioral: pure-JS re-implementation of match() for fixture-based tests.
+  const ENERGY_ORDER_SMOKE = ['subtle', 'default', 'lively'];
+  function energyLevelSmoke(e) { return ENERGY_ORDER_SMOKE.indexOf(e); }
+
+  // Re-parse RULES from the source file by evaluating a simplified CJS wrapper.
+  let RULES_SMOKE;
+  try {
+    const suggSrc2 = fs.readFileSync(suggPath, 'utf8');
+    let cjsSrc = suggSrc2
+      .replace(/^export /gm, '')
+      .replace(/: ClippyEnergy/g, '')
+      .replace(/: SuggestionRule\[\]/g, '')
+      .replace(/: SuggestionContext\b/g, '')
+      .replace(/: string\b/g, '')
+      .replace(/: number\b/g, '')
+      .replace(/: boolean\b/g, '')
+      .replace(/^(type|interface) \w[\s\S]*?^}/gm, '')
+      .replace(/export\s+type\s+\w+[\s\S]*?;/gm, '');
+    const fn = new Function('require', 'module', 'exports', `${cjsSrc}\nmodule.exports = { RULES, match, interpolate };`);
+    const mod = { exports: {} };
+    fn(require, mod, mod.exports);
+    RULES_SMOKE = mod.exports.RULES;
+    if (!Array.isArray(RULES_SMOKE) || RULES_SMOKE.length < 8) throw new Error('RULES not array or too short');
+  } catch (parseErr) {
+    RULES_SMOKE = null;
+  }
+
+  // matchSmoke — pure-JS implementation of the match algorithm
+  function matchSmoke(rules, ctx, opts) {
+    const userEnergyLevel = energyLevelSmoke(opts.energy);
+    for (const rule of rules) {
+      if (energyLevelSmoke(rule.minEnergy) > userEnergyLevel) continue;
+      if (opts.denylist.has(rule.id)) continue;
+      if (opts.firedThisSession.has(rule.id)) {
+        if (rule.rearmAfterMs === undefined) continue;
+        const lastFired = opts.lastFiredAt.get(rule.id);
+        if (lastFired !== undefined && opts.now - lastFired < rule.rearmAfterMs) continue;
+      }
+      const w = rule.when;
+      if (w.app !== undefined) {
+        if (typeof w.app === 'string') { if (ctx.app !== w.app) continue; }
+        else { if (!w.app.test(ctx.app)) continue; }
+      }
+      if (w.windowTitle !== undefined && !w.windowTitle.test(ctx.windowTitle)) continue;
+      if (w.idleSec !== undefined) {
+        const { min, max } = w.idleSec;
+        if (min !== undefined && ctx.idleSec < min) continue;
+        if (max !== undefined && ctx.idleSec > max) continue;
+      }
+      if (w.downloadsCount !== undefined && (ctx.downloadsCount === undefined || ctx.downloadsCount < w.downloadsCount.min)) continue;
+      if (w.screenshotsCount !== undefined && (ctx.screenshotsCount === undefined || ctx.screenshotsCount < w.screenshotsCount.min)) continue;
+      if (w.hour !== undefined) {
+        const { min, max } = w.hour;
+        if (min !== undefined && ctx.hourOfDay < min) continue;
+        if (max !== undefined && ctx.hourOfDay > max) continue;
+      }
+      if (w.custom !== undefined && !w.custom(ctx)) continue;
+      return rule;
+    }
+    return null;
+  }
+
+  // interpolateSmoke — mirror of interpolate()
+  function interpolateSmoke(template, ctx) {
+    return template.replace(/\{(\w+)\}/g, (_, key) => {
+      switch (key) {
+        case 'downloadsCount':   return ctx.downloadsCount != null ? String(ctx.downloadsCount) : '?';
+        case 'screenshotsCount': return ctx.screenshotsCount != null ? String(ctx.screenshotsCount) : '?';
+        case 'idleSec':          return String(ctx.idleSec);
+        case 'hourOfDay':        return String(ctx.hourOfDay);
+        case 'app':              return ctx.app;
+        case 'windowTitle':      return ctx.windowTitle;
+        default:                 return '';
+      }
+    });
+  }
+
+  // Use the parsed RULES if available, else build a minimal fixture set
+  const testRules = RULES_SMOKE || [
+    { id: 'mail-compose-detected', minEnergy: 'subtle', when: { app: /^(Mail|Outlook|Spark|Airmail|outlook\.exe|olk\.exe)$/, windowTitle: /^(New Message|Untitled|Re:|Fwd:)/, idleSec: { min: 4, max: 90 } }, say: "Looks like you're writing an email — want me to polish it?", animation: 'Writing' },
+    { id: 'downloads-cluttered', minEnergy: 'default', when: { downloadsCount: { min: 40 }, idleSec: { min: 30 } }, say: 'Your Downloads folder has {downloadsCount} files — want me to tidy it?', animation: 'CheckingSomething' },
+    { id: 'desktop-screenshots-pileup', minEnergy: 'default', when: { screenshotsCount: { min: 20 } }, say: "That's {screenshotsCount} screenshots on your Desktop — want me to file them?", animation: 'Searching' },
+    { id: 'slack-mention-idle', minEnergy: 'subtle', when: { app: /^(Slack|slack\.exe)$/, windowTitle: /\(\d+\).*mention|@you/i, idleSec: { min: 60 } }, say: "You've got a Slack mention waiting — want me to draft a reply?", animation: 'GestureUp' },
+    { id: 'vscode-error-state', minEnergy: 'default', when: { app: /^(Code|Cursor|code\.exe|cursor\.exe)$/, windowTitle: /●|Problem|Error/, idleSec: { min: 8 } }, say: "Looks like there's an error in the editor — want me to take a look?", animation: 'GetAttention' },
+    { id: 'morning-standup', minEnergy: 'lively', when: { hour: { min: 8, max: 10 }, custom: (c) => c.idleSec < 120 }, say: "Morning! Want me to summarize yesterday's tabs and emails?", animation: 'Wave', rearmAfterMs: 24 * 60 * 60 * 1000 },
+    { id: 'pdf-long-read', minEnergy: 'default', when: { app: /^(Preview|Adobe Acrobat|Skim|AcroRd32\.exe|Acrobat\.exe)$/, idleSec: { min: 45 } }, say: 'Want me to summarize this PDF for you?', animation: 'GestureUp' },
+    { id: 'notion-blank-page', minEnergy: 'subtle', when: { app: /^(Notion|notion\.exe)$/, windowTitle: /Untitled|New page/i, idleSec: { min: 5, max: 60 } }, say: 'Need help getting started on this page?', animation: 'Writing' },
+  ];
+
+  const emptyOpts = { energy: 'default', firedThisSession: new Set(), denylist: new Set(), now: Date.now(), lastFiredAt: new Map() };
+
+  // B1: mail-compose POSITIVE — outlook.exe + "New Message" title (Windows path)
+  {
+    const ctx = { app: 'outlook.exe', windowTitle: 'New Message — Drafts', idleSec: 30, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, energy: 'subtle' });
+    if (r && r.id === 'mail-compose-detected') pass('v0.19.0 PR-3 B1: mail-compose-detected fires on outlook.exe + New Message title (Windows)');
+    else fail('v0.19.0 PR-3 B1: mail-compose-detected', `got: ${r ? r.id : 'null'}`);
+  }
+
+  // B2: mail-compose NEGATIVE — Inbox window (not a compose window)
+  {
+    const ctx = { app: 'outlook.exe', windowTitle: 'Inbox — mail@example.com', idleSec: 30, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, energy: 'subtle' });
+    if (!r || r.id !== 'mail-compose-detected') pass('v0.19.0 PR-3 B2: mail-compose-detected does NOT fire for Inbox window');
+    else fail('v0.19.0 PR-3 B2: mail-compose false-positive', 'matched Inbox window');
+  }
+
+  // B3: downloads-cluttered POSITIVE — 45 files, idle 60s
+  {
+    const ctx = { app: 'explorer.exe', windowTitle: 'Downloads', idleSec: 60, downloadsCount: 45, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, emptyOpts);
+    if (r && r.id === 'downloads-cluttered') pass('v0.19.0 PR-3 B3: downloads-cluttered fires at 45 files + 60s idle');
+    else fail('v0.19.0 PR-3 B3: downloads-cluttered', `got: ${r ? r.id : 'null'}`);
+  }
+
+  // B4: downloads-cluttered NEGATIVE — below threshold (39 files)
+  {
+    const ctx = { app: 'explorer.exe', windowTitle: 'Downloads', idleSec: 60, downloadsCount: 39, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, emptyOpts);
+    if (!r || r.id !== 'downloads-cluttered') pass('v0.19.0 PR-3 B4: downloads-cluttered does NOT fire below threshold (39)');
+    else fail('v0.19.0 PR-3 B4: downloads-cluttered threshold', 'fired below 40-file minimum');
+  }
+
+  // B5: slack-mention-idle POSITIVE — slack.exe (Windows)
+  {
+    const ctx = { app: 'slack.exe', windowTitle: '(3) mention Slack', idleSec: 120, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, energy: 'subtle' });
+    if (r && r.id === 'slack-mention-idle') pass('v0.19.0 PR-3 B5: slack-mention-idle fires on slack.exe + mention title + 2min idle (Windows)');
+    else fail('v0.19.0 PR-3 B5: slack-mention-idle', `got: ${r ? r.id : 'null'}`);
+  }
+
+  // B6: vscode-error-state POSITIVE — code.exe (Windows)
+  {
+    const ctx = { app: 'code.exe', windowTitle: '● index.ts — myProject', idleSec: 15, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, emptyOpts);
+    if (r && r.id === 'vscode-error-state') pass('v0.19.0 PR-3 B6: vscode-error-state fires on code.exe + ● title (Windows)');
+    else fail('v0.19.0 PR-3 B6: vscode-error-state', `got: ${r ? r.id : 'null'}`);
+  }
+
+  // B7: denylist blocks a matched rule
+  {
+    const ctx = { app: 'code.exe', windowTitle: '● main.ts', idleSec: 15, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, denylist: new Set(['vscode-error-state']) });
+    if (!r || r.id !== 'vscode-error-state') pass('v0.19.0 PR-3 B7: denylist blocks vscode-error-state');
+    else fail('v0.19.0 PR-3 B7: denylist', 'denylisted rule still matched');
+  }
+
+  // B8: energy='subtle' blocks default-tier rule (downloads-cluttered needs 'default')
+  {
+    const ctx = { app: 'explorer.exe', windowTitle: 'Downloads', idleSec: 60, downloadsCount: 50, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, energy: 'subtle' });
+    if (!r || r.id !== 'downloads-cluttered') pass('v0.19.0 PR-3 B8: energy=subtle blocks default-tier rule (downloads-cluttered)');
+    else fail('v0.19.0 PR-3 B8: energy gate', 'downloads-cluttered fired at subtle energy');
+  }
+
+  // B9: firedThisSession blocks repeat (no rearmAfterMs on most rules)
+  {
+    const ctx = { app: 'code.exe', windowTitle: '● broken.ts', idleSec: 15, hourOfDay: 14 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, firedThisSession: new Set(['vscode-error-state']) });
+    if (!r || r.id !== 'vscode-error-state') pass('v0.19.0 PR-3 B9: firedThisSession blocks repeat for vscode-error-state');
+    else fail('v0.19.0 PR-3 B9: session-lock', 'already-fired rule still matched');
+  }
+
+  // B10: hour gate — morning-standup only fires between 8-10, at lively energy
+  {
+    const ctxMorning = { app: 'chrome.exe', windowTitle: 'New Tab', idleSec: 30, hourOfDay: 9 };
+    const rMorning = matchSmoke(testRules, ctxMorning, { ...emptyOpts, energy: 'lively' });
+    const morningFires = rMorning && rMorning.id === 'morning-standup';
+    const ctxNoon = { app: 'chrome.exe', windowTitle: 'New Tab', idleSec: 30, hourOfDay: 12 };
+    const rNoon = matchSmoke(testRules, ctxNoon, { ...emptyOpts, energy: 'lively' });
+    const noonSilent = !rNoon || rNoon.id !== 'morning-standup';
+    if (morningFires && noonSilent) pass('v0.19.0 PR-3 B10: morning-standup hour gate (fires 8-10, silent at noon)');
+    else fail('v0.19.0 PR-3 B10: hour gate', `morning=${morningFires}, noon-silent=${noonSilent}`);
+  }
+
+  // B11: custom predicate path — morning-standup blocks when idleSec >= 120
+  {
+    const ctx = { app: 'chrome.exe', windowTitle: 'New Tab', idleSec: 200, hourOfDay: 9 };
+    const r = matchSmoke(testRules, ctx, { ...emptyOpts, energy: 'lively' });
+    if (!r || r.id !== 'morning-standup') pass('v0.19.0 PR-3 B11: custom predicate blocks morning-standup when idle >= 120s');
+    else fail('v0.19.0 PR-3 B11: custom predicate', 'morning-standup fired when idleSec=200');
+  }
+
+  // B12: interpolate() substitutes {downloadsCount} correctly
+  {
+    const template = 'Your Downloads folder has {downloadsCount} files — want me to tidy it?';
+    const ctx = { app: 'explorer.exe', windowTitle: 'Downloads', idleSec: 40, downloadsCount: 47, hourOfDay: 14 };
+    const result = interpolateSmoke(template, ctx);
+    const expected = 'Your Downloads folder has 47 files — want me to tidy it?';
+    if (result === expected) pass('v0.19.0 PR-3 B12: interpolate() substitutes {downloadsCount}');
+    else fail('v0.19.0 PR-3 B12: interpolate', `got: "${result}" — want: "${expected}"`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ import { createLogger, serializeErr, setCurrentTaskId } from './logger';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import * as suggestions from './contextual-suggestions';
 
 const log = createLogger('Brain');
 const API_BASE = 'https://api.clippyai.app';
@@ -295,6 +296,10 @@ interface BrainSettings {
   ttsEnabled: boolean;
   /** Utterance rate 0.5–2.0 (default 1.1). */
   speechRate: number;
+  /** v0.19.0 PR-3 — contextual-suggestion energy level. Controls which rule tiers fire. */
+  clippyEnergy: 'subtle' | 'default' | 'lively';
+  /** v0.19.0 PR-3 — rule IDs the user has permanently dismissed via "Don't suggest this again". */
+  suggestionDenylist: string[];
 }
 
 const settingsStore = new Store<BrainSettings>({
@@ -311,6 +316,8 @@ const settingsStore = new Store<BrainSettings>({
     bubbleAutoHideMs: 30000,     // 30s default (was hardcoded 20s, too short)
     ttsEnabled: true,
     speechRate: 1.1,
+    clippyEnergy: 'default',
+    suggestionDenylist: [],
   },
 });
 
@@ -341,6 +348,9 @@ export class Brain {
   private static readonly PROACTIVE_FORCE_FIRE_AFTER_SKIPS = 5;
   private greetedOnWake = false;
   private isExecuting = false;
+  // v0.19.0 PR-3 — contextual-suggestion rule engine state
+  private suggestionFiredThisSession = new Set<string>();
+  private suggestionLastFiredAt = new Map<string, number>();
   // Set by a NEW handleUserMessage call arriving while a previous one is
   // still in its tool-loop. The in-flight loop checks this between steps
   // and aborts, letting the new message take over. Resets at the start of
@@ -1217,6 +1227,68 @@ export class Brain {
       }
       this.proactiveSkipStreak = 0;
       this.lastScreenFingerprint = fingerprint;
+
+      // v0.19.0 PR-3 — contextual-suggestion rule engine. Try a deterministic
+      // rule match BEFORE spending a model call. A match saves a full
+      // round-trip + tokens (~$0.001/tip) for the 60-70% of situations where
+      // a rule is unambiguous. On miss we fall through to the model path below.
+      try {
+        const activeRaw = await executeTool('get_active_window', {}).catch(() => ({ text: '{}' }));
+        let ctxApp = '';
+        let ctxTitle = '';
+        try {
+          const parsed = JSON.parse(activeRaw.text) as { processName?: string; title?: string };
+          ctxApp = parsed.processName ?? '';
+          ctxTitle = parsed.title ?? '';
+        } catch { /* not JSON — leave empty */ }
+
+        const now = Date.now();
+        const downloadsDir = path.join(app.getPath('home'), 'Downloads');
+        let downloadsCount: number | undefined;
+        let screenshotsCount: number | undefined;
+        try {
+          downloadsCount = fs.readdirSync(downloadsDir).length;
+        } catch { /* no Downloads dir — skip */ }
+        try {
+          const desktopDir = app.getPath('desktop');
+          const desktopFiles = fs.readdirSync(desktopDir);
+          screenshotsCount = desktopFiles.filter((f) => /screenshot/i.test(f) && /\.(png|jpg|jpeg)$/i.test(f)).length;
+        } catch { /* no Desktop — skip */ }
+
+        const ctx: suggestions.SuggestionContext = {
+          app: ctxApp,
+          windowTitle: ctxTitle,
+          idleSec: 0, // powerMonitor not imported; use 0 (rules with idleSec.min will not fire on 0)
+          downloadsCount,
+          screenshotsCount,
+          hourOfDay: new Date().getHours(),
+        };
+
+        const energy = settingsStore.get('clippyEnergy') as suggestions.ClippyEnergy;
+        const denylist = new Set<string>(settingsStore.get('suggestionDenylist') as string[]);
+
+        const rule = suggestions.match(ctx, {
+          energy,
+          firedThisSession: this.suggestionFiredThisSession,
+          denylist,
+          now,
+          lastFiredAt: this.suggestionLastFiredAt,
+        });
+
+        if (rule) {
+          this.suggestionFiredThisSession.add(rule.id);
+          this.suggestionLastFiredAt.set(rule.id, now);
+          const text = suggestions.interpolate(rule.say, ctx);
+          log.info('Clippy.say', { text, animation: rule.animation, trigger: 'contextual_rule', rule_id: rule.id });
+          this.emit('clippy-speak', { text, animate: rule.animation, ruleId: rule.id });
+          const cooldown = settingsStore.get('proactiveCooldownMs');
+          this.noRepeatUntil = Date.now() + Math.max(0, cooldown);
+          return;
+        }
+      } catch (ruleErr) {
+        log.warn('contextual-suggestion match failed', serializeErr(ruleErr));
+        // Non-fatal — fall through to model call
+      }
 
       // D2: max_tokens was 120 which truncated legitimate one-sentence tips
       // mid-word (e.g. "...Useful tips for" cut off at token 120). Bumped

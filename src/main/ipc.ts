@@ -148,6 +148,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       // v0.12.3 — exposed cooldown + bubble auto-hide
       proactiveCooldownMs: brainSettingsStore.get('proactiveCooldownMs'),
       bubbleAutoHideMs: brainSettingsStore.get('bubbleAutoHideMs'),
+      // v0.19.0 PR-3 — contextual-suggestion energy level
+      clippyEnergy: brainSettingsStore.get('clippyEnergy'),
       ttsEnabled: licenseStore.get('ttsEnabled', true),
       speechRate: licenseStore.get('speechRate', 1.1),
       // v0.16.0 — pitch + volume
@@ -226,6 +228,28 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // existing-user preferences carry over without a fresh prompt.
     if (settings.wakeWordEnabled !== undefined) {
       licenseStore.set('wakeWordEnabled', Boolean(settings.wakeWordEnabled));
+    }
+    // v0.19.0 PR-3 — Clippy energy level for the contextual-suggestion rule engine.
+    if (settings.clippyEnergy !== undefined) {
+      const energy = String(settings.clippyEnergy);
+      if (['subtle', 'default', 'lively'].includes(energy)) {
+        brainSettingsStore.set('clippyEnergy', energy as 'subtle' | 'default' | 'lively');
+      }
+    }
+    return true;
+  });
+
+  // v0.19.0 PR-3 — "Don't suggest this again" denylist append.
+  // Triggered when the user right-clicks a rule-fired bubble and chooses
+  // "Don't suggest this again". Idempotent: adding an already-denylisted
+  // ID is harmless.
+  ipcMain.handle('add-suggestion-denylist', async (_event, ruleId: unknown) => {
+    if (typeof ruleId !== 'string' || !ruleId.trim()) return false;
+    const id = ruleId.trim().substring(0, 80); // cap length; no traversal risk
+    const current = brainSettingsStore.get('suggestionDenylist') as string[];
+    if (!current.includes(id)) {
+      brainSettingsStore.set('suggestionDenylist', [...current, id]);
+      log.info('Suggestion.denied', { rule_id: id });
     }
     return true;
   });
@@ -645,10 +669,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Right-click context menu
   let voiceMuted = false;
 
-  ipcMain.on('show-context-menu', (_event) => {
+  ipcMain.on('show-context-menu', (_event, ruleId?: string) => {
     const isAwake = brain.getMode() === 'awake';
 
-    const menu = Menu.buildFromTemplate([
+    const menuTemplate: Electron.MenuItemConstructorOptions[] = [
       {
         label: '💬 Chat...',
         click: () => {
@@ -657,6 +681,24 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           mainWindow.webContents.send('clippy-speak', { text, animate: 'Wave' });
         },
       },
+    ];
+
+    // v0.19.0 PR-3 — "Don't suggest this again" appears when the current visible
+    // tip was fired by a deterministic rule (ruleId present).
+    if (ruleId && typeof ruleId === 'string') {
+      menuTemplate.push({
+        label: "🚫 Don't suggest this again",
+        click: () => {
+          const current = brainSettingsStore.get('suggestionDenylist') as string[];
+          if (!current.includes(ruleId)) {
+            brainSettingsStore.set('suggestionDenylist', [...current, ruleId]);
+            log.info('Suggestion.denied', { rule_id: ruleId, source: 'context_menu' });
+          }
+        },
+      });
+    }
+
+    menuTemplate.push(
       { type: 'separator' },
       {
         label: isAwake ? '💤 Sleep' : '☀️ Wake Up',
@@ -699,8 +741,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           app.quit();
         },
       },
-    ]);
+    );
 
+    const menu = Menu.buildFromTemplate(menuTemplate);
     menu.popup({ window: mainWindow });
   });
 
