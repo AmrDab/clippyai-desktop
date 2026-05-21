@@ -7,6 +7,47 @@ html, body {
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
+/* === Platform Visual Tokens — v0.19.0 ====================================
+   The onboarding redesign ships TWO native-feeling visual variants gated by
+   a `data-platform` attribute on <body>. The mac variant (`data-platform=
+   "mac"`) lives in a parallel block added by A3 and uses Liquid Glass
+   semantics — more translucent, content-tinted. This block defines the
+   Windows Fluent / Mica / Acrylic / Reveal tokens. Mica differs from macOS
+   Glass intentionally: more opaque, wallpaper-tinted, with a wider blur
+   radius so the depth reads as "frosted glass over the desktop" rather than
+   "lens distortion over the content underneath".
+
+   Accent: defaults to Windows blue (#0078D4). Future enhancement is to read
+   systemPreferences.getAccentColor() in main and broadcast via IPC, which
+   would replace this with the user's chosen accent. For v0.19.0 a static
+   color is acceptable per spec and avoids a new IPC channel mid-release.
+   ====================================================================== */
+[data-platform="win"] {
+  --fluent-mica:      rgba(243, 243, 243, 0.85);
+  --fluent-acrylic:   rgba(255, 255, 255, 0.7);
+  --fluent-acrylic-blur: blur(60px) saturate(1.2);
+  --fluent-card-bg:   rgba(255, 255, 255, 0.85);
+  --fluent-card-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.04),
+    0 8px 16px rgba(0, 0, 0, 0.08);
+  --fluent-card-shadow-hover:
+    0 4px 8px rgba(0, 0, 0, 0.06),
+    0 16px 32px rgba(0, 0, 0, 0.12);
+  --fluent-card-shadow-pressed:
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  --fluent-accent:    #0078D4;
+  --fluent-accent-rgb: 0, 120, 212;
+  --fluent-accent-hover: #106EBE;
+  --fluent-accent-pressed: #005A9E;
+  --fluent-border:    1px solid rgba(0, 0, 0, 0.05);
+  --fluent-radius-sm: 4px;
+  --fluent-radius-md: 8px;
+  --fluent-radius-lg: 12px;
+  --fluent-reveal-radius: 80px;
+  --fluent-transition: 250ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --fluent-font: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+}
+
 /* === Main Clippy Window === */
 body.clippy-window {
   width: 100%;
@@ -774,4 +815,344 @@ body.settings-window {
   font-size: 14px;
   color: #333;
   letter-spacing: 1px;
+}
+
+/* === Windows Fluent / Mica visual variant — v0.19.0 PR-6 =================
+   These rules ONLY apply when <body data-platform="win">. The mac variant
+   (added by A3) gates on [data-platform="mac"] and overrides a parallel
+   set of selectors. Anything outside the data-platform scope is the legacy
+   "neutral" treatment (still used for the main Clippy window, settings,
+   logs — those windows aren't part of the v0.19.0 redesign yet).
+
+   IDs/classes assumed to exist (added by A3 in onboarding.html):
+     - <body class="onboarding-window" data-platform="win">  (we set the attr)
+     - #step-app-picker, #step-api-keys, #step-setup-complete
+     - .app-card[data-app-id]  (Step 4 cards in 7 sections)
+     - .api-key-row             (Step 5 password input rows)
+     - .step-dot                (footer nav dots — alternative to .progress-dots .dot)
+     - .step-nav-prev, .step-nav-next  (footer arrows — alternative to #btn-back, #btn-next)
+     - .first-win-chip          (Step 6 chip buttons for the 5 demo wins)
+     - [data-fluent-reveal]     (any element opted into the cursor-tracking reveal glow)
+   We style BOTH the new (Step 4-6) selectors AND the existing (Step 1-3)
+   .btn-primary / .btn-secondary / .progress-dots so the entire flow feels
+   uniform when data-platform="win" is set, even before A3's HTML lands.
+   ====================================================================== */
+
+/* ── Mica window backdrop ────────────────────────────────────────────── */
+body.onboarding-window[data-platform="win"] {
+  background: var(--fluent-mica);
+  backdrop-filter: var(--fluent-acrylic-blur);
+  -webkit-backdrop-filter: var(--fluent-acrylic-blur);
+  font-family: var(--fluent-font);
+  color: #1a1a1a;
+  /* Round the outer window shell per Fluent spec. The main process applies
+     rounded corners at the OS level on Win 11 already; this is a fallback
+     for environments where that isn't honored (Win 10, screenshots, dev). */
+  border-radius: var(--fluent-radius-lg);
+}
+
+[data-platform="win"] .onboarding-header h1 {
+  font-weight: 600;
+  color: #1a1a1a;
+  letter-spacing: -0.01em;
+}
+
+[data-platform="win"] .onboarding-header .tagline {
+  color: rgba(0, 0, 0, 0.55);
+  font-weight: 400;
+}
+
+[data-platform="win"] .onboarding-step h2 {
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+[data-platform="win"] .onboarding-step p {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+[data-platform="win"] .onboarding-step label {
+  color: rgba(0, 0, 0, 0.75);
+  font-weight: 600;
+}
+
+/* ── Inputs & selects — Fluent flat with subtle inset ────────────────── */
+[data-platform="win"] .onboarding-step input,
+[data-platform="win"] .onboarding-step select {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.4); /* Fluent's signature thicker bottom edge */
+  border-radius: var(--fluent-radius-sm);
+  font-family: var(--fluent-font);
+  transition: border-color var(--fluent-transition),
+              background var(--fluent-transition),
+              box-shadow var(--fluent-transition);
+}
+
+[data-platform="win"] .onboarding-step input:hover,
+[data-platform="win"] .onboarding-step select:hover {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+[data-platform="win"] .onboarding-step input:focus,
+[data-platform="win"] .onboarding-step select:focus {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(0, 0, 0, 0.08);
+  border-bottom: 2px solid var(--fluent-accent); /* accent underline replaces green ring */
+  box-shadow: none;
+  outline: none;
+}
+
+/* ── Acrylic cards — app picker grid + API key rows ──────────────────── */
+[data-platform="win"] .app-card,
+[data-platform="win"] .api-key-row {
+  background: var(--fluent-acrylic);
+  backdrop-filter: var(--fluent-acrylic-blur);
+  -webkit-backdrop-filter: var(--fluent-acrylic-blur);
+  border: var(--fluent-border);
+  border-radius: var(--fluent-radius-md);
+  box-shadow: var(--fluent-card-shadow);
+  padding: 12px;
+  cursor: pointer;
+  transition: box-shadow var(--fluent-transition),
+              transform var(--fluent-transition),
+              background var(--fluent-transition);
+  position: relative;
+  overflow: hidden;
+}
+
+[data-platform="win"] .app-card:hover,
+[data-platform="win"] .api-key-row:hover {
+  background: var(--fluent-card-bg);
+  box-shadow: var(--fluent-card-shadow-hover);
+  /* Elevation 1 → 2: slight lift on hover */
+  transform: translateY(-1px);
+}
+
+[data-platform="win"] .app-card:active,
+[data-platform="win"] .api-key-row:active {
+  box-shadow: var(--fluent-card-shadow-pressed);
+  transform: translateY(0);
+}
+
+/* Selected app card — accent-tinted border + faint accent fill */
+[data-platform="win"] .app-card.selected,
+[data-platform="win"] .app-card[aria-selected="true"] {
+  background: rgba(var(--fluent-accent-rgb), 0.08);
+  border: 1px solid var(--fluent-accent);
+}
+
+/* ── Reveal effect — radial highlight tracks the cursor ──────────────── */
+/* Tracked via --reveal-x / --reveal-y custom properties set in onboarding.ts
+   on mousemove. Default coords park the gradient offscreen so it's invisible
+   until the cursor enters the element. */
+[data-platform="win"] [data-fluent-reveal] {
+  background-image: radial-gradient(
+    var(--fluent-reveal-radius) circle at
+    var(--reveal-x, -100px) var(--reveal-y, -100px),
+    rgba(var(--fluent-accent-rgb), 0.10),
+    transparent 70%
+  );
+  background-blend-mode: screen;
+  background-repeat: no-repeat;
+}
+
+/* Reveal overlay for elements that already have a background — use a
+   pseudo-element so we don't clobber their fill. Cards/rows above can use
+   this variant via the `.fluent-reveal-overlay` helper class. */
+[data-platform="win"] .app-card[data-fluent-reveal],
+[data-platform="win"] .api-key-row[data-fluent-reveal],
+[data-platform="win"] .first-win-chip[data-fluent-reveal] {
+  position: relative;
+}
+[data-platform="win"] .app-card[data-fluent-reveal]::before,
+[data-platform="win"] .api-key-row[data-fluent-reveal]::before,
+[data-platform="win"] .first-win-chip[data-fluent-reveal]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    var(--fluent-reveal-radius) circle at
+    var(--reveal-x, -100px) var(--reveal-y, -100px),
+    rgba(var(--fluent-accent-rgb), 0.12),
+    transparent 70%
+  );
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity var(--fluent-transition);
+}
+[data-platform="win"] .app-card[data-fluent-reveal]:hover::before,
+[data-platform="win"] .api-key-row[data-fluent-reveal]:hover::before,
+[data-platform="win"] .first-win-chip[data-fluent-reveal]:hover::before {
+  opacity: 1;
+}
+
+/* ── Buttons — Fluent accent primary, subtle secondary ───────────────── */
+[data-platform="win"] .btn-primary,
+[data-platform="win"] .step-nav-next {
+  background: var(--fluent-accent);
+  color: #fff;
+  border: 1px solid var(--fluent-accent);
+  border-radius: var(--fluent-radius-sm);
+  font-family: var(--fluent-font);
+  font-weight: 600;
+  padding: 8px 20px;
+  box-shadow: var(--fluent-card-shadow);
+  transition: background var(--fluent-transition),
+              box-shadow var(--fluent-transition),
+              transform var(--fluent-transition);
+}
+
+[data-platform="win"] .btn-primary:hover,
+[data-platform="win"] .step-nav-next:hover {
+  background: var(--fluent-accent-hover);
+  box-shadow: var(--fluent-card-shadow-hover);
+  transform: translateY(-1px);
+}
+
+[data-platform="win"] .btn-primary:active,
+[data-platform="win"] .step-nav-next:active {
+  background: var(--fluent-accent-pressed);
+  box-shadow: var(--fluent-card-shadow-pressed);
+  transform: translateY(0);
+}
+
+[data-platform="win"] .btn-primary:disabled {
+  background: rgba(0, 0, 0, 0.1);
+  color: rgba(0, 0, 0, 0.35);
+  border-color: transparent;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+[data-platform="win"] .btn-secondary,
+[data-platform="win"] .step-nav-prev {
+  background: var(--fluent-card-bg);
+  color: #1a1a1a;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--fluent-radius-sm);
+  font-family: var(--fluent-font);
+  font-weight: 600;
+  padding: 8px 20px;
+  transition: background var(--fluent-transition),
+              border-color var(--fluent-transition);
+}
+
+[data-platform="win"] .btn-secondary:hover,
+[data-platform="win"] .step-nav-prev:hover {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+[data-platform="win"] .btn-trial {
+  background: var(--fluent-accent);
+  border-radius: var(--fluent-radius-sm);
+  font-family: var(--fluent-font);
+  font-weight: 600;
+  box-shadow: var(--fluent-card-shadow);
+  transition: background var(--fluent-transition),
+              box-shadow var(--fluent-transition);
+}
+
+[data-platform="win"] .btn-trial:hover {
+  background: var(--fluent-accent-hover);
+  box-shadow: var(--fluent-card-shadow-hover);
+}
+
+/* ── Step nav dots — accent fill when active ─────────────────────────── */
+[data-platform="win"] .progress-dots .dot,
+[data-platform="win"] .step-dot {
+  background: rgba(0, 0, 0, 0.15);
+  transition: background var(--fluent-transition),
+              width var(--fluent-transition);
+}
+
+[data-platform="win"] .progress-dots .dot.active,
+[data-platform="win"] .step-dot.active {
+  background: var(--fluent-accent);
+  /* Fluent's signature elongated active pill */
+  width: 18px;
+  border-radius: 4px;
+}
+
+/* ── Divider — single hairline, Mica-friendly ────────────────────────── */
+[data-platform="win"] .onboarding-divider {
+  color: rgba(0, 0, 0, 0.4);
+}
+[data-platform="win"] .onboarding-divider span {
+  background: transparent;
+}
+[data-platform="win"] .onboarding-divider::before {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* ── Errors — keep Win 11 system red ─────────────────────────────────── */
+[data-platform="win"] .onboarding-error {
+  color: #C42B1C;
+  font-weight: 600;
+}
+
+/* ── First-5-wins chips (Step 6) ─────────────────────────────────────── */
+[data-platform="win"] .first-win-chip {
+  background: var(--fluent-acrylic);
+  backdrop-filter: var(--fluent-acrylic-blur);
+  -webkit-backdrop-filter: var(--fluent-acrylic-blur);
+  border: var(--fluent-border);
+  border-radius: var(--fluent-radius-md);
+  box-shadow: var(--fluent-card-shadow);
+  font-family: var(--fluent-font);
+  font-weight: 600;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: box-shadow var(--fluent-transition),
+              transform var(--fluent-transition),
+              background var(--fluent-transition);
+  position: relative;
+  overflow: hidden;
+}
+[data-platform="win"] .first-win-chip:hover {
+  background: var(--fluent-card-bg);
+  box-shadow: var(--fluent-card-shadow-hover);
+  transform: translateY(-1px);
+}
+[data-platform="win"] .first-win-chip:active {
+  box-shadow: var(--fluent-card-shadow-pressed);
+  transform: translateY(0);
+}
+
+/* ── Step transition — slide + fade ──────────────────────────────────── */
+[data-platform="win"] .onboarding-step {
+  /* Slightly less bouncy than the macOS spring — Fluent eases are restrained. */
+  transition: opacity var(--fluent-transition),
+              transform var(--fluent-transition);
+}
+[data-platform="win"] .onboarding-step:not(.active) {
+  opacity: 0;
+  transform: translateY(4px);
+}
+[data-platform="win"] .onboarding-step.active {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Reduced motion — disable transitions + transforms ───────────────── */
+@media (prefers-reduced-motion: reduce) {
+  [data-platform="win"] .app-card,
+  [data-platform="win"] .api-key-row,
+  [data-platform="win"] .first-win-chip,
+  [data-platform="win"] .btn-primary,
+  [data-platform="win"] .btn-secondary,
+  [data-platform="win"] .step-nav-prev,
+  [data-platform="win"] .step-nav-next,
+  [data-platform="win"] .onboarding-step,
+  [data-platform="win"] .progress-dots .dot,
+  [data-platform="win"] .step-dot {
+    transition: none;
+    transform: none;
+  }
+  [data-platform="win"] [data-fluent-reveal]::before {
+    display: none;
+  }
 }
