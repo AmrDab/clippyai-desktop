@@ -29,8 +29,27 @@ function installRendererLogBridge(component: string): void {
   });
 }
 
+// v0.19.0 PR-6 — set data-platform on <body> so the onboarding + future
+// settings/logs windows pick up the platform-native visual variant in
+// style.css. The Clippy sprite window itself doesn't have a Mica/Glass
+// chrome (it's a transparent always-on-top overlay), but children that
+// scope on [data-platform="win"] still inherit the attribute. Coordinated
+// with A3 (mac variant): A3 may rewrite this helper to also broadcast the
+// chosen platform via IPC; keep this single-line shape to make the merge
+// trivial. If A3 has already written this, both branches converge to the
+// same setAttribute and no diff conflict arises.
+function applyPlatformAttribute(): void {
+  const ua = navigator.userAgent.toLowerCase();
+  const platform =
+    ua.includes('windows') ? 'win' :
+    (ua.includes('mac os') || ua.includes('macintosh')) ? 'mac' :
+    'linux';
+  document.body.setAttribute('data-platform', platform);
+}
+
 async function init(): Promise<void> {
   installRendererLogBridge('Renderer.main');
+  applyPlatformAttribute();
   console.log('[Main] Initializing ClippyAI renderer...');
 
   let agentData: AgentData;
