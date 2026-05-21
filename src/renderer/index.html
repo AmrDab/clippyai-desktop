@@ -6,28 +6,86 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body class="clippy-window">
-  <!-- Speech bubble (above Clippy) -->
-  <div id="bubble" class="bubble hidden">
+  <!-- ── Speech bubble v2 (v0.19.0 PR-2) ───────────────────────────────
+       Three-state adaptive bubble with six contextual tints. Replaces the
+       single fixed-size bubble. The `data-state` attribute is the source
+       of truth for which mount points are visible; CSS drives all layout
+       off it (no class soup). The `data-tint` attribute drives the
+       color wash + the one-shot hint animation.
+
+       States:
+         compact   — ~280×60   one-line ambient tip, no input
+         standard  — ~340×auto multi-line + actions + compact input row
+         expanded  — ~480×600  full chat panel with history + chips
+
+       Tints (10–15% wash):
+         default | info | warning | busy | error | success
+       ──────────────────────────────────────────────────────────────── -->
+  <div id="bubble" class="bubble hidden" data-state="standard" data-tint="default">
+    <!-- Expanded-only header — minimize / pin / close. Hidden in compact
+         + standard by CSS via [data-state]. Buttons are wired in
+         BubbleController; they remain in the DOM so the user can hover
+         them before the state transition finishes. -->
+    <div id="bubble-header">
+      <span class="bubble-header-title">Clippy</span>
+      <div class="bubble-header-controls">
+        <button id="bubble-minimize" type="button" title="Minimize to compact" aria-label="Minimize">&minus;</button>
+        <button id="bubble-pin" type="button" title="Pin bubble (stay open across messages)" aria-label="Pin" aria-pressed="false">&#9776;</button>
+        <button id="bubble-close" type="button" title="Close (Esc)" aria-label="Close">&times;</button>
+      </div>
+    </div>
+
+    <!-- Primary text — single line in compact, multi-paragraph in
+         standard, full markdown-rendered in expanded. -->
     <div id="bubble-text"></div>
-    <!-- v0.17.7 — explicit action row for things like update prompts.
-         The previous flow hijacked clicking Clippy himself to confirm
-         updates, which led to accidental restarts. Buttons rendered
-         here are the ONLY way to confirm an action; clicking Clippy
-         is back to "open chat." Hidden by default; populated by
-         BubbleController.speakWithActions. -->
+
+    <!-- v0.17.7 — action row (e.g. "Update now"). Hidden by default;
+         populated by speakWithActions(). -->
     <div id="bubble-actions" class="hidden"></div>
+
+    <!-- Expanded-only conversation history. Markdown-rendered messages,
+         scrollable. Populated by setState('expanded') / renderHistory(). -->
+    <div id="bubble-history" class="hidden"></div>
+
+    <!-- Expanded-only suggestion chips (PR-3 will wire the contextual
+         engine; PR-2 implements the render contract only). -->
+    <div id="bubble-chips" class="hidden"></div>
+
     <div id="bubble-input-area" class="hidden">
+      <!-- Expanded-only file attach button. Hidden in compact + standard
+           by CSS via [data-state]. PR-2 ships the UI; the upload pipeline
+           lands later. -->
+      <button id="bubble-attach" type="button" title="Attach file" aria-label="Attach file">
+        <span aria-hidden="true">&#128206;</span>
+      </button>
       <input id="bubble-input" type="text" placeholder="Type to Clippy..." />
       <!-- v0.17.2 — click-to-toggle voice input. Click to start, click
            again to stop & transcribe, Esc to cancel. (Pre-v0.17.2 was
            hold-to-talk, which felt finicky for clips longer than a few
            seconds.) Hidden when voiceEnabled is false. -->
       <button id="bubble-mic" type="button" title="Click to speak (Ctrl+Shift+Space) · Esc cancels" aria-label="Voice input">
-        <span class="mic-icon" aria-hidden="true">🎤</span>
+        <span class="mic-icon" aria-hidden="true">&#127908;</span>
         <span class="mic-level" aria-hidden="true"></span>
       </button>
-      <button id="bubble-send">&rarr;</button>
+      <!-- v0.19.0 — paper-plane SVG replaces the old "→" character.
+           Inline so we don't pull a sprite sheet for one icon. -->
+      <button id="bubble-send" type="button" title="Send (Enter)" aria-label="Send">
+        <svg class="send-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path fill="currentColor" d="M2.5 11.3 21 3.1c.6-.3 1.2.3.9.9l-8.2 18.5c-.3.6-1.2.6-1.4-.1l-2.3-7-7-2.3c-.7-.2-.7-1.1-.1-1.4Zm9.4 1.6 5.5-5.5-7.6 3.4 2.1 2.1Zm.7.7 2.1 2.1 3.4-7.6-5.5 5.5Z"/>
+        </svg>
+      </button>
     </div>
+
+    <!-- Standard-only corner handle. Hover-revealed bottom-right grip;
+         click to grow into expanded mode. Hidden in compact (no growth
+         path from compact → expanded; user goes compact → standard
+         → expanded). -->
+    <button id="bubble-expand-handle" type="button" title="Expand to full chat" aria-label="Expand">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+        <path fill="currentColor" d="M3 13h3v1H2v-4h1v3Zm10-10h-3V2h4v4h-1V3Z"/>
+      </svg>
+    </button>
+
     <div id="bubble-tail"></div>
   </div>
 

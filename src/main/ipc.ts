@@ -148,6 +148,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       // v0.12.3 — exposed cooldown + bubble auto-hide
       proactiveCooldownMs: brainSettingsStore.get('proactiveCooldownMs'),
       bubbleAutoHideMs: brainSettingsStore.get('bubbleAutoHideMs'),
+      // v0.19.0 PR-2 — bubble v2 prefs (default state + pin)
+      bubbleDefaultState: brainSettingsStore.get('bubbleDefaultState'),
+      bubblePinned: brainSettingsStore.get('bubblePinned'),
       ttsEnabled: licenseStore.get('ttsEnabled', true),
       speechRate: licenseStore.get('speechRate', 1.1),
       // v0.16.0 — pitch + volume
@@ -193,6 +196,19 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const hideMs = Math.max(0, Math.min(120000, Number(settings.bubbleAutoHideMs) || 0));
       brainSettingsStore.set('bubbleAutoHideMs', hideMs);
       mainWindow.webContents.send('bubble-auto-hide', hideMs);
+    }
+    // v0.19.0 PR-2 — bubble default-state + pin. Both broadcast so the
+    // renderer's BubbleController can react without a round-trip getConfig.
+    if (settings.bubbleDefaultState !== undefined) {
+      const v = String(settings.bubbleDefaultState);
+      const state: 'compact' | 'standard' = v === 'compact' ? 'compact' : 'standard';
+      brainSettingsStore.set('bubbleDefaultState', state);
+      mainWindow.webContents.send('bubble-default-state', state);
+    }
+    if (settings.bubblePinned !== undefined) {
+      const pinned = Boolean(settings.bubblePinned);
+      brainSettingsStore.set('bubblePinned', pinned);
+      mainWindow.webContents.send('bubble-pinned', pinned);
     }
     if (proactiveChanged) brain.restartProactiveLoop();
     // TTS toggle + speech rate — saved in licenseStore, broadcast to main window

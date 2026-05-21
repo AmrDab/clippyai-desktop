@@ -30,118 +30,383 @@ body.clippy-window {
   image-rendering: pixelated;
 }
 
-/* === Speech bubble — modernized in v0.11.24 ============================
-   Replaces the gray-bordered, pale-yellow, hard-shadow look with a
-   modern messenger-style card:
-   - near-white frosted background (subtle brand warmth, not yellow)
-   - soft layered shadow (close + ambient + depth) instead of one hard 3-stop
-   - 14px radius — generous but not toy-like
-   - 1px hairline border in low-opacity ink (just enough definition)
-   - macOS/iMessage-style rounded "tail" instead of the CSS triangle hack
-   - system font stack — antialiased, modern fallback
-   ====================================================================== */
+/* ── Bubble v2 — adaptive three-state with six tints (v0.19.0 PR-2) ══════
+   Replaces the single fixed-size bubble with a state machine driven by
+   `data-state` on #bubble: `compact` | `standard` | `expanded`. A second
+   axis, `data-tint`, paints a soft contextual wash + plays a one-shot
+   hint animation on transition. Visual goals:
+
+   - keep the brand: Clippy yellow lives as an inner-glow accent in the
+     `default` tint, not as a flat fill. Tahoma fallback kept for short
+     tips so the retro feel survives; Inter for chat history.
+   - frosted glass (16px backdrop-blur) + 1px ink hairline + soft drop
+     shadow — replaces the v0.11.24 fill + hard shadow combo.
+   - everything CSS-driven from data attributes. No class soup, no JS
+     animation library.
+
+   Layout footprint per state:
+     compact   ≈ 280×60   (single-line tip, no input, no header, no chips)
+     standard  ≈ 340×auto (multi-line + actions + compact input row)
+     expanded  ≈ 480×600  (header + history + chips + larger input)
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Tint palette — CSS custom properties so JS only flips data-tint and
+   CSS picks up the right wash, accent, and shadow. ~10–15% wash over a
+   frosted backdrop (any heavier and contrast on the body text drops). */
+:root {
+  --bubble-radius: 16px;
+  --bubble-bg:        rgba(252, 252, 254, 0.78);
+  --bubble-ink:       rgba(15, 23, 42, 0.88);
+  --bubble-ink-soft:  rgba(15, 23, 42, 0.55);
+  --bubble-hairline:  rgba(15, 23, 42, 0.10);
+  --bubble-inner-stroke: rgba(255, 255, 255, 0.65);
+  --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.18);
+
+  /* default — Clippy brand yellow inner glow */
+  --tint-default-wash:   rgba(255, 212, 0, 0.12);
+  --tint-default-accent: #FFD400;
+  --tint-default-text:   #1c1917;
+
+  /* info — neutral white-frost; user can reply */
+  --tint-info-wash:   rgba(255, 255, 255, 0.30);
+  --tint-info-accent: #94a3b8;
+  --tint-info-text:   #0f172a;
+
+  /* warning — warm amber; approval needed */
+  --tint-warning-wash:   rgba(245, 158, 11, 0.14);
+  --tint-warning-accent: #f59e0b;
+  --tint-warning-text:   #78350f;
+
+  /* busy — cool blue; acting / working */
+  --tint-busy-wash:   rgba(59, 130, 246, 0.12);
+  --tint-busy-accent: #3b82f6;
+  --tint-busy-text:   #1e3a8a;
+
+  /* error — rose-red; blocked or failed */
+  --tint-error-wash:   rgba(244, 63, 94, 0.13);
+  --tint-error-accent: #f43f5e;
+  --tint-error-text:   #881337;
+
+  /* success — mint; recent completion */
+  --tint-success-wash:   rgba(16, 185, 129, 0.13);
+  --tint-success-accent: #10b981;
+  --tint-success-text:   #064e3b;
+}
+
 .bubble {
   position: fixed;
   bottom: 100px;
   right: 5px;
-  width: 300px;
-  min-height: 70px;
-  background: rgba(252, 252, 254, 0.96);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 14px;
+  width: 340px;
+  min-height: 64px;
+  background: var(--bubble-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  backdrop-filter: saturate(180%) blur(16px);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: var(--bubble-radius);
   padding: 12px 14px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text",
+  /* Tahoma fallback keeps the retro flavor for short tips. Inter is
+     loaded in expanded mode via #bubble-history. System fallbacks for
+     missing-font safety. */
+  font-family: Tahoma, "Segoe UI", -apple-system, BlinkMacSystemFont,
     "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
   font-size: 13.5px;
   line-height: 1.45;
-  color: #0f172a;
+  color: var(--bubble-ink);
   letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Layered: ambient drop shadow + 1px white inner stroke on top edge.
+     Inner stroke is what makes it read as "glass" instead of "card". */
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 6px 16px rgba(15, 23, 42, 0.08),
-    0 24px 48px rgba(15, 23, 42, 0.10);
-  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+    var(--bubble-shadow),
+    inset 0 1px 0 var(--bubble-inner-stroke);
+  transition:
+    width 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    min-height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.22s ease,
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 0.25s ease;
   -webkit-app-region: no-drag;
   cursor: default;
   z-index: 10;
+  /* The tint wash sits between the frosted bg and the content. Drawn
+     via ::before so we can fade it in independently of the base bg. */
+  isolation: isolate;
+  overflow: hidden;
 }
 
+/* Tint wash layer — paints over the frosted backdrop, under content. */
+.bubble::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--tint-wash, transparent);
+  pointer-events: none;
+  z-index: -1;
+  transition: background 0.25s ease;
+}
+
+/* Per-tint custom-property forwarding. Each tint binds the generic
+   --tint-wash / --tint-accent / --tint-text vars so the bubble doesn't
+   have to know which tint it's in. */
+.bubble[data-tint="default"] {
+  --tint-wash:   var(--tint-default-wash);
+  --tint-accent: var(--tint-default-accent);
+  --tint-text:   var(--tint-default-text);
+}
+.bubble[data-tint="info"] {
+  --tint-wash:   var(--tint-info-wash);
+  --tint-accent: var(--tint-info-accent);
+  --tint-text:   var(--tint-info-text);
+}
+.bubble[data-tint="warning"] {
+  --tint-wash:   var(--tint-warning-wash);
+  --tint-accent: var(--tint-warning-accent);
+  --tint-text:   var(--tint-warning-text);
+}
+.bubble[data-tint="busy"] {
+  --tint-wash:   var(--tint-busy-wash);
+  --tint-accent: var(--tint-busy-accent);
+  --tint-text:   var(--tint-busy-text);
+}
+.bubble[data-tint="error"] {
+  --tint-wash:   var(--tint-error-wash);
+  --tint-accent: var(--tint-error-accent);
+  --tint-text:   var(--tint-error-text);
+}
+.bubble[data-tint="success"] {
+  --tint-wash:   var(--tint-success-wash);
+  --tint-accent: var(--tint-success-accent);
+  --tint-text:   var(--tint-success-text);
+}
+
+/* ── State-specific sizing ─────────────────────────────────────────── */
+.bubble[data-state="compact"] {
+  width: 280px;
+  min-height: 60px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer; /* click anywhere → standard */
+}
+.bubble[data-state="standard"] {
+  width: 340px;
+  min-height: 70px;
+}
+.bubble[data-state="expanded"] {
+  width: 480px;
+  height: 600px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Entry / exit transitions ─────────────────────────────────────── */
 .bubble.hidden {
   opacity: 0;
-  transform: translateY(4px) scale(0.985);
+  transform: translateY(4px) scale(0.96);
   pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* Tail — modern rounded connector dot, anchored bottom-right.
-   Positioned below the bubble pointing toward Clippy's head.
-   Two stacked rounded squares with shadows, scaled down as they
-   approach the character — iMessage-style. */
+/* compact → standard: slide-down 8px + fade-in over 200ms */
+.bubble[data-state="standard"]:not(.hidden) {
+  animation: bubble-slide-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* standard → expanded: grow from the anchor corner over 300ms */
+.bubble[data-state="expanded"]:not(.hidden) {
+  animation: bubble-grow 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes bubble-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes bubble-grow {
+  from { opacity: 0; transform: scale(0.92); transform-origin: bottom right; }
+  to   { opacity: 1; transform: scale(1);     transform-origin: bottom right; }
+}
+
+/* ── Hint animations per tint (run once on data-tint change) ──────── */
+/* The .bubble--tint-hint class is toggled by JS for one animation cycle. */
+.bubble[data-tint="default"].bubble--tint-hint { animation: tint-default-glow 1.2s ease both; }
+.bubble[data-tint="info"].bubble--tint-hint #bubble-input::placeholder { animation: tint-info-blink 1.6s ease-in-out infinite; }
+.bubble[data-tint="warning"].bubble--tint-hint #bubble-actions button { animation: tint-warning-pulse 0.6s ease both; }
+.bubble[data-tint="busy"].bubble--tint-hint::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.18) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: tint-busy-shimmer 1.4s linear infinite;
+  pointer-events: none;
+}
+.bubble[data-tint="error"].bubble--tint-hint { animation: tint-error-shake 0.4s ease both; }
+.bubble[data-tint="success"].bubble--tint-hint::after {
+  content: '\2713';
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  color: var(--tint-success-accent);
+  font-size: 16px;
+  font-weight: 700;
+  animation: tint-success-check 1.2s ease both;
+}
+
+@keyframes tint-default-glow {
+  0%   { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 0 0 rgba(255, 212, 0, 0); }
+  35%  { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 24px 4px rgba(255, 212, 0, 0.28); }
+  100% { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 0 0 rgba(255, 212, 0, 0); }
+}
+@keyframes tint-info-blink {
+  0%, 100% { opacity: 0.38; }
+  50%      { opacity: 0.85; }
+}
+@keyframes tint-warning-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.04); box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18); }
+}
+@keyframes tint-busy-shimmer {
+  0%   { background-position: -100% 0; }
+  100% { background-position:  200% 0; }
+}
+@keyframes tint-error-shake {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-4px); }
+  40%      { transform: translateX(4px); }
+  60%      { transform: translateX(-2px); }
+  80%      { transform: translateX(2px); }
+}
+@keyframes tint-success-check {
+  0%   { opacity: 0; transform: scale(0.5); }
+  40%  { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ── Avoidance translate (cursor approaches → slide 120px away) ──── */
+.bubble[data-avoid="left"]  { transform: translateX(-120px); }
+.bubble[data-avoid="right"] { transform: translateX(120px); }
+.bubble[data-avoid="up"]    { transform: translateY(-120px); }
+.bubble[data-avoid="down"]  { transform: translateY(120px); }
+
+/* ── Tail — rounded connector dot, points toward Clippy ──────────── */
 #bubble-tail {
   position: absolute;
   bottom: -8px;
   right: 26px;
   width: 14px;
   height: 14px;
-  background: rgba(252, 252, 254, 0.96);
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-hairline);
   border-top: none;
   border-left: none;
   border-radius: 0 0 6px 0;
   transform: rotate(45deg);
   transform-origin: center;
   box-shadow: 2px 2px 4px rgba(15, 23, 42, 0.05);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  backdrop-filter: saturate(180%) blur(16px);
+  z-index: -1;
 }
-
 #bubble-tail::before {
-  /* Small "echo dot" closer to Clippy — iMessage cue that the bubble
-     belongs to the figure below it. */
+  /* iMessage-style "echo dot" closer to Clippy. */
   content: '';
   position: absolute;
   width: 5px;
   height: 5px;
-  background: rgba(252, 252, 254, 0.96);
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-hairline);
   border-radius: 50%;
   bottom: -16px;
   right: -16px;
   box-shadow: 1px 1px 2px rgba(15, 23, 42, 0.06);
-  transform: rotate(-45deg); /* counter the parent rotation */
+  transform: rotate(-45deg);
+}
+/* Expanded mode snaps to the screen edge; the tail is meaningless then. */
+.bubble[data-state="expanded"] #bubble-tail { display: none; }
+
+/* ── Header (expanded-only) ──────────────────────────────────────── */
+#bubble-header {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bubble-hairline);
+  flex-shrink: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bubble-ink-soft);
+}
+.bubble[data-state="expanded"] #bubble-header { display: flex; }
+
+.bubble-header-title {
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.bubble-header-controls { display: flex; gap: 4px; }
+.bubble-header-controls button {
+  width: 22px; height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--bubble-ink-soft);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+.bubble-header-controls button:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--bubble-ink);
+}
+#bubble-pin[aria-pressed="true"] {
+  background: var(--tint-default-wash);
+  color: var(--tint-default-text);
 }
 
+/* ── Primary text region ─────────────────────────────────────────── */
 #bubble-text {
   margin-bottom: 4px;
   word-wrap: break-word;
   user-select: text;
   cursor: text;
-  /* v0.12.3 — cap height + scroll on overflow. Per UX audit finding #2:
-     long replies (Excel formulas, code blocks, multi-paragraph summaries)
-     previously rendered but spilled below the bubble's visible area, with
-     no scrollbar visible until the user clicked into chat-history mode.
-     Now reading mode shares the same overflow treatment. */
   max-height: 240px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
   padding-right: 4px;
 }
-#bubble-text::-webkit-scrollbar { width: 6px; }
-#bubble-text::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.18);
-  border-radius: 3px;
+.bubble[data-state="compact"] #bubble-text {
+  max-height: 40px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Tahoma, "Segoe UI", system-ui, sans-serif;
+  margin-bottom: 0;
+  padding-right: 0;
 }
+.bubble[data-state="expanded"] #bubble-text {
+  display: none; /* expanded uses #bubble-history instead */
+}
+#bubble-text::-webkit-scrollbar { width: 6px; }
+#bubble-text::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
 #bubble-text::-webkit-scrollbar-track { background: transparent; }
 
-/* v0.12.5 — error reply styling. Red left border + faint pink tint so the
-   user instantly distinguishes an error from a normal tip. */
+/* v0.12.5 → mapped to data-tint="error" in v0.19.0. Kept for back-compat
+   with speakError() which still toggles the legacy class. */
 #bubble-text.bubble-error {
-  border-left: 3px solid #dc2626;
-  background: rgba(220, 38, 38, 0.04);
+  border-left: 3px solid var(--tint-error-accent);
+  background: rgba(244, 63, 94, 0.05);
   padding-left: 10px;
   border-radius: 3px;
 }
@@ -151,57 +416,47 @@ body.clippy-window {
   padding: 4px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
-  border: 1px solid rgba(220, 38, 38, 0.3);
-  border-radius: 4px;
+  color: var(--tint-error-text);
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.30);
+  border-radius: 6px;
   cursor: pointer;
 }
-.bubble-retry-btn:hover { background: rgba(220, 38, 38, 0.15); }
+.bubble-retry-btn:hover { background: rgba(244, 63, 94, 0.15); }
 .bubble-retry-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* Chat history mode */
-#bubble-text.chat-history {
-  max-height: 180px;
+/* ── History (expanded-only) — Inter-flavored chat panel ─────────── */
+#bubble-history {
+  display: none;
+  flex: 1;
   overflow-y: auto;
+  padding: 14px 16px;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.55;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
-  margin-right: -4px;
-  padding-right: 4px;
 }
-#bubble-text.chat-history::-webkit-scrollbar { width: 6px; }
-#bubble-text.chat-history::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.18);
-  border-radius: 3px;
-}
-#bubble-text.chat-history::-webkit-scrollbar-track { background: transparent; }
+.bubble[data-state="expanded"] #bubble-history { display: block; }
+#bubble-history::-webkit-scrollbar { width: 6px; }
+#bubble-history::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
+#bubble-history::-webkit-scrollbar-track { background: transparent; }
 
 .chat-msg {
-  padding: 6px 0;
-  font-size: 12.5px;
-  line-height: 1.4;
+  padding: 8px 0;
   border-bottom: 1px solid rgba(15, 23, 42, 0.05);
 }
-
 .chat-msg:last-child { border-bottom: none; }
-
-.chat-user {
-  color: #2563eb; /* blue-600 — modern messenger blue */
-}
-
-.chat-clippy {
-  color: #1e293b; /* slate-800 */
-}
-
+.chat-user   { color: #2563eb; }
+.chat-clippy { color: #1e293b; }
 .chat-label {
   font-weight: 600;
   font-size: 11px;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
   margin-right: 4px;
   text-transform: uppercase;
-  opacity: 0.75;
+  opacity: 0.7;
 }
-
 .chat-time {
   float: right;
   font-size: 10px;
@@ -209,107 +464,222 @@ body.clippy-window {
   margin-left: 6px;
   font-variant-numeric: tabular-nums;
 }
-
 .chat-empty {
   color: rgba(15, 23, 42, 0.4);
   font-style: italic;
   text-align: center;
-  padding: 12px 0;
+  padding: 16px 0;
+  font-size: 12.5px;
+}
+/* Markdown elements inside history. Intentionally minimal — we render
+   bold / inline code / fences / lists only. */
+.chat-msg strong { font-weight: 600; }
+.chat-msg code {
+  font-family: ui-monospace, SFMono-Regular, "Menlo", "Cascadia Code", monospace;
   font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #b91c1c;
+}
+.chat-msg pre {
+  font-family: ui-monospace, SFMono-Regular, "Menlo", "Cascadia Code", monospace;
+  font-size: 12px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+.chat-msg pre code { background: transparent; padding: 0; color: inherit; }
+.chat-msg ul { margin: 4px 0 4px 18px; padding: 0; }
+.chat-msg li { margin: 2px 0; }
+
+/* ── Action row (existing — populated by speakWithActions) ──────── */
+#bubble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+#bubble-actions.hidden { display: none; }
+#bubble-actions button {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  border-radius: 8px;
+  border: 1px solid var(--tint-accent, var(--bubble-hairline));
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--tint-text, var(--bubble-ink));
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.08s ease;
+  -webkit-app-region: no-drag;
+}
+#bubble-actions button:hover { background: rgba(255, 255, 255, 0.85); }
+#bubble-actions button:active { transform: translateY(0.5px); }
+
+/* ── Suggestion chips (expanded-only) — frosted pills ───────────── */
+#bubble-chips {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+  flex-shrink: 0;
+}
+.bubble[data-state="expanded"] #bubble-chips:not(.hidden) { display: flex; }
+
+.bubble-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: Inter, system-ui, sans-serif;
+  background: rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 999px;
+  color: var(--bubble-ink);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(4px);
+  /* Stagger applied via inline style --i for each chip. */
+  animation: chip-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: calc(var(--i, 0) * 50ms);
+  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+.bubble-chip:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+}
+.bubble-chip:active { transform: translateY(0); }
+
+@keyframes chip-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Input area ─────────────────────────────────────────────────── */
 #bubble-input-area {
   display: flex;
   gap: 6px;
   margin-top: 10px;
-  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  border-top: 1px solid var(--bubble-hairline);
   padding-top: 8px;
-  align-items: stretch;
+  align-items: center;
 }
-
+.bubble[data-state="expanded"] #bubble-input-area {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--bubble-hairline);
+  background: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+.bubble[data-state="compact"] #bubble-input-area { display: none; }
 #bubble-input-area.hidden { display: none; }
+
+/* Attach button — expanded-only. Hidden in standard / compact. */
+#bubble-attach {
+  display: none;
+  width: 32px; height: 32px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.bubble[data-state="expanded"] #bubble-attach { display: inline-flex; }
+#bubble-attach:hover { background: rgba(255, 255, 255, 0.9); }
 
 #bubble-input {
   flex: 1;
-  border: 1px solid rgba(15, 23, 42, 0.10);
-  border-radius: 8px;
-  padding: 6px 10px;
+  min-width: 0;
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 10px;
+  padding: 7px 12px;
   font-size: 13px;
-  font-family: inherit;
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.9);
+  font-family: Inter, -apple-system, system-ui, sans-serif;
+  color: var(--bubble-ink);
+  background: rgba(255, 255, 255, 0.85);
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   -webkit-app-region: no-drag;
 }
-
-#bubble-input::placeholder {
-  color: rgba(15, 23, 42, 0.38);
+.bubble[data-state="expanded"] #bubble-input {
+  padding: 9px 14px;
+  font-size: 13.5px;
+  border-radius: 12px;
 }
-
+#bubble-input::placeholder { color: rgba(15, 23, 42, 0.38); }
 #bubble-input:focus {
-  border-color: #4CAF50;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.18);
+  border-color: var(--tint-accent, #FFD400);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tint-accent, #FFD400) 22%, transparent);
 }
 
+/* ── Send button — paper-plane SVG in a circular pill ──────────── */
 #bubble-send {
-  background: linear-gradient(180deg, #4CAF50 0%, #43A047 100%);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 6px 14px;
+  width: 32px; height: 32px;
+  background: linear-gradient(180deg, #FFE14A 0%, #FFD400 100%);
+  color: #1c1917;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 50%;
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   box-shadow:
-    0 1px 1px rgba(56, 142, 60, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
   transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
   -webkit-app-region: no-drag;
 }
-
 #bubble-send:hover {
-  background: linear-gradient(180deg, #5cba60 0%, #4CAF50 100%);
+  background: linear-gradient(180deg, #FFEB7A 0%, #FFD831 100%);
   box-shadow:
-    0 2px 4px rgba(56, 142, 60, 0.30),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    0 3px 8px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
+#bubble-send:active { transform: translateY(0.5px); }
+#bubble-send .send-icon { display: block; transform: translateX(0.5px); }
 
-#bubble-send:active {
-  background: #388E3C;
-  transform: translateY(0.5px);
-  box-shadow:
-    0 0 1px rgba(56, 142, 60, 0.40),
-    inset 0 1px 2px rgba(0, 0, 0, 0.12);
-}
-
-/* v0.17.0 — voice input mic button (hold-to-talk). The .mic-level span
-   inside it is what pulses with mic volume; CSS var --lvl is updated
-   from JS each ~150ms in src/renderer/recorder.ts. */
+/* ── Mic button — circular pill with retained level-pulse ──────── */
 #bubble-mic {
   position: relative;
-  background: rgba(255, 255, 255, 0.08);
+  width: 32px; height: 32px;
+  background: rgba(255, 255, 255, 0.55);
   color: #2C3E50;
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  border-radius: 8px;
-  padding: 6px 10px;
-  margin-right: 6px;
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 50%;
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   transition: background 0.12s ease, transform 0.08s ease;
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
-#bubble-mic:hover { background: rgba(0, 0, 0, 0.06); }
+#bubble-mic:hover { background: rgba(255, 255, 255, 0.9); }
 #bubble-mic:active { transform: translateY(0.5px); }
 #bubble-mic .mic-icon { position: relative; z-index: 2; }
 #bubble-mic .mic-level {
-  /* Radial pulse that scales with mic RMS. Sits behind the icon. */
   position: absolute;
   inset: 0;
-  border-radius: 8px;
+  border-radius: 50%;
   background: radial-gradient(circle at center, rgba(244, 67, 54, 0.55) 0%, rgba(244, 67, 54, 0.0) 70%);
   transform: scale(var(--lvl, 0));
   transition: transform 0.12s ease-out;
@@ -326,9 +696,7 @@ body.clippy-window {
   border-color: rgba(255, 193, 7, 0.55);
 }
 #bubble-mic.encoding .mic-icon::after {
-  /* Tiny spinner-replacement: three pulsing dots inside the button while
-     whisper-cli is transcribing. Avoids dragging in a spinner asset. */
-  content: '…';
+  content: '\2026';
   margin-left: 4px;
   animation: mic-dots 0.9s steps(4, end) infinite;
 }
@@ -341,31 +709,58 @@ body.clippy-window {
   50%      { opacity: 1; }
 }
 
-@media (prefers-color-scheme: dark) {
-  #bubble-mic {
-    background: rgba(255, 255, 255, 0.05);
-    color: #e2e8f0;
-    border-color: rgba(255, 255, 255, 0.10);
-  }
-  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); }
+/* ── Expand corner-handle (standard-only, hover-revealed) ──────── */
+#bubble-expand-handle {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 18px; height: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 6px;
+  color: var(--bubble-ink-soft);
+  cursor: pointer;
+  opacity: 0;
+  transform: translate(2px, 2px);
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.12s ease;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+}
+.bubble[data-state="standard"] #bubble-expand-handle { display: inline-flex; }
+.bubble[data-state="standard"]:hover #bubble-expand-handle {
+  opacity: 1;
+  transform: translate(0, 0);
+}
+#bubble-expand-handle:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--bubble-ink);
 }
 
+/* ── Dark mode — keeps brand warmth ─────────────────────────────── */
 @media (prefers-color-scheme: dark) {
-  /* Dark-mode path — defensive even though Clippy's window has no
-     system theme, in case Electron honors it on some setups. Kept
-     subtle so the brand colors don't lose their warmth. */
-  .bubble {
-    background: rgba(28, 28, 32, 0.92);
-    color: #e2e8f0;
-    border-color: rgba(255, 255, 255, 0.08);
+  :root {
+    --bubble-bg:        rgba(28, 28, 32, 0.78);
+    --bubble-ink:       #e2e8f0;
+    --bubble-ink-soft:  rgba(226, 232, 240, 0.6);
+    --bubble-hairline:  rgba(255, 255, 255, 0.10);
+    --bubble-inner-stroke: rgba(255, 255, 255, 0.08);
+    --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.5);
   }
-  #bubble-tail { background: rgba(28, 28, 32, 0.92); border-color: rgba(255, 255, 255, 0.08); }
-  #bubble-tail::before { background: rgba(28, 28, 32, 0.92); border-color: rgba(255, 255, 255, 0.08); }
+  #bubble-tail, #bubble-tail::before { background: var(--bubble-bg); border-color: var(--bubble-hairline); }
   .chat-clippy { color: #e2e8f0; }
   .chat-user { color: #60a5fa; }
   .chat-msg { border-bottom-color: rgba(255, 255, 255, 0.06); }
-  #bubble-input { background: rgba(20, 20, 24, 0.9); color: #e2e8f0; border-color: rgba(255, 255, 255, 0.10); }
+  .chat-msg code { background: rgba(255, 255, 255, 0.08); color: #fda4af; }
+  .chat-msg pre { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.08); }
+  #bubble-input { background: rgba(20, 20, 24, 0.85); color: #e2e8f0; }
   #bubble-input::placeholder { color: rgba(226, 232, 240, 0.38); }
+  #bubble-mic, #bubble-attach { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
+  #bubble-mic:hover, #bubble-attach:hover { background: rgba(255, 255, 255, 0.10); }
+  .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
+  .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
+  #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: var(--tint-text, #e2e8f0); }
 }
 
 /* === Onboarding Window === */

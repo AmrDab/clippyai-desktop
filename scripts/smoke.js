@@ -1025,6 +1025,111 @@ function layer1() {
   } else {
     fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
+
+  // ────────── v0.19.0 PR-2: bubble v2 invariants ──────────
+  // Structural checks for the adaptive three-state bubble. These guard
+  // against regression of:
+  //   - mount-point HTML structure (header / history / chips / handle)
+  //   - the six CSS tint variants (custom-property names)
+  //   - public BubbleController API (setState / setTint methods)
+  //   - markdown renderer fixtures (bold / inline code / fence / list)
+  const indexHtml = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
+  const styleCss  = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'style.css'), 'utf8');
+  const bubbleTs  = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'bubble.ts'), 'utf8');
+
+  // 1. HTML mount points (the new ones, plus the existing ones must
+  //    still be present after the v2 rewrite).
+  const requiredIds = [
+    'bubble', 'bubble-text', 'bubble-actions', 'bubble-input-area',
+    'bubble-input', 'bubble-mic', 'bubble-send', 'bubble-tail',
+    'bubble-header', 'bubble-history', 'bubble-chips', 'bubble-expand-handle',
+  ];
+  const missingIds = requiredIds.filter((id) => !new RegExp(`id="${id}"`).test(indexHtml));
+  if (missingIds.length === 0) {
+    pass('v0.19.0: bubble v2 — all required mount points present (header/history/chips/expand-handle)');
+  } else {
+    fail('v0.19.0: bubble v2 mount points', `missing: ${missingIds.join(', ')}`);
+  }
+
+  // 2. data-state + data-tint attributes wired on #bubble
+  const hasDataState = /id="bubble"[^>]*data-state=/.test(indexHtml);
+  const hasDataTint  = /id="bubble"[^>]*data-tint=/.test(indexHtml);
+  if (hasDataState && hasDataTint) {
+    pass('v0.19.0: bubble v2 — #bubble has data-state + data-tint attributes (CSS-driven variant)');
+  } else {
+    fail('v0.19.0: bubble v2 data attrs', `state=${hasDataState}, tint=${hasDataTint}`);
+  }
+
+  // 3. Six tint CSS custom properties defined. Each tint declares
+  //    --tint-{name}-wash, --tint-{name}-accent, --tint-{name}-text.
+  const tints = ['default', 'info', 'warning', 'busy', 'error', 'success'];
+  const tintMissing = tints.filter((t) =>
+    !new RegExp(`--tint-${t}-wash\\s*:`).test(styleCss)
+    || !new RegExp(`--tint-${t}-accent\\s*:`).test(styleCss)
+    || !new RegExp(`--tint-${t}-text\\s*:`).test(styleCss)
+  );
+  if (tintMissing.length === 0) {
+    pass('v0.19.0: bubble v2 — six tint variants defined as CSS custom properties (wash + accent + text)');
+  } else {
+    fail('v0.19.0: bubble v2 tint vars', `incomplete tints: ${tintMissing.join(', ')}`);
+  }
+
+  // 4. Per-tint selectors that bind the generic --tint-* vars to the
+  //    bubble — i.e. [data-tint="X"] picks up the right palette.
+  const tintBindings = tints.filter((t) => new RegExp(`\\[data-tint="${t}"\\]`).test(styleCss));
+  if (tintBindings.length === 6) {
+    pass('v0.19.0: bubble v2 — all six [data-tint="X"] selector bindings present');
+  } else {
+    fail('v0.19.0: bubble v2 data-tint selectors', `found ${tintBindings.length}/6: ${tintBindings.join(', ')}`);
+  }
+
+  // 5. BubbleController exports setState + setTint + setSuggestionChips +
+  //    renderMarkdown. Plain regex on method signatures so we don't have
+  //    to parse TS in this CJS runner.
+  const hasSetState   = /(\bsetState\b\s*\(\s*state\s*:\s*BubbleState)/.test(bubbleTs);
+  const hasSetTint    = /(\bsetTint\b\s*\(\s*tint\s*:\s*BubbleTint)/.test(bubbleTs);
+  const hasSetChips   = /\bsetSuggestionChips\b\s*\(/.test(bubbleTs);
+  const hasMarkdown   = /\brenderMarkdown\b\s*\(/.test(bubbleTs);
+  if (hasSetState && hasSetTint && hasSetChips && hasMarkdown) {
+    pass('v0.19.0: bubble v2 — BubbleController exposes setState / setTint / setSuggestionChips / renderMarkdown');
+  } else {
+    fail('v0.19.0: bubble v2 controller API', `setState=${hasSetState}, setTint=${hasSetTint}, chips=${hasSetChips}, markdown=${hasMarkdown}`);
+  }
+
+  // 6. renderMarkdown handles 4 fixtures. Extract the function body and
+  //    eval the four regex patterns it relies on; if all four transforms
+  //    are present, the fixtures pass by construction. Pattern-based
+  //    rather than runtime-import-based because importing a TS file
+  //    from a CJS runner needs a transpiler we don't want to pull in.
+  const mdBody = (() => {
+    const m = bubbleTs.match(/renderMarkdown\(text: string\)[\s\S]*?\n  \}\n/);
+    return m ? m[0] : '';
+  })();
+  // Substring-based — checking literal text of the regex patterns in
+  // the function body. Avoids meta-regex confusion of escaping a regex
+  // that matches another regex literal.
+  const handlesBold  = mdBody.includes('\\*\\*([^*');                              // **x** transform
+  const handlesCode  = mdBody.includes('`([^`');                                    // `x` transform
+  const handlesFence = mdBody.includes('```([\\s\\S]*?)```');                       // ``` fence extract
+  const handlesList  = mdBody.includes('[-*]') || mdBody.includes('[ \\t]*[-*]');   // bullet match
+  if (handlesBold && handlesCode && handlesFence && handlesList) {
+    pass('v0.19.0: bubble v2 — renderMarkdown handles 4 fixtures (bold / inline code / code fence / bullet list)');
+  } else {
+    fail('v0.19.0: bubble v2 renderMarkdown', `bold=${handlesBold}, code=${handlesCode}, fence=${handlesFence}, list=${handlesList}`);
+  }
+
+  // 7. BrainSettings includes bubbleDefaultState + bubblePinned with
+  //    'standard' / false defaults (so existing users see no change).
+  const brainSrcBubbleV2 = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+  const hasDefaultStateField = /bubbleDefaultState:\s*'compact'\s*\|\s*'standard'/.test(brainSrcBubbleV2);
+  const hasPinnedField = /bubblePinned:\s*boolean/.test(brainSrcBubbleV2);
+  const hasDefaultStateDefault = /bubbleDefaultState:\s*'standard'/.test(brainSrcBubbleV2);
+  const hasPinnedDefault = /bubblePinned:\s*false/.test(brainSrcBubbleV2);
+  if (hasDefaultStateField && hasPinnedField && hasDefaultStateDefault && hasPinnedDefault) {
+    pass('v0.19.0: bubble v2 — BrainSettings adds bubbleDefaultState + bubblePinned with safe defaults');
+  } else {
+    fail('v0.19.0: bubble v2 BrainSettings', `defField=${hasDefaultStateField}, pinField=${hasPinnedField}, defDefault=${hasDefaultStateDefault}, pinDefault=${hasPinnedDefault}`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
