@@ -29,6 +29,24 @@ const log = createLogger('ActionHistory');
 
 const MAX_ENTRIES = 50;
 
+/**
+ * Describes how to undo a tool call. This union is intentionally OPEN — add
+ * new kinds as new tools become undoable. The undo executor (undo.ts) switches
+ * on `kind` and applies the inverse.
+ *
+ * Trust budget: if we're unsure, use `noop` with an honest reason. Never mark
+ * something undoable that isn't — that's the worst trust failure.
+ */
+export type InverseAction =
+  | { kind: 'restore-file'; trashPath: string; originalPath: string }
+  | { kind: 'rename'; fromPath: string; toPath: string }      // back-rename: move fromPath → toPath
+  | { kind: 'move'; fromPath: string; toPath: string }        // back-move (POSIX rename)
+  | { kind: 'delete-calendar-event'; provider: string; eventId: string }
+  | { kind: 'delete-email-draft'; provider: string; draftId: string }
+  | { kind: 'restore-clipboard'; previousValue: string | null }
+  | { kind: 'recreate-from-args'; tool: string; args: Record<string, unknown> }  // generic last-resort
+  | { kind: 'noop'; reason: string };                          // explicit "can't undo"
+
 export interface ActionEntry {
   id: string;             // uuid
   ts: string;             // ISO timestamp
@@ -39,6 +57,12 @@ export interface ActionEntry {
   outcome: 'success' | 'failure' | 'unverified' | 'approval_denied' | 'blocked';
   detail: string;         // brief outcome detail or error code, max 200 chars
   taskId?: string;        // task correlation id
+  /** Inverse-action descriptor. Present → entry is undoable (or noop with reason). */
+  inverse?: InverseAction;
+  /** True once undo has been successfully applied. */
+  undone?: boolean;
+  /** ISO timestamp of when undo was applied. */
+  undoneAt?: string;
 }
 
 function historyPath(): string {
@@ -87,6 +111,8 @@ function summarizeArgs(args: unknown): string {
         pairs.push(`${k}=***`);
         continue;
       }
+      // Skip smuggled side-channel fields (prefixed with _) used by undo factories.
+      if (k.startsWith('_')) continue;
       const sv = typeof v === 'string' ? v : JSON.stringify(v);
       pairs.push(`${k}=${(sv ?? '').toString().slice(0, 50)}`);
     }
@@ -111,6 +137,8 @@ export function record(entry: Omit<ActionEntry, 'id' | 'ts' | 'tier' | 'actionCl
     outcome: entry.outcome,
     detail: (entry.detail || '').slice(0, 200),
     taskId: entry.taskId,
+    // v0.19.0 — undo surface. Only present when the tool declared an inverse.
+    inverse: entry.inverse,
   };
   list.unshift(row);
   if (list.length > MAX_ENTRIES) list.length = MAX_ENTRIES;
@@ -119,6 +147,30 @@ export function record(entry: Omit<ActionEntry, 'id' | 'ts' | 'tier' | 'actionCl
 
 export function getAll(): ActionEntry[] {
   return [...load()]; // defensive copy — callers shouldn't mutate cache
+}
+
+/**
+ * Find a single entry by id. Returns null if not found. Used by the undo IPC
+ * handler before calling applyInverse.
+ */
+export function findById(id: string): ActionEntry | null {
+  const list = load();
+  return list.find((e) => e.id === id) ?? null;
+}
+
+/**
+ * Mark an entry as undone in-place and persist. Called after applyInverse
+ * succeeds. Mutates the cache entry directly so subsequent getAll() calls
+ * reflect the change without a reload.
+ */
+export function markUndone(id: string): boolean {
+  const list = load();
+  const entry = list.find((e) => e.id === id);
+  if (!entry) return false;
+  entry.undone = true;
+  entry.undoneAt = new Date().toISOString();
+  flush();
+  return true;
 }
 
 export function clear(): void {

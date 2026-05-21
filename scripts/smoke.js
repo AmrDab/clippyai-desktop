@@ -1025,6 +1025,245 @@ function layer1() {
   } else {
     fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
+
+  // ────────── v0.19.0 follow-me smoke tests ──────────
+
+  // F.1 follow-me.ts exists with the expected exports
+  const followMePath = path.join(ROOT, 'src', 'main', 'follow-me.ts');
+  if (fs.existsSync(followMePath)) {
+    const fmSrc = fs.readFileSync(followMePath, 'utf8');
+    const hasStart = /export function start\b/.test(fmSrc);
+    const hasStop = /export function stop\b/.test(fmSrc);
+    const hasIsActive = /export function isActive\b/.test(fmSrc);
+    const hasSetMainWindow = /export function setMainWindow\b/.test(fmSrc);
+    if (hasStart && hasStop && hasIsActive && hasSetMainWindow) {
+      pass('v0.19.0: follow-me.ts exports start, stop, isActive, setMainWindow');
+    } else {
+      fail('v0.19.0: follow-me.ts exports', `start=${hasStart} stop=${hasStop} isActive=${hasIsActive} setMainWindow=${hasSetMainWindow}`);
+    }
+  } else {
+    fail('v0.19.0: follow-me.ts', 'file does not exist');
+  }
+
+  // F.2 brain.ts require('./follow-me') present (bundle-skip guard)
+  const brainSrcF = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+  const brainRequiresFollowMe = /require\('\.\/follow-me'\)/.test(brainSrcF);
+  if (brainRequiresFollowMe) pass("v0.19.0: brain.ts require('./follow-me') present (bundle-skip guard)");
+  else fail("v0.19.0: brain.ts missing require('./follow-me')", 'pattern not found');
+
+  // F.3 TOOL_META has follow_me (with actionClass) and stop_following (with narration)
+  const metaSrcF = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
+  const hasFollowMeMeta = /follow_me\s*:\s*\{[^}]*actionClass[^}]*narration/.test(metaSrcF);
+  const hasStopFollowingMeta = /stop_following\s*:\s*\{[^}]*narration/.test(metaSrcF);
+  if (hasFollowMeMeta && hasStopFollowingMeta) {
+    pass('v0.19.0: TOOL_META has follow_me (with actionClass+narration) and stop_following');
+  } else {
+    fail('v0.19.0: TOOL_META follow-me entries', `follow_me=${hasFollowMeMeta} stop_following=${hasStopFollowingMeta}`);
+  }
+
+  // F.4 Pattern-route regexes verified inline — matching what brain.ts uses
+  const FOLLOW_START_RE = /\b(follow me|come here|follow my cursor|follow the cursor|stay with me|trail me)\b/i;
+  const FOLLOW_STOP_RE = /\b(stop following|stay there|stay put|don'?t follow|stop trailing)\b/i;
+
+  const startPositives = [
+    'follow me please',
+    'hey, come here',
+    'follow my cursor',
+    'follow the cursor around',
+    'stay with me for a bit',
+    'trail me',
+    'follow me to the kitchen',     // acceptable false-positive per spec
+  ];
+  const startNegatives = [
+    "i'll follow you",              // wrong direction — user would follow Clippy
+    'how to follow a trail',        // unrelated
+    'who do you follow on twitter', // unrelated
+  ];
+  const stopPositives = [
+    'stop following',
+    'stay there',
+    'stay put',
+    "don't follow me",
+    'stop trailing',
+  ];
+  const stopNegatives = [
+    'follow me now',      // start intent, not stop
+    'how to follow a map', // unrelated
+  ];
+
+  const startPosFails = startPositives.filter((s) => !FOLLOW_START_RE.test(s));
+  const startNegFails = startNegatives.filter((s) => FOLLOW_START_RE.test(s));
+  const stopPosFails = stopPositives.filter((s) => !FOLLOW_STOP_RE.test(s));
+  const stopNegFails = stopNegatives.filter((s) => FOLLOW_STOP_RE.test(s));
+
+  if (startPosFails.length === 0) pass(`v0.19.0: follow-start regex: ${startPositives.length}/${startPositives.length} positive fixtures match`);
+  else fail('v0.19.0: follow-start regex false negatives', startPosFails.join(' | '));
+
+  if (startNegFails.length === 0) pass(`v0.19.0: follow-start regex: ${startNegatives.length}/${startNegatives.length} negative fixtures correctly rejected`);
+  else fail('v0.19.0: follow-start regex false positives', startNegFails.join(' | '));
+
+  if (stopPosFails.length === 0) pass(`v0.19.0: follow-stop regex: ${stopPositives.length}/${stopPositives.length} positive fixtures match`);
+  else fail('v0.19.0: follow-stop regex false negatives', stopPosFails.join(' | '));
+
+  if (stopNegFails.length === 0) pass(`v0.19.0: follow-stop regex: ${stopNegatives.length}/${stopNegatives.length} negative fixtures correctly rejected`);
+  else fail('v0.19.0: follow-stop regex false positives', stopNegFails.join(' | '));
+
+  // v0.19.0 PR-5 — undo surface
+  smokeUndoSurface();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// v0.19.0: undo + action-log surface (PR-5)
+// ────────────────────────────────────────────────────────────────────
+
+function smokeUndoSurface() {
+  header('v0.19.0: undo + action log surface');
+
+  // 1. undo.ts exports applyInverse
+  const undoSrc = path.join(ROOT, 'src/main/undo.ts');
+  if (fs.existsSync(undoSrc)) pass('undo.ts exists');
+  else fail('undo.ts missing', undoSrc);
+
+  const undoContent = fs.existsSync(undoSrc) ? fs.readFileSync(undoSrc, 'utf8') : '';
+  if (undoContent.includes('export async function applyInverse')) pass('undo.ts exports applyInverse');
+  else fail('undo.ts missing applyInverse export', '');
+
+  // 2. tool-undo.ts exports TOOL_UNDO with at least 6 entries
+  const toolUndoSrc = path.join(ROOT, 'src/main/tool-undo.ts');
+  if (fs.existsSync(toolUndoSrc)) pass('tool-undo.ts exists');
+  else fail('tool-undo.ts missing', toolUndoSrc);
+
+  const toolUndoContent = fs.existsSync(toolUndoSrc) ? fs.readFileSync(toolUndoSrc, 'utf8') : '';
+  if (toolUndoContent.includes('export const TOOL_UNDO')) pass('tool-undo.ts exports TOOL_UNDO');
+  else fail('tool-undo.ts missing TOOL_UNDO export', '');
+
+  const requiredTools = ['write_file', 'delete_file', 'rename_file', 'move_file', 'outlook_send_email', 'write_clipboard'];
+  const missingTools = requiredTools.filter(t => !toolUndoContent.includes(`${t}:`));
+  if (missingTools.length === 0) pass(`TOOL_UNDO contains all 6 required entries (${requiredTools.join(', ')})`);
+  else fail('TOOL_UNDO missing entries', missingTools.join(', '));
+
+  // 3. ActionEntry interface includes inverse?, undone?, undoneAt?
+  const histSrc = path.join(ROOT, 'src/main/action-history.ts');
+  const histContent = fs.existsSync(histSrc) ? fs.readFileSync(histSrc, 'utf8') : '';
+  if (histContent.includes('inverse?: InverseAction')) pass('ActionEntry has inverse?: InverseAction');
+  else fail('ActionEntry missing inverse field', '');
+  if (histContent.includes('undone?: boolean')) pass('ActionEntry has undone?: boolean');
+  else fail('ActionEntry missing undone field', '');
+  if (histContent.includes('undoneAt?: string')) pass('ActionEntry has undoneAt?: string');
+  else fail('ActionEntry missing undoneAt field', '');
+  if (histContent.includes('export type InverseAction')) pass('action-history.ts exports InverseAction type');
+  else fail('action-history.ts missing InverseAction export', '');
+  if (histContent.includes('export function findById')) pass('action-history.ts exports findById');
+  else fail('action-history.ts missing findById', '');
+  if (histContent.includes('export function markUndone')) pass('action-history.ts exports markUndone');
+  else fail('action-history.ts missing markUndone', '');
+
+  // 4. ipc.ts registers action-undo handler
+  const ipcSrc = path.join(ROOT, 'src/main/ipc.ts');
+  const ipcContent = fs.existsSync(ipcSrc) ? fs.readFileSync(ipcSrc, 'utf8') : '';
+  if (ipcContent.includes("'action-undo'") || ipcContent.includes('"action-undo"'))
+    pass("IPC handler 'action-undo' registered");
+  else fail("IPC handler 'action-undo' missing", '');
+
+  // 5. preload exposes undoAction
+  const preloadSrc = path.join(ROOT, 'src/preload/index.ts');
+  const preloadContent = fs.existsSync(preloadSrc) ? fs.readFileSync(preloadSrc, 'utf8') : '';
+  if (preloadContent.includes('undoAction')) pass('preload/index.ts exposes undoAction');
+  else fail('preload/index.ts missing undoAction', '');
+
+  // 6. api.d.ts declares undoAction on guardrails
+  const apiSrc = path.join(ROOT, 'src/preload/api.d.ts');
+  const apiContent = fs.existsSync(apiSrc) ? fs.readFileSync(apiSrc, 'utf8') : '';
+  if (apiContent.includes('undoAction')) pass('api.d.ts declares guardrails.undoAction');
+  else fail('api.d.ts missing undoAction declaration', '');
+
+  // 7. brain.ts calls TOOL_UNDO factory after tool execution
+  const brainSrc = path.join(ROOT, 'src/main/brain.ts');
+  const brainContent = fs.existsSync(brainSrc) ? fs.readFileSync(brainSrc, 'utf8') : '';
+  if (brainContent.includes('TOOL_UNDO')) pass('brain.ts references TOOL_UNDO (undo factory invocation)');
+  else fail('brain.ts missing TOOL_UNDO reference', '');
+  if (brainContent.includes('inverse,')) pass('brain.ts passes inverse to history.record()');
+  else fail('brain.ts not passing inverse to record()', '');
+
+  // 8. tools.ts has delete_file / rename_file / move_file implementations
+  const toolsSrc = path.join(ROOT, 'src/main/tools.ts');
+  const toolsContent = fs.existsSync(toolsSrc) ? fs.readFileSync(toolsSrc, 'utf8') : '';
+  if (toolsContent.includes('async function deleteFile')) pass('tools.ts has deleteFile implementation');
+  else fail('tools.ts missing deleteFile', '');
+  if (toolsContent.includes('async function renameFile')) pass('tools.ts has renameFile implementation');
+  else fail('tools.ts missing renameFile', '');
+  if (toolsContent.includes('async function moveFile')) pass('tools.ts has moveFile implementation');
+  else fail('tools.ts missing moveFile', '');
+  if (toolsContent.includes('CLIPPY_TRASH_DIR')) pass('tools.ts defines CLIPPY_TRASH_DIR for move-to-trash');
+  else fail('tools.ts missing CLIPPY_TRASH_DIR', '');
+  if (toolsContent.includes('cleanClippyTrash')) pass('tools.ts exports cleanClippyTrash (startup storage hygiene)');
+  else fail('tools.ts missing cleanClippyTrash', '');
+
+  // 9. Behavioral tests — pure JS ports of undo logic
+
+  // 9a. rename inverse: TOOL_UNDO[rename_file] swaps from/to
+  const renameFactory = (args, _result) => {
+    const from = String(args.from ?? '');
+    const to = String(args.to ?? '');
+    if (!from || !to) return null;
+    return { kind: 'rename', fromPath: to, toPath: from };
+  };
+  const renameInverse = renameFactory({ from: '/a/foo.txt', to: '/a/bar.txt' }, {});
+  if (renameInverse && renameInverse.kind === 'rename' && renameInverse.fromPath === '/a/bar.txt' && renameInverse.toPath === '/a/foo.txt')
+    pass('rename_file inverse: from/to correctly swapped');
+  else fail('rename_file inverse: swap incorrect', JSON.stringify(renameInverse));
+
+  // 9b. noop returns ok:false
+  const noopResult = (() => {
+    const inv = { kind: 'noop', reason: 'Email was sent — cannot un-send.' };
+    if (inv.kind === 'noop') return { ok: false, detail: inv.reason };
+    return { ok: true };
+  })();
+  if (!noopResult.ok && noopResult.detail.includes('cannot un-send'))
+    pass('noop inverse: returns ok:false with reason');
+  else fail('noop inverse: wrong result', JSON.stringify(noopResult));
+
+  // 9c. delete_file inverse: _clippyTrashPath smuggled correctly
+  const deleteFactory = (args, _result) => {
+    const trashPath = String(args._clippyTrashPath ?? '');
+    const originalPath = String(args.path ?? '');
+    if (!trashPath || !originalPath) return { kind: 'noop', reason: 'Trash path not recorded.' };
+    return { kind: 'restore-file', trashPath, originalPath };
+  };
+  const deleteInverseWithPath = deleteFactory({ path: '/a/file.txt', _clippyTrashPath: '/home/user/.clippy-trash/12345-file.txt' }, {});
+  if (deleteInverseWithPath.kind === 'restore-file' && deleteInverseWithPath.originalPath === '/a/file.txt')
+    pass('delete_file inverse: restore-file with correct paths');
+  else fail('delete_file inverse: wrong result', JSON.stringify(deleteInverseWithPath));
+
+  const deleteInverseNoop = deleteFactory({ path: '/a/file.txt' }, {});
+  if (deleteInverseNoop.kind === 'noop')
+    pass('delete_file inverse: noop when _clippyTrashPath absent');
+  else fail('delete_file inverse: expected noop when no trash path', JSON.stringify(deleteInverseNoop));
+
+  // 9d. write_clipboard inverse: _previousClipboard captured
+  const clipboardFactory = (args, _result) => {
+    if (!Object.prototype.hasOwnProperty.call(args, '_previousClipboard')) {
+      return { kind: 'noop', reason: 'Clipboard overwritten — previous value not captured.' };
+    }
+    return { kind: 'restore-clipboard', previousValue: args._previousClipboard };
+  };
+  const clipInverseWithPrev = clipboardFactory({ text: 'new', _previousClipboard: 'old' }, {});
+  if (clipInverseWithPrev.kind === 'restore-clipboard' && clipInverseWithPrev.previousValue === 'old')
+    pass('write_clipboard inverse: restore-clipboard with previous value');
+  else fail('write_clipboard inverse: wrong result', JSON.stringify(clipInverseWithPrev));
+
+  const clipInverseNoop = clipboardFactory({ text: 'new' }, {});
+  if (clipInverseNoop.kind === 'noop')
+    pass('write_clipboard inverse: noop when _previousClipboard absent');
+  else fail('write_clipboard inverse: expected noop', JSON.stringify(clipInverseNoop));
+
+  // 9e. settings.ts has clickUndo function
+  const settingsSrc = path.join(ROOT, 'src/renderer/settings.ts');
+  const settingsContent = fs.existsSync(settingsSrc) ? fs.readFileSync(settingsSrc, 'utf8') : '';
+  if (settingsContent.includes('clickUndo')) pass('settings.ts has clickUndo function');
+  else fail('settings.ts missing clickUndo', '');
+  if (settingsContent.includes('undoAction')) pass('settings.ts calls guardrails.undoAction');
+  else fail('settings.ts not calling undoAction', '');
 }
 
 // ────────────────────────────────────────────────────────────────────

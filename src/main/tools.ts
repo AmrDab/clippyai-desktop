@@ -1550,6 +1550,102 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
 // kept on disk for emergency manual debugging but is NOT registered in
 // TOOL_MAP; the model has no way to call it.
 
+// ── v0.19.0: File management tools (delete / rename / move) ─────────────
+// These tools are new in v0.19.0 to support undo. delete_file uses
+// move-to-trash instead of hard delete so the inverse can restore the file.
+// The ~/.clippy-trash folder is cleaned of items older than 7 days on startup
+// (see initTools) so storage doesn't accumulate silently.
+
+const CLIPPY_TRASH_DIR = path.join(os.homedir(), '.clippy-trash');
+
+/**
+ * Clean ~/.clippy-trash/ of items older than 7 days.
+ * Called once at startup (non-blocking). Storage hygiene — without this the
+ * trash folder grows unbounded if the user never manually empties it.
+ */
+export function cleanClippyTrash(): void {
+  try {
+    if (!fs.existsSync(CLIPPY_TRASH_DIR)) return;
+    const entries = fs.readdirSync(CLIPPY_TRASH_DIR);
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let cleaned = 0;
+    for (const name of entries) {
+      // Names are prefixed with the unix timestamp: "<ms>-<basename>"
+      const ms = parseInt(name.split('-')[0], 10);
+      if (!isNaN(ms) && ms < cutoff) {
+        try {
+          const full = path.join(CLIPPY_TRASH_DIR, name);
+          const stat = fs.statSync(full);
+          if (stat.isDirectory()) {
+            fs.rmSync(full, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(full);
+          }
+          cleaned++;
+        } catch { /* skip locked / already gone */ }
+      }
+    }
+    if (cleaned > 0) log.info('cleanClippyTrash', { cleaned });
+  } catch (err) {
+    log.warn('cleanClippyTrash failed (non-fatal)', { err: (err as Error).message });
+  }
+}
+
+async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: 'Error: path is required' };
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { text: `(error:FILE_NOT_FOUND) File does not exist: ${filePath}` };
+    }
+    // Move to ~/.clippy-trash/ instead of hard-delete so the undo inverse
+    // can restore it. The trash path is smuggled back via params for the
+    // undo factory in tool-undo.ts.
+    fs.mkdirSync(CLIPPY_TRASH_DIR, { recursive: true });
+    const trashName = `${Date.now()}-${path.basename(filePath)}`;
+    const trashPath = path.join(CLIPPY_TRASH_DIR, trashName);
+    fs.renameSync(filePath, trashPath);
+    // Smuggle the trash path so TOOL_UNDO[delete_file] can build the inverse.
+    (params as Record<string, unknown>)._clippyTrashPath = trashPath;
+    log.info('deleteFile → trash', { filePath, trashPath });
+    return { text: `Trashed ${filePath} (restorable via Undo within 7 days)` };
+  } catch (err) {
+    return { text: `(error:DELETE_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function renameFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const fromPath = String(params.from || '');
+  const toPath = String(params.to || '');
+  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
+  try {
+    if (!fs.existsSync(fromPath)) {
+      return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
+    }
+    fs.renameSync(fromPath, toPath);
+    log.info('renameFile', { from: fromPath, to: toPath });
+    return { text: `Renamed: ${fromPath} → ${toPath}` };
+  } catch (err) {
+    return { text: `(error:RENAME_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function moveFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const fromPath = String(params.from || '');
+  const toPath = String(params.to || '');
+  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
+  try {
+    if (!fs.existsSync(fromPath)) {
+      return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
+    }
+    fs.renameSync(fromPath, toPath);
+    log.info('moveFile', { from: fromPath, to: toPath });
+    return { text: `Moved: ${fromPath} → ${toPath}` };
+  } catch (err) {
+    return { text: `(error:MOVE_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 // ── Agent loop tools ────────────────────────────────────────────
 
 async function planTool(params: Record<string, unknown>): Promise<ToolResult> {
@@ -2714,6 +2810,10 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   create_reminder: createReminder,
   read_file: readFile,
   write_file: writeFile,
+  // v0.19.0 — file management (delete uses trash for undoability)
+  delete_file: deleteFile,
+  rename_file: renameFile,
+  move_file: moveFile,
   // run_powershell removed in v0.12.3 — see comment above runPowershell function definition.
   // v0.12.4 additions
   zip_files: zipFiles,
@@ -2790,7 +2890,35 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   generate_excel: excelFromRows,
   generate_pdf: pdfFromText,
   generate_qrcode: qrcodeFromText,
+  // v0.19.0 — follow-me cursor mode (PR-4)
+  follow_me: followMeTool,
+  stop_following: stopFollowingTool,
 };
+
+// ── v0.19.0: follow-me cursor mode tools ────────────────────────
+async function followMeTool(): Promise<ToolResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fm = require('./follow-me') as typeof import('./follow-me');
+    fm.start();
+    return { text: 'Started following the cursor. Say "stop following" or press Esc when you want me to stay put.' };
+  } catch (err) {
+    log.warn('follow_me tool error', serializeErr(err));
+    return { text: `(error:FOLLOW_ME_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function stopFollowingTool(): Promise<ToolResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fm = require('./follow-me') as typeof import('./follow-me');
+    fm.stop('manual');
+    return { text: 'Okay, staying here.' };
+  } catch (err) {
+    log.warn('stop_following tool error', serializeErr(err));
+    return { text: `(error:STOP_FOLLOWING_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
 
 async function clawdStatus(): Promise<ToolResult> {
   const ready = isClawdReady();
@@ -2837,6 +2965,9 @@ export async function initTools(): Promise<void> {
   // Non-blocking — never delay startup just because skills enumeration
   // hits a slow disk.
   refreshSkillRegistry().catch((err) => log.warn('Skill registry refresh failed', serializeErr(err)));
+  // v0.19.0 — clean ~/.clippy-trash of items older than 7 days. Non-blocking.
+  // This keeps the trash folder from growing unbounded between sessions.
+  try { cleanClippyTrash(); } catch { /* non-fatal */ }
   // PSBridge warmup is SLOW (~12s on fresh Windows installs) and blocking
   // it here makes Clippy show nothing for ~12s after click-to-launch. Start
   // it in the background and let psCommand() fall back to one-off PowerShell

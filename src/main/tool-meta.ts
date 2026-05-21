@@ -113,6 +113,10 @@ export const TOOL_META: Record<string, ToolMeta> = {
   write_clipboard:    { tier: 2, cost: 'cheap',     description: 'Write text to the Windows clipboard', narration: 'Copying to clipboard' },
   read_file:          { tier: 2, cost: 'cheap',     description: 'Read a local file from disk', narration: 'Reading the file' },
   write_file:         { tier: 2, cost: 'cheap',     description: 'Write a local file to disk', narration: 'Saving the file', actionClass: 'destructive_file' },
+  // v0.19.0 — file management tools (delete uses move-to-trash for undoability)
+  delete_file:        { tier: 2, cost: 'cheap',     description: 'Move a local file to ~/.clippy-trash (restorable via Undo within 7 days)', narration: 'Deleting the file', actionClass: 'destructive_file' },
+  rename_file:        { tier: 2, cost: 'cheap',     description: 'Rename a local file (from → to path)', narration: 'Renaming the file', actionClass: 'destructive_file' },
+  move_file:          { tier: 2, cost: 'cheap',     description: 'Move a local file to a new location (from → to path)', narration: 'Moving the file', actionClass: 'destructive_file' },
   list_files:         { tier: 2, cost: 'cheap',     description: 'List files in a directory', narration: 'Listing files' },
   search_files_content:{ tier: 2, cost: 'medium',   description: 'Search file contents for a regex/string pattern', narration: 'Searching through files' },
   // run_powershell removed v0.12.3 — security audit (prompt-injection → RCE).
@@ -176,12 +180,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   mouse_drag:           { tier: 5, cost: 'medium',    description: 'Drag from one set of screen coordinates to another', narration: 'Dragging', actionClass: 'desktop_input' },
   mouse_scroll:         { tier: 5, cost: 'cheap',     description: 'Scroll the mouse wheel at the cursor position', narration: 'Scrolling' },
 
-  // ── Tier 5 diagnostic (added by PR 4) ────────────────────────────────
-  // clawd_status reads the clawdcursor fallback subprocess state. Tagged
-  // tier 2 because it is a status read with no UI driving — it just exposes
-  // whether the Tier-5 fallback is ready, installing, or disabled.
-  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)' },
-
   // ── v0.12.4 additions ──
   zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive', narration: 'Zipping files' },
   unzip_files:          { tier: 2, cost: 'medium',    description: 'Decompress a ZIP archive into a destination directory', narration: 'Unzipping' },
@@ -219,6 +217,9 @@ export const TOOL_META: Record<string, ToolMeta> = {
   browser_list_tabs: { tier: 4, cost: 'cheap',  description: 'List all open browser tabs. mcp-chrome only — CDP attach is single-tab.', narration: 'Listing your tabs' },
   browser_switch_tab:{ tier: 4, cost: 'cheap',  description: 'Switch to a tab by id, url-substring, or title-substring. mcp-chrome only.', narration: 'Switching tabs' },
   clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)', narration: 'Checking fallback status' },
+  // v0.19.0 — follow-me cursor mode
+  follow_me:      { tier: 2, cost: 'cheap', description: "Have Clippy follow the user's cursor around the screen until told to stop", narration: 'Following you', actionClass: 'desktop_input' },
+  stop_following: { tier: 2, cost: 'cheap', description: 'Stop following the cursor and stay in place', narration: 'Standing still', actionClass: 'desktop_input' },
 };
 
 export function getToolMeta(name: string): ToolMeta | undefined {
