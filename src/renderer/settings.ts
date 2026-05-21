@@ -74,6 +74,15 @@ async function loadConfig(): Promise<void> {
     if ([0, 15000, 30000, 60000].includes(hideMs)) hideSel.value = String(hideMs);
   }
 
+  // v0.19.0 PR-2 — bubble default state + pin
+  const defStateSel = document.getElementById('setting-bubble-default-state') as HTMLSelectElement | null;
+  if (defStateSel) {
+    const v = String(config.bubbleDefaultState || 'standard');
+    defStateSel.value = (v === 'compact' || v === 'standard') ? v : 'standard';
+  }
+  const pinEl = document.getElementById('setting-bubble-pinned') as HTMLInputElement | null;
+  if (pinEl) pinEl.checked = Boolean(config.bubblePinned);
+
   if (config.ttsVoice) {
     voiceSelect.value = config.ttsVoice as string;
   }
@@ -242,6 +251,20 @@ const bubbleHideSelect = document.getElementById('setting-bubble-hide') as HTMLS
 if (bubbleHideSelect) {
   bubbleHideSelect.addEventListener('change', () => {
     window.clippy.updateSettings({ bubbleAutoHideMs: Number(bubbleHideSelect.value) });
+  });
+}
+
+// v0.19.0 PR-2 — bubble default state + pin
+const bubbleDefaultStateSel = document.getElementById('setting-bubble-default-state') as HTMLSelectElement | null;
+if (bubbleDefaultStateSel) {
+  bubbleDefaultStateSel.addEventListener('change', () => {
+    window.clippy.updateSettings({ bubbleDefaultState: bubbleDefaultStateSel.value });
+  });
+}
+const bubblePinnedEl = document.getElementById('setting-bubble-pinned') as HTMLInputElement | null;
+if (bubblePinnedEl) {
+  bubblePinnedEl.addEventListener('change', () => {
+    window.clippy.updateSettings({ bubblePinned: bubblePinnedEl.checked });
   });
 }
 

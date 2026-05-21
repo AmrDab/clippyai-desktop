@@ -291,6 +291,18 @@ interface BrainSettings {
   /** v0.12.3 — bubble auto-hide. 0 = manual (never auto-hide). Per UX
    *  audit finding #4: 20s default stole long replies mid-read. */
   bubbleAutoHideMs: number;
+  /** v0.19.0 PR-2 — default resting state for the bubble.
+   *  'standard' = the v0.12 behavior (multi-line, with input row).
+   *  'compact'  = single-line ambient tip that auto-fades; user clicks
+   *  to escalate. Short proactive tips honor this preference; long
+   *  replies always render in standard regardless. */
+  bubbleDefaultState: 'compact' | 'standard';
+  /** v0.19.0 PR-2 — pin the bubble open across successive speak()
+   *  calls. When true, auto-hide is suppressed and state transitions
+   *  triggered by new tips are skipped. Useful for chatty workflows
+   *  (drafting an email back-and-forth) where the bubble closing
+   *  between turns is friction. */
+  bubblePinned: boolean;
   /** TTS voice on/off (wired from settings UI → broadcast to main renderer). */
   ttsEnabled: boolean;
   /** Utterance rate 0.5–2.0 (default 1.1). */
@@ -309,6 +321,10 @@ const settingsStore = new Store<BrainSettings>({
     // raise via Settings → Brain → Quiet Time slider.
     proactiveCooldownMs: 60000,
     bubbleAutoHideMs: 30000,     // 30s default (was hardcoded 20s, too short)
+    // v0.19.0 PR-2 — keep "standard" as the default so existing users
+    // see no change. Compact-by-default is opt-in via Settings.
+    bubbleDefaultState: 'standard',
+    bubblePinned: false,
     ttsEnabled: true,
     speechRate: 1.1,
   },

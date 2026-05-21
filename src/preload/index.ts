@@ -66,6 +66,15 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('bubble-auto-hide', (_e, ms) => cb(ms));
   },
 
+  // v0.19.0 PR-2 — bubble v2 default state + pin. Both push from main →
+  // renderer on settings change so BubbleController reacts immediately.
+  onBubbleDefaultState: (cb: (state: 'compact' | 'standard') => void) => {
+    ipcRenderer.on('bubble-default-state', (_e, state) => cb(state));
+  },
+  onBubblePinned: (cb: (pinned: boolean) => void) => {
+    ipcRenderer.on('bubble-pinned', (_e, pinned) => cb(pinned));
+  },
+
   // v0.12.5 — manual proactive trigger from Settings UI.
   fireProactiveTip: () => ipcRenderer.invoke('fire-proactive-tip'),
 

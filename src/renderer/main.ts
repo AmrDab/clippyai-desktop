@@ -208,12 +208,21 @@ async function init(): Promise<void> {
   window.clippy.onSpeechPitch?.((p) => tts.setPitch(p));
   window.clippy.onSpeechVolume?.((v) => tts.setVolume(v));
   // v0.12.3 — apply persisted bubble auto-hide on startup + on change.
+  // v0.19.0 PR-2 — also apply bubbleDefaultState + bubblePinned. Same
+  // config call, so we fold both into the existing try/catch.
   try {
     const cfg = await window.clippy.getConfig();
     const ms = Number(cfg.bubbleAutoHideMs);
     if (Number.isFinite(ms) && ms >= 0) bubbleCtrl.setAutoHideMs(ms);
-  } catch { /* config not available; keep default */ }
+    const defState = cfg.bubbleDefaultState;
+    if (defState === 'compact' || defState === 'standard') {
+      bubbleCtrl.setDefaultState(defState);
+    }
+    if (cfg.bubblePinned === true) bubbleCtrl.setPinned(true);
+  } catch { /* config not available; keep defaults */ }
   window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
+  window.clippy.onBubbleDefaultState?.((s) => bubbleCtrl.setDefaultState(s));
+  window.clippy.onBubblePinned?.((p) => bubbleCtrl.setPinned(p));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 

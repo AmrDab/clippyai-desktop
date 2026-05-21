@@ -71,6 +71,9 @@ interface Window {
     onProactiveToggle: (cb: (enabled: boolean) => void) => void;
     /** v0.12.3 — bubble auto-hide ms; 0 = manual */
     onBubbleAutoHide: (cb: (ms: number) => void) => void;
+    /** v0.19.0 PR-2 — bubble v2 default state + pin. */
+    onBubbleDefaultState?: (cb: (state: 'compact' | 'standard') => void) => void;
+    onBubblePinned?: (cb: (pinned: boolean) => void) => void;
     /** v0.12.5 — manual proactive trigger from Settings UI */
     fireProactiveTip?: () => Promise<{ ok: boolean; reason?: string }>;
 
