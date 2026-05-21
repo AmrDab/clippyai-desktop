@@ -184,6 +184,28 @@
           <label>Mail Setup</label>
           <div id="mail-env-status" style="font-size:12px;color:#555;line-height:1.7;margin-top:6px;">Probing…</div>
         </div>
+
+        <!-- v0.19.0 — Follow Mode. Controls how Clippy glides toward the cursor
+             when follow-me is active (voice: "follow me", tray menu, or tool). -->
+        <div class="settings-group" style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;">
+          <label style="font-weight:600;">Follow Mode</label>
+          <p style="font-size:12px;color:#888;margin:4px 0 10px;">Controls how Clippy follows your cursor when follow mode is active.</p>
+          <div class="settings-group">
+            <label for="setting-follow-offset-x">Horizontal Offset</label>
+            <input id="setting-follow-offset-x" type="range" min="-400" max="400" step="10" value="220" />
+            <span id="follow-offset-x-value" style="font-size:12px;color:#888;">220 px</span>
+          </div>
+          <div class="settings-group">
+            <label for="setting-follow-offset-y">Vertical Offset</label>
+            <input id="setting-follow-offset-y" type="range" min="-300" max="300" step="10" value="120" />
+            <span id="follow-offset-y-value" style="font-size:12px;color:#888;">120 px</span>
+          </div>
+          <div class="settings-group">
+            <label for="setting-follow-easing">Follow Easing</label>
+            <input id="setting-follow-easing" type="range" min="0.05" max="0.40" step="0.01" value="0.18" />
+            <span id="follow-easing-value" style="font-size:12px;color:#888;">0.18</span>
+          </div>
+        </div>
       </div>
 
       <!-- v0.14.1 — Skills tab. Shows installed ClawHub skills with version

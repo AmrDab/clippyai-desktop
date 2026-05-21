@@ -150,6 +150,26 @@ async function loadConfig(): Promise<void> {
   const planName = (config.plan as string) || 'Unknown';
   licensePlanDisplay.textContent = planName;
   showPlanFeatures(planName);
+
+  // v0.19.0 — follow-me cursor mode settings
+  const fxEl = document.getElementById('setting-follow-offset-x') as HTMLInputElement | null;
+  const fxValEl = document.getElementById('follow-offset-x-value');
+  if (fxEl && fxValEl && config.followOffsetX !== undefined) {
+    fxEl.value = String(config.followOffsetX);
+    fxValEl.textContent = `${config.followOffsetX}px`;
+  }
+  const fyEl = document.getElementById('setting-follow-offset-y') as HTMLInputElement | null;
+  const fyValEl = document.getElementById('follow-offset-y-value');
+  if (fyEl && fyValEl && config.followOffsetY !== undefined) {
+    fyEl.value = String(config.followOffsetY);
+    fyValEl.textContent = `${config.followOffsetY}px`;
+  }
+  const feEl = document.getElementById('setting-follow-easing') as HTMLInputElement | null;
+  const feValEl = document.getElementById('follow-easing-value');
+  if (feEl && feValEl && config.followEasing !== undefined) {
+    feEl.value = String(config.followEasing);
+    feValEl.textContent = String(parseFloat(String(config.followEasing)).toFixed(2));
+  }
 }
 
 function maskKey(key: string): string {
@@ -318,6 +338,32 @@ if (manageSubLink) {
   manageSubLink.addEventListener('click', (e) => {
     e.preventDefault();
     window.clippy.openSubscriptionPortal();
+  });
+}
+
+// v0.19.0 — follow-me cursor mode sliders
+const followOffsetXRange = document.getElementById('setting-follow-offset-x') as HTMLInputElement | null;
+const followOffsetXValue = document.getElementById('follow-offset-x-value');
+if (followOffsetXRange && followOffsetXValue) {
+  followOffsetXRange.addEventListener('input', () => {
+    followOffsetXValue.textContent = `${followOffsetXRange.value}px`;
+    debounceSave({ followOffsetX: Number(followOffsetXRange.value) });
+  });
+}
+const followOffsetYRange = document.getElementById('setting-follow-offset-y') as HTMLInputElement | null;
+const followOffsetYValue = document.getElementById('follow-offset-y-value');
+if (followOffsetYRange && followOffsetYValue) {
+  followOffsetYRange.addEventListener('input', () => {
+    followOffsetYValue.textContent = `${followOffsetYRange.value}px`;
+    debounceSave({ followOffsetY: Number(followOffsetYRange.value) });
+  });
+}
+const followEasingRange = document.getElementById('setting-follow-easing') as HTMLInputElement | null;
+const followEasingValue = document.getElementById('follow-easing-value');
+if (followEasingRange && followEasingValue) {
+  followEasingRange.addEventListener('input', () => {
+    followEasingValue.textContent = String(parseFloat(followEasingRange.value).toFixed(2));
+    debounceSave({ followEasing: Number(followEasingRange.value) });
   });
 }
 

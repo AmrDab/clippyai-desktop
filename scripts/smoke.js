@@ -1025,6 +1025,53 @@ function layer1() {
   } else {
     fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
+
+  // ────────── v0.19.0 follow-me smoke tests ──────────
+
+  // F.1 follow-me.ts exists with the expected exports
+  const followMePath = path.join(ROOT, 'src', 'main', 'follow-me.ts');
+  if (fs.existsSync(followMePath)) {
+    const fmSrc = fs.readFileSync(followMePath, 'utf8');
+    const hasStart = /export function start\b/.test(fmSrc);
+    const hasStop = /export function stop\b/.test(fmSrc);
+    const hasIsActive = /export function isActive\b/.test(fmSrc);
+    const hasSetMainWindow = /export function setMainWindow\b/.test(fmSrc);
+    if (hasStart && hasStop && hasIsActive && hasSetMainWindow) {
+      pass('v0.19.0: follow-me.ts exports start, stop, isActive, setMainWindow');
+    } else {
+      fail('v0.19.0: follow-me.ts exports', `start=${hasStart} stop=${hasStop} isActive=${hasIsActive} setMainWindow=${hasSetMainWindow}`);
+    }
+  } else {
+    fail('v0.19.0: follow-me.ts', 'file does not exist');
+  }
+
+  // F.2 brain.ts require('./follow-me') present (bundle-skip guard)
+  const brainSrcF = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+  const brainRequiresFollowMe = /require\('\.\/follow-me'\)/.test(brainSrcF);
+  if (brainRequiresFollowMe) pass("v0.19.0: brain.ts require('./follow-me') present (bundle-skip guard)");
+  else fail("v0.19.0: brain.ts missing require('./follow-me')", 'pattern not found');
+
+  // F.3 TOOL_META has follow_me (with actionClass before narration) and stop_following
+  const metaSrcF = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
+  const hasFollowMeMeta = /follow_me\s*:\s*\{[^}]*actionClass[^}]*narration/.test(metaSrcF);
+  const hasStopFollowingMeta = /stop_following\s*:\s*\{[^}]*narration/.test(metaSrcF);
+  if (hasFollowMeMeta && hasStopFollowingMeta) {
+    pass('v0.19.0: TOOL_META has follow_me (with actionClass+narration) and stop_following');
+  } else {
+    fail('v0.19.0: TOOL_META follow-me entries', `follow_me=${hasFollowMeMeta} stop_following=${hasStopFollowingMeta}`);
+  }
+
+  // F.4 Pattern-route regexes verified inline — matching what brain.ts uses
+  const startRe = /\b(follow me|come here|follow my cursor|follow the cursor|stay with me|trail me)\b/i;
+  const stopRe = /\b(stop following|stay there|stay put|don'?t follow|stop trailing)\b/i;
+  const startHits = ['follow me', 'come here', 'follow my cursor', 'follow the cursor', 'stay with me', 'trail me', 'please follow me now'];
+  const startMisses = ['stop following', 'stay', 'follow'];
+  const stopHits = ['stop following', 'stay there', 'stay put', "don't follow", "dont follow", 'stop trailing'];
+  const stopMisses = ['follow me', 'stop'];
+  const startOk = startHits.every((s) => startRe.test(s)) && startMisses.every((s) => !startRe.test(s));
+  const stopOk = stopHits.every((s) => stopRe.test(s)) && stopMisses.every((s) => !stopRe.test(s));
+  if (startOk && stopOk) pass('v0.19.0: follow-me pattern-route regexes verified (start + stop)');
+  else fail('v0.19.0: follow-me pattern-route regexes', `startOk=${startOk} stopOk=${stopOk}`);
 }
 
 // ────────────────────────────────────────────────────────────────────

@@ -2790,7 +2790,34 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   generate_excel: excelFromRows,
   generate_pdf: pdfFromText,
   generate_qrcode: qrcodeFromText,
+  // v0.19.0 — follow-me cursor mode
+  follow_me: followMeTool,
+  stop_following: stopFollowingTool,
 };
+
+async function followMeTool(): Promise<ToolResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fm = require('./follow-me') as typeof import('./follow-me');
+    fm.start();
+    return { text: 'Started following the cursor. Say "stop following" or press Esc when you want me to stay put.' };
+  } catch (err) {
+    log.warn('follow_me tool error', serializeErr(err));
+    return { text: `Error starting follow-me: ${(err as Error).message}` };
+  }
+}
+
+async function stopFollowingTool(): Promise<ToolResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fm = require('./follow-me') as typeof import('./follow-me');
+    fm.stop('manual');
+    return { text: 'Okay, staying here.' };
+  } catch (err) {
+    log.warn('stop_following tool error', serializeErr(err));
+    return { text: `Error stopping follow-me: ${(err as Error).message}` };
+  }
+}
 
 async function clawdStatus(): Promise<ToolResult> {
   const ready = isClawdReady();
