@@ -96,6 +96,27 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     brain.setMode(mode);
   });
 
+  // v0.19.0 — follow-me IPC handlers.
+  // Renderer sends 'follow-me-stop' when user presses Esc while follow mode is active.
+  ipcMain.on('follow-me-stop', (_event, reason: string) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fm = require('./follow-me') as typeof import('./follow-me');
+      fm.stop(reason as 'esc' | 'manual' | 'voice' | 'sleep');
+    } catch { /* non-fatal */ }
+  });
+
+  // Renderer can query whether follow mode is active (for the Esc handler to gate on).
+  ipcMain.handle('follow-me-active', () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fm = require('./follow-me') as typeof import('./follow-me');
+      return fm.isActive();
+    } catch {
+      return false;
+    }
+  });
+
   // Click-through toggle
   ipcMain.on('set-click-through', (_event, enabled: boolean) => {
     setClickThrough(mainWindow, enabled);
@@ -160,6 +181,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       wakeWordEnabled: licenseStore.get('wakeWordEnabled', false),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
+      // v0.19.0 — follow-me settings
+      followOffsetX: brainSettingsStore.get('followOffsetX'),
+      followOffsetY: brainSettingsStore.get('followOffsetY'),
+      followEasing: brainSettingsStore.get('followEasing'),
     };
   });
 
@@ -226,6 +251,35 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // existing-user preferences carry over without a fresh prompt.
     if (settings.wakeWordEnabled !== undefined) {
       licenseStore.set('wakeWordEnabled', Boolean(settings.wakeWordEnabled));
+    }
+    // v0.19.0 — follow-me settings. Persisted and applied live to the
+    // follow-me module so the user can tune offset/easing mid-follow.
+    if (settings.followOffsetX !== undefined) {
+      const ox = Math.max(-400, Math.min(400, Math.round(Number(settings.followOffsetX) || 220)));
+      brainSettingsStore.set('followOffsetX', ox);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.setOptions({ offsetX: ox });
+      } catch { /* non-fatal */ }
+    }
+    if (settings.followOffsetY !== undefined) {
+      const oy = Math.max(-300, Math.min(300, Math.round(Number(settings.followOffsetY) || 120)));
+      brainSettingsStore.set('followOffsetY', oy);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.setOptions({ offsetY: oy });
+      } catch { /* non-fatal */ }
+    }
+    if (settings.followEasing !== undefined) {
+      const ease = Math.max(0.05, Math.min(0.40, Number(settings.followEasing) || 0.18));
+      brainSettingsStore.set('followEasing', ease);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.setOptions({ easing: ease });
+      } catch { /* non-fatal */ }
     }
     return true;
   });
@@ -730,5 +784,39 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     const m = require('./action-history') as typeof import('./action-history');
     m.clear();
     return true;
+  });
+
+  // v0.19.0 — Undo: apply the inverse of a recorded action.
+  // Returns { ok, detail } — the renderer shows this as a toast.
+  // Trust budget: if we're unsure (entry not found, already undone, no
+  // inverse recorded), return ok:false with an honest reason. Never claim
+  // success when we didn't actually undo.
+  ipcMain.handle('action-undo', async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) {
+      return { ok: false, detail: 'Invalid action id.' };
+    }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const history = require('./action-history') as typeof import('./action-history');
+      const entry = history.findById(id);
+      if (!entry) return { ok: false, detail: 'Action not found in history.' };
+      if (entry.undone) return { ok: false, detail: 'Already undone.' };
+      if (!entry.inverse) return { ok: false, detail: 'This action is not undoable.' };
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const undoMod = require('./undo') as typeof import('./undo');
+      const result = await undoMod.applyInverse(entry.inverse);
+
+      if (result.ok) {
+        history.markUndone(id);
+        log.info('action-undo success', { id, tool: entry.tool });
+      } else {
+        log.warn('action-undo failed', { id, tool: entry.tool, detail: result.detail });
+      }
+      return result;
+    } catch (err) {
+      log.error('action-undo threw', serializeErr(err));
+      return { ok: false, detail: `Undo error: ${err instanceof Error ? err.message : String(err)}` };
+    }
   });
 }

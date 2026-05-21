@@ -51,8 +51,20 @@ interface Window {
         actionClass: string | null; argsSummary: string;
         outcome: 'success' | 'failure' | 'unverified' | 'approval_denied' | 'blocked';
         detail: string; taskId?: string;
+        /** v0.19.0 — inverse action descriptor. Present if entry is undoable (or noop). */
+        inverse?: {
+          kind: 'restore-file' | 'rename' | 'move' | 'delete-calendar-event' | 'delete-email-draft' | 'restore-clipboard' | 'recreate-from-args' | 'noop';
+          reason?: string;
+          [key: string]: unknown;
+        };
+        /** v0.19.0 — true once undo has been successfully applied. */
+        undone?: boolean;
+        /** v0.19.0 — ISO timestamp of when undo was applied. */
+        undoneAt?: string;
       }>>;
       clearHistory: () => Promise<boolean>;
+      /** v0.19.0 — undo a recorded action by id. Returns { ok, detail }. */
+      undoAction: (id: string) => Promise<{ ok: boolean; detail?: string }>;
     };
 
     // ── Speech / TTS
@@ -120,6 +132,9 @@ interface Window {
     /** v0.16.0 — play-tag mode toggle */
     onPlayTagStart?: (cb: () => void) => void;
     onPlayTagStop?: (cb: () => void) => void;
+    /** v0.19.0 — follow-me cursor mode */
+    followMeActive?: () => Promise<boolean>;
+    followMeStop?: (reason: string) => void;
     /** v0.15.0 — Settings → Web → mcp-chrome extension status */
     mcpChromeStatus?: () => Promise<{
       ready: boolean;

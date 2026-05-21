@@ -144,6 +144,26 @@ async function loadConfig(): Promise<void> {
   const launchEl = document.getElementById('setting-launch-startup') as HTMLInputElement;
   if (launchEl) launchEl.checked = Boolean(config.launchOnStartup);
 
+  // v0.19.0 — Follow Mode settings
+  const fxEl = document.getElementById('setting-follow-offset-x') as HTMLInputElement | null;
+  const fxValEl = document.getElementById('follow-offset-x-value');
+  if (fxEl && fxValEl && config.followOffsetX !== undefined) {
+    fxEl.value = String(config.followOffsetX);
+    fxValEl.textContent = `${config.followOffsetX}px`;
+  }
+  const fyEl = document.getElementById('setting-follow-offset-y') as HTMLInputElement | null;
+  const fyValEl = document.getElementById('follow-offset-y-value');
+  if (fyEl && fyValEl && config.followOffsetY !== undefined) {
+    fyEl.value = String(config.followOffsetY);
+    fyValEl.textContent = `${config.followOffsetY}px`;
+  }
+  const feEl = document.getElementById('setting-follow-easing') as HTMLInputElement | null;
+  const feValEl = document.getElementById('follow-easing-value');
+  if (feEl && feValEl && config.followEasing !== undefined) {
+    feEl.value = String(config.followEasing);
+    feValEl.textContent = String(parseFloat(String(config.followEasing)).toFixed(2));
+  }
+
   // License
   const key = (config.licenseKey as string) || '';
   licenseKeyDisplay.textContent = key ? maskKey(key) : 'No key set';
@@ -309,6 +329,32 @@ const launchToggle = document.getElementById('setting-launch-startup') as HTMLIn
 if (launchToggle) {
   launchToggle.addEventListener('change', () => {
     window.clippy.setLaunchOnStartup(launchToggle.checked);
+  });
+}
+
+// v0.19.0 — Follow Mode sliders.
+const followOffsetXRange = document.getElementById('setting-follow-offset-x') as HTMLInputElement | null;
+const followOffsetXValue = document.getElementById('follow-offset-x-value');
+if (followOffsetXRange && followOffsetXValue) {
+  followOffsetXRange.addEventListener('input', () => {
+    followOffsetXValue.textContent = `${followOffsetXRange.value}px`;
+    debounceSave({ followOffsetX: Number(followOffsetXRange.value) });
+  });
+}
+const followOffsetYRange = document.getElementById('setting-follow-offset-y') as HTMLInputElement | null;
+const followOffsetYValue = document.getElementById('follow-offset-y-value');
+if (followOffsetYRange && followOffsetYValue) {
+  followOffsetYRange.addEventListener('input', () => {
+    followOffsetYValue.textContent = `${followOffsetYRange.value}px`;
+    debounceSave({ followOffsetY: Number(followOffsetYRange.value) });
+  });
+}
+const followEasingRange = document.getElementById('setting-follow-easing') as HTMLInputElement | null;
+const followEasingValue = document.getElementById('follow-easing-value');
+if (followEasingRange && followEasingValue) {
+  followEasingRange.addEventListener('input', () => {
+    followEasingValue.textContent = String(parseFloat(followEasingRange.value).toFixed(2));
+    debounceSave({ followEasing: Number(followEasingRange.value) });
   });
 }
 
@@ -838,15 +884,72 @@ async function refreshHistory(): Promise<void> {
     const escTool = String(r.tool).replace(/[<>&]/g, '');
     const escDetail = String(r.detail || '').replace(/[<>&]/g, '');
     const escClass = r.actionClass ? `<span style="color:#888;margin-left:6px;font-size:10.5px;">·${r.actionClass}·T${r.tier}</span>` : `<span style="color:#888;margin-left:6px;font-size:10.5px;">·T${r.tier}</span>`;
+
+    // v0.19.0 — undo surface. Build the right-column widget based on state:
+    //   • entry.undone          → green "Undone" badge with timestamp tooltip
+    //   • inverse.kind==='noop' → grey badge with reason as tooltip
+    //   • inverse present       → active "Undo" button
+    //   • no inverse            → just the timestamp
+    let rightCol: string;
+    if (r.undone) {
+      const undoneAtStr = r.undoneAt ? new Date(r.undoneAt).toLocaleTimeString() : '';
+      rightCol = `<span class="undo-badge undo-done" title="Undone at ${undoneAtStr}" style="background:#d1fae5;color:#065f46;border-radius:4px;padding:2px 7px;font-size:10.5px;font-weight:600;white-space:nowrap;">Undone</span>`;
+    } else if (r.inverse && r.inverse.kind === 'noop') {
+      const reason = String(r.inverse.reason || '').replace(/"/g, '&quot;');
+      rightCol = `<span class="undo-badge undo-noop" title="${reason}" style="background:#f3f4f6;color:#9ca3af;border-radius:4px;padding:2px 7px;font-size:10.5px;font-weight:500;white-space:nowrap;cursor:help;">Can\'t undo</span>`;
+    } else if (r.inverse) {
+      // Undoable — show active button
+      rightCol = `<button class="undo-btn" data-id="${r.id}" style="background:#fff;border:1px solid #d0d4da;border-radius:4px;padding:2px 8px;font-size:10.5px;cursor:pointer;color:#374151;white-space:nowrap;" title="Undo this action">Undo</button>`;
+    } else {
+      rightCol = `<div style="color:#888;font-size:10.5px;white-space:nowrap;">${fmtRelTime(r.ts)}</div>`;
+    }
+
     div.innerHTML = `
       ${outcomeBadge(r.outcome)}
       <div style="overflow:hidden;">
         <div style="color:#1a1a1a;font-weight:600;font-size:11.5px;">${escTool}${escClass}</div>
-        <div style="color:#555;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escDetail}</div>
+        <div style="color:#555;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escDetail}">${escDetail}</div>
+        <div style="color:#aaa;font-size:10px;margin-top:1px;">${fmtRelTime(r.ts)}</div>
       </div>
-      <div style="color:#888;font-size:10.5px;white-space:nowrap;">${fmtRelTime(r.ts)}</div>
+      <div style="display:flex;align-items:center;gap:4px;">${rightCol}</div>
     `;
+
+    // Wire Undo button imperatively — avoids innerHTML event listener issues.
+    const undoBtn = div.querySelector<HTMLButtonElement>('.undo-btn');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', async () => {
+        undoBtn.disabled = true;
+        undoBtn.textContent = 'Undoing...';
+        try {
+          const result = await clickUndo(undoBtn.dataset.id ?? '');
+          if (result.ok) {
+            // Replace button with success badge in-place without full re-render.
+            const parent = undoBtn.parentElement;
+            if (parent) {
+              parent.innerHTML = `<span class="undo-badge undo-done" style="background:#d1fae5;color:#065f46;border-radius:4px;padding:2px 7px;font-size:10.5px;font-weight:600;">Undone</span>`;
+            }
+          } else {
+            undoBtn.disabled = false;
+            undoBtn.textContent = 'Undo';
+            alert(`Undo failed: ${result.detail || 'Unknown error'}`);
+          }
+        } catch {
+          undoBtn.disabled = false;
+          undoBtn.textContent = 'Undo';
+        }
+      });
+    }
+
     root.appendChild(div);
+  }
+}
+
+async function clickUndo(id: string): Promise<{ ok: boolean; detail?: string }> {
+  if (!id || !window.clippy.guardrails) return { ok: false, detail: 'Not available.' };
+  try {
+    return await window.clippy.guardrails.undoAction(id);
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }
 }
 

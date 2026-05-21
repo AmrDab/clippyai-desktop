@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('clippy', {
       ipcRenderer.invoke('guardrails:set-policy', next),
     getHistory: () => ipcRenderer.invoke('guardrails:get-history'),
     clearHistory: () => ipcRenderer.invoke('guardrails:clear-history'),
+    // v0.19.0 — undo a recorded action by id. Returns { ok, detail }.
+    undoAction: (id: string) => ipcRenderer.invoke('action-undo', id),
   },
 
   updateSettings: (settings: Record<string, unknown>) =>
@@ -138,6 +140,11 @@ contextBridge.exposeInMainWorld('clippy', {
   onPlayTagStop: (cb: () => void) => {
     ipcRenderer.on('play-tag-stop', () => cb());
   },
+
+  // v0.19.0 — follow-me cursor mode. Renderer calls followMeStop('esc')
+  // when user presses Esc while follow mode is active.
+  followMeActive: () => ipcRenderer.invoke('follow-me-active'),
+  followMeStop: (reason: string) => ipcRenderer.send('follow-me-stop', reason),
 
   moveWindow: (deltaX: number, deltaY: number) => {
     ipcRenderer.send('move-window', deltaX, deltaY);
