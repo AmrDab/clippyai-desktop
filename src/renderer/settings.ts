@@ -289,6 +289,14 @@ if (fireTipBtn) {
 // v0.12.5 — TTS voice preview. Uses the renderer's own Web Speech API
 // directly so no IPC roundtrip; respects whatever voice + rate the user
 // currently has selected in this Settings window even before they save.
+//
+// v0.18.4 — also read pitch + volume from the live sliders. The pre-fix
+// click handler set only `utterance.rate`, so dragging the pitch or
+// volume sliders and clicking Play Sample silently used the browser
+// defaults (pitch=1.0, volume=1.0) regardless of slider position. Real
+// Clippy speech (via tts.ts) was always correct because the IPC
+// `speech-pitch` / `speech-volume` channels flowed live to the bubble
+// renderer — this bug was confined to the Settings preview button.
 const testVoiceBtn = document.getElementById('btn-test-voice') as HTMLButtonElement | null;
 if (testVoiceBtn) {
   testVoiceBtn.addEventListener('click', () => {
@@ -298,6 +306,8 @@ if (testVoiceBtn) {
       const selected = voices.find((v) => v.name === voiceSelect.value);
       if (selected) utterance.voice = selected;
       utterance.rate = Number(speechRateRange.value) || 1.1;
+      if (pitchRange) utterance.pitch = Number(pitchRange.value) || 1.0;
+      if (volumeRange) utterance.volume = Number(volumeRange.value) ?? 0.9;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     } catch { /* SpeechSynthesis unavailable — silent fail */ }

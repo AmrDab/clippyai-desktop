@@ -1025,6 +1025,27 @@ function layer1() {
   } else {
     fail('v0.11.29: _outlook-com-precheck.ps1', 'helper file missing');
   }
+
+  // ────────── v0.18.4 — voice test-button reads pitch+volume from sliders ──────────
+  // Pre-v0.18.4 the Settings "Play sample" button set utterance.rate from
+  // the live slider but never touched utterance.pitch or utterance.volume,
+  // so dragging those sliders + clicking Play used the browser defaults
+  // (1.0 / 1.0) regardless of slider position. Real Clippy speech via
+  // tts.ts always worked; this bug was isolated to the Settings preview.
+  // The structural invariant: the test-voice click handler must read
+  // both pitchRange.value and volumeRange.value and assign them to the
+  // utterance. A future refactor that drops either assignment fails L1.
+  const settingsSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'settings.ts'), 'utf8');
+  const testBlock = settingsSrc.match(/testVoiceBtn\.addEventListener\('click',[\s\S]{0,800}?\}\);/);
+  const handlerBody = testBlock && testBlock[0];
+  const readsRate = handlerBody && /utterance\.rate\s*=\s*Number\(speechRateRange\.value\)/.test(handlerBody);
+  const readsPitch = handlerBody && /utterance\.pitch\s*=\s*Number\(pitchRange\.value\)/.test(handlerBody);
+  const readsVolume = handlerBody && /utterance\.volume\s*=\s*Number\(volumeRange\.value\)/.test(handlerBody);
+  if (handlerBody && readsRate && readsPitch && readsVolume) {
+    pass('v0.18.4: Voice test-button reads rate + pitch + volume from live sliders');
+  } else {
+    fail('v0.18.4: Voice test-button', `rate=${readsRate} pitch=${readsPitch} volume=${readsVolume}`);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
