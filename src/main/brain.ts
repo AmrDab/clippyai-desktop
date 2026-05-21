@@ -295,6 +295,12 @@ interface BrainSettings {
   ttsEnabled: boolean;
   /** Utterance rate 0.5–2.0 (default 1.1). */
   speechRate: number;
+  /** v0.19.0 — follow-me horizontal offset (px). Positive = cursor is left of Clippy. */
+  followOffsetX: number;
+  /** v0.19.0 — follow-me vertical offset (px). Positive = cursor is above Clippy. */
+  followOffsetY: number;
+  /** v0.19.0 — follow-me easing factor 0.05–0.40. Higher = snappier. */
+  followEasing: number;
 }
 
 const settingsStore = new Store<BrainSettings>({
@@ -311,6 +317,9 @@ const settingsStore = new Store<BrainSettings>({
     bubbleAutoHideMs: 30000,     // 30s default (was hardcoded 20s, too short)
     ttsEnabled: true,
     speechRate: 1.1,
+    followOffsetX: 220,
+    followOffsetY: 120,
+    followEasing: 0.18,
   },
 });
 
@@ -385,6 +394,12 @@ export class Brain {
       try { abortAllInFlightTools(); } catch (err) {
         log.warn('abortAllInFlightTools threw on sleep (non-fatal)', serializeErr(err));
       }
+      // v0.19.0 — stop follow-me polling so no orphan interval survives sleep.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        if (fm.isActive()) fm.stop('sleep');
+      } catch { /* non-fatal — follow-me module may not be loaded yet */ }
       this.stopLoop();
     }
   }
@@ -472,6 +487,35 @@ export class Brain {
       } catch { /* non-fatal */ }
       this.emit('play-tag-stop');
       const reply = "Aw, no fun! 📎";
+      this.emit('clippy-speak', { text: reply, animate: 'GestureDown' });
+      return reply;
+    }
+
+    // v0.19.0 — follow-me pattern routing. Cheap regex short-circuits so we
+    // don't burn a model turn on "follow me" / "stop following" requests.
+    if (/\b(follow me|come here|follow my cursor|follow the cursor|stay with me|trail me)\b/i.test(text)) {
+      log.info('FollowMe.start', { trigger: 'voice' });
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.start(undefined, undefined, 'voice');
+      } catch (err) {
+        log.warn('follow-me start failed (non-fatal)', serializeErr(err));
+      }
+      const reply = 'On it! I\'ll follow your cursor. Say "stop following" or press Esc when you want me to stay put. 📎';
+      this.emit('clippy-speak', { text: reply, animate: 'Wave' });
+      return reply;
+    }
+    if (/\b(stop following|stay there|stay put|don'?t follow|stop trailing)\b/i.test(text)) {
+      log.info('FollowMe.stop', { trigger: 'voice' });
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.stop('voice');
+      } catch (err) {
+        log.warn('follow-me stop failed (non-fatal)', serializeErr(err));
+      }
+      const reply = "Okay, I'll stay put right here. 📎";
       this.emit('clippy-speak', { text: reply, animate: 'GestureDown' });
       return reply;
     }

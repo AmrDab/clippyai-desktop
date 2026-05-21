@@ -231,6 +231,12 @@ function launchMainApp(): void {
     if (mainWindow) w.startCursorPoll(mainWindow);
   });
 
+  // v0.19.0 — inject window reference into follow-me module so subsequent
+  // callers (tools, IPC) don't need to pass it explicitly.
+  import('./follow-me').then((fm) => {
+    if (mainWindow) fm.setMainWindow(mainWindow);
+  }).catch((err: Error) => log.warn('follow-me module load failed (non-fatal)', err.message));
+
   brain.setMode('awake');
   mainWindow.webContents.send('mode-change', 'awake');
 

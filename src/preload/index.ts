@@ -139,6 +139,11 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('play-tag-stop', () => cb());
   },
 
+  // v0.19.0 — follow-me cursor mode. Renderer calls followMeStop('esc')
+  // when user presses Esc while follow mode is active.
+  followMeActive: () => ipcRenderer.invoke('follow-me-active'),
+  followMeStop: (reason: string) => ipcRenderer.send('follow-me-stop', reason),
+
   moveWindow: (deltaX: number, deltaY: number) => {
     ipcRenderer.send('move-window', deltaX, deltaY);
   },

@@ -81,6 +81,15 @@ export class BubbleController {
       });
     }
 
+    // v0.19.0 — ESC while not recording → stop follow-me if active.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !this.isRecording()) {
+        window.clippy.followMeActive?.().then((active: boolean) => {
+          if (active) { window.clippy.followMeStop?.('esc'); }
+        }).catch(() => { /* non-fatal */ });
+      }
+    });
+
     // Click bubble text → toggle between history and input
     this.bubbleText.addEventListener('click', (e) => {
       e.stopPropagation();

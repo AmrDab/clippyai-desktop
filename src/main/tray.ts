@@ -3,6 +3,7 @@ import path from 'path';
 import { Brain, brainSettingsStore } from './brain';
 import { createSettingsWindow } from './window';
 import { getBuddyName } from './license';
+import * as followMe from './follow-me';
 
 let tray: Tray | null = null;
 
@@ -38,6 +39,21 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
         },
       },
       { type: 'separator' },
+      {
+        // v0.19.0 — follow-me toggle. Label reflects current state so the
+        // user always knows whether follow mode is active.
+        label: followMe.isActive() ? 'Following cursor (click to stop)' : 'Follow my cursor',
+        type: 'checkbox' as const,
+        checked: followMe.isActive(),
+        click: () => {
+          if (followMe.isActive()) {
+            followMe.stop('manual');
+          } else {
+            followMe.start(win);
+          }
+          updateMenu();
+        },
+      },
       {
         label: 'Center on Screen',
         // v0.12.5 — rescue affordance when Clippy gets dragged off-screen

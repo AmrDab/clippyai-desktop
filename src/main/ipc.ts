@@ -96,6 +96,26 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     brain.setMode(mode);
   });
 
+  // v0.19.0 — follow-me cursor mode IPC handlers.
+  // Renderer sends 'follow-me-stop' when user presses Esc while follow mode
+  // is active. reason: 'esc' lets telemetry distinguish user-driven stops.
+  ipcMain.on('follow-me-stop', (_event, reason: string) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fm = require('./follow-me') as typeof import('./follow-me');
+      fm.stop(reason ?? 'esc');
+    } catch { /* non-fatal */ }
+  });
+  // Renderer queries active state to decide whether to send 'follow-me-stop'
+  // on Esc (avoids suppressing normal Esc behaviour when not in follow mode).
+  ipcMain.handle('follow-me-active', () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fm = require('./follow-me') as typeof import('./follow-me');
+      return fm.isActive();
+    } catch { return false; }
+  });
+
   // Click-through toggle
   ipcMain.on('set-click-through', (_event, enabled: boolean) => {
     setClickThrough(mainWindow, enabled);
@@ -160,6 +180,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       wakeWordEnabled: licenseStore.get('wakeWordEnabled', false),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
+      // v0.19.0 — follow-me cursor mode settings
+      followOffsetX: brainSettingsStore.get('followOffsetX'),
+      followOffsetY: brainSettingsStore.get('followOffsetY'),
+      followEasing: brainSettingsStore.get('followEasing'),
     };
   });
 
@@ -226,6 +250,35 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // existing-user preferences carry over without a fresh prompt.
     if (settings.wakeWordEnabled !== undefined) {
       licenseStore.set('wakeWordEnabled', Boolean(settings.wakeWordEnabled));
+    }
+    // v0.19.0 — follow-me cursor mode options. Live-update setOptions() so
+    // changes in the Settings slider take effect without a restart.
+    if (settings.followOffsetX !== undefined) {
+      const offX = Math.max(-400, Math.min(400, Number(settings.followOffsetX) || 220));
+      brainSettingsStore.set('followOffsetX', offX);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.setOptions({ offsetX: offX });
+      } catch { /* non-fatal */ }
+    }
+    if (settings.followOffsetY !== undefined) {
+      const offY = Math.max(-300, Math.min(300, Number(settings.followOffsetY) || 120));
+      brainSettingsStore.set('followOffsetY', offY);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.setOptions({ offsetY: offY });
+      } catch { /* non-fatal */ }
+    }
+    if (settings.followEasing !== undefined) {
+      const ease = Math.max(0.05, Math.min(0.40, Number(settings.followEasing) || 0.18));
+      brainSettingsStore.set('followEasing', ease);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fm = require('./follow-me') as typeof import('./follow-me');
+        fm.setOptions({ easing: ease });
+      } catch { /* non-fatal */ }
     }
     return true;
   });
