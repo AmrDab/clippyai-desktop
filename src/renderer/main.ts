@@ -121,7 +121,11 @@ async function init(): Promise<void> {
   });
 
   // === IPC Event Listeners ===
-  window.clippy.onSpeak(({ text, animate }) => {
+  // v0.19.0 PR-3 — track the rule_id of the currently-visible proactive tip so
+  // "Don't suggest this again" in the context menu knows which rule to deny.
+  let currentRuleId: string | undefined;
+
+  window.clippy.onSpeak(({ text, animate, ruleId }) => {
     const safeText = text || '';
     if (safeText) {
       // A real reply from the model — clear any pending narration crumbs so
@@ -131,6 +135,8 @@ async function init(): Promise<void> {
       tts.speak(safeText);
     }
     if (animate) clippyCtrl.playNamed(animate);
+    // Track rule source for context-menu "Don't suggest this again".
+    currentRuleId = ruleId;
   });
 
   // v0.17.8 — narration crumbs: short, present-progressive updates that keep
@@ -522,7 +528,9 @@ async function init(): Promise<void> {
   canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    window.clippy.showContextMenu();
+    // v0.19.0 PR-3 — pass the current rule_id (if any) so the context menu can
+    // show "Don't suggest this again" for rule-fired tips.
+    window.clippy.showContextMenu(currentRuleId);
   });
 
   console.log('[Main] ClippyAI renderer initialized successfully');

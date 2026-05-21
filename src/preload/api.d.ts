@@ -56,7 +56,8 @@ interface Window {
     };
 
     // ── Speech / TTS
-    onSpeak: (cb: (payload: { text: string; animate: string }) => void) => void;
+    /** v0.19.0 PR-3 — ruleId present when the tip was fired by a deterministic rule */
+    onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string }) => void) => void;
 
     // ── Narration crumbs — short bubble updates fired on every Tool.call
     onClippyCrumb: (cb: (payload: { text: string; tool: string; step: number }) => void) => void;
@@ -141,7 +142,10 @@ interface Window {
     // ── Window control
     setClickThrough: (enabled: boolean) => void;
     openSettings: () => void;
-    showContextMenu: () => void;
+    /** v0.19.0 PR-3 — optional ruleId for "Don't suggest this again" context-menu item */
+    showContextMenu: (ruleId?: string) => void;
+    /** v0.19.0 PR-3 — append a rule ID to the persistent suggestion denylist */
+    addSuggestionDenylist?: (ruleId: string) => Promise<boolean>;
     moveWindow: (deltaX: number, deltaY: number) => void;
     expandWindow: () => void;
     collapseWindow: () => void;

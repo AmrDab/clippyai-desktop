@@ -74,6 +74,13 @@ async function loadConfig(): Promise<void> {
     if ([0, 15000, 30000, 60000].includes(hideMs)) hideSel.value = String(hideMs);
   }
 
+  // v0.19.0 PR-3 — load Clippy energy radio buttons
+  const energyVal = (config.clippyEnergy as string) || 'default';
+  const energyRadio = document.querySelector<HTMLInputElement>(
+    `input[name="clippy-energy"][value="${energyVal}"]`,
+  );
+  if (energyRadio) energyRadio.checked = true;
+
   if (config.ttsVoice) {
     voiceSelect.value = config.ttsVoice as string;
   }
@@ -242,6 +249,17 @@ const bubbleHideSelect = document.getElementById('setting-bubble-hide') as HTMLS
 if (bubbleHideSelect) {
   bubbleHideSelect.addEventListener('change', () => {
     window.clippy.updateSettings({ bubbleAutoHideMs: Number(bubbleHideSelect.value) });
+  });
+}
+
+// v0.19.0 PR-3 — Clippy energy radio cards
+const energyGroup = document.getElementById('clippy-energy-group');
+if (energyGroup) {
+  energyGroup.addEventListener('change', (e) => {
+    const target = e.target as HTMLInputElement | null;
+    if (target && target.name === 'clippy-energy') {
+      window.clippy.updateSettings({ clippyEnergy: target.value });
+    }
   });
 }
 
