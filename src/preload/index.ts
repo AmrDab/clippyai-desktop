@@ -151,6 +151,13 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.send('collapse-window');
   },
 
+  // Main pushes which side of Clippy the bubble body grows on (anchor-aware,
+  // multi-display) so the renderer can flip the tail. 'above' = Clippy below
+  // the bubble (default); 'below' = Clippy above it.
+  onBubbleSide: (cb: (side: 'above' | 'below') => void) => {
+    ipcRenderer.on('bubble-side', (_e, side) => cb(side));
+  },
+
   closeWindow: () => {
     ipcRenderer.send('close-onboarding');
   },

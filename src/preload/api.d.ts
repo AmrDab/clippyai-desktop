@@ -145,6 +145,9 @@ interface Window {
     moveWindow: (deltaX: number, deltaY: number) => void;
     expandWindow: () => void;
     collapseWindow: () => void;
+    /** Main pushes the side the bubble body grows on (anchor-aware /
+     *  multi-display) so the renderer can flip the tail. */
+    onBubbleSide?: (cb: (side: 'above' | 'below') => void) => void;
     closeWindow: () => void;
 
     // ── Animation playback

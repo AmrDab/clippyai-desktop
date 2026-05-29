@@ -234,6 +234,10 @@ async function init(): Promise<void> {
   } catch { /* config not available; keep default */ }
   window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
 
+  // Anchor-aware bubble side — main flips the tail when Clippy is near the
+  // top edge and the bubble has to grow downward instead of up.
+  window.clippy.onBubbleSide?.((side) => bubbleCtrl.setSide(side));
+
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 
   // v0.16.0 — task-in-progress animation loop. Replaces the prior one-shot
