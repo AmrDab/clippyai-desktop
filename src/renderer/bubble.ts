@@ -109,6 +109,14 @@ export class BubbleController {
     });
   }
 
+  /** Main (window.ts) decides whether the bubble body grows above or below
+   *  Clippy based on which screen edge he's near, and pushes the chosen side
+   *  here so the tail flips to keep pointing at him. 'above' = Clippy below
+   *  the bubble (default); 'below' = Clippy above it. */
+  setSide(side: 'above' | 'below'): void {
+    this.bubble.classList.toggle('bubble--below', side === 'below');
+  }
+
   speak(text: string): void {
     this.chatHistory.push({ role: 'clippy', text, time: new Date() });
     this.showingHistory = false;
