@@ -104,6 +104,21 @@ contextBridge.exposeInMainWorld('clippy', {
   transcribeAudio: (wav: Uint8Array, initialPrompt?: string) =>
     ipcRenderer.invoke('transcribe-audio', wav, initialPrompt),
   sttStatus: () => ipcRenderer.invoke('stt-status'),
+
+  // voice parity — optional OpenAI TTS. synthesizeSpeech returns audio
+  // BYTES (the key stays in main); on unavailable/error the renderer falls
+  // back to local SpeechSynthesis. setOpenAiKey is write-only (no getter
+  // exists), clearOpenAiKey wipes the secret store + presence + reverts to
+  // the free System engine.
+  synthesizeSpeech: (text: string, voice?: string) =>
+    ipcRenderer.invoke('synthesize-speech', text, voice),
+  setOpenAiKey: (token: string) => ipcRenderer.invoke('set-openai-key', token),
+  clearOpenAiKey: () => ipcRenderer.invoke('clear-openai-key'),
+  // Main pushes the engine choice so tts.ts switches live on settings change.
+  onTtsEngine: (cb: (engine: 'system' | 'openai') => void) => {
+    ipcRenderer.on('tts-engine', (_e, engine) => cb(engine));
+  },
+
   // v0.17.0 — global push-to-talk hotkey signals from main process
   onVoiceStart: (cb: () => void) => {
     ipcRenderer.on('voice-start', () => cb());

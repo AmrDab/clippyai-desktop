@@ -112,6 +112,20 @@ interface Window {
     /** v0.17.0 — Voice input (offline whisper.cpp transcription) */
     transcribeAudio?: (wav: Uint8Array, initialPrompt?: string) => Promise<{ ok: boolean; text?: string; error?: string; elapsedMs?: number }>;
     sttStatus?: () => Promise<{ ready: boolean; reason?: string }>;
+    /** voice parity — optional OpenAI TTS proxy. Returns audio bytes on ok;
+     *  `unavailable` means no key configured (renderer uses local
+     *  SpeechSynthesis). The key never crosses this bridge. */
+    synthesizeSpeech?: (text: string, voice?: string) => Promise<{
+      ok: boolean;
+      audio?: Uint8Array;
+      mimeType?: string;
+      error?: string;
+      unavailable?: boolean;
+    }>;
+    /** Write-only: stores the OpenAI key in the OS secret store. No getter exists. */
+    setOpenAiKey?: (token: string) => Promise<{ ok: boolean; error?: string }>;
+    clearOpenAiKey?: () => Promise<{ ok: boolean; error?: string }>;
+    onTtsEngine?: (cb: (engine: 'system' | 'openai') => void) => void;
     onVoiceStart?: (cb: () => void) => void;
     onVoiceStop?: (cb: () => void) => void;
     onVoiceToggle?: (cb: (enabled: boolean) => void) => void;
