@@ -846,7 +846,7 @@ export class Brain {
             contents.push({
               role: 'function',
               parts: [{ functionResponse: { name: call.name, response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${policy.classFor(call.name)}). Suggest an alternative or tell the user how to enable it.` } } }],
-            } as Content);
+            } as unknown as Content);
             continue;
           }
 
