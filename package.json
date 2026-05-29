@@ -24,6 +24,8 @@
     "smoke": "node scripts/smoke.js",
     "smoke:1": "node scripts/smoke.js --layer=1",
     "smoke:2": "node scripts/smoke.js --layer=2",
+    "test": "node scripts/test-lumiere-scorer.js",
+    "test:lumiere": "node scripts/test-lumiere-scorer.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
