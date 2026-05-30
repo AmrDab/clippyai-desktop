@@ -13,8 +13,17 @@ import {
   getPlan,
   getBuddyName,
   getTtsVoice,
+  isOpenAiKeyPresent,
+  setOpenAiKeyPresence,
+  getTtsEngine,
+  setTtsEngine,
   store as licenseStore,
 } from './license';
+// voice parity — STATIC import (bundle-anchor rule): a static
+// `import * as` is the only form that survives Rollup tree-shaking. A lazy
+// require()/dynamic import() would get dropped from the bundle.
+import * as openaiVoice from './openai-voice';
+import { setSecret, clearSecret } from './skills/secrets';
 import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow } from './window';
 // updater imports moved to top of file
@@ -149,6 +158,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       proactiveCooldownMs: brainSettingsStore.get('proactiveCooldownMs'),
       bubbleAutoHideMs: brainSettingsStore.get('bubbleAutoHideMs'),
       ttsEnabled: licenseStore.get('ttsEnabled', true),
+      // voice parity — TTS engine picker + OpenAI key presence. Renderer
+      // reads ttsEngine to decide whether to attempt the OpenAI path;
+      // openaiKeyPresent drives the Settings UI state. The key VALUE never
+      // appears here — presence boolean only.
+      ttsEngine: getTtsEngine(),
+      openaiKeyPresent: isOpenAiKeyPresent(),
       speechRate: licenseStore.get('speechRate', 1.1),
       // v0.16.0 — pitch + volume
       speechPitch: licenseStore.get('speechPitch', 1.0),
@@ -200,6 +215,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       licenseStore.set('ttsEnabled', Boolean(settings.ttsEnabled));
       mainWindow.webContents.send('tts-toggle', Boolean(settings.ttsEnabled));
     }
+    // voice parity — TTS engine picker: 'system' (free, default, offline)
+    // vs 'openai' (premium, requires a key). Broadcast so the renderer's
+    // TTS instance switches engine live without a reload.
+    if (settings.ttsEngine !== undefined) {
+      const engine = String(settings.ttsEngine) === 'openai' ? 'openai' : 'system';
+      setTtsEngine(engine);
+      mainWindow.webContents.send('tts-engine', engine);
+    }
     if (settings.speechRate !== undefined) {
       const rate = Math.max(0.5, Math.min(2.0, Number(settings.speechRate) || 1.1));
       licenseStore.set('speechRate', rate);
@@ -228,6 +251,64 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       licenseStore.set('wakeWordEnabled', Boolean(settings.wakeWordEnabled));
     }
     return true;
+  });
+
+  // voice parity — optional OpenAI TTS proxy. The renderer calls this ONLY
+  // when the user picked the OpenAI engine; we read the key in main (secret
+  // store or env), call gpt-4o-mini-tts, and return the audio BYTES. The
+  // key never crosses the bridge. On no-key/error the renderer falls back
+  // to local SpeechSynthesis — Clippy never goes mute.
+  ipcMain.handle('synthesize-speech', async (_event, text: unknown, voice?: unknown) => {
+    try {
+      if (typeof text !== 'string' || !text.trim()) {
+        return { ok: false, error: 'empty-text' };
+      }
+      const v = typeof voice === 'string' && voice.trim() ? voice.trim() : undefined;
+      const r = await openaiVoice.synthesizeSpeech(text, { voice: v });
+      if (!r.ok) {
+        return { ok: false, error: r.error, unavailable: r.unavailable === true };
+      }
+      // Hand back a plain Uint8Array — structured-clone-safe over IPC.
+      return { ok: true, audio: r.audio, mimeType: r.mimeType };
+    } catch (err) {
+      log.warn('synthesize-speech failed', serializeErr(err));
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // voice parity — write the user-provided OpenAI key to the OS secret
+  // store (service `clippyai-api`, account `openai`) + flip the presence
+  // flag. Write-only: there is NO get-openai-key handler, so the key value
+  // can never be read back into the renderer.
+  ipcMain.handle('set-openai-key', async (_event, token: unknown) => {
+    if (typeof token !== 'string' || token.trim().length < 8) {
+      return { ok: false, error: 'invalid-key' };
+    }
+    try {
+      await setSecret(openaiVoice.OPENAI_KEYCHAIN_SERVICE, openaiVoice.OPENAI_KEYCHAIN_ACCOUNT, token.trim());
+      setOpenAiKeyPresence(true);
+      return { ok: true };
+    } catch (err) {
+      log.warn('set-openai-key failed', { msg: err instanceof Error ? err.message : String(err) });
+      return { ok: false, error: 'secret-store-write-failed' };
+    }
+  });
+
+  ipcMain.handle('clear-openai-key', async () => {
+    try {
+      await clearSecret(openaiVoice.OPENAI_KEYCHAIN_SERVICE, openaiVoice.OPENAI_KEYCHAIN_ACCOUNT);
+      setOpenAiKeyPresence(false);
+      // If the user removes the key, drop back to the free System engine so
+      // we don't leave them on a now-broken OpenAI path.
+      setTtsEngine('system');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('tts-engine', 'system');
+      }
+      return { ok: true };
+    } catch (err) {
+      log.warn('clear-openai-key failed', { msg: err instanceof Error ? err.message : String(err) });
+      return { ok: false, error: 'secret-store-clear-failed' };
+    }
   });
 
   // Open settings window

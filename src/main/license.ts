@@ -14,6 +14,11 @@ interface LicenseStore {
   validated: boolean;
   graceExpiry: number;      // timestamp — grace window when API unreachable
   lastValidated: number;    // timestamp — when key was last confirmed with API
+  // voice parity — optional OpenAI premium TTS. The key VALUE never lives
+  // in this store (only keytar holds it); we keep a presence flag + the
+  // engine pick so get-config can answer without an async secret read.
+  openaiKeyPresent: boolean;
+  ttsEngine: 'system' | 'openai';
 }
 
 const store = new Store<LicenseStore>({
@@ -25,6 +30,8 @@ const store = new Store<LicenseStore>({
     validated: false,
     graceExpiry: 0,
     lastValidated: 0,
+    openaiKeyPresent: false,
+    ttsEngine: 'system',
   },
 });
 
@@ -241,6 +248,29 @@ export async function revalidateIfNeeded(): Promise<boolean> {
   // onboarding shows and the user gets a chance to enter a fresh key.
   clearLicense();
   return false;
+}
+
+// ── voice parity — optional OpenAI premium TTS ───────────────────────
+
+/** Sync presence check for the user-provided OpenAI key. The secret itself
+ *  never lives in the store — only this flag (set when the Settings field
+ *  writes the key to the OS secret store). */
+export function isOpenAiKeyPresent(): boolean {
+  return store.get('openaiKeyPresent') === true;
+}
+
+export function setOpenAiKeyPresence(present: boolean): void {
+  store.set('openaiKeyPresent', present);
+}
+
+/** Which TTS engine the user picked. 'system' (default, free, offline) or
+ *  'openai' (premium, requires a key). */
+export function getTtsEngine(): 'system' | 'openai' {
+  return store.get('ttsEngine') === 'openai' ? 'openai' : 'system';
+}
+
+export function setTtsEngine(engine: 'system' | 'openai'): void {
+  store.set('ttsEngine', engine === 'openai' ? 'openai' : 'system');
 }
 
 export { store };

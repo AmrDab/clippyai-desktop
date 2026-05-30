@@ -140,6 +140,11 @@ async function loadConfig(): Promise<void> {
     volValueEl.textContent = `${Math.round(config.speechVolume * 100)}%`;
   }
 
+  // voice parity — engine pick + OpenAI key presence.
+  if (ttsEngineSelect) ttsEngineSelect.value = config.ttsEngine === 'openai' ? 'openai' : 'system';
+  openAiKeyPresent = config.openaiKeyPresent === true;
+  renderOpenAiKeyStatus();
+
   // Launch on startup
   const launchEl = document.getElementById('setting-launch-startup') as HTMLInputElement;
   if (launchEl) launchEl.checked = Boolean(config.launchOnStartup);
@@ -216,6 +221,71 @@ const voicesFeedbackLink = document.getElementById('link-voices-feedback');
 if (voicesFeedbackLink) voicesFeedbackLink.addEventListener('click', (e) => {
   e.preventDefault();
   window.clippy.openExternalUrl('https://clippyai.app');
+});
+
+// voice parity — engine picker (System / OpenAI) + write-only key field.
+const ttsEngineSelect = document.getElementById('setting-tts-engine') as HTMLSelectElement | null;
+const openaiKeyInput = document.getElementById('setting-openai-key') as HTMLInputElement | null;
+const openaiKeyStatus = document.getElementById('openai-key-status');
+const saveOpenAiKeyBtn = document.getElementById('btn-save-openai-key') as HTMLButtonElement | null;
+const clearOpenAiKeyBtn = document.getElementById('btn-clear-openai-key') as HTMLButtonElement | null;
+const openaiKeysLink = document.getElementById('link-openai-keys');
+let openAiKeyPresent = false;
+
+function renderOpenAiKeyStatus(): void {
+  if (!openaiKeyStatus) return;
+  if (openAiKeyPresent) {
+    openaiKeyStatus.textContent = 'A key is saved in your OS secret store. It stays on this PC and is sent only to OpenAI when you use the OpenAI voice. Use Remove to delete it.';
+  } else {
+    openaiKeyStatus.textContent = 'No key saved. OpenAI voice needs your own key — stored securely in your OS secret store, sent only to OpenAI. Get one at platform.openai.com/api-keys.';
+  }
+  // Nudge when OpenAI is selected but no key is present (will use System).
+  if (ttsEngineSelect && ttsEngineSelect.value === 'openai' && !openAiKeyPresent) {
+    openaiKeyStatus.textContent = 'OpenAI selected but no key saved — Clippy will use the System voice until you save a key below.';
+  }
+}
+
+if (ttsEngineSelect) {
+  ttsEngineSelect.addEventListener('change', () => {
+    const engine = ttsEngineSelect.value === 'openai' ? 'openai' : 'system';
+    window.clippy.updateSettings({ ttsEngine: engine });
+    renderOpenAiKeyStatus();
+  });
+}
+
+if (saveOpenAiKeyBtn && openaiKeyInput) {
+  saveOpenAiKeyBtn.addEventListener('click', async () => {
+    const token = openaiKeyInput.value.trim();
+    if (token.length < 8) {
+      if (openaiKeyStatus) openaiKeyStatus.textContent = 'That key looks too short. Paste your full OpenAI key (starts with "sk-").';
+      return;
+    }
+    const res = await window.clippy.setOpenAiKey?.(token);
+    if (res?.ok) {
+      openAiKeyPresent = true;
+      openaiKeyInput.value = '';
+      renderOpenAiKeyStatus();
+    } else if (openaiKeyStatus) {
+      openaiKeyStatus.textContent = `Could not save key: ${res?.error || 'unknown error'}.`;
+    }
+  });
+}
+
+if (clearOpenAiKeyBtn) {
+  clearOpenAiKeyBtn.addEventListener('click', async () => {
+    const res = await window.clippy.clearOpenAiKey?.();
+    if (res?.ok) {
+      openAiKeyPresent = false;
+      // Main reverts the engine to System on clear; mirror it in the UI.
+      if (ttsEngineSelect) ttsEngineSelect.value = 'system';
+      renderOpenAiKeyStatus();
+    }
+  });
+}
+
+if (openaiKeysLink) openaiKeysLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.clippy.openExternalUrl('https://platform.openai.com/api-keys');
 });
 
 // TTS Enable toggle — this IS the "AI voice toggle" the user sees in Voice tab

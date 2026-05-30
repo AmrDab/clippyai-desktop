@@ -83,6 +83,8 @@ async function init(): Promise<void> {
     if (config.ttsVoice) tts.setPreferredVoice(config.ttsVoice as string);
     if (config.speechRate) tts.setRate(config.speechRate as number);
     if (config.ttsEnabled === false) tts.setEnabled(false);
+    // voice parity — adopt the saved engine pick (system default / OpenAI).
+    if (config.ttsEngine === 'openai') tts.setEngine('openai');
   } catch {}
 
   // v0.16.1 — Interaction-frequency mood tracker. Every user-initiated
@@ -226,6 +228,8 @@ async function init(): Promise<void> {
   } catch { /* defaults applied */ }
   window.clippy.onSpeechPitch?.((p) => tts.setPitch(p));
   window.clippy.onSpeechVolume?.((v) => tts.setVolume(v));
+  // voice parity — live engine switch from Settings (system ↔ OpenAI).
+  window.clippy.onTtsEngine?.((engine) => tts.setEngine(engine));
   // v0.12.3 — apply persisted bubble auto-hide on startup + on change.
   try {
     const cfg = await window.clippy.getConfig();
@@ -233,6 +237,10 @@ async function init(): Promise<void> {
     if (Number.isFinite(ms) && ms >= 0) bubbleCtrl.setAutoHideMs(ms);
   } catch { /* config not available; keep default */ }
   window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
+
+  // Anchor-aware bubble side — main flips the tail when Clippy is near the
+  // top edge and the bubble has to grow downward instead of up.
+  window.clippy.onBubbleSide?.((side) => bubbleCtrl.setSide(side));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 

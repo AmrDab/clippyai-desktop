@@ -180,7 +180,6 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // clawd_status reads the clawdcursor fallback subprocess state. Tagged
   // tier 2 because it is a status read with no UI driving — it just exposes
   // whether the Tier-5 fallback is ready, installing, or disabled.
-  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)' },
 
   // ── v0.12.4 additions ──
   zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive', narration: 'Zipping files' },

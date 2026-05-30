@@ -155,6 +155,29 @@ body.clippy-window {
   transform: rotate(-45deg); /* counter the parent rotation */
 }
 
+/* Tail flip — when Clippy is near the top edge, main grows the window
+   DOWNWARD (window.ts emits 'bubble-side' = 'below') and the renderer
+   toggles .bubble--below. Clippy then sits ABOVE the bubble, so the bubble
+   pins to the window top and the tail points UP toward him. Mirror the
+   connector geometry to the top edge. */
+.bubble--below {
+  bottom: auto;
+  top: 5px;
+}
+.bubble--below #bubble-tail {
+  bottom: auto;
+  top: -8px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  border-bottom: none;
+  border-right: none;
+  border-left: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 6px 0 0 0;
+}
+.bubble--below #bubble-tail::before {
+  bottom: auto;
+  top: -16px;
+}
+
 #bubble-text {
   margin-bottom: 4px;
   word-wrap: break-word;
@@ -402,6 +425,11 @@ body.clippy-window {
   }
   #bubble-tail { background: rgba(28, 28, 32, 0.92); border-color: rgba(255, 255, 255, 0.08); }
   #bubble-tail::before { background: rgba(28, 28, 32, 0.92); border-color: rgba(255, 255, 255, 0.08); }
+  /* Flipped tail re-asserts top/left hairlines; keep them dark too. */
+  .bubble--below #bubble-tail {
+    border-top-color: rgba(255, 255, 255, 0.08);
+    border-left-color: rgba(255, 255, 255, 0.08);
+  }
   .chat-clippy { color: #e2e8f0; }
   .chat-user { color: #60a5fa; }
   .chat-msg { border-bottom-color: rgba(255, 255, 255, 0.06); }
