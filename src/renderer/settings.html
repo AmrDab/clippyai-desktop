@@ -94,18 +94,27 @@
           <input id="setting-speech-volume" type="range" min="0" max="1" step="0.05" value="0.9" />
           <span id="speech-volume-value" style="font-size: 12px; color: #888;">90%</span>
         </div>
-        <!-- v0.16.0 — engine picker placeholder. SAPI is the only engine
-             shipped today; Piper TTS (neural, more natural) coming in a
-             future patch as an opt-in download. The menu exists now so
-             users can see the roadmap and don't have to guess. -->
+        <!-- voice parity — engine picker. System (Windows/SAPI) is the free,
+             offline default + fallback. OpenAI (gpt-4o-mini-tts) is an opt-in
+             premium upgrade that needs the user's own API key (below). -->
         <div class="settings-group" style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;">
           <label for="setting-tts-engine">Voice Engine</label>
           <select id="setting-tts-engine">
-            <option value="sapi" selected>Windows (SAPI) — built-in</option>
-            <option value="piper" disabled>Piper TTS (neural) — coming soon</option>
-            <option value="elevenlabs" disabled>ElevenLabs (cloud) — coming soon</option>
+            <option value="system" selected>System default (Windows) — free, offline</option>
+            <option value="openai">OpenAI (premium — gpt-4o-mini-tts)</option>
           </select>
-          <p style="font-size:11px;color:#888;margin-top:4px;">More natural voices are on the roadmap. Vote at <a href="#" id="link-voices-feedback" style="color:#4CAF50;">clippyai.app/voices</a>.</p>
+          <p style="font-size:11px;color:#888;margin-top:4px;">System voice runs entirely on your PC. <strong>OpenAI sends the text Clippy speaks to OpenAI</strong> for higher-quality audio (~$0.015/min) and needs your own API key below. If OpenAI is unavailable, Clippy automatically falls back to the system voice. Vote on more voices at <a href="#" id="link-voices-feedback" style="color:#4CAF50;">clippyai.app/voices</a>.</p>
+        </div>
+        <!-- voice parity — user-provided OpenAI key. Write-only: there is no
+             getter, so the saved key value never flows back to this UI. -->
+        <div class="settings-group" style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;">
+          <label for="setting-openai-key">OpenAI API key</label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input id="setting-openai-key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" style="flex:1;" />
+            <button id="btn-save-openai-key" type="button">Save</button>
+            <button id="btn-clear-openai-key" type="button">Remove</button>
+          </div>
+          <p style="font-size:11px;color:#888;margin-top:4px;" id="openai-key-status">Stored securely in your OS secret store — it stays on this PC and is sent only to OpenAI when you use the OpenAI voice. Get a key at <a href="https://platform.openai.com/api-keys" id="link-openai-keys" style="color:#4CAF50;">platform.openai.com/api-keys</a>.</p>
         </div>
 
         <!-- v0.17.0 — Voice input (speech-to-text). Bundled whisper.cpp +

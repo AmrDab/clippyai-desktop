@@ -136,10 +136,30 @@ process.on('uncaughtException', (err) => {
 });
 
 // Unhandled promise rejections — previously silent, could mask bugs.
+// HARDENED (parity with macOS): log the full stack on first sighting of each
+// distinct reason, and rate-limit repeats so a tight reject loop can never
+// flood the log (the macOS build hit an 18,544-line, 29h "conversion failure"
+// storm because the prior handler logged message-only on every occurrence).
+const _rejThrottle = new Map<string, { count: number; lastLoggedAt: number }>();
+const _REJ_THROTTLE_MS = 60_000;
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
-  bootLog(`UNHANDLED_REJECTION: ${msg}`);
-  log.error('Unhandled rejection', msg);
+  const stack = reason instanceof Error ? (reason.stack || msg) : msg;
+  const key = msg || 'unknown';
+  const now = Date.now();
+  const seen = _rejThrottle.get(key);
+  if (!seen) {
+    _rejThrottle.set(key, { count: 0, lastLoggedAt: now });
+    bootLog(`UNHANDLED_REJECTION: ${msg}`);
+    log.error('Unhandled rejection', stack);
+  } else {
+    seen.count++;
+    if (now - seen.lastLoggedAt >= _REJ_THROTTLE_MS) {
+      log.error('Unhandled rejection (repeating)', `${stack} — ${seen.count}× in the last minute`);
+      seen.lastLoggedAt = now;
+      seen.count = 0;
+    }
+  }
   // Do NOT exit — promise rejections are usually recoverable (network
   // errors, missing optional features). Logging is enough.
 });

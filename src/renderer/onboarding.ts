@@ -1,6 +1,47 @@
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 export {};
 
+// v0.19.0 PR-6 — set data-platform on <body> so the CSS visual variant in
+// style.css ([data-platform="win"] / [data-platform="mac"]) activates. We
+// use navigator.userAgent here instead of process.platform because the
+// renderer doesn't have direct access to Node's process global, and adding
+// a new preload bridge just for this would conflict with A3's parallel
+// work on main.ts (mac variant). Renderer-only platform detect keeps the
+// two variants on separate code paths.
+function detectPlatform(): 'win' | 'mac' | 'linux' {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('windows')) return 'win';
+  if (ua.includes('mac os') || ua.includes('macintosh')) return 'mac';
+  return 'linux';
+}
+document.body.setAttribute('data-platform', detectPlatform());
+
+// v0.19.0 PR-6 — Fluent Reveal effect. Any element marked with
+// [data-fluent-reveal] gets a CSS radial-gradient highlight whose center
+// follows the cursor. We set --reveal-x / --reveal-y as element-scoped
+// custom properties; the CSS in style.css ([data-platform="win"]
+// [data-fluent-reveal]::before) reads them. Pure JS state mutation, no
+// requestAnimationFrame — the browser already batches mousemove events at
+// the display refresh rate and CSS custom property writes are cheap.
+//
+// We attach a single delegated listener on document so app-cards added
+// dynamically (Step 5 builds API key rows from Step 4's selection) pick
+// up the effect without us re-wiring per-render. The handler bails fast
+// for events outside reveal elements, so the runtime cost is one closest()
+// call per mousemove during onboarding only.
+function installFluentReveal(): void {
+  document.addEventListener('mousemove', (e) => {
+    const target = e.target as Element | null;
+    if (!target) return;
+    const el = target.closest('[data-fluent-reveal]') as HTMLElement | null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.style.setProperty('--reveal-x', `${e.clientX - r.left}px`);
+    el.style.setProperty('--reveal-y', `${e.clientY - r.top}px`);
+  });
+}
+installFluentReveal();
+
 const LICENSE_REGEX = /^CLIPPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
 let currentStep = 1;

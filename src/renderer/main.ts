@@ -29,8 +29,27 @@ function installRendererLogBridge(component: string): void {
   });
 }
 
+// v0.19.0 PR-6 — set data-platform on <body> so the onboarding + future
+// settings/logs windows pick up the platform-native visual variant in
+// style.css. The Clippy sprite window itself doesn't have a Mica/Glass
+// chrome (it's a transparent always-on-top overlay), but children that
+// scope on [data-platform="win"] still inherit the attribute. Coordinated
+// with A3 (mac variant): A3 may rewrite this helper to also broadcast the
+// chosen platform via IPC; keep this single-line shape to make the merge
+// trivial. If A3 has already written this, both branches converge to the
+// same setAttribute and no diff conflict arises.
+function applyPlatformAttribute(): void {
+  const ua = navigator.userAgent.toLowerCase();
+  const platform =
+    ua.includes('windows') ? 'win' :
+    (ua.includes('mac os') || ua.includes('macintosh')) ? 'mac' :
+    'linux';
+  document.body.setAttribute('data-platform', platform);
+}
+
 async function init(): Promise<void> {
   installRendererLogBridge('Renderer.main');
+  applyPlatformAttribute();
   console.log('[Main] Initializing ClippyAI renderer...');
 
   let agentData: AgentData;
@@ -64,6 +83,8 @@ async function init(): Promise<void> {
     if (config.ttsVoice) tts.setPreferredVoice(config.ttsVoice as string);
     if (config.speechRate) tts.setRate(config.speechRate as number);
     if (config.ttsEnabled === false) tts.setEnabled(false);
+    // voice parity — adopt the saved engine pick (system default / OpenAI).
+    if (config.ttsEngine === 'openai') tts.setEngine('openai');
   } catch {}
 
   // v0.16.1 — Interaction-frequency mood tracker. Every user-initiated
@@ -207,6 +228,8 @@ async function init(): Promise<void> {
   } catch { /* defaults applied */ }
   window.clippy.onSpeechPitch?.((p) => tts.setPitch(p));
   window.clippy.onSpeechVolume?.((v) => tts.setVolume(v));
+  // voice parity — live engine switch from Settings (system ↔ OpenAI).
+  window.clippy.onTtsEngine?.((engine) => tts.setEngine(engine));
   // v0.12.3 — apply persisted bubble auto-hide on startup + on change.
   try {
     const cfg = await window.clippy.getConfig();
@@ -214,6 +237,10 @@ async function init(): Promise<void> {
     if (Number.isFinite(ms) && ms >= 0) bubbleCtrl.setAutoHideMs(ms);
   } catch { /* config not available; keep default */ }
   window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
+
+  // Anchor-aware bubble side — main flips the tail when Clippy is near the
+  // top edge and the bubble has to grow downward instead of up.
+  window.clippy.onBubbleSide?.((side) => bubbleCtrl.setSide(side));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
 

@@ -18,8 +18,15 @@
  * prior Kimi+Gemini-fallback shape if rollback is ever needed.
  */
 
-import { BrowserWindow, net, app } from 'electron';
+import { BrowserWindow, net, app, powerMonitor } from 'electron';
 import { executeTool, abortAllInFlightTools } from './tools';
+// v0.20.0 "Lumiere" — probabilistic proactive scorer, SHADOW MODE on Windows.
+// Static `import * as` is the ONLY pattern that survives Rollup tree-shaking
+// (bundle-anchor rule): dynamic import() / lazy require() both get dropped.
+import * as lumiereScorer from './proactive/scorer';
+import * as lumiereCost from './proactive/interruption-cost';
+import * as lumiereEvents from './proactive/user-events';
+import * as lumiereSeen from './proactive/seen-context';
 import { TOOL_META, narrationFor } from './tool-meta';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
@@ -31,6 +38,11 @@ import fs from 'fs';
 import path from 'path';
 
 const log = createLogger('Brain');
+// v0.20.0 "Lumiere" — when true, the probabilistic scorer is evaluated each
+// proactive tick and its verdict is LOGGED, but it does NOT control whether
+// Clippy fires (shadow mode). Flip to false to make the whole hook a no-op
+// (and tree-shake the lumiere imports). The live firing path is untouched.
+const LUMIERE_SHADOW = true;
 const API_BASE = 'https://api.clippyai.app';
 const TURN_ENDPOINT = `${API_BASE}/v1/turn`;
 
@@ -295,6 +307,14 @@ interface BrainSettings {
   ttsEnabled: boolean;
   /** Utterance rate 0.5–2.0 (default 1.1). */
   speechRate: number;
+  /**
+   * v0.20.0 "Lumiere" — user-tunable surfacing threshold for the probabilistic
+   * proactive scorer. Optional / undefined for existing users (→ scorer's
+   * DEFAULT_THRESHOLD via resolveThreshold). SHADOW MODE only in v0.20.0: read
+   * by evaluateLumiereShadow for logging; it does NOT yet gate live firing.
+   * 0 = kill switch; otherwise clamped to [0.3, 0.8].
+   */
+  proactiveConfidenceThreshold?: number;
 }
 
 const settingsStore = new Store<BrainSettings>({
@@ -341,6 +361,12 @@ export class Brain {
   private static readonly PROACTIVE_FORCE_FIRE_AFTER_SKIPS = 5;
   private greetedOnWake = false;
   private isExecuting = false;
+  // v0.20.0 "Lumiere" SHADOW MODE — passive state for the probabilistic
+  // scorer. These observe the proactive context + derive features. They are
+  // NOT yet authoritative over firing (see LUMIERE_SHADOW + evaluateLumiereShadow).
+  private readonly lumiereBus = new lumiereEvents.UserEventBus();
+  private readonly lumiereSeenCtx = new lumiereSeen.SeenContext();
+  private readonly lumiereProbScorer = new lumiereScorer.ProactiveProbabilityScorer();
   // Set by a NEW handleUserMessage call arriving while a previous one is
   // still in its tool-loop. The in-flight loop checks this between steps
   // and aborts, letting the new message take over. Resets at the start of
@@ -846,7 +872,7 @@ export class Brain {
             contents.push({
               role: 'function',
               parts: [{ functionResponse: { name: call.name, response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${policy.classFor(call.name)}). Suggest an alternative or tell the user how to enable it.` } } }],
-            } as Content);
+            } as unknown as Content);
             continue;
           }
 
@@ -1112,6 +1138,102 @@ export class Brain {
 
   // ========== Proactive loop ==========
 
+  /**
+   * v0.20.0 "Lumiere" — SHADOW-MODE evaluation of the probabilistic scorer.
+   *
+   * Parses the already-captured proactive context (which embeds the
+   * get_active_window JSON) for the active app + title, reads the
+   * cross-platform powerMonitor idle time, feeds the UserEventBus so focus/idle
+   * transitions accumulate across ticks, records the seen-context, builds the
+   * scorer feature vector from REAL signals available on Windows today, and
+   * logs the verdict against the live decision. This method has NO side effect
+   * on whether Clippy fires — it only observes + logs. Gated by LUMIERE_SHADOW
+   * so the whole thing is a no-op (and tree-shakeable) when disabled.
+   *
+   * Feature provenance (Windows, v0.20.0):
+   *   - errorState   → REAL (regex on the active window title)
+   *   - novelContext → REAL (seen-context.ts over app+title)
+   *   - refocusCount → REAL (UserEventBus focus diffs across ticks)
+   *   - rulePrior    → 0: Windows has no contextual-rule engine (its proactive
+   *                    path is model-driven), so there is no rule confidence to
+   *                    fold in. STUBBED at 0 this milestone.
+   *   - stuckPause   → conservatively false (its "typing burst >30s"
+   *                    precondition needs the keyboard-burst event that is
+   *                    STUBBED this milestone).
+   *
+   * Cost signals (Windows): app (REAL from processName) + idleSec (REAL from
+   * powerMonitor). doNotDisturb / trueFullscreen are STUBBED (undefined).
+   */
+  private evaluateLumiereShadow(context: string, actuallyFired: boolean): void {
+    if (!LUMIERE_SHADOW) return;
+    try {
+      const now = Date.now();
+
+      // The proactive context begins with `Active: <json-or-text>\nScreen: ...`.
+      // Recover the active-window JSON ({ processName, title }) the same shape
+      // get_active_window (get-foreground-window.ps1) emits.
+      let appName = 'unknown';
+      let windowTitle = '';
+      const activeLine = context.match(/^Active:\s*(.*)$/m);
+      if (activeLine) {
+        try {
+          const parsed = JSON.parse(activeLine[1]) as { processName?: string; title?: string };
+          if (typeof parsed.processName === 'string') appName = parsed.processName;
+          if (typeof parsed.title === 'string') windowTitle = parsed.title;
+        } catch {
+          // Not JSON (e.g. "(no active window)") — leave defaults.
+        }
+      }
+
+      // Idle seconds — Electron powerMonitor is cross-platform (REAL on Windows).
+      const idleSec = powerMonitor.getSystemIdleTime();
+      const snap = { app: appName, windowTitle, idleSec };
+
+      // Accumulate the action-sequence stream + seen-context.
+      this.lumiereBus.observe(snap, now);
+      const novel = this.lumiereSeenCtx.isNovel(appName, windowTitle);
+      this.lumiereSeenCtx.record(appName, windowTitle, now);
+
+      const summary = lumiereEvents.summarize(this.lumiereBus.snapshot(now), now);
+      const errorState = /error|failed|●|problem/i.test(windowTitle);
+
+      const features: lumiereScorer.ScoreFeatures = {
+        stuckPause: false,        // STUBBED precondition (keyboard burst) — see jsdoc
+        refocusCount: summary.maxRefocusOfSameApp,
+        errorState,
+        novelContext: novel,
+        rulePrior: 0,             // STUBBED — no rule engine on Windows (model-driven path)
+      };
+
+      const costMult = lumiereCost.currentInterruptionCost({ app: appName, idleSec });
+      const threshold = lumiereScorer.resolveThreshold(settingsStore.get('proactiveConfidenceThreshold'));
+      const verdict = this.lumiereProbScorer.decide(features, costMult, threshold);
+
+      log.info('Lumiere.shadow', {
+        p: Number(verdict.p.toFixed(3)),
+        threshold,
+        effectiveThreshold: Number(verdict.effectiveThreshold.toFixed(3)),
+        costMult: Number(costMult.toFixed(3)),
+        wouldFire: verdict.wouldFire,
+        actuallyFired,
+        // disagreement is the interesting signal to mine during shadow:
+        // wouldFire && !actuallyFired = scorer wants a tip the live path skipped
+        // !wouldFire && actuallyFired = scorer would have stayed silent (P0 watch)
+        disagree: verdict.wouldFire !== actuallyFired,
+        reason: verdict.reason,
+        app: appName,
+        novel,
+        refocus: summary.maxRefocusOfSameApp,
+        errorState,
+        idleSec,
+        eventBufSize: this.lumiereBus.size,
+      });
+    } catch (err) {
+      // Shadow mode must never break the live proactive path.
+      log.warn('Lumiere.shadow failed', serializeErr(err));
+    }
+  }
+
   private startLoop(): void {
     this.stopLoop();
     setTimeout(() => this.proactiveCheck(), 2000);
@@ -1217,6 +1339,15 @@ export class Brain {
       }
       this.proactiveSkipStreak = 0;
       this.lastScreenFingerprint = fingerprint;
+
+      // v0.20.0 "Lumiere" SHADOW MODE — compute (but do NOT act on) the
+      // probabilistic verdict for this tick, logging it against the live
+      // decision. The Windows proactive path is model-driven (no rule engine),
+      // so `actuallyFired` here means "the live path is proceeding to attempt a
+      // proactive utterance this tick" (it cleared every skip gate above). This
+      // runs BEFORE the model call / fire below so both share one tick. It has
+      // NO side effect on whether Clippy fires (see LUMIERE_SHADOW).
+      this.evaluateLumiereShadow(context, true);
 
       // D2: max_tokens was 120 which truncated legitimate one-sentence tips
       // mid-word (e.g. "...Useful tips for" cut off at token 120). Bumped
