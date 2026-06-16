@@ -24,6 +24,12 @@ import { TOOL_META, narrationFor } from './tool-meta';
 import { getLicenseKey } from './license';
 import { getGuidePrompt } from './guides';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
+// v0.18.3 — static import so Rollup bundles the user-takeover module.
+// Lazy `require('./user-takeover')` in v0.18.1 slipped past the tree-
+// shaker; the runtime require threw "Cannot find module" on every
+// task start, so the takeover monitor never actually ran. Caught
+// during the v0.18.2 macOS E2E test by inspecting the live bundle.
+import * as userTakeover from './user-takeover';
 import Store from 'electron-store';
 import { createLogger, serializeErr, setCurrentTaskId } from './logger';
 import { randomUUID } from 'crypto';
@@ -430,6 +436,14 @@ export class Brain {
   // and aborts, letting the new message take over. Resets at the start of
   // every new execution.
   private cancelRequested = false;
+  /**
+   * v0.18.1 — populated when cancellation is fired by the user-takeover
+   * monitor (vs. an explicit sleep / new-message override). Used in the
+   * finally block to speak a context-appropriate stop message: "I'll
+   * stop — looks like you grabbed the mouse" instead of just silently
+   * aborting and leaving the user wondering.
+   */
+  private cancelReason: import('./user-takeover').TakeoverReason | null = null;
 
   constructor(win: BrowserWindow) {
     this.win = win;
@@ -620,6 +634,26 @@ export class Brain {
     }
     this.isExecuting = true;
     this.cancelRequested = false;
+    this.cancelReason = null;
+
+    // v0.18.1 — start user-takeover monitor. Watches for organic
+    // keyboard/mouse activity during the task. If the user grabs the
+    // mouse or starts typing while Clippy is running, we abort the
+    // task immediately and tell the user why we stopped. The monitor
+    // uses powerMonitor.getSystemIdleTime() + cursor delta polling at
+    // 500ms cadence; Clippy's own input is filtered out via the
+    // noteClippyInput() callbacks wired into the tool dispatcher.
+    try {
+      userTakeover.start((reason, detail) => {
+        if (this.cancelRequested) return;  // already cancelling for another reason
+        log.warn('Takeover-driven cancel', { reason, idle_sec: detail.idleSec, cursor_delta: detail.cursorDelta });
+        this.cancelRequested = true;
+        this.cancelReason = reason;
+        try { abortAllInFlightTools(); } catch { /* non-fatal */ }
+      });
+    } catch (err) {
+      log.warn('Takeover monitor unavailable (non-fatal)', { err: err instanceof Error ? err.message : String(err) });
+    }
 
     try {
       // v0.16.0 — kick off the continuous "working" animation loop on the
@@ -1205,6 +1239,23 @@ export class Brain {
       setCurrentTaskId(undefined);
       // v0.16.0 — stop the renderer's working-animation loop.
       this.emit('working-stop');
+
+      // v0.18.1 — stop the user-takeover monitor and, if the cancel was
+      // triggered by user input, speak a friendly explanation so the
+      // user knows Clippy noticed them taking over instead of just
+      // mysteriously going silent.
+      try {
+        userTakeover.stop();
+      } catch { /* non-fatal */ }
+      if (this.cancelReason) {
+        const msg =
+          this.cancelReason === 'user_moved_cursor' ? "I'll stop — looks like you grabbed the mouse."
+          : this.cancelReason === 'user_typed' ? "I'll stop — go ahead and type."
+          : "I'll stop — you've taken over.";
+        this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+        log.info('Spoke user-takeover stop message', { reason: this.cancelReason });
+        this.cancelReason = null;
+      }
       // Clippy stays always-on-top throughout — no re-assert needed.
       // The window was never lowered during the loop.
     }
