@@ -26,6 +26,7 @@ const firstWinsEl = document.getElementById('first-wins-chips')!;
 // macOS is the only platform we ship to today (this is the macOS port),
 // but the attribute is feature-gated against navigator.platform so a future
 // cross-platform build won't accidentally apply mac vibrancy on Windows.
+const IS_MAC = (navigator.platform || '').toLowerCase().includes('mac');
 (function setPlatform(): void {
   const p = (navigator.platform || '').toLowerCase();
   if (p.includes('mac')) document.body.setAttribute('data-platform', 'mac');
@@ -512,8 +513,13 @@ btnNext.addEventListener('click', async () => {
       try {
         await window.clippy.updateSettings({ wakeWordEnabled });
       } catch { /* non-fatal */ }
-      // Advance from "Meet Clippy" into the NEW permission walkthrough step.
-      showStep(4);
+      // Advance from "Meet Clippy". On macOS, step 4 is the TCC permission
+      // walkthrough (Accessibility + Screen Recording). Windows requires NO
+      // per-app grants for desktop automation, screen capture, or input
+      // synthesis — the mac permission APIs don't exist here, and running
+      // the walkthrough would poll "Needed" forever with no way to grant.
+      // So on Windows we skip straight to the app picker (step 5).
+      showStep(IS_MAC ? 4 : 5);
     } catch {
       btnNext.textContent = 'Next';
     } finally {
@@ -579,7 +585,11 @@ btnBack.addEventListener('click', () => {
   if (currentStep > 1) {
     // Clippy now initializes only on close, so navigating back from step 7 is
     // safe — nothing has been launched yet. Clamp to step 1.
-    const target = Math.max(1, currentStep - 1);
+    let target = Math.max(1, currentStep - 1);
+    // On Windows, step 4 (mac TCC permission walkthrough) was skipped on the
+    // way forward, so Back from step 5 must return to step 3, not the empty
+    // step 4. Keep the two in sync with the forward-skip above.
+    if (!IS_MAC && target === 4) target = 3;
     showStep(target);
   }
 });
