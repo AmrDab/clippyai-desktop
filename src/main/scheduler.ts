@@ -23,7 +23,7 @@ const log = createLogger('Scheduler');
  * If the app is closed when an event would have fired, it does NOT fire on
  * the next launch (we don't want "Good morning at 6pm because you opened me
  * late"). Stretch reminder is interval-based not date-based — it fires the
- * NEXT time the 55min cadence aligns within the work-hours window.
+ * NEXT time the 2-hour cadence aligns within the work-hours window.
  */
 
 type EventName = 'morning_greeting' | 'wrap_up_tip' | 'stretch_break';

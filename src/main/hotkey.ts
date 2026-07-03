@@ -1,6 +1,7 @@
 import { globalShortcut, BrowserWindow } from 'electron';
 import { Brain, brainSettingsStore as settingsStore } from './brain';
 import { createLogger } from './logger';
+import { triggerWritingAssist } from './writing-assist';
 
 const log = createLogger('Hotkey');
 
@@ -49,6 +50,21 @@ export function registerHotkey(win: BrowserWindow, brain: Brain): void {
     log.warn('Voice hotkey registration failed — another app may hold it', { shortcut: voiceShortcut });
   } else {
     log.info('Voice hotkey registered', { shortcut: voiceShortcut });
+  }
+
+  // v1 — writing assistant. ⌥G reads the focused field, lints it with the
+  // on-device Harper engine, and pops a correction card near the field.
+  const writingOk = globalShortcut.register('Alt+G', () => {
+    if (win.isDestroyed()) return;
+    // (Beta) gate — respect the live Settings toggle. Default true; checked at
+    // press time so toggling in Settings takes effect immediately.
+    if (settingsStore.get('writingAssistEnabled') === false) return;
+    void triggerWritingAssist(win);
+  });
+  if (!writingOk) {
+    log.warn('Writing-assist hotkey registration failed — another app may hold it', { shortcut: 'Alt+G' });
+  } else {
+    log.info('Writing-assist hotkey registered', { shortcut: 'Alt+G' });
   }
 }
 

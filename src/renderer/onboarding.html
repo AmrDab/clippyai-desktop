@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body class="onboarding-window">
@@ -14,40 +14,52 @@
 
     <!-- Step 1: Welcome -->
     <div class="onboarding-step active" data-step="1">
-      <h2>Welcome!</h2>
+      <h2>Welcome</h2>
       <p>ClippyAI is your personal AI desktop assistant. It watches your screen, helps proactively, and responds to your questions — all powered by the classic Clippy character you know and love.</p>
-      <p>Let's get you set up in just a moment.</p>
+      <p class="onboarding-subhead">Let's get you set up in just a moment.</p>
     </div>
 
-    <!-- Step 2: License Key -->
+    <!-- Step 2: Get started — free is the primary path -->
     <div class="onboarding-step" data-step="2">
-      <h2>Activate ClippyAI</h2>
-      <p>Paste the license key from your email below.</p>
-      <div>
-        <label for="license-key">License Key</label>
-        <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+      <h2>Get started — free forever</h2>
+      <p class="onboarding-subhead">No card needed. Just an email and you're in. Already have a license key? You can paste it below.</p>
+
+      <!-- Primary: free signup -->
+      <div id="free-section">
+        <button class="btn-primary" id="btn-use-free" type="button">Use Clippy free</button>
+        <div id="free-email-row" style="display:none;">
+          <label for="free-email">Your email</label>
+          <input id="free-email" type="email" placeholder="you@example.com" spellcheck="false" autocomplete="email" inputmode="email" />
+          <button class="btn-primary" id="btn-free-confirm" type="button">Confirm</button>
+        </div>
+        <div class="onboarding-error" id="free-error"></div>
       </div>
-      <div class="onboarding-error" id="license-error"></div>
+
+      <!-- Secondary: upsell to a Power trial -->
       <div id="trial-section">
-        <div class="onboarding-divider"><span>don't have a key?</span></div>
-        <button class="btn-trial" id="btn-start-trial">Get a Free Trial Key</button>
-        <p class="trial-hint" id="trial-hint" style="display: none;">
-          Checkout opened in your browser. After signing up, check your email (and spam folder) for the license key, then paste it above.
+        <div class="onboarding-divider"><span>or</span></div>
+        <p class="onboarding-subhead" style="margin-bottom:var(--s-space-2);">
+          Want Clippy to actually run your desktop? Start a 7-day Power trial — automation, browser control, multi-monitor.
+        </p>
+        <button class="btn-trial" id="btn-start-trial">Start 7-Day Free Trial</button>
+        <p class="trial-hint" id="trial-hint" style="display:none;">
+          Checkout opened in your browser. After signing up, check your email (and spam folder) for the license key, then paste it below.
         </p>
       </div>
+
+      <!-- Tertiary: existing license key -->
+      <div id="license-section">
+        <div class="onboarding-divider"><span>already have a key?</span></div>
+        <label for="license-key">License key</label>
+        <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+        <div class="onboarding-error" id="license-error"></div>
+      </div>
     </div>
 
-    <!-- Step 3: Personalize -->
+    <!-- Step 3: Personalize / Meet Clippy -->
     <div class="onboarding-step" data-step="3">
-      <h2>Personalize Your Buddy</h2>
-      <!-- v0.17.7 — capture the user's OWN name here instead of relying on
-           a post-onboarding "Hey! What should I call you?" prompt that
-           could race against renderer init and silently miss. Atomic
-           saveUserProfile happens alongside the license save. -->
-      <div>
-        <label for="user-name">What should we call you?</label>
-        <input id="user-name" type="text" placeholder="Your name" maxlength="40" />
-      </div>
+      <h2>Meet Clippy</h2>
+      <p class="onboarding-subhead">Name your buddy and pick how he sounds.</p>
       <div>
         <label for="buddy-name">Name your buddy</label>
         <input id="buddy-name" type="text" value="Clippy" maxlength="20" />
@@ -56,14 +68,128 @@
         <label for="voice-select">Choose a voice</label>
         <select id="voice-select"></select>
       </div>
+      <!-- v0.19.0 PR-6.3 — auto-launch on system start. Default ON because
+           Clippy is a "buddy that's just there." User can toggle off here OR
+           in Settings → General later. -->
+      <div class="onboarding-toggle">
+        <label class="onboarding-toggle-row" for="onboarding-launch-startup">
+          <input id="onboarding-launch-startup" type="checkbox" checked />
+          <span class="onboarding-toggle-label">
+            <span class="onboarding-toggle-title">Start Clippy when I log in</span>
+            <span class="onboarding-toggle-hint">Recommended — Clippy stays in the corner, ready when you need him.</span>
+          </span>
+        </label>
+      </div>
+      <!-- v0.19.0 PR-6.4 — wake-word opt-in. PREFERENCE-ONLY (stub) until the
+           on-device wake-word model ships. -->
+      <div class="onboarding-toggle">
+        <label class="onboarding-toggle-row" for="onboarding-wake-word">
+          <input id="onboarding-wake-word" type="checkbox" />
+          <span class="onboarding-toggle-label">
+            <span class="onboarding-toggle-title">Listen for "Hey Clippy"</span>
+            <span class="onboarding-toggle-hint">
+              Coming in a future patch — your pick is saved now. When the on-device wake-word
+              model ships, Clippy will start listening automatically. Runs locally — no audio uploaded.
+            </span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Step 4: Permissions — guided grant flow (JS wired in onboarding.ts, T7).
+         Clean glass card: each permission ask is shown one at a time. The flow
+         logic is unchanged — it drives #perm-why / #perm-status / #perm-open /
+         #perm-skip. onboarding.ts toggles `perm-enter` (re-entrance) and
+         `perm-granted` (confirmation tint) on #perm-card. -->
+    <div class="onboarding-step" data-step="4">
+      <h2>Let's give Clippy what he needs</h2>
+      <p class="onboarding-subhead">One quick permission at a time. I'll point you right to it.</p>
+      <!-- KEEP the ids — the PermissionFlow renderer writes into these exact nodes. -->
+      <div class="perm-card" id="perm-card">
+        <div class="perm-why" id="perm-why"></div>
+        <div class="perm-status" id="perm-status" role="status" aria-live="polite">Needed</div>
+        <button class="btn-primary" id="perm-open" type="button">Open Settings</button>
+        <button class="onboarding-skip-link" id="perm-skip" type="button">Skip for now</button>
+      </div>
+    </div>
+
+    <!-- Step 5: App picker — v0.19.0 PR-6 -->
+    <div class="onboarding-step" data-step="5">
+      <h2>Which apps do you use?</h2>
+      <p class="onboarding-subhead">Pick what you live in. Clippy will know how to reach those — and skip the rest.</p>
+      <div class="app-picker" id="app-picker">
+        <!-- Populated from APP_CATALOG at runtime. -->
+      </div>
+      <!-- v0.19.0 PR-6.2 — "Not listed" + skip affordances. -->
+      <div class="app-picker-footer">
+        <p class="onboarding-hint">
+          Don't see your app? <strong>Clippy still works with it</strong> — just ask in chat
+          ("open Figma", "summarize this Cron page") and he'll find it. You can add it later in <em>Settings → Apps</em>.
+        </p>
+        <button id="btn-skip-apps" type="button" class="onboarding-skip-link">
+          I'll set this up later
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 6: API keys — v0.19.0 PR-6 -->
+    <div class="onboarding-step" data-step="6">
+      <h2>Hook up the fast paths</h2>
+      <p class="onboarding-subhead">For apps with an API, give Clippy a token and he'll skip the slow UI route. Optional — you can always do this later in Settings.</p>
+      <div class="api-keys" id="api-keys">
+        <!-- Populated at runtime from the selected apps with hasApi=true. -->
+      </div>
+      <p id="api-keys-empty" class="onboarding-subhead" style="display:none;font-style:italic;">
+        None of the apps you picked have an API path. You're good — skip ahead.
+      </p>
+    </div>
+
+    <!-- Step 7: Web Control (optional) — v0.20.0 -->
+    <div class="onboarding-step" data-step="7">
+      <h2>Let Clippy use your browser</h2>
+      <p class="onboarding-subhead">Optional, but worth it. Install the <strong>Clippy Browser Bridge</strong> so Clippy can drive your real, signed-in tabs — Gmail, Outlook web, anything you're already logged into — instead of clicking around the screen. Much more reliable for web tasks.</p>
+      <p class="onboarding-hint">A quick guided install on our site: download, load into Chrome, done. No GitHub. You can also set this up any time in <em>Settings → Web</em>.</p>
+      <button id="btn-install-bridge" type="button" class="btn-secondary" style="margin-top:var(--s-space-3);">⬇ Open install guide</button>
+      <p class="onboarding-hint" id="bridge-hint" hidden style="margin-top:var(--s-space-3);">Opened in your browser — follow the steps there, then come back and press Next. Or just press Next to skip and set it up later.</p>
+    </div>
+
+    <!-- Step 8: Setup complete. A simple glass success badge. -->
+    <div class="onboarding-step" data-step="8">
+      <div class="done-mark" aria-hidden="true">✓</div>
+      <h2>You're all set</h2>
+      <p class="onboarding-subhead">Try one of these as your first ask:</p>
+      <div class="first-wins" id="first-wins-chips">
+        <!-- Populated from FIRST_WINS at runtime. -->
+      </div>
+      <p class="onboarding-subhead" style="margin-top:var(--s-space-3);font-size:var(--s-fs-12);">
+        Or just close this window and chat with Clippy any time.
+      </p>
+
+      <!-- Shown only when Screen Recording was granted during setup: applying
+           it needs a process restart. The user can do it now or defer — SR
+           takes effect on Clippy's next launch either way. -->
+      <div class="relaunch-banner" id="relaunch-banner" hidden>
+        <p class="relaunch-banner-text">
+          One more thing — <strong>Screen Recording</strong> needs a quick restart to take effect.
+        </p>
+        <div class="relaunch-banner-actions">
+          <button class="btn-primary" id="btn-relaunch-now">Quit &amp; Reopen</button>
+          <button class="btn-secondary" id="btn-relaunch-later">Later</button>
+        </div>
+      </div>
     </div>
 
     <div class="onboarding-footer">
       <button class="btn-secondary" id="btn-back" style="visibility: hidden;">Back</button>
-      <div class="progress-dots">
+      <div class="progress-dots" role="progressbar" aria-label="Onboarding progress">
         <span class="dot active" data-dot="1"></span>
         <span class="dot" data-dot="2"></span>
         <span class="dot" data-dot="3"></span>
+        <span class="dot" data-dot="4"></span>
+        <span class="dot" data-dot="5"></span>
+        <span class="dot" data-dot="6"></span>
+        <span class="dot" data-dot="7"></span>
+        <span class="dot" data-dot="8"></span>
       </div>
       <button class="btn-primary" id="btn-next">Get Started</button>
     </div>

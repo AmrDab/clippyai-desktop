@@ -1,8 +1,8 @@
 {
   "name": "clippyai",
-  "version": "0.17.7",
+  "version": "0.20.0-alpha.24",
   "productName": "ClippyAI",
-  "description": "ClippyAI — Your AI desktop buddy",
+  "description": "ClippyAI \u2014 Your AI desktop buddy",
   "homepage": "https://clippyai.app",
   "main": "out/main/index.js",
   "author": {
@@ -24,15 +24,19 @@
     "smoke": "node scripts/smoke.js",
     "smoke:1": "node scripts/smoke.js --layer=1",
     "smoke:2": "node scripts/smoke.js --layer=2",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "for t in scripts/test-*.js; do echo \"\\n# $t\"; node \"$t\" || exit 1; done",
+    "unit": "vitest run"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/rest": "^21.0.0",
     "docx": "^8.5.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
     "exceljs": "^4.4.0",
+    "harper.js": "^2.4.0",
     "keytar": "^7.9.0",
     "pdf-lib": "^1.17.1",
     "qrcode": "^1.5.4",
@@ -48,7 +52,8 @@
     "electron-builder": "^24.0.0",
     "electron-vite": "^2.0.0",
     "pngjs": "^7.0.0",
-    "rcedit": "^5.0.2",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8",
+    "rcedit": "^5.0.2"
   }
 }

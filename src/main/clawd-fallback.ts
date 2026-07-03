@@ -1,16 +1,22 @@
 /**
  * Tier-5 fallback via clawdcursor subprocess.
  *
- * When in-process tools fail with structured codes (UI_NOT_FOUND, COM_ERROR,
- * TIMEOUT, PSBRIDGE_DEAD), retry the equivalent clawdcursor tool. clawdcursor
+ * When in-process tools fail with structured codes (UI_NOT_FOUND, AX_ERROR,
+ * TIMEOUT, BRIDGE_DEAD), retry the equivalent clawdcursor tool. clawdcursor
  * must be installed globally (npm i -g clawdcursor); if absent, this module
  * logs once and stays disabled — Clippy boots and runs normally without it.
  *
  * Lifecycle:
- *   - startClawd(): spawns `clawdcursor serve --port 0`, parses port from
- *     stdout, reads bearer token from ~/.clawdcursor/token. Non-blocking.
+ *   - startClawd(): spawns `clawdcursor agent --no-llm --port 3847 --accept`,
+ *     waits for ready signal on stdout, reads bearer token from
+ *     ~/.clawdcursor/token. Non-blocking.
  *   - On unexpected exit: rate-limited respawn (max 3 / 60s).
  *   - stopClawd(): SIGTERM, 2s grace, SIGKILL fallback.
+ *
+ * v1.5.x protocol: MCP JSON-RPC at POST /mcp
+ *   Request: {"jsonrpc":"2.0","id":N,"method":"tools/call","params":{"name":"<tool>","arguments":{...}}}
+ *   Headers: Content-Type: application/json, Accept: application/json, text/event-stream
+ *   Response: {"result":{"content":[{"type":"text","text":"..."}]},"jsonrpc":"2.0","id":N}
  */
 
 import { spawn, ChildProcess, execFile } from 'child_process';
@@ -33,6 +39,14 @@ export interface ClawdHandle {
   pid: number;
 }
 
+// v1.5.x — fixed port (default for `clawdcursor agent`). Using a fixed
+// port avoids having to parse it from stdout (which broke with --port 0
+// because the OS-assigned port never appeared in the log line).
+const CLAWD_PORT = 3847;
+
+// JSON-RPC id counter — monotonically increasing per process lifetime.
+let rpcId = 0;
+
 let handle: ClawdHandle | null = null;
 let proc: ChildProcess | null = null;
 let installed: boolean | null = null;
@@ -49,18 +63,19 @@ const TOKEN_PATH = path.join(os.homedir(), '.clawdcursor', 'token');
  * Map of in-process tool names → clawdcursor tool names where an equivalent
  * exists.
  *
- * Mappings derived from clawdcursor's tool registry (see
- * ~/AppData/Roaming/npm/node_modules/clawdcursor/dist/tools/*.js). Only tools
- * with genuinely matching semantics are mapped.
+ * Mappings derived from clawdcursor's tool registry (on macOS the global
+ * install lives under the npm prefix, e.g.
+ * /usr/local/lib/node_modules/clawdcursor/dist/tools/*.js or
+ * ~/.npm-global/...). Only tools with genuinely matching semantics are mapped.
  *
  * NOT mapped (intentional):
- *   - COM tools (outlook_*, excel_*, word_to_pdf, create_reminder): clawdcursor
- *     has no COM bridge; falling back to UI clicks for Outlook is worse than
- *     surfacing the COM error.
+ *   - macOS app-scripting tools (mail_*, calendar_*, reminders_*): these go
+ *     through AppleScript/Apple Events in-process; falling back to blind UI
+ *     clicks is worse than surfacing the AppleScript error.
  *   - File tools (read_file, write_file, list_files, search_files_content):
  *     no clawdcursor equivalent; the in-process Node fs is authoritative.
  *   - System tools (system_info, list_processes, kill_process, ping_host,
- *     http_request, run_powershell): no equivalent or no benefit from a
+ *     http_request, run_shell): no equivalent or no benefit from a
  *     subprocess hop.
  *   - Agent loop (plan): clippy-internal.
  *   - Speech (speak_text): no clawdcursor counterpart.
@@ -114,7 +129,13 @@ export function isClawdInstalled(): boolean | null {
 
 async function detectBinary(): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('where', ['clawdcursor'], { timeout: 3000 });
+    // v0.20.0 — `where` is Windows-only; on macOS/Linux it doesn't exist, so
+    // detection ALWAYS failed (silently disabling the Tier-5 fallback). Use the
+    // platform-correct locator: `where` on Windows, `command -v` elsewhere.
+    const [bin, args] = process.platform === 'win32'
+      ? ['where', ['clawdcursor']]
+      : ['/bin/sh', ['-c', 'command -v clawdcursor']];
+    const { stdout } = await execFileAsync(bin as string, args as string[], { timeout: 3000 });
     const first = stdout.split(/\r?\n/).map((s) => s.trim()).find((s) => s.length > 0);
     return first || null;
   } catch {
@@ -157,16 +178,18 @@ function rotateToken(): string | null {
     const tmp = TOKEN_PATH + '.tmp';
     fs.writeFileSync(tmp, token, { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, TOKEN_PATH);
-    // Best-effort: tighten Windows ACL to current user only. icacls is
-    // synchronous via execFile — fire-and-forget here, log on failure but
-    // don't block startup.
-    try {
-      const username = os.userInfo().username;
-      execFile('icacls', [TOKEN_PATH, '/inheritance:r', '/grant', `${username}:F`], { timeout: 3000 }, (err) => {
-        if (err) log.warn('clawd token icacls failed (non-fatal)', { err: serializeErr(err) });
-      });
-    } catch (err) {
-      log.warn('clawd token icacls spawn failed (non-fatal)', { err: serializeErr(err) });
+    // Best-effort: tighten the Windows ACL to the current user only. icacls is
+    // Windows-only — on macOS/Linux the file is already created mode 0o600 above,
+    // so skip it (previously it ENOENT'd on every startup on non-Windows).
+    if (process.platform === 'win32') {
+      try {
+        const username = os.userInfo().username;
+        execFile('icacls', [TOKEN_PATH, '/inheritance:r', '/grant', `${username}:F`], { timeout: 3000 }, (err) => {
+          if (err) log.warn('clawd token icacls failed (non-fatal)', { err: serializeErr(err) });
+        });
+      } catch (err) {
+        log.warn('clawd token icacls spawn failed (non-fatal)', { err: serializeErr(err) });
+      }
     }
     return token;
   } catch (err) {
@@ -217,12 +240,14 @@ export async function startClawd(): Promise<void> {
   if (rotatedToken) log.info('clawd token rotated for this session');
 
   let resolved = false;
-  let detectedPort: number | null = null;
   let stdoutBuf = '';
   let stderrBuf = '';
   let readyTimer: NodeJS.Timeout | null = null;
 
-  const child = spawn(binaryPath, ['serve', '--port', '0'], {
+  // v1.5.x: verb changed from `serve` to `agent`; REST removed, only MCP
+  // JSON-RPC at POST /mcp. Fixed port avoids the --port 0 bug where stdout
+  // printed "http://127.0.0.1:0" literally instead of the actual OS port.
+  const child = spawn(binaryPath, ['agent', '--no-llm', '--port', String(CLAWD_PORT), '--accept'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -247,21 +272,20 @@ export async function startClawd(): Promise<void> {
 
   child.stdout?.on('data', (chunk: Buffer) => {
     stdoutBuf += chunk.toString();
-    if (detectedPort === null) {
-      // clawdcursor logs: "Tool server: http://127.0.0.1:<PORT>"
-      const m = stdoutBuf.match(/http:\/\/127\.0\.0\.1:(\d+)/);
-      if (m) {
-        detectedPort = Number(m[1]);
-        const token = readToken();
-        if (!token) {
-          finalize(false, 'token file missing');
-          return;
-        }
-        handle = { port: detectedPort, token, pid: child.pid || -1 };
-        installed = true;
-        log.info('clawdcursor ready', { port: detectedPort, pid: child.pid });
-        finalize(true);
+    if (stdoutBuf.length > 4000) stdoutBuf = stdoutBuf.slice(-4000);
+    // v1.5.x ready signal: "desktop control active on 127.0.0.1:<PORT>" or
+    // the legacy "Tool server: http://127.0.0.1:<PORT>". Either way we use
+    // the fixed CLAWD_PORT — no parsing needed.
+    if (handle === null && /desktop control active|Tool server/i.test(stdoutBuf)) {
+      const token = readToken();
+      if (!token) {
+        finalize(false, 'token file missing after ready signal');
+        return;
       }
+      handle = { port: CLAWD_PORT, token, pid: child.pid || -1 };
+      installed = true;
+      log.info('clawdcursor ready', { port: CLAWD_PORT, pid: child.pid });
+      finalize(true);
     }
   });
 
@@ -343,14 +367,22 @@ export async function stopClawd(): Promise<void> {
 export async function clawdHealth(): Promise<boolean> {
   const h = handle;
   if (!h) return false;
+  // v1.5.x: no /health endpoint — probe with a lightweight tools/list call.
   return new Promise<boolean>((resolve) => {
-    const req = http.get(
+    const body = JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/list', params: {} });
+    const req = http.request(
       {
         host: '127.0.0.1',
         port: h.port,
-        path: '/health',
-        timeout: 1000,
-        headers: { Authorization: `Bearer ${h.token}` },
+        path: '/mcp',
+        method: 'POST',
+        timeout: 2000,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'Accept': 'application/json, text/event-stream',
+          Authorization: `Bearer ${h.token}`,
+        },
       },
       (res) => {
         res.resume();
@@ -358,10 +390,9 @@ export async function clawdHealth(): Promise<boolean> {
       },
     );
     req.on('error', () => resolve(false));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.write(body);
+    req.end();
   });
 }
 
@@ -373,18 +404,26 @@ export async function callClawdTool(
   const h = handle;
   if (!h) return { text: `(error:CLAWD_FAILED) clawdcursor not ready` };
 
+  // v1.5.x MCP JSON-RPC protocol. REST /execute/:name removed.
   return new Promise<ToolResult>((resolve) => {
-    const body = JSON.stringify(params || {});
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: ++rpcId,
+      method: 'tools/call',
+      params: { name, arguments: params || {} },
+    });
     const req = http.request(
       {
         host: '127.0.0.1',
         port: h.port,
-        path: `/execute/${encodeURIComponent(name)}`,
+        path: '/mcp',
         method: 'POST',
         timeout: timeoutMs,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
+          // Required by clawdcursor v1.5.x — server rejects without this Accept header.
+          'Accept': 'application/json, text/event-stream',
           Authorization: `Bearer ${h.token}`,
         },
       },
@@ -398,17 +437,21 @@ export async function callClawdTool(
             return;
           }
           try {
-            const parsed = JSON.parse(raw);
-            // clawdcursor returns either {text, image?} or {result}/{content}
-            if (typeof parsed?.text === 'string') {
-              resolve({ text: parsed.text, image: parsed.image });
+            const parsed = JSON.parse(raw) as {
+              result?: { content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }> };
+              error?: { code?: number; message?: string };
+            };
+            if (parsed.error) {
+              resolve({ text: `(error:CLAWD_FAILED) ${parsed.error.message || JSON.stringify(parsed.error)}` });
               return;
             }
-            if (typeof parsed?.result === 'string') {
-              resolve({ text: parsed.result });
-              return;
-            }
-            resolve({ text: raw });
+            const content = parsed.result?.content ?? [];
+            const textPart = content.find((c) => c.type === 'text');
+            const imagePart = content.find((c) => c.type === 'image' && c.data);
+            resolve({
+              text: textPart?.text ?? raw,
+              ...(imagePart ? { image: { data: imagePart.data!, mimeType: imagePart.mimeType ?? 'image/png' } } : {}),
+            });
           } catch {
             resolve({ text: raw });
           }
@@ -450,25 +493,36 @@ export async function submitClawdTask(
   if (!task || task.trim().length === 0) return { text: '(error:MISSING_TASK) task description is required' };
   const timeoutMs = opts.timeoutMs ?? 120_000;
 
-  // Per clawd README + SKILL.md: POST /task with {"task": "..."} returns
-  // {status, taskId}. We use returnPartial:true so we get a single
-  // round-trip with the result (or partial state if it times out).
+  // v1.5.x: POST /task removed. Delegate via MCP `submit_task` tool.
+  // Note: submit_task requires the clawdcursor agent to be started WITH an
+  // LLM backend. When started with --no-llm (tools-only mode), the agent
+  // will reject submit_task with an error — that error is surfaced back
+  // to the caller rather than failing silently.
   return new Promise<ToolResult>((resolve) => {
     const reqBody = JSON.stringify({
-      task: task.trim(),
-      returnPartial: true,
-      ...(opts.appHint ? { appHint: opts.appHint } : {}),
+      jsonrpc: '2.0',
+      id: ++rpcId,
+      method: 'tools/call',
+      params: {
+        name: 'submit_task',
+        arguments: {
+          task: task.trim(),
+          timeout: Math.floor(timeoutMs / 1000),
+          ...(opts.appHint ? { app: opts.appHint } : {}),
+        },
+      },
     });
     const req = http.request(
       {
         host: '127.0.0.1',
         port: h.port,
-        path: '/task',
+        path: '/mcp',
         method: 'POST',
         timeout: timeoutMs,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(reqBody),
+          'Accept': 'application/json, text/event-stream',
           Authorization: `Bearer ${h.token}`,
         },
       },
@@ -483,21 +537,16 @@ export async function submitClawdTask(
           }
           try {
             const parsed = JSON.parse(raw) as {
-              status?: string;
-              result?: unknown;
-              summary?: string;
-              text?: string;
-              taskId?: string;
-              error?: string;
+              result?: { content?: Array<{ type: string; text?: string }> };
+              error?: { code?: number; message?: string };
             };
             if (parsed.error) {
-              resolve({ text: `(error:CLAWD_TASK_FAILED) ${parsed.error}` });
+              resolve({ text: `(error:CLAWD_TASK_FAILED) ${parsed.error.message || JSON.stringify(parsed.error)}` });
               return;
             }
-            const summary = parsed.summary || parsed.text
-              || (typeof parsed.result === 'string' ? parsed.result : JSON.stringify(parsed.result ?? ''));
-            const status = parsed.status || 'unknown';
-            resolve({ text: `clawd_task status=${status}: ${summary?.toString().slice(0, 1500) || '(no summary)'}` });
+            const content = parsed.result?.content ?? [];
+            const textPart = content.find((c) => c.type === 'text');
+            resolve({ text: textPart?.text ?? raw.slice(0, 1500) });
           } catch {
             resolve({ text: raw.slice(0, 1500) });
           }

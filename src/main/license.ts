@@ -1,7 +1,10 @@
 import Store from 'electron-store';
-import { net } from 'electron';
+import { net, app } from 'electron';
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
 import crypto from 'crypto';
+import { clearAllSecrets } from './skills/secrets';
 
 const API_BASE = 'https://api.clippyai.app';
 const GRACE_PERIOD_DAYS = 1; // 24h grace when API is temporarily unreachable
@@ -14,6 +17,26 @@ interface LicenseStore {
   validated: boolean;
   graceExpiry: number;      // timestamp — grace window when API unreachable
   lastValidated: number;    // timestamp — when key was last confirmed with API
+  // v0.19.0 PR-6 — onboarding app picker + API-key presence flags.
+  // The actual API tokens live in macOS Keychain via setSecret('clippyai-api', appId, …);
+  // only a presence boolean per app rides in the store. Why split: tokens are
+  // sensitive and belong in Keychain (where the OS handles encryption +
+  // user-prompt-on-export); the presence flag is what tools.ts checks to
+  // decide between API-route and UI-automation fallback, so it needs to be
+  // sync-readable without an async keychain hit on every tool call.
+  userApps: string[];
+  apiKeys: Record<string, boolean>;
+  // v0.20.0 (voice v1) — optional OpenAI voice (TTS/STT). The key itself
+  // lives in Keychain (service `clippyai-api`, account `openai`); only a
+  // presence boolean rides in the store so get-config can answer without
+  // an async keychain hit. ttsEngine picks System (free, default) vs OpenAI.
+  openaiKeyPresent: boolean;
+  ttsEngine: 'system' | 'openai';
+  // feat/pricing-free-tier — last usage snapshot from a /turn response. Lets
+  // Settings render a monthly usage meter (tokensUsed / tokensAllowed) without
+  // a dedicated usage endpoint. Additive + best-effort: zero means "unknown".
+  tokensUsed: number;
+  tokensAllowed: number;
 }
 
 const store = new Store<LicenseStore>({
@@ -25,6 +48,14 @@ const store = new Store<LicenseStore>({
     validated: false,
     graceExpiry: 0,
     lastValidated: 0,
+    userApps: [],
+    apiKeys: {},
+    // v0.20.0 (voice v1) — default OFF / System voice so the free, offline
+    // path stays the default. Opt-in only.
+    openaiKeyPresent: false,
+    ttsEngine: 'system',
+    tokensUsed: 0,
+    tokensAllowed: 0,
   },
 });
 
@@ -74,6 +105,21 @@ export function getMachineId(): string {
   return getMachineFingerprint();
 }
 
+// feat/pricing-free-tier — usage snapshot accessors. The worker stamps
+// `tokens_used` / `tokens_allowed` on every successful /turn response; brain.ts
+// records the latest here so Settings can show a free-tier usage meter.
+export function recordUsage(tokensUsed: number, tokensAllowed: number): void {
+  if (Number.isFinite(tokensUsed)) store.set('tokensUsed', Math.max(0, tokensUsed));
+  if (Number.isFinite(tokensAllowed) && tokensAllowed > 0) store.set('tokensAllowed', tokensAllowed);
+}
+
+export function getUsage(): { tokensUsed: number; tokensAllowed: number } {
+  return {
+    tokensUsed: store.get('tokensUsed', 0),
+    tokensAllowed: store.get('tokensAllowed', 0),
+  };
+}
+
 export function isFirstRun(): boolean {
   return !store.get('licenseKey');
 }
@@ -114,6 +160,30 @@ export function clearLicense(): void {
   store.set('validated', false);
   store.set('graceExpiry', 0);
   store.set('lastValidated', 0);
+}
+
+/**
+ * Full local reset for the EXPLICIT user "clear license / start fresh" action.
+ * Beyond clearLicense(): also wipes the Keychain API tokens (which survive even
+ * a manual Application-Support delete) and the on-disk profile so NOTHING is
+ * orphaned and the next launch re-onboards from a clean slate. NOT used on
+ * transient server-revokes — clearLicense() alone handles those, so a lapsed
+ * subscription doesn't nuke the user's persona/instincts.
+ */
+export async function clearAllLocalData(): Promise<void> {
+  clearLicense();
+  store.set('buddyName', '');
+  store.set('ttsVoice', '');
+  // Keychain (service must match api-routes.ts API_KEYCHAIN_SERVICE) — the one
+  // store that survives deleting ~/Library/Application Support/ClippyAI.
+  await clearAllSecrets('clippyai-api');
+  // On-disk profile / learned state under userData.
+  const userData = app.getPath('userData');
+  for (const rel of ['profile', 'action-history.json', 'user.md']) {
+    try {
+      fs.rmSync(path.join(userData, rel), { recursive: true, force: true });
+    } catch { /* best-effort */ }
+  }
 }
 
 export function setGracePeriod(): void {
@@ -241,6 +311,108 @@ export async function revalidateIfNeeded(): Promise<boolean> {
   // onboarding shows and the user gets a chance to enter a fresh key.
   clearLicense();
   return false;
+}
+
+
+// ── v0.19.0 PR-6 onboarding app + API-key state ──────────────────────
+
+/**
+ * Whitelist of app IDs surfaced in the onboarding app picker. Kept here
+ * (not in the renderer) so the IPC clamp in ipc.ts and the keychain
+ * lookup in api-routes.ts can validate against the same set without an
+ * import cycle. Add a new app: append here AND to APP_CATALOG in
+ * src/renderer/app-catalog.ts (the renderer side owns rendering metadata
+ * — icons, labels, groups — to keep main slim).
+ */
+export const KNOWN_APP_IDS = [
+  // Email
+  'apple-mail', 'gmail', 'outlook',
+  // Calendar
+  'apple-calendar', 'google-calendar', 'outlook-calendar',
+  // Notes
+  'notion', 'obsidian', 'apple-notes',
+  // Messaging
+  'slack', 'teams',
+  // CRM
+  'hubspot', 'salesforce',
+  // Dev
+  'github', 'linear', 'jira',
+  // Browser
+  'chrome', 'safari', 'arc',
+] as const;
+
+/**
+ * Apps that have a usable API route (vs UI-automation only). hasApiKey()
+ * gates here so an app like Apple Mail (no public API) never tries to
+ * read a keychain entry that can't exist anyway.
+ */
+export const API_CAPABLE_APP_IDS = ['gmail', 'hubspot', 'notion', 'slack', 'linear', 'github'] as const;
+
+export function getUserApps(): string[] {
+  const raw = store.get('userApps') as unknown;
+  if (!Array.isArray(raw)) return [];
+  // Re-validate against the whitelist on every read — a corrupted store
+  // (manual edit, prior-version migration) shouldn't smuggle in app IDs
+  // we don't know how to render.
+  const allow = new Set<string>(KNOWN_APP_IDS as readonly string[]);
+  return raw.filter((s): s is string => typeof s === 'string' && allow.has(s));
+}
+
+export function setUserApps(apps: string[]): void {
+  const allow = new Set<string>(KNOWN_APP_IDS as readonly string[]);
+  const filtered = Array.from(new Set(apps.filter((s) => typeof s === 'string' && allow.has(s))));
+  store.set('userApps', filtered);
+}
+
+export function getApiKeysPresence(): Record<string, boolean> {
+  const raw = store.get('apiKeys') as unknown;
+  if (!raw || typeof raw !== 'object') return {};
+  const allow = new Set<string>(API_CAPABLE_APP_IDS as readonly string[]);
+  const out: Record<string, boolean> = {};
+  for (const id of allow) {
+    out[id] = Boolean((raw as Record<string, unknown>)[id]);
+  }
+  return out;
+}
+
+export function setApiKeyPresence(appId: string, present: boolean): void {
+  const allow = new Set<string>(API_CAPABLE_APP_IDS as readonly string[]);
+  if (!allow.has(appId)) return;
+  const current = (store.get('apiKeys') as Record<string, boolean>) || {};
+  current[appId] = present;
+  store.set('apiKeys', current);
+}
+
+/**
+ * Sync presence check. Hot path: tools.ts calls this every time an
+ * API-route-equivalent tool fires. Stays sync (no keychain hit) by
+ * design — see comment on LicenseStore.apiKeys.
+ */
+export function hasApiKey(appId: string): boolean {
+  return getApiKeysPresence()[appId] === true;
+}
+
+// ── v0.20.0 (voice v1) — optional OpenAI voice ────────────────────────
+
+/** Sync presence check for the user-provided OpenAI key. The secret
+ *  itself never lives in the store — only this flag (set when the
+ *  Settings field writes the key to Keychain). */
+export function isOpenAiKeyPresent(): boolean {
+  return store.get('openaiKeyPresent') === true;
+}
+
+export function setOpenAiKeyPresence(present: boolean): void {
+  store.set('openaiKeyPresent', present);
+}
+
+/** Which TTS engine the user picked. 'system' (default, free, offline)
+ *  or 'openai' (premium, requires a key). */
+export function getTtsEngine(): 'system' | 'openai' {
+  return store.get('ttsEngine') === 'openai' ? 'openai' : 'system';
+}
+
+export function setTtsEngine(engine: 'system' | 'openai'): void {
+  store.set('ttsEngine', engine === 'openai' ? 'openai' : 'system');
 }
 
 export { store };

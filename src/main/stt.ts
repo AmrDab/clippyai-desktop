@@ -4,8 +4,19 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { createLogger, serializeErr } from './logger';
+// v0.20.0 (voice v1) — STATIC import so Rollup keeps it in the main
+// bundle (dynamic import()/lazy require() get tree-shaken — see memory:
+// feedback-clippy-bundle-anchors). Used for the macOS STT path where the
+// bundled Windows whisper-cli cannot run.
+import * as openaiVoice from './openai-voice';
+import { isOpenAiKeyPresent } from './license';
 
 const log = createLogger('STT');
+
+/** The bundled whisper-cli is a Windows binary (whisper-cli.exe + .dll
+ *  deps). It only runs on win32. On darwin/linux we must NOT spawn it —
+ *  doing so was a latent crash-class bug (spawning a missing .exe). */
+const WHISPER_NATIVE = process.platform === 'win32';
 
 /**
  * v0.17.0 — Local speech-to-text via bundled whisper.cpp.
@@ -18,8 +29,8 @@ const log = createLogger('STT');
  *   alternative (Whisper API / Google STT via Web Speech) would have
  *   meant disclosing a third-party audio pipeline in the privacy policy.
  *
- * What's bundled:
- *   - whisper-cli.exe + 4 DLLs (whisper.dll, ggml*.dll) — total ~2.3 MB
+ * What's bundled (macOS):
+ *   - whisper-cli (universal arm64+x64) + .dylib deps — total ~2-3 MB
  *   - ggml-base.en-q5_1.bin — quantized 5-bit base.en model — ~57 MB
  *   - Total installer delta: ~60 MB
  *
@@ -73,9 +84,23 @@ function modelPath(): string {
  *  show a clean "voice unavailable" state instead of failing on first
  *  use if the bundle didn't install correctly. */
 export function isSttReady(): { ready: boolean; reason?: string } {
-  const cli = path.join(whisperDir(), 'whisper-cli.exe');
+  if (!WHISPER_NATIVE) {
+    // v0.20.0 (voice v1) — macOS/Linux. The bundled whisper-cli is a
+    // Windows-only binary, so we NEVER probe/spawn it here. Voice input
+    // is available only if the user has configured an OpenAI key (cloud
+    // gpt-4o-transcribe). No key → cleanly "not available" so the UI can
+    // tell the user what to do instead of failing on first use.
+    if (isOpenAiKeyPresent() || (process.env.OPENAI_API_KEY || '').trim()) {
+      return { ready: true };
+    }
+    return {
+      ready: false,
+      reason: 'Voice input needs an OpenAI key on macOS — add one in Settings → Voice (audio is sent to OpenAI; opt-in).',
+    };
+  }
+  const cli = path.join(whisperDir(), 'whisper-cli');
   const model = modelPath();
-  if (!fs.existsSync(cli)) return { ready: false, reason: `whisper-cli.exe not found at ${cli}` };
+  if (!fs.existsSync(cli)) return { ready: false, reason: `whisper-cli not found at ${cli}` };
   if (!fs.existsSync(model)) return { ready: false, reason: `model not found at ${model}` };
   return { ready: true };
 }
@@ -93,11 +118,23 @@ export async function transcribeWav(
   const ready = isSttReady();
   if (!ready.ready) return { ok: false, error: ready.reason };
 
+  // v0.20.0 (voice v1) — macOS/Linux path. We never spawn the Windows
+  // whisper-cli here; isSttReady() above already guaranteed an OpenAI key
+  // exists, so route through the main-process OpenAI proxy. The key stays
+  // in main; only the transcript text comes back.
+  if (!WHISPER_NATIVE) {
+    const r = await openaiVoice.transcribeWithOpenAi(wavBuffer, {
+      initialPrompt: opts.initialPrompt,
+      timeoutMs: opts.timeoutMs ?? 30_000,
+    });
+    return { ok: r.ok, text: r.text, error: r.error, elapsedMs: r.elapsedMs };
+  }
+
   const start = Date.now();
   const tmpFile = path.join(os.tmpdir(), `clippy-stt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
   try {
     fs.writeFileSync(tmpFile, wavBuffer);
-    const cliPath = path.join(whisperDir(), 'whisper-cli.exe');
+    const cliPath = path.join(whisperDir(), 'whisper-cli');
     const args = [
       '-m', modelPath(),
       '-f', tmpFile,

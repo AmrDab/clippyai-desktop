@@ -13,7 +13,18 @@ body.clippy-window {
   height: 100%;
 }
 
-/* Clippy container — anchored bottom-right */
+/* Clippy container — anchored bottom-right.
+ *
+ * v0.19.0 RC-6 — z-index bumped above `.bubble` (z-index: 10) so that
+ * when the bubble enters its `expanded` 480×600 state — which pins to
+ * the same bottom-right corner of the host window — the Clippy sprite
+ * stays visible IN FRONT OF the panel instead of being painted behind
+ * it. The bubble's frosted backdrop reads naturally with Clippy peeking
+ * over the corner; matches the classic Office Assistant arrangement
+ * where the character sits next to / in front of his speech tray, not
+ * behind it. Pre-fix the sprite would disappear under the expanded
+ * panel until the user collapsed it (alpha.8 customer report).
+ */
 #clippy-container {
   position: fixed;
   bottom: 3px;
@@ -22,6 +33,7 @@ body.clippy-window {
   height: 93px;
   cursor: pointer;
   user-select: none;
+  z-index: 20;
 }
 
 #clippy-canvas {
@@ -30,120 +42,472 @@ body.clippy-window {
   image-rendering: pixelated;
 }
 
-/* === Speech bubble — modernized in v0.11.24 ============================
-   Replaces the gray-bordered, pale-yellow, hard-shadow look with a
-   modern messenger-style card:
-   - near-white frosted background (subtle brand warmth, not yellow)
-   - soft layered shadow (close + ambient + depth) instead of one hard 3-stop
-   - 14px radius — generous but not toy-like
-   - 1px hairline border in low-opacity ink (just enough definition)
-   - macOS/iMessage-style rounded "tail" instead of the CSS triangle hack
-   - system font stack — antialiased, modern fallback
-   ====================================================================== */
+/* ── Bubble v2 — adaptive three-state with six tints (v0.19.0 PR-2) ══════
+   Replaces the single fixed-size bubble with a state machine driven by
+   `data-state` on #bubble: `compact` | `standard` | `expanded`. A second
+   axis, `data-tint`, paints a soft contextual wash + plays a one-shot
+   hint animation on transition. Visual goals:
+
+   - keep the brand: Clippy yellow lives as an inner-glow accent in the
+     `default` tint, not as a flat fill. Tahoma fallback kept for short
+     tips so the retro feel survives; Inter for chat history.
+   - frosted glass (16px backdrop-blur) + 1px ink hairline + soft drop
+     shadow — replaces the v0.11.24 fill + hard shadow combo.
+   - everything CSS-driven from data attributes. No class soup, no JS
+     animation library.
+
+   Layout footprint per state:
+     compact   ≈ 280×60   (single-line tip, no input, no header, no chips)
+     standard  ≈ 340×auto (multi-line + actions + compact input row)
+     expanded  ≈ 480×600  (header + history + chips + larger input)
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Tint palette — CSS custom properties so JS only flips data-tint and
+   CSS picks up the right wash, accent, and shadow. ~10–15% wash over a
+   frosted backdrop (any heavier and contrast on the body text drops). */
+:root {
+  --bubble-radius: 16px;
+  --bubble-bg:        rgba(252, 252, 254, 0.78);
+  --bubble-ink:       rgba(15, 23, 42, 0.88);
+  --bubble-ink-soft:  rgba(15, 23, 42, 0.55);
+  /* v0.19.0 RC-6 — harmonized with Settings v2 hairline (0.08) so the
+   * bubble border reads as the same family of slate-ink strokes used
+   * everywhere else in the app. Pre-fix the bubble's 0.10 alpha looked
+   * subtly heavier than the settings cards next to it. */
+  --bubble-hairline:  rgba(15, 23, 42, 0.08);
+  --bubble-inner-stroke: rgba(255, 255, 255, 0.65);
+  --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.18);
+
+  /* default — Clippy brand yellow inner glow */
+  --tint-default-wash:   rgba(255, 212, 0, 0.12);
+  --tint-default-accent: #FFD400;
+  --tint-default-text:   #1c1917;
+
+  /* info — neutral white-frost; user can reply */
+  --tint-info-wash:   rgba(255, 255, 255, 0.30);
+  --tint-info-accent: #94a3b8;
+  --tint-info-text:   #0f172a;
+
+  /* warning — warm amber; approval needed */
+  --tint-warning-wash:   rgba(245, 158, 11, 0.14);
+  --tint-warning-accent: #f59e0b;
+  --tint-warning-text:   #78350f;
+
+  /* busy — cool blue; acting / working */
+  --tint-busy-wash:   rgba(59, 130, 246, 0.12);
+  --tint-busy-accent: #3b82f6;
+  --tint-busy-text:   #1e3a8a;
+
+  /* error — rose-red; blocked or failed */
+  --tint-error-wash:   rgba(244, 63, 94, 0.13);
+  --tint-error-accent: #f43f5e;
+  --tint-error-text:   #881337;
+
+  /* success — mint; recent completion */
+  --tint-success-wash:   rgba(16, 185, 129, 0.13);
+  --tint-success-accent: #10b981;
+  --tint-success-text:   #064e3b;
+}
+
 .bubble {
   position: fixed;
-  bottom: 100px;
+  /* The host Electron window is sized + positioned anchor-aware by main
+   * (window.ts), with Clippy pinned to the window's bottom-right (124×93).
+   * The bubble must sit ABOVE the sprite so it doesn't cover Clippy or the
+   * reply text — anchor its bottom just above Clippy's height (~96px) so the
+   * tail points down AT him (classic Office-Assistant arrangement).
+   * v0.20.0-alpha.18 — alpha.14 changed this to `bottom: 5px`, which put the
+   * bubble in the SAME bottom-right corner as the sprite; Clippy then painted
+   * on top of the bubble and hid the last words of every reply. Expanded mode
+   * overrides this back to 5px on purpose (Clippy peeks over the corner, tail
+   * hidden). */
+  bottom: 104px;
   right: 5px;
-  width: 300px;
-  min-height: 70px;
-  background: rgba(252, 252, 254, 0.96);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 14px;
+  width: 340px;
+  min-width: 240px;
+  max-width: calc(100vw - 10px);
+  min-height: 64px;
+  background: var(--bubble-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  backdrop-filter: saturate(180%) blur(16px);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: var(--bubble-radius);
   padding: 12px 14px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text",
-    "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
-  font-size: 13.5px;
-  line-height: 1.45;
-  color: #0f172a;
-  letter-spacing: -0.005em;
+  /* System SF stack — Tahoma led this stack through alpha.22 and read
+     dated/aliased on retina next to the glass treatment ("looks low
+     quality" — founder, 2026-06-11). The retro flavor stays in the sprite
+     and tints; the type itself is native-modern. */
+  font-family: -apple-system, BlinkMacSystemFont, Inter, "SF Pro Text",
+    "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--bubble-ink);
+  letter-spacing: -0.01em;
+  text-wrap: pretty;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Layered: ambient drop shadow + 1px white inner stroke on top edge.
+     Inner stroke is what makes it read as "glass" instead of "card". */
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 6px 16px rgba(15, 23, 42, 0.08),
-    0 24px 48px rgba(15, 23, 42, 0.10);
-  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+    var(--bubble-shadow),
+    inset 0 1px 0 var(--bubble-inner-stroke);
+  transition:
+    width 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    min-height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.22s ease,
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 0.25s ease;
   -webkit-app-region: no-drag;
   cursor: default;
   z-index: 10;
+  /* The tint wash sits between the frosted bg and the content. Drawn
+     via ::before so we can fade it in independently of the base bg. */
+  isolation: isolate;
+  overflow: hidden;
 }
 
-.bubble.hidden {
-  opacity: 0;
-  transform: translateY(4px) scale(0.985);
-  pointer-events: none;
-}
-
-/* Tail — modern rounded connector dot, anchored bottom-right.
-   Positioned below the bubble pointing toward Clippy's head.
-   Two stacked rounded squares with shadows, scaled down as they
-   approach the character — iMessage-style. */
-#bubble-tail {
-  position: absolute;
-  bottom: -8px;
-  right: 26px;
-  width: 14px;
-  height: 14px;
-  background: rgba(252, 252, 254, 0.96);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  border-top: none;
-  border-left: none;
-  border-radius: 0 0 6px 0;
-  transform: rotate(45deg);
-  transform-origin: center;
-  box-shadow: 2px 2px 4px rgba(15, 23, 42, 0.05);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
-}
-
-#bubble-tail::before {
-  /* Small "echo dot" closer to Clippy — iMessage cue that the bubble
-     belongs to the figure below it. */
+/* Tint wash layer — paints over the frosted backdrop, under content. */
+.bubble::before {
   content: '';
   position: absolute;
-  width: 5px;
-  height: 5px;
-  background: rgba(252, 252, 254, 0.96);
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 50%;
-  bottom: -16px;
-  right: -16px;
-  box-shadow: 1px 1px 2px rgba(15, 23, 42, 0.06);
-  transform: rotate(-45deg); /* counter the parent rotation */
+  inset: 0;
+  border-radius: inherit;
+  background: var(--tint-wash, transparent);
+  pointer-events: none;
+  z-index: -1;
+  transition: background 0.25s ease;
 }
 
+/* Per-tint custom-property forwarding. Each tint binds the generic
+   --tint-wash / --tint-accent / --tint-text vars so the bubble doesn't
+   have to know which tint it's in. */
+.bubble[data-tint="default"] {
+  --tint-wash:   var(--tint-default-wash);
+  --tint-accent: var(--tint-default-accent);
+  --tint-text:   var(--tint-default-text);
+}
+.bubble[data-tint="info"] {
+  --tint-wash:   var(--tint-info-wash);
+  --tint-accent: var(--tint-info-accent);
+  --tint-text:   var(--tint-info-text);
+}
+.bubble[data-tint="warning"] {
+  --tint-wash:   var(--tint-warning-wash);
+  --tint-accent: var(--tint-warning-accent);
+  --tint-text:   var(--tint-warning-text);
+}
+.bubble[data-tint="busy"] {
+  --tint-wash:   var(--tint-busy-wash);
+  --tint-accent: var(--tint-busy-accent);
+  --tint-text:   var(--tint-busy-text);
+}
+.bubble[data-tint="error"] {
+  --tint-wash:   var(--tint-error-wash);
+  --tint-accent: var(--tint-error-accent);
+  --tint-text:   var(--tint-error-text);
+}
+.bubble[data-tint="success"] {
+  --tint-wash:   var(--tint-success-wash);
+  --tint-accent: var(--tint-success-accent);
+  --tint-text:   var(--tint-success-text);
+}
+
+/* ── State-specific sizing ─────────────────────────────────────────── */
+.bubble[data-state="compact"] {
+  width: 280px;
+  min-height: 60px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer; /* click anywhere → standard */
+}
+/* Compact affordance — the live-test failure mode was a compact bubble
+ * that LOOKED like a dead notification. Pair the type-to-reply handler
+ * (bubble.ts) with a quiet hint so the path out of compact is
+ * discoverable without stealing attention (fades in late, stays soft). */
+.bubble[data-state="compact"]::after {
+  content: 'click or just start typing…';
+  display: block;
+  margin-top: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--bubble-ink-soft);
+  opacity: 0;
+  animation: compact-hint-in 0.4s ease 1.1s forwards;
+}
+@keyframes compact-hint-in { to { opacity: 0.72; } }
+@media (prefers-reduced-motion: reduce) {
+  .bubble[data-state="compact"]::after { animation: none; opacity: 0.72; }
+}
+.bubble[data-state="standard"] {
+  width: 340px;
+  min-height: 70px;
+}
+.bubble[data-state="expanded"] {
+  width: 480px;
+  height: 600px;
+  /* Intentional: the expanded panel fills the window down to the corner and
+   * Clippy peeks over its bottom-right (tail hidden) — see #clippy-container
+   * note + `[data-state="expanded"] #bubble-tail { display:none }`. */
+  bottom: 5px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  /* v0.19.0 RC-6 — disable the property-level width/height/min-height
+   * tweens specifically in expanded mode. The `bubble-grow` keyframe
+   * animation (300ms scale-in from origin bottom-right) is what should
+   * own the transition feel; running both at once produced a double
+   * tween where the panel grew via scale AND simultaneously animated
+   * its computed width/height — visible as a soft "settling" wobble at
+   * the end of the grow. Opacity + transform tweens still inherit from
+   * `.bubble` so fade-in remains smooth. */
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 0.25s ease;
+}
+
+/* ── Entry / exit transitions ─────────────────────────────────────── */
+.bubble.hidden {
+  opacity: 0;
+  transform: translateY(4px) scale(0.96);
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* compact → standard: slide-down 8px + fade-in over 200ms */
+.bubble[data-state="standard"]:not(.hidden) {
+  animation: bubble-slide-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* standard → expanded: grow from the anchor corner over 300ms */
+.bubble[data-state="expanded"]:not(.hidden) {
+  animation: bubble-grow 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes bubble-slide-in {
+  /* Slight scale riding the slide makes the pop read "alive" instead of
+     "panel" — origin sits toward the tail so growth points at Clippy. */
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); transform-origin: 85% 100%; }
+  to   { opacity: 1; transform: translateY(0) scale(1);       transform-origin: 85% 100%; }
+}
+@keyframes bubble-grow {
+  from { opacity: 0; transform: scale(0.92); transform-origin: bottom right; }
+  to   { opacity: 1; transform: scale(1);     transform-origin: bottom right; }
+}
+
+/* ── Hint animations per tint (run once on data-tint change) ──────── */
+/* The .bubble--tint-hint class is toggled by JS for one animation cycle. */
+.bubble[data-tint="default"].bubble--tint-hint { animation: tint-default-glow 1.2s ease both; }
+.bubble[data-tint="info"].bubble--tint-hint #bubble-input::placeholder { animation: tint-info-blink 1.6s ease-in-out infinite; }
+.bubble[data-tint="warning"].bubble--tint-hint #bubble-actions button { animation: tint-warning-pulse 0.6s ease both; }
+.bubble[data-tint="busy"].bubble--tint-hint::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.18) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: tint-busy-shimmer 1.4s linear infinite;
+  pointer-events: none;
+}
+.bubble[data-tint="error"].bubble--tint-hint { animation: tint-error-shake 0.4s ease both; }
+.bubble[data-tint="success"].bubble--tint-hint::after {
+  content: '\2713';
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  color: var(--tint-success-accent);
+  font-size: 16px;
+  font-weight: 700;
+  animation: tint-success-check 1.2s ease both;
+}
+
+@keyframes tint-default-glow {
+  0%   { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 0 0 rgba(255, 212, 0, 0); }
+  35%  { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 24px 4px rgba(255, 212, 0, 0.28); }
+  100% { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 0 0 rgba(255, 212, 0, 0); }
+}
+@keyframes tint-info-blink {
+  0%, 100% { opacity: 0.38; }
+  50%      { opacity: 0.85; }
+}
+@keyframes tint-warning-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.04); box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18); }
+}
+@keyframes tint-busy-shimmer {
+  0%   { background-position: -100% 0; }
+  100% { background-position:  200% 0; }
+}
+@keyframes tint-error-shake {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-4px); }
+  40%      { transform: translateX(4px); }
+  60%      { transform: translateX(-2px); }
+  80%      { transform: translateX(2px); }
+}
+@keyframes tint-success-check {
+  0%   { opacity: 0; transform: scale(0.5); }
+  40%  { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ── Avoidance translate (cursor approaches → slide 120px away) ──── */
+.bubble[data-avoid="left"]  { transform: translateX(-120px); }
+.bubble[data-avoid="right"] { transform: translateX(120px); }
+.bubble[data-avoid="up"]    { transform: translateY(-120px); }
+.bubble[data-avoid="down"]  { transform: translateY(120px); }
+
+/* ── Tail — rounded connector dot, points toward Clippy ──────────── */
+#bubble-tail {
+  /* Slimmer connector (was 14px — read chunky against the 1px hairline
+     chrome). 11px diamond + tighter radius keeps the hairline visually
+     continuous around the corner. */
+  position: absolute;
+  bottom: -7px;
+  right: 28px;
+  width: 11px;
+  height: 11px;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-hairline);
+  border-top: none;
+  border-left: none;
+  border-radius: 0 0 3.5px 0;
+  transform: rotate(45deg);
+  transform-origin: center;
+  box-shadow: 1.5px 1.5px 3px rgba(15, 23, 42, 0.04);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  backdrop-filter: saturate(180%) blur(16px);
+  z-index: -1;
+}
+#bubble-tail::before {
+  /* iMessage-style "echo dot" closer to Clippy. */
+  content: '';
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 50%;
+  bottom: -14px;
+  right: -14px;
+  box-shadow: 1px 1px 2px rgba(15, 23, 42, 0.05);
+  transform: rotate(-45deg);
+}
+/* Expanded mode snaps to the screen edge; the tail is meaningless then. */
+.bubble[data-state="expanded"] #bubble-tail { display: none; }
+
+/* v0.20.0-alpha.14 — tail flip. When Clippy is near the top edge, main
+ * grows the window DOWNWARD (window.ts emits 'bubble-side' = 'below') and
+ * the renderer toggles .bubble--below. Clippy then sits ABOVE the bubble,
+ * so the bubble pins to the window top and the tail points UP toward him.
+ * Mirror the connector geometry to the top edge. */
+.bubble--below {
+  bottom: auto;
+  top: 5px;
+}
+.bubble--below #bubble-tail {
+  bottom: auto;
+  top: -8px;
+  border-top: 1px solid var(--bubble-hairline);
+  border-bottom: none;
+  border-right: none;
+  border-left: 1px solid var(--bubble-hairline);
+  border-radius: 6px 0 0 0;
+}
+.bubble--below #bubble-tail::before {
+  bottom: auto;
+  top: -16px;
+}
+
+/* ── Header (expanded-only) ──────────────────────────────────────── */
+#bubble-header {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bubble-hairline);
+  flex-shrink: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bubble-ink-soft);
+}
+.bubble[data-state="expanded"] #bubble-header { display: flex; }
+
+.bubble-header-title {
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.bubble-header-controls { display: flex; gap: 4px; }
+.bubble-header-controls button {
+  width: 22px; height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--bubble-ink-soft);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+.bubble-header-controls button:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--bubble-ink);
+}
+#bubble-pin[aria-pressed="true"] {
+  background: var(--tint-default-wash);
+  color: var(--tint-default-text);
+}
+
+/* ── Primary text region ─────────────────────────────────────────── */
 #bubble-text {
   margin-bottom: 4px;
   word-wrap: break-word;
   user-select: text;
   cursor: text;
-  /* v0.12.3 — cap height + scroll on overflow. Per UX audit finding #2:
-     long replies (Excel formulas, code blocks, multi-paragraph summaries)
-     previously rendered but spilled below the bubble's visible area, with
-     no scrollbar visible until the user clicked into chat-history mode.
-     Now reading mode shares the same overflow treatment. */
   max-height: 240px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
   padding-right: 4px;
 }
-#bubble-text::-webkit-scrollbar { width: 6px; }
-#bubble-text::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.18);
-  border-radius: 3px;
+.bubble[data-state="compact"] #bubble-text {
+  max-height: 40px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Tahoma, "Segoe UI", system-ui, sans-serif;
+  margin-bottom: 0;
+  padding-right: 0;
 }
+.bubble[data-state="expanded"] #bubble-text {
+  display: none; /* expanded uses #bubble-history instead */
+}
+#bubble-text::-webkit-scrollbar { width: 6px; }
+#bubble-text::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
 #bubble-text::-webkit-scrollbar-track { background: transparent; }
 
-/* v0.12.5 — error reply styling. Red left border + faint pink tint so the
-   user instantly distinguishes an error from a normal tip. */
+/* v0.12.5 → mapped to data-tint="error" in v0.19.0. Kept for back-compat
+   with speakError() which still toggles the legacy class. */
 #bubble-text.bubble-error {
-  border-left: 3px solid #dc2626;
-  background: rgba(220, 38, 38, 0.04);
+  border-left: 3px solid var(--tint-error-accent);
+  background: rgba(244, 63, 94, 0.05);
   padding-left: 10px;
   border-radius: 3px;
+}
+/* Step ticker — shown while a tool is running. Muted so it reads as status,
+   not conversation. Italic + lighter opacity distinguishes it from replies. */
+#bubble-text.bubble-step {
+  font-style: italic;
+  opacity: 0.75;
+  letter-spacing: 0.01em;
 }
 .bubble-retry-btn {
   display: inline-block;
@@ -151,57 +515,47 @@ body.clippy-window {
   padding: 4px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
-  border: 1px solid rgba(220, 38, 38, 0.3);
-  border-radius: 4px;
+  color: var(--tint-error-text);
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.30);
+  border-radius: 6px;
   cursor: pointer;
 }
-.bubble-retry-btn:hover { background: rgba(220, 38, 38, 0.15); }
+.bubble-retry-btn:hover { background: rgba(244, 63, 94, 0.15); }
 .bubble-retry-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* Chat history mode */
-#bubble-text.chat-history {
-  max-height: 180px;
+/* ── History (expanded-only) — Inter-flavored chat panel ─────────── */
+#bubble-history {
+  display: none;
+  flex: 1;
   overflow-y: auto;
+  padding: 14px 16px;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.55;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
-  margin-right: -4px;
-  padding-right: 4px;
 }
-#bubble-text.chat-history::-webkit-scrollbar { width: 6px; }
-#bubble-text.chat-history::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.18);
-  border-radius: 3px;
-}
-#bubble-text.chat-history::-webkit-scrollbar-track { background: transparent; }
+.bubble[data-state="expanded"] #bubble-history { display: block; }
+#bubble-history::-webkit-scrollbar { width: 6px; }
+#bubble-history::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
+#bubble-history::-webkit-scrollbar-track { background: transparent; }
 
 .chat-msg {
-  padding: 6px 0;
-  font-size: 12.5px;
-  line-height: 1.4;
+  padding: 8px 0;
   border-bottom: 1px solid rgba(15, 23, 42, 0.05);
 }
-
 .chat-msg:last-child { border-bottom: none; }
-
-.chat-user {
-  color: #2563eb; /* blue-600 — modern messenger blue */
-}
-
-.chat-clippy {
-  color: #1e293b; /* slate-800 */
-}
-
+.chat-user   { color: #2563eb; }
+.chat-clippy { color: #1e293b; }
 .chat-label {
   font-weight: 600;
   font-size: 11px;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
   margin-right: 4px;
   text-transform: uppercase;
-  opacity: 0.75;
+  opacity: 0.7;
 }
-
 .chat-time {
   float: right;
   font-size: 10px;
@@ -209,107 +563,217 @@ body.clippy-window {
   margin-left: 6px;
   font-variant-numeric: tabular-nums;
 }
-
 .chat-empty {
   color: rgba(15, 23, 42, 0.4);
   font-style: italic;
   text-align: center;
-  padding: 12px 0;
+  padding: 16px 0;
+  font-size: 12.5px;
+}
+/* Markdown elements inside history. Intentionally minimal — we render
+   bold / inline code / fences / lists only. */
+.chat-msg strong { font-weight: 600; }
+.chat-msg code {
+  font-family: ui-monospace, SFMono-Regular, "Menlo", "Cascadia Code", monospace;
   font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #b91c1c;
+}
+.chat-msg pre {
+  font-family: ui-monospace, SFMono-Regular, "Menlo", "Cascadia Code", monospace;
+  font-size: 12px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+.chat-msg pre code { background: transparent; padding: 0; color: inherit; }
+.chat-msg ul { margin: 4px 0 4px 18px; padding: 0; }
+.chat-msg li { margin: 2px 0; }
+
+/* ── Action row (existing — populated by speakWithActions) ──────── */
+#bubble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+#bubble-actions.hidden { display: none; }
+/* v0.19.0 RC-6 — action pills harmonized with `.bubble-chip` (also a
+ * pill, 999px) and Settings v2 micro-controls. Pre-fix the 8px radius
+ * made the action row read as "old MS buttons" while the chips above it
+ * read as modern pills — clashing pair. Same padding bump (5→6px
+ * vertical, 12→14px horizontal) gives the touch target a tiny bit more
+ * room, matching the chip footprint. */
+#bubble-actions button {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  border-radius: 999px;
+  border: 1px solid var(--tint-accent, var(--bubble-hairline));
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--tint-text, var(--bubble-ink));
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.08s ease, box-shadow 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+#bubble-actions button:hover {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+#bubble-actions button:active { transform: translateY(0.5px); }
+
+/* ── Suggestion chips (expanded-only) — frosted pills ───────────── */
+#bubble-chips {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+  flex-shrink: 0;
+}
+.bubble[data-state="expanded"] #bubble-chips:not(.hidden) { display: flex; }
+
+.bubble-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: Inter, system-ui, sans-serif;
+  background: rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 999px;
+  color: var(--bubble-ink);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(4px);
+  /* Stagger applied via inline style --i for each chip. */
+  animation: chip-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: calc(var(--i, 0) * 50ms);
+  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+.bubble-chip:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+}
+.bubble-chip:active { transform: translateY(0); }
+
+@keyframes chip-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Input area ─────────────────────────────────────────────────── */
 #bubble-input-area {
   display: flex;
   gap: 6px;
   margin-top: 10px;
-  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  border-top: 1px solid var(--bubble-hairline);
   padding-top: 8px;
-  align-items: stretch;
+  align-items: center;
 }
-
+.bubble[data-state="expanded"] #bubble-input-area {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--bubble-hairline);
+  background: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+.bubble[data-state="compact"] #bubble-input-area { display: none; }
 #bubble-input-area.hidden { display: none; }
+
+/* Attach button — expanded-only. Hidden in standard / compact. */
+/* (#bubble-attach styles removed — the attach button was removed pre-launch
+   until the upload pipeline ships; see index.html.) */
 
 #bubble-input {
   flex: 1;
-  border: 1px solid rgba(15, 23, 42, 0.10);
-  border-radius: 8px;
-  padding: 6px 10px;
+  min-width: 0;
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 11px;
+  padding: 8px 13px;
   font-size: 13px;
-  font-family: inherit;
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.9);
+  font-family: -apple-system, BlinkMacSystemFont, Inter, system-ui, sans-serif;
+  color: var(--bubble-ink);
+  background: rgba(255, 255, 255, 0.92);
   outline: none;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   -webkit-app-region: no-drag;
 }
-
-#bubble-input::placeholder {
-  color: rgba(15, 23, 42, 0.38);
+.bubble[data-state="expanded"] #bubble-input {
+  padding: 9px 14px;
+  font-size: 13.5px;
+  border-radius: 12px;
 }
-
+#bubble-input::placeholder { color: rgba(15, 23, 42, 0.38); }
 #bubble-input:focus {
-  border-color: #4CAF50;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.18);
+  border-color: var(--tint-accent, #FFD400);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tint-accent, #FFD400) 22%, transparent);
 }
 
+/* ── Send button — paper-plane SVG in a circular pill ──────────── */
 #bubble-send {
-  background: linear-gradient(180deg, #4CAF50 0%, #43A047 100%);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 6px 14px;
+  width: 32px; height: 32px;
+  background: linear-gradient(180deg, #FFE14A 0%, #FFD400 100%);
+  color: #1c1917;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 50%;
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   box-shadow:
-    0 1px 1px rgba(56, 142, 60, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
   transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
   -webkit-app-region: no-drag;
 }
-
 #bubble-send:hover {
-  background: linear-gradient(180deg, #5cba60 0%, #4CAF50 100%);
+  background: linear-gradient(180deg, #FFEB7A 0%, #FFD831 100%);
   box-shadow:
-    0 2px 4px rgba(56, 142, 60, 0.30),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    0 3px 8px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
+#bubble-send:active { transform: translateY(0.5px); }
+#bubble-send .send-icon { display: block; transform: translateX(0.5px); }
 
-#bubble-send:active {
-  background: #388E3C;
-  transform: translateY(0.5px);
-  box-shadow:
-    0 0 1px rgba(56, 142, 60, 0.40),
-    inset 0 1px 2px rgba(0, 0, 0, 0.12);
-}
-
-/* v0.17.0 — voice input mic button (hold-to-talk). The .mic-level span
-   inside it is what pulses with mic volume; CSS var --lvl is updated
-   from JS each ~150ms in src/renderer/recorder.ts. */
+/* ── Mic button — circular pill with retained level-pulse ──────── */
 #bubble-mic {
   position: relative;
-  background: rgba(255, 255, 255, 0.08);
+  width: 32px; height: 32px;
+  background: rgba(255, 255, 255, 0.55);
   color: #2C3E50;
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  border-radius: 8px;
-  padding: 6px 10px;
-  margin-right: 6px;
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 50%;
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   transition: background 0.12s ease, transform 0.08s ease;
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
-#bubble-mic:hover { background: rgba(0, 0, 0, 0.06); }
+#bubble-mic:hover { background: rgba(255, 255, 255, 0.9); }
 #bubble-mic:active { transform: translateY(0.5px); }
 #bubble-mic .mic-icon { position: relative; z-index: 2; }
 #bubble-mic .mic-level {
-  /* Radial pulse that scales with mic RMS. Sits behind the icon. */
   position: absolute;
   inset: 0;
-  border-radius: 8px;
+  border-radius: 50%;
   background: radial-gradient(circle at center, rgba(244, 67, 54, 0.55) 0%, rgba(244, 67, 54, 0.0) 70%);
   transform: scale(var(--lvl, 0));
   transition: transform 0.12s ease-out;
@@ -326,9 +790,7 @@ body.clippy-window {
   border-color: rgba(255, 193, 7, 0.55);
 }
 #bubble-mic.encoding .mic-icon::after {
-  /* Tiny spinner-replacement: three pulsing dots inside the button while
-     whisper-cli is transcribing. Avoids dragging in a spinner asset. */
-  content: '…';
+  content: '\2026';
   margin-left: 4px;
   animation: mic-dots 0.9s steps(4, end) infinite;
 }
@@ -341,40 +803,65 @@ body.clippy-window {
   50%      { opacity: 1; }
 }
 
-@media (prefers-color-scheme: dark) {
-  #bubble-mic {
-    background: rgba(255, 255, 255, 0.05);
-    color: #e2e8f0;
-    border-color: rgba(255, 255, 255, 0.10);
-  }
-  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); }
+/* ── Expand corner-handle (standard-only, hover-revealed) ──────── */
+#bubble-expand-handle {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 18px; height: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 6px;
+  color: var(--bubble-ink-soft);
+  cursor: pointer;
+  opacity: 0;
+  transform: translate(2px, 2px);
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.12s ease;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+}
+.bubble[data-state="standard"] #bubble-expand-handle { display: inline-flex; }
+.bubble[data-state="standard"]:hover #bubble-expand-handle {
+  opacity: 1;
+  transform: translate(0, 0);
+}
+#bubble-expand-handle:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--bubble-ink);
 }
 
+/* ── Dark mode — keeps brand warmth ─────────────────────────────── */
 @media (prefers-color-scheme: dark) {
-  /* Dark-mode path — defensive even though Clippy's window has no
-     system theme, in case Electron honors it on some setups. Kept
-     subtle so the brand colors don't lose their warmth. */
-  .bubble {
-    background: rgba(28, 28, 32, 0.92);
-    color: #e2e8f0;
-    border-color: rgba(255, 255, 255, 0.08);
+  :root {
+    --bubble-bg:        rgba(28, 28, 32, 0.78);
+    --bubble-ink:       #e2e8f0;
+    --bubble-ink-soft:  rgba(226, 232, 240, 0.6);
+    --bubble-hairline:  rgba(255, 255, 255, 0.10);
+    --bubble-inner-stroke: rgba(255, 255, 255, 0.08);
+    --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.5);
   }
-  #bubble-tail { background: rgba(28, 28, 32, 0.92); border-color: rgba(255, 255, 255, 0.08); }
-  #bubble-tail::before { background: rgba(28, 28, 32, 0.92); border-color: rgba(255, 255, 255, 0.08); }
+  #bubble-tail, #bubble-tail::before { background: var(--bubble-bg); border-color: var(--bubble-hairline); }
   .chat-clippy { color: #e2e8f0; }
   .chat-user { color: #60a5fa; }
   .chat-msg { border-bottom-color: rgba(255, 255, 255, 0.06); }
-  #bubble-input { background: rgba(20, 20, 24, 0.9); color: #e2e8f0; border-color: rgba(255, 255, 255, 0.10); }
+  .chat-msg code { background: rgba(255, 255, 255, 0.08); color: #fda4af; }
+  .chat-msg pre { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.08); }
+  #bubble-input { background: rgba(20, 20, 24, 0.85); color: #e2e8f0; }
   #bubble-input::placeholder { color: rgba(226, 232, 240, 0.38); }
+  #bubble-mic { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
+  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); }
+  .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
+  .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
+  #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: var(--tint-text, #e2e8f0); }
 }
 
 /* === Onboarding Window === */
-body.onboarding-window {
-  background: #fafafa;
-  width: 400px;
-  height: 500px;
-  overflow: hidden;
-}
+/* (Legacy body.onboarding-window 400×500 + the interim 480×620 block were
+   removed 2026-06-12 — three cascading definitions left overflow:hidden and a
+   stale size leaking through. The single canonical block lives in the redesign
+   section below.) */
 
 .onboarding {
   display: flex;
@@ -404,12 +891,23 @@ body.onboarding-window {
   display: none;
   flex-direction: column;
   flex: 1;
+  /* min-height:0 lets the step shrink below its intrinsic content height so
+     overflow-y can scroll instead of pushing the footer off-screen. */
+  min-height: 0;
   justify-content: center;
   gap: 16px;
 }
 
 .onboarding-step.active {
   display: flex;
+  /* Any step taller than the window scrolls internally; the footer stays put.
+     MUST be flex-start, not the base rule's center: a CENTERED flex column
+     that overflows pushes content equally above the top edge, which is
+     physically unreachable by scrolling — so tall steps (2/3) would clip
+     their H2 + first field at the top. Top-align so scrolling reaches it.
+     (Steps 4-6 already set flex-start; this covers 1-3 too.) */
+  justify-content: flex-start;
+  overflow-y: auto;
 }
 
 .onboarding-step h2 {
@@ -433,6 +931,38 @@ body.onboarding-window {
   margin-bottom: 4px;
 }
 
+/* Brain orientation status — shown during onboarding step 3 while Clippy
+   reads soul.md → identity.md → core-behavior.md → … */
+.orient-status {
+  background: #f6f7f9;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 6px 0 14px;
+  font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  display: grid;
+  gap: 4px;
+}
+.orient-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+}
+.orient-row .orient-tick {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  color: #9ca3af;
+}
+.orient-row.orient-ok { color: #1f2937; }
+.orient-row.orient-ok .orient-tick { color: #16a34a; }
+.orient-row.orient-bad { color: #991b1b; }
+.orient-row.orient-bad .orient-tick { color: #dc2626; }
+
 .onboarding-step input,
 .onboarding-step select {
   width: 100%;
@@ -448,6 +978,16 @@ body.onboarding-window {
 .onboarding-step select:focus {
   border-color: #4CAF50;
   box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.15);
+}
+
+/* Keyboard focus ring (WCAG 2.4.7) — onboarding buttons/links had only
+   mouse :hover styling, so Tab users couldn't see where focus was. */
+.onboarding-step button:focus-visible,
+.onboarding-step a:focus-visible,
+.onboarding-step input:focus-visible,
+.onboarding-step select:focus-visible {
+  outline: 2px solid #1a73e8;
+  outline-offset: 2px;
 }
 
 .onboarding-error {
@@ -594,7 +1134,7 @@ body.settings-window {
   background: #fff;
   color: #333;
   font-weight: 600;
-  border-right: 2px solid #4CAF50;
+  border-right: 2px solid var(--s-accent);
 }
 
 .settings-content {
@@ -733,7 +1273,7 @@ body.settings-window {
 }
 
 .toggle-switch input:checked + .toggle-slider {
-  background: #4CAF50;
+  background: var(--s-success);
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
@@ -753,8 +1293,8 @@ body.settings-window {
   border-radius: 50%;
 }
 
-.status-dot.connected { background: #4CAF50; }
-.status-dot.disconnected { background: #d32f2f; }
+.status-dot.connected { background: var(--s-success); }
+.status-dot.disconnected { background: var(--s-danger); }
 
 .btn-test {
   background: #f5f5f5;
@@ -774,4 +1314,1741 @@ body.settings-window {
   font-size: 14px;
   color: #333;
   letter-spacing: 1px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * v0.19.0 PR-6 — Liquid Glass macOS treatment.
+ *
+ * Applied to onboarding + Settings → Apps via `body[data-platform="mac"]`
+ * which is set by each renderer's bootstrap from navigator.platform. On
+ * non-mac platforms the existing flat styling stays in place; mac users
+ * get the vibrancy treatment that makes the windows feel like native
+ * macOS Tahoe sheets — backdrop blur, layered shadows, hairline borders,
+ * spring-easing transitions, and pill-shaped buttons.
+ *
+ * Architectural note: every Glass selector reads from CSS variables
+ * scoped to `[data-platform="mac"]`. That keeps the mac-only tweaks in
+ * one block and lets us swap the palette (light / dark / future high-
+ * contrast variant) by mutating the variables rather than the rules.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+[data-platform="mac"] {
+  --glass-bg: rgba(255, 255, 255, 0.65);
+  --glass-blur: blur(40px) saturate(1.8);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.5);
+  --glass-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 16px 32px rgba(0, 0, 0, 0.12),
+    0 4px 8px rgba(0, 0, 0, 0.06);
+  --glass-radius: 24px;
+  --glass-radius-sm: 16px;
+  --glass-radius-pill: 999px;
+  --glass-accent: rgba(255, 212, 0, 0.15);
+  --glass-accent-strong: rgba(255, 196, 0, 0.85);
+  --glass-text: rgba(28, 28, 30, 0.95);
+  --glass-text-muted: rgba(60, 60, 67, 0.7);
+  --glass-divider: rgba(60, 60, 67, 0.15);
+  --glass-input-bg: rgba(255, 255, 255, 0.45);
+  --glass-card-bg: rgba(255, 255, 255, 0.55);
+  --glass-card-bg-hover: rgba(255, 255, 255, 0.72);
+  --glass-card-bg-selected: rgba(255, 212, 0, 0.22);
+  --glass-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+/* ── Window backdrops: onboarding + settings get the desktop-bleed-through
+   feel. The actual transparency is a frosted gradient so even on a black
+   desktop wallpaper the foreground stays legible. */
+[data-platform="mac"].onboarding-window,
+[data-platform="mac"].settings-window {
+  background:
+    linear-gradient(135deg, rgba(245, 245, 250, 0.92) 0%, rgba(232, 233, 240, 0.85) 100%);
+  color: var(--glass-text);
+}
+
+/* On macOS we can lean on -webkit-backdrop-filter on the inner container
+   so the entire onboarding/settings panel reads as a vibrancy sheet.
+   The body itself stays opaque enough to render in the off-chance the
+   compositor disables backdrop-filter (rare but possible — e.g. user
+   has "Reduce transparency" set). */
+[data-platform="mac"] .onboarding,
+[data-platform="mac"] .settings-layout {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  background: var(--glass-bg);
+  border-radius: var(--glass-radius);
+  box-shadow: var(--glass-shadow);
+}
+
+/* ── Typography. Headlines tighter, body weight 300, system stack. */
+[data-platform="mac"] .onboarding-header h1 {
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: -0.03em;
+  color: var(--glass-text);
+}
+[data-platform="mac"] .onboarding-header .tagline {
+  color: var(--glass-text-muted);
+  font-weight: 400;
+}
+[data-platform="mac"] .onboarding-step h2 {
+  font-weight: 600;
+  font-size: 20px;
+  color: var(--glass-text);
+  letter-spacing: -0.02em;
+}
+[data-platform="mac"] .onboarding-step p,
+[data-platform="mac"] .onboarding-subhead {
+  font-weight: 300;
+  color: var(--glass-text-muted);
+  line-height: 1.55;
+}
+.onboarding-subhead {
+  font-size: 13px;
+  color: #666;
+  text-align: center;
+  line-height: 1.55;
+  margin-bottom: 6px;
+}
+
+/* ── Inputs. The default browser borders look wrong on glass; restyle to
+   match the macOS textfield aesthetic — minimal stroke, subtle vibrancy. */
+[data-platform="mac"] .onboarding-step input,
+[data-platform="mac"] .onboarding-step select {
+  background: var(--glass-input-bg);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-size: 14px;
+  color: var(--glass-text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(8px) saturate(1.2);
+}
+[data-platform="mac"] .onboarding-step input:focus,
+[data-platform="mac"] .onboarding-step select:focus {
+  border-color: var(--glass-accent-strong);
+  box-shadow: 0 0 0 4px var(--glass-accent);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+/* ── Buttons. Pill-shaped, vibrancy-tinted, hover-lift translateY(-1px). */
+[data-platform="mac"] .btn-primary,
+[data-platform="mac"] .btn-trial {
+  background: linear-gradient(180deg, rgba(255, 212, 0, 0.95) 0%, rgba(255, 184, 0, 0.92) 100%);
+  color: rgba(48, 30, 0, 0.95);
+  border: 1px solid rgba(184, 130, 0, 0.35);
+  border-radius: var(--glass-radius-pill);
+  padding: 10px 22px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 4px 12px rgba(255, 184, 0, 0.25);
+  transition: transform 0.16s var(--glass-spring), box-shadow 0.16s var(--glass-spring), background 0.16s ease;
+}
+[data-platform="mac"] .btn-primary:hover,
+[data-platform="mac"] .btn-trial:hover {
+  background: linear-gradient(180deg, rgba(255, 220, 30, 0.98) 0%, rgba(255, 195, 0, 0.95) 100%);
+  transform: translateY(-1px);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.55) inset,
+    0 8px 20px rgba(255, 184, 0, 0.32);
+}
+[data-platform="mac"] .btn-primary:disabled {
+  background: rgba(200, 200, 205, 0.6);
+  color: rgba(60, 60, 67, 0.55);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+[data-platform="mac"] .btn-secondary {
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--glass-text);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: var(--glass-radius-pill);
+  padding: 10px 20px;
+  font-weight: 500;
+  -webkit-backdrop-filter: blur(8px) saturate(1.3);
+  backdrop-filter: blur(8px) saturate(1.3);
+  transition: transform 0.16s var(--glass-spring), background 0.16s ease;
+}
+[data-platform="mac"] .btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.7);
+  transform: translateY(-1px);
+}
+
+/* ── Progress dots — render as a thin glass capsule with active dot
+   tinted with --glass-accent-strong. The container is a pill, each dot
+   is a circle inside. Matches the macOS Tahoe step-indicator look. */
+[data-platform="mac"] .progress-dots {
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--glass-radius-pill);
+  padding: 6px 10px;
+  gap: 6px;
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  backdrop-filter: blur(10px) saturate(1.3);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+}
+[data-platform="mac"] .progress-dots .dot {
+  width: 6px;
+  height: 6px;
+  background: rgba(60, 60, 67, 0.18);
+  transition: background 0.25s var(--glass-spring), transform 0.25s var(--glass-spring);
+}
+[data-platform="mac"] .progress-dots .dot.active {
+  background: var(--glass-accent-strong);
+  transform: scale(1.15);
+}
+
+/* ── Nav arrows could be added later as 32×32 circular glass buttons.
+   For now we recycle .btn-secondary for "Back". */
+
+/* ── Step animations. The onboarding-step container fades + slides in
+   with spring easing when it gains .active. Old behavior was display:none →
+   display:flex with no transition, which felt abrupt on a long-form flow. */
+[data-platform="mac"] .onboarding-step {
+  transition: opacity 0.4s var(--glass-spring), transform 0.4s var(--glass-spring);
+}
+[data-platform="mac"] .onboarding-step.active {
+  animation: glass-step-in 0.4s var(--glass-spring);
+}
+@keyframes glass-step-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Onboarding window — per-step scroll for the content-heavy steps (4–7).
+ * Step 5 alone has 19 app cards in 7 groups. The window size + base type
+ * live in the single canonical body.onboarding-window block (redesign
+ * section below).
+ * ═══════════════════════════════════════════════════════════════════ */
+
+.onboarding-step[data-step="4"],
+.onboarding-step[data-step="5"],
+.onboarding-step[data-step="6"],
+.onboarding-step[data-step="7"] {
+  justify-content: flex-start;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(60, 60, 67, 0.25) transparent;
+  padding-right: 4px;
+}
+.onboarding-step[data-step="4"]::-webkit-scrollbar,
+.onboarding-step[data-step="5"]::-webkit-scrollbar,
+.onboarding-step[data-step="6"]::-webkit-scrollbar,
+.onboarding-step[data-step="7"]::-webkit-scrollbar { width: 6px; }
+.onboarding-step[data-step="4"]::-webkit-scrollbar-thumb,
+.onboarding-step[data-step="5"]::-webkit-scrollbar-thumb,
+.onboarding-step[data-step="6"]::-webkit-scrollbar-thumb,
+.onboarding-step[data-step="7"]::-webkit-scrollbar-thumb {
+  background: rgba(60, 60, 67, 0.25);
+  border-radius: 3px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Step 4: Permissions
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Permission card ──────────────────────────────────────────────────
+   One permission ask at a time, presented as a clean centered glass card.
+   onboarding.ts drives #perm-why / #perm-status / #perm-open / #perm-skip and
+   toggles `perm-enter` (re-entrance per new permission) + `perm-granted`. */
+.perm-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-space-3);
+  text-align: center;
+  width: 100%;
+  max-width: 360px;
+  margin: var(--s-space-4) auto;
+  padding: var(--s-space-5) var(--s-space-5) var(--s-space-4);
+  background: var(--glass-card-bg, rgba(255, 255, 255, 0.6));
+  -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  backdrop-filter: blur(30px) saturate(1.6);
+  border: 1px solid var(--s-hairline, rgba(0, 0, 0, 0.08));
+  border-radius: var(--glass-radius-sm, 16px);
+  box-shadow: var(--s-shadow-2, 0 8px 28px rgba(15, 23, 42, 0.12));
+  transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+.perm-why {
+  font-size: var(--s-fs-14);
+  color: var(--glass-text, var(--s-ink));
+  line-height: 1.45;
+}
+
+/* Status pill — quiet by default, green glass when granted */
+.perm-status {
+  align-self: center;
+  font-size: var(--s-fs-12);
+  font-weight: 600;
+  color: var(--glass-text-muted, var(--s-ink-muted));
+  padding: 3px 12px;
+  border-radius: var(--glass-radius-pill, 999px);
+  background: rgba(120, 120, 128, 0.12);
+  transition: color 0.3s ease, background 0.3s ease;
+}
+.perm-status.granted {
+  color: #1c7c3a;
+  background: rgba(52, 199, 89, 0.18);
+}
+
+/* Gentle re-entrance each time a NEW permission appears (class re-applied) */
+.perm-card.perm-enter {
+  animation: perm-card-in 0.32s var(--glass-spring, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+@keyframes perm-card-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Subtle confirmation tint once the active permission is granted */
+.perm-card.perm-granted {
+  background: rgba(52, 199, 89, 0.12);
+  border-color: rgba(52, 199, 89, 0.4);
+}
+
+/* ── Step 7 success badge ─────────────────────────────────────────────
+   Glassy circular checkmark that pops in when setup completes. */
+.done-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin: var(--s-space-3) auto var(--s-space-4);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  color: #1c7c3a;
+  background: rgba(52, 199, 89, 0.18);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  border: 1px solid rgba(52, 199, 89, 0.4);
+  border-radius: 50%;
+  box-shadow:
+    0 6px 20px rgba(52, 199, 89, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  animation: done-mark-pop 0.5s var(--glass-spring, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+@keyframes done-mark-pop {
+  0%   { opacity: 0; transform: scale(0.4); }
+  60%  { opacity: 1; transform: scale(1.12); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Step 5: App picker
+ * ═══════════════════════════════════════════════════════════════════ */
+
+.app-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+/* v0.19.0 PR-6.2 — "Not listed" hint + skip link block. Sits below the
+   picker so users with non-catalog tools (or no intent to set this up
+   right now) have a clear, low-pressure escape. The hint reads as
+   reassuring copy, the skip link reads as an honest secondary action.
+   Both inherit the platform's glass / fluent typography from
+   .onboarding-subhead's siblings without re-asserting the heavy treatment. */
+.app-picker-footer {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+/* v0.19.0 PR-6.3 — onboarding step-3 "Start with my Mac" toggle. Native
+   checkbox is the simplest A11y story; copy + helper text live next to it
+   so users read intent, not just affordance. Scoped accent colors per
+   platform via the same vars used by .onboarding-skip-link. */
+.onboarding-toggle {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--glass-card-bg, rgba(255, 255, 255, 0.65));
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 12px;
+}
+.onboarding-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  margin: 0;
+}
+.onboarding-toggle-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--glass-accent, #0a84ff);
+  cursor: pointer;
+}
+[data-platform="mac"] .onboarding-toggle-row input[type="checkbox"] {
+  accent-color: var(--mac-accent, #0a84ff);
+}
+[data-platform="win"] .onboarding-toggle-row input[type="checkbox"] {
+  accent-color: var(--accent, #0078d4);
+}
+.onboarding-toggle-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.onboarding-toggle-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--glass-text, #1a1a1a);
+}
+.onboarding-toggle-hint {
+  font-size: 12px;
+  color: var(--glass-text-muted, #777);
+  line-height: 1.45;
+}
+.onboarding-hint {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--glass-text-muted, #777);
+  text-align: center;
+  margin: 0;
+  max-width: 38em;
+}
+.onboarding-hint strong { color: inherit; }
+.onboarding-hint em { font-style: italic; }
+.onboarding-skip-link {
+  background: transparent;
+  border: none;
+  color: var(--glass-accent, #0a84ff);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: background 120ms ease;
+}
+.onboarding-skip-link:hover {
+  background: var(--glass-accent-soft, rgba(10, 132, 255, 0.08));
+}
+[data-platform="mac"] .onboarding-skip-link {
+  color: var(--mac-accent, #0a84ff);
+}
+[data-platform="win"] .onboarding-skip-link {
+  color: var(--accent, #0078d4);
+}
+.app-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--glass-text-muted, #888);
+  margin-bottom: 8px;
+  padding-left: 2px;
+}
+.app-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.app-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px 10px;
+  background: var(--glass-card-bg, rgba(255, 255, 255, 0.85));
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--glass-text, #1c1c1e);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  backdrop-filter: blur(20px) saturate(1.5);
+  transition: transform 0.18s var(--glass-spring), background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.app-card:hover {
+  background: var(--glass-card-bg-hover, rgba(255, 255, 255, 0.95));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.app-card.selected {
+  background: var(--glass-card-bg-selected, rgba(255, 212, 0, 0.22));
+  border-color: rgba(184, 130, 0, 0.45);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 0 0 1.5px rgba(255, 212, 0, 0.6),
+    0 4px 14px rgba(255, 184, 0, 0.22);
+}
+.app-card-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-card-icon svg {
+  width: 100%;
+  height: 100%;
+}
+.app-card-name {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  text-align: center;
+  line-height: 1.2;
+}
+.app-card-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 212, 0, 0.92);
+  color: rgba(48, 30, 0, 0.95);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.2s var(--glass-spring), transform 0.2s var(--glass-spring);
+}
+.app-card.selected .app-card-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Non-mac fallback for app cards — flat, no vibrancy. */
+:not([data-platform="mac"]).onboarding-window .app-card,
+.settings-window:not([data-platform="mac"]) .app-card {
+  background: #fafafa;
+  border-color: #e0e0e0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Step 6: API-key entry rows
+ * ═══════════════════════════════════════════════════════════════════ */
+
+.api-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.key-row {
+  background: var(--glass-card-bg, rgba(255, 255, 255, 0.85));
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 16px;
+  padding: 12px 14px;
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+.key-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.key-row-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.key-row-icon svg {
+  width: 100%;
+  height: 100%;
+}
+.key-row-name {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  color: var(--glass-text, #1c1c1e);
+}
+.key-row-input-wrap {
+  display: flex;
+  gap: 6px;
+}
+.key-row-input {
+  flex: 1;
+  background: var(--glass-input-bg, rgba(255, 255, 255, 0.45));
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-family: ui-monospace, 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--glass-text, #1c1c1e);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.key-row-input:focus {
+  border-color: var(--glass-accent-strong, #c89a00);
+  box-shadow: 0 0 0 4px var(--glass-accent, rgba(255, 212, 0, 0.15));
+}
+.key-row-footer {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+}
+.key-row-link {
+  background: none;
+  border: none;
+  color: var(--glass-text-muted, #666);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(60, 60, 67, 0.25);
+  transition: color 0.15s ease;
+}
+.key-row-link:hover {
+  color: var(--glass-text, #1c1c1e);
+  text-decoration-color: rgba(60, 60, 67, 0.6);
+}
+.key-row-help {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.035);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--glass-text-muted, #555);
+}
+.key-row-help.hidden { display: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Step 7: First-5-wins chips. Also reused as the post-onboarding overlay
+ * above the bubble (see #first-win-overlay below).
+ * ═══════════════════════════════════════════════════════════════════ */
+
+.first-wins {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.first-win-chip {
+  background: var(--glass-card-bg, rgba(255, 255, 255, 0.85));
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: var(--glass-radius-pill, 999px);
+  padding: 11px 18px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--glass-text, #1c1c1e);
+  text-align: left;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  backdrop-filter: blur(20px) saturate(1.5);
+  transition: transform 0.18s var(--glass-spring), background 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+}
+.first-win-chip:hover {
+  background: rgba(255, 255, 255, 0.98);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.09);
+}
+
+/* Step 7 — Screen-Recording restart choice. Quiet card so it reads as an
+   optional nudge, not an alarm. Hidden by default via the [hidden] attr. */
+.relaunch-banner {
+  margin-top: var(--s-space-3, 12px);
+  padding: var(--s-space-3, 12px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: var(--s-radius-lg, 12px);
+  background: var(--s-surface-soft, #f8fafc);
+  text-align: center;
+}
+.relaunch-banner[hidden] { display: none; }
+.relaunch-banner-text {
+  margin: 0 0 var(--s-space-2, 8px);
+  font-size: var(--s-fs-12, 12px);
+  color: var(--s-ink-muted, #6b7280);
+}
+.relaunch-banner-actions {
+  display: flex;
+  gap: var(--s-space-2, 8px);
+  justify-content: center;
+}
+
+.first-win-chip:active {
+  transform: translateY(0);
+}
+.first-win-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Settings → Apps tab. Same picker + key entry chrome as onboarding,
+ * scoped under the settings window.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+.settings-section[data-section="apps"] .app-picker {
+  margin-top: 8px;
+}
+.settings-section[data-section="apps"] .key-row {
+  margin-bottom: 8px;
+}
+.settings-section[data-section="apps"] .api-keys-empty {
+  font-style: italic;
+  color: var(--glass-text-muted, #888);
+  font-size: 12px;
+  padding: 8px 0;
+}
+.settings-section[data-section="apps"] h3 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--glass-text, #333);
+  margin: 18px 0 8px;
+}
+.settings-section[data-section="apps"] .api-key-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--glass-text-muted, #888);
+  font-weight: 500;
+  margin-left: auto;
+}
+.settings-section[data-section="apps"] .api-key-status.set {
+  color: #16a34a;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * First-5-wins overlay (post-onboarding) — non-modal pop-up above the
+ * bubble. Anchored bottom-right of the screen, just above Clippy's
+ * bubble. Auto-dismisses on chip click; user can also click outside.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#first-win-overlay {
+  position: fixed;
+  bottom: 200px;
+  right: 5px;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: rgba(252, 252, 254, 0.82);
+  -webkit-backdrop-filter: blur(32px) saturate(1.8);
+  backdrop-filter: blur(32px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 20px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 12px 28px rgba(0, 0, 0, 0.16),
+    0 4px 8px rgba(0, 0, 0, 0.08);
+  z-index: 20;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  animation: glass-step-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#first-win-overlay.hidden {
+  display: none;
+}
+#first-win-overlay-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(28, 28, 30, 0.85);
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+  padding-left: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#first-win-overlay-close {
+  background: none;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(60, 60, 67, 0.5);
+  cursor: pointer;
+  padding: 0 4px;
+}
+#first-win-overlay-close:hover {
+  color: rgba(28, 28, 30, 0.9);
+}
+#first-win-overlay .first-win-chip {
+  font-size: 12.5px;
+  padding: 8px 14px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Settings v2 — modern polish (v0.19.0 RC-6)
+ *
+ * A calm, dense, hairline-driven look inspired by Linear, Raycast, Vercel,
+ * and GitHub Settings. The legacy `.settings-*` and `.onboarding-*` rules
+ * above are kept untouched (the bubble + main window still read them); we
+ * override the in-window styling here so both Settings and Onboarding feel
+ * like one product.
+ *
+ * Design tokens are the single source of truth: spacing scale, type scale,
+ * neutral palette, hairline colors, focus ring. Component classes
+ * (`.s-card`, `.s-row`, `.s-help`, `.s-divider`, `.s-section-title`,
+ * `.s-section-subtitle`, `.s-value-chip`, `.s-button`, `.s-button--ghost`,
+ * `.s-radio-card`, `.s-link`) build on those tokens.
+ *
+ * Strategy: keep all `id=` attributes from the legacy markup so settings.ts
+ * and onboarding.ts continue to work unchanged. Visual rewrite only.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Spacing scale — 4px base. Use these instead of one-off margins. */
+  --s-space-1: 4px;
+  --s-space-2: 8px;
+  --s-space-3: 12px;
+  --s-space-4: 16px;
+  --s-space-5: 20px;
+  --s-space-6: 24px;
+  --s-space-7: 32px;
+  --s-space-8: 40px;
+
+  /* Type scale */
+  --s-fs-11: 11px;
+  --s-fs-12: 12px;
+  --s-fs-13: 13px;
+  --s-fs-14: 14px;
+  --s-fs-15: 15px;
+  --s-fs-17: 17px;
+  --s-fs-20: 20px;
+  --s-fs-24: 24px;
+
+  /* Neutral palette — slate-tinted ink, near-white surfaces */
+  --s-ink:        #0f172a;  /* primary text */
+  --s-ink-muted:  #475569;  /* secondary text */
+  --s-ink-faint:  #94a3b8;  /* tertiary text / placeholder */
+  --s-surface:        #ffffff;
+  --s-surface-soft:   #f8fafc;
+  --s-surface-sunk:   #f1f5f9;
+  --s-hairline:       rgba(15, 23, 42, 0.08);
+  --s-hairline-strong: rgba(15, 23, 42, 0.14);
+  --s-divider:        rgba(15, 23, 42, 0.06);
+
+  /* Brand accents — Clippy yellow primary, Office green secondary */
+  --s-accent:         #FFD400;
+  --s-accent-ink:     #1c1917;
+  --s-accent-soft:    rgba(255, 212, 0, 0.18);
+  --s-accent-ring:    rgba(255, 212, 0, 0.32);
+  --s-success:        #16a34a;
+  --s-danger:         #dc2626;
+  --s-info:           #2563eb;
+
+  /* Radii */
+  --s-radius-sm: 6px;
+  --s-radius-md: 8px;
+  --s-radius-lg: 12px;
+  --s-radius-xl: 16px;
+
+  /* Focus ring */
+  --s-ring: 0 0 0 3px var(--s-accent-ring);
+
+  /* Shadow — used very sparingly, only on the active card hover */
+  --s-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --s-shadow-2: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+/* ── Window chrome — soft surface, calm typography ─────────────────── */
+body.settings-window {
+  background: var(--s-surface-soft);
+  /* 100vw/100vh (not fixed px) so the body always matches the actual window.
+     The fixed 820×640 was 60px wider than the 760px BrowserWindow, clipping
+     the right edge of the cards; and a window resized below 640px clipped the
+     bottom. The window default is now 820 wide to match the redesign; the
+     fluid sizing keeps it correct at any resize down to minWidth/minHeight. */
+  width: 100vw;
+  height: 100vh;
+  color: var(--s-ink);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    system-ui, sans-serif;
+  font-size: var(--s-fs-13);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.settings-layout {
+  display: flex;
+  height: 100%;
+}
+
+/* ── Sidebar — wider, calmer, light hairline, no chunky borders ────── */
+.settings-nav {
+  width: 200px;
+  background: transparent;
+  border-right: 1px solid var(--s-hairline);
+  padding: var(--s-space-6) var(--s-space-3);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Optional sidebar section labels (uppercase eyebrow) */
+.settings-nav-group {
+  padding: var(--s-space-4) var(--s-space-3) var(--s-space-1);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--s-ink-faint);
+}
+.settings-nav-group:first-child { padding-top: 0; }
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-space-2);
+  width: 100%;
+  padding: 7px var(--s-space-3);
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: var(--s-fs-13);
+  font-family: inherit;
+  color: var(--s-ink-muted);
+  border-radius: var(--s-radius-md);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.settings-nav-item:hover {
+  background: var(--s-surface);
+  color: var(--s-ink);
+}
+.settings-nav-item.active {
+  background: var(--s-surface);
+  color: var(--s-ink);
+  font-weight: 600;
+  border-right: none;
+  box-shadow: var(--s-shadow-1);
+}
+
+/* ── Content pane — generous padding, scrollable ─────────────────────
+ *
+ * v0.19.0 RC-6 — flexbox overflow plumbing fix.
+ *
+ * `.settings-content` is the flex child that needs to scroll when a
+ * section overflows. WITHOUT `min-height: 0`, flex children get the
+ * default `min-height: auto`, which is the intrinsic content height —
+ * the pane refuses to shrink below its content, so `overflow-y: auto`
+ * never engages and the bottom of dense tabs (Brain, Voice) gets
+ * clipped by the window edge. Adding `min-height: 0` lets the flex
+ * algorithm size the pane to the available space and the inner
+ * `.settings-section` content scrolls cleanly. The trailing
+ * `padding-block-end` keeps the last `.s-card` from butting against
+ * the scrollbar gutter.
+ */
+.settings-content {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-space-7) var(--s-space-7) var(--s-space-7);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--s-hairline-strong) transparent;
+}
+/* The last card in any tab needs breathing room above the bottom edge
+ * so the scroll endpoint feels intentional, not abrupt. */
+.settings-content > .settings-section.active > :last-child {
+  margin-bottom: var(--s-space-4);
+}
+.settings-content::-webkit-scrollbar { width: 8px; }
+.settings-content::-webkit-scrollbar-thumb {
+  background: var(--s-hairline-strong);
+  border-radius: 4px;
+}
+
+/* ── Section header — large title + muted subtitle ─────────────────── */
+.settings-section .s-section-head {
+  margin-bottom: var(--s-space-6);
+  padding-bottom: var(--s-space-4);
+  border-bottom: 1px solid var(--s-hairline);
+}
+.settings-section .s-section-title,
+.settings-section h2 {
+  font-size: var(--s-fs-20);
+  font-weight: 600;
+  color: var(--s-ink);
+  letter-spacing: -0.015em;
+  margin: 0 0 var(--s-space-1);
+}
+.settings-section .s-section-subtitle {
+  font-size: var(--s-fs-13);
+  color: var(--s-ink-muted);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* ── Card — the new primary container for grouped controls ─────────── */
+.s-card {
+  background: var(--s-surface);
+  border: 1px solid var(--s-hairline);
+  border-radius: var(--s-radius-lg);
+  padding: var(--s-space-5) var(--s-space-5);
+  margin-bottom: var(--s-space-4);
+}
+.s-card__header {
+  margin-bottom: var(--s-space-4);
+}
+.s-card__title {
+  font-size: var(--s-fs-15);
+  font-weight: 600;
+  color: var(--s-ink);
+  letter-spacing: -0.01em;
+  margin: 0 0 2px;
+}
+.s-card__subtitle {
+  font-size: var(--s-fs-12);
+  color: var(--s-ink-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Row — a single labelled control inside a card ─────────────────── */
+.s-row {
+  padding: var(--s-space-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-2);
+  border-top: 1px solid var(--s-divider);
+}
+.s-row:first-of-type { border-top: none; padding-top: 0; }
+.s-row:last-child    { padding-bottom: 0; }
+
+/* Inline row: label on the left, control on the right (toggles, selects) */
+.s-row--inline {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-space-4);
+}
+.s-row--inline .s-row__main {
+  flex: 1;
+  min-width: 0;
+}
+.s-row--inline .s-row__control {
+  flex-shrink: 0;
+}
+
+.s-row__label {
+  font-size: var(--s-fs-13);
+  font-weight: 500;
+  color: var(--s-ink);
+  margin: 0;
+}
+.s-row__help,
+.s-help {
+  font-size: var(--s-fs-12);
+  color: var(--s-ink-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+.s-row__help a,
+.s-help a,
+.s-link {
+  color: var(--s-info);
+  text-decoration: none;
+}
+.s-row__help a:hover,
+.s-help a:hover,
+.s-link:hover {
+  text-decoration: underline;
+}
+
+/* Range row: track + value chip aligned right */
+.s-row__range {
+  display: flex;
+  align-items: center;
+  gap: var(--s-space-3);
+}
+.s-row__range input[type="range"] {
+  flex: 1;
+}
+.s-value-chip {
+  flex-shrink: 0;
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--s-fs-12);
+  font-weight: 500;
+  color: var(--s-ink-muted);
+  padding: 2px 8px;
+  background: var(--s-surface-sunk);
+  border-radius: var(--s-radius-sm);
+}
+
+/* ── Form controls — quieter borders, focus ring ───────────────────── */
+.settings-section input[type="text"],
+.settings-section input[type="url"],
+.settings-section select,
+.s-input,
+.s-select {
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--s-hairline-strong);
+  border-radius: var(--s-radius-md);
+  background: var(--s-surface);
+  font-size: var(--s-fs-13);
+  font-family: inherit;
+  color: var(--s-ink);
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.settings-section input[type="text"]:focus,
+.settings-section input[type="url"]:focus,
+.settings-section select:focus,
+.s-input:focus,
+.s-select:focus {
+  border-color: var(--s-accent);
+  box-shadow: var(--s-ring);
+}
+.settings-section input[disabled],
+.s-input[disabled] {
+  background: var(--s-surface-sunk);
+  color: var(--s-ink-faint);
+  cursor: not-allowed;
+}
+.settings-section input[readonly],
+.s-input[readonly] {
+  background: var(--s-surface-sunk);
+  color: var(--s-ink-muted);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--s-fs-12);
+}
+
+/* Range slider — refreshed thumb, accent track */
+.settings-section input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--s-hairline-strong);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+.settings-section input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--s-surface);
+  border: 1.5px solid var(--s-ink-muted);
+  border-radius: 50%;
+  cursor: grab;
+  box-shadow: var(--s-shadow-1);
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+.settings-section input[type="range"]::-webkit-slider-thumb:hover {
+  border-color: var(--s-ink);
+}
+.settings-section input[type="range"]::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.1);
+  border-color: var(--s-accent);
+}
+.settings-section input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--s-surface);
+  border: 1.5px solid var(--s-ink-muted);
+  border-radius: 50%;
+  cursor: grab;
+}
+
+/* Toggle switch — refreshed sizing, accent-on */
+.s-card .toggle-switch,
+.settings-section .toggle-switch {
+  width: 36px;
+  height: 20px;
+}
+.s-card .toggle-slider,
+.settings-section .toggle-slider {
+  background: var(--s-hairline-strong);
+}
+.s-card .toggle-slider::before,
+.settings-section .toggle-slider::before {
+  width: 16px;
+  height: 16px;
+}
+.s-card .toggle-switch input:checked + .toggle-slider,
+.settings-section .toggle-switch input:checked + .toggle-slider {
+  background: var(--s-ink);
+}
+.s-card .toggle-switch input:checked + .toggle-slider::before,
+.settings-section .toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+}
+
+/* ── Buttons (in-card) — quiet primary + ghost ─────────────────────── */
+.s-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-space-2);
+  padding: 7px var(--s-space-4);
+  font-size: var(--s-fs-13);
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--s-ink);
+  background: var(--s-surface);
+  border: 1px solid var(--s-hairline-strong);
+  border-radius: var(--s-radius-md);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.s-button:hover {
+  background: var(--s-surface-soft);
+  border-color: var(--s-ink-faint);
+}
+.s-button:focus-visible {
+  outline: none;
+  box-shadow: var(--s-ring);
+}
+.s-button--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--s-ink-muted);
+  padding: 4px var(--s-space-2);
+}
+.s-button--ghost:hover {
+  background: var(--s-surface-sunk);
+  color: var(--s-ink);
+  border-color: transparent;
+}
+.s-button--accent {
+  background: var(--s-accent);
+  border-color: var(--s-accent);
+  color: var(--s-accent-ink);
+  font-weight: 600;
+}
+.s-button--accent:hover {
+  background: #ffdb33;
+  border-color: #ffdb33;
+}
+
+/* ── Radio cards — used by Energy + Permission policy ──────────────── */
+.s-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-2);
+}
+.s-radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-space-3);
+  padding: var(--s-space-3) var(--s-space-4);
+  border: 1px solid var(--s-hairline);
+  border-radius: var(--s-radius-md);
+  cursor: pointer;
+  background: var(--s-surface);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.s-radio-card:hover {
+  border-color: var(--s-hairline-strong);
+  background: var(--s-surface-soft);
+}
+.s-radio-card input[type="radio"] {
+  margin-top: 3px;
+  accent-color: var(--s-ink);
+  flex-shrink: 0;
+}
+.s-radio-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.s-radio-card__title {
+  font-size: var(--s-fs-13);
+  font-weight: 600;
+  color: var(--s-ink);
+}
+.s-radio-card__title .s-badge {
+  font-weight: 400;
+  font-size: var(--s-fs-11);
+  color: var(--s-ink-faint);
+  margin-left: 4px;
+}
+.s-radio-card__help {
+  font-size: var(--s-fs-12);
+  color: var(--s-ink-muted);
+  line-height: 1.5;
+}
+.s-radio-card:has(input:checked) {
+  border-color: var(--s-ink);
+  background: var(--s-surface);
+  box-shadow: 0 0 0 1px var(--s-ink) inset;
+}
+
+/* ── Status block (mail probe, mcp-chrome status) ──────────────────── */
+.s-status {
+  padding: var(--s-space-3) var(--s-space-4);
+  background: var(--s-surface-soft);
+  border: 1px solid var(--s-hairline);
+  border-radius: var(--s-radius-md);
+  font-size: var(--s-fs-12);
+  line-height: 1.7;
+  color: var(--s-ink-muted);
+}
+.s-status code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  padding: 1px 4px;
+  background: var(--s-surface-sunk);
+  border-radius: 4px;
+}
+/* Semantic status variants — replace ad-hoc inline color/background hacks
+   so STT/probe banners read consistently with the design tokens. */
+.s-status--ok {
+  color: var(--s-success);
+  background: rgba(22, 163, 74, 0.08);
+  border-color: rgba(22, 163, 74, 0.22);
+}
+.s-status--error {
+  color: var(--s-danger);
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.22);
+}
+
+/* ── Read-only keycap row (hotkeys rendered as macOS glyphs) ───────── */
+.s-keycap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-space-1);
+}
+.s-keycap kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--s-fs-12);
+  color: var(--s-ink);
+  background: var(--s-surface-sunk);
+  border: 1px solid var(--s-hairline-strong);
+  border-radius: var(--s-radius-sm);
+  box-shadow: var(--s-shadow-1);
+}
+
+/* ── Generic inline "coming soon"-style badge ──────────────────────── */
+.s-badge {
+  display: inline-block;
+  font-weight: 400;
+  font-size: var(--s-fs-11);
+  color: var(--s-ink-faint);
+  margin-left: 4px;
+}
+
+/* ── Inline list of links (About tab) ──────────────────────────────── */
+.s-link-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-space-2);
+  font-size: var(--s-fs-13);
+}
+.s-link-list a {
+  color: var(--s-info);
+  text-decoration: none;
+}
+.s-link-list a:hover { text-decoration: underline; }
+
+/* ── License key display (mono, prominent) ─────────────────────────── */
+.license-display {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--s-fs-14);
+  color: var(--s-ink);
+  letter-spacing: 0.04em;
+  padding: var(--s-space-3) var(--s-space-4);
+  background: var(--s-surface-soft);
+  border: 1px solid var(--s-hairline);
+  border-radius: var(--s-radius-md);
+}
+
+/* ── Activity history list (Guardrails) ────────────────────────────── */
+#action-history-list {
+  border: 1px solid var(--s-hairline);
+  border-radius: var(--s-radius-md);
+  max-height: 340px;
+  overflow-y: auto;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  background: var(--s-surface-soft);
+}
+#action-history-empty {
+  padding: var(--s-space-6);
+  text-align: center;
+  color: var(--s-ink-faint);
+}
+
+/* ── Per-section override: Apps tab heading shrinks (it lives inside a card) */
+.settings-section[data-section="apps"] .s-card h3 {
+  font-size: var(--s-fs-13);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--s-ink);
+  margin: var(--s-space-4) 0 var(--s-space-2);
+}
+.settings-section[data-section="apps"] .s-card h3:first-of-type {
+  margin-top: 0;
+}
+
+/* ── Connection status — re-skinned dot + label ───────────────────── */
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-space-2);
+  font-size: var(--s-fs-13);
+  color: var(--s-ink);
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.connected    { background: var(--s-success); }
+.status-dot.disconnected { background: var(--s-danger); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Onboarding v2 — polished progress + step layout
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Canonical onboarding window (single source of truth) ──────────────
+   100vw/100vh so it always matches the fixed 480×620 BrowserWindow exactly;
+   overflow:hidden keeps the WINDOW from scrolling (the active step scrolls
+   internally, footer pinned). Native SF stack — no web-font dependency, no
+   FOUC, no privacy ping; the prior stack led with 'Inter' which the
+   onboarding CSP blocks, so it silently fell back anyway. */
+body.onboarding-window {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--s-surface);
+  color: var(--s-ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI',
+    system-ui, sans-serif;
+  font-feature-settings: 'cv11', 'ss01';
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.onboarding {
+  /* Tighter top/bottom than the old 32/24 to hand more height to the step
+     content (content-heavy steps were reading as cropped). */
+  padding: var(--s-space-5) var(--s-space-6) var(--s-space-4);
+}
+
+/* Header — refined hierarchy */
+.onboarding-header {
+  text-align: center;
+  margin-bottom: var(--s-space-4);
+}
+.onboarding-header h1 {
+  font-size: var(--s-fs-24);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--s-ink);
+  margin-bottom: 3px;
+}
+/* Brand hairline under the wordmark — a quiet Clippy-yellow accent that
+   reads as "designed product" rather than "system dialog". */
+.onboarding-header h1::after {
+  content: '';
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin: 7px auto 0;
+  border-radius: 2px;
+  background: var(--s-accent);
+}
+.onboarding-header .tagline {
+  font-size: var(--s-fs-12);
+  font-weight: 500;
+  color: var(--s-ink-faint);
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+/* Step — wider rhythm, refined headings */
+.onboarding-step {
+  gap: var(--s-space-4);
+}
+.onboarding-step h2 {
+  font-size: var(--s-fs-20);
+  font-weight: 600;
+  color: var(--s-ink);
+  letter-spacing: -0.02em;
+  text-align: center;
+  margin-bottom: 2px;
+}
+.onboarding-step p,
+.onboarding-step .onboarding-subhead {
+  font-size: var(--s-fs-13);
+  color: var(--s-ink-muted);
+  text-align: center;
+  line-height: 1.6;
+}
+.onboarding-step label {
+  font-size: var(--s-fs-12);
+  font-weight: 500;
+  color: var(--s-ink-muted);
+  margin-bottom: var(--s-space-1);
+  letter-spacing: 0.01em;
+}
+.onboarding-step input,
+.onboarding-step select {
+  background: var(--s-surface);
+  border: 1px solid var(--s-hairline-strong);
+  border-radius: var(--s-radius-md);
+  padding: 10px 12px;
+  font-size: var(--s-fs-14);
+  color: var(--s-ink);
+}
+.onboarding-step input:focus,
+.onboarding-step select:focus {
+  border-color: var(--s-accent);
+  box-shadow: var(--s-ring);
+}
+
+/* Every active step scrolls when its content is taller than the window; make
+   that obvious so a partial step reads as "scroll for more", not "cropped".
+   A visible thin scrollbar + a fade strip just above the footer. */
+.onboarding-step.active {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.22) transparent;
+}
+.onboarding-step.active::-webkit-scrollbar { width: 8px; }
+.onboarding-step.active::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.2);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Progress bar — slim segmented track replaces the bare dot row */
+.onboarding-footer {
+  position: relative;
+  margin-top: var(--s-space-4);
+  padding-top: var(--s-space-4);
+  border-top: 1px solid var(--s-hairline);
+  /* Always visible — never let a tall step push it out of the window. */
+  flex-shrink: 0;
+}
+/* The "there's more above me" fade — sits over the bottom of the scrolling
+   step so cut-off content is clearly continuable, not clipped. */
+.onboarding-footer::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: calc(-1 * var(--s-space-6));
+  height: var(--s-space-6);
+  background: linear-gradient(to top, var(--s-surface), transparent);
+  pointer-events: none;
+}
+.progress-dots {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  justify-content: center;
+  align-items: center;
+  margin: 0 var(--s-space-4);
+}
+.progress-dots .dot {
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  /* Upcoming steps: a real visible track, not a near-invisible hairline. */
+  background: var(--s-surface-sunk);
+  box-shadow: inset 0 0 0 1px var(--s-hairline);
+  transition: background 0.25s ease, width 0.25s ease, box-shadow 0.25s ease;
+}
+.progress-dots .dot.complete {
+  background: var(--s-ink-faint);
+  box-shadow: none;
+}
+.progress-dots .dot.active {
+  /* "You are here" — wider, ink-filled, with a Clippy-yellow cap so the
+     current step pops on the otherwise-monochrome track. */
+  width: 30px;
+  background: linear-gradient(90deg, var(--s-ink) 70%, var(--s-accent) 70%);
+  box-shadow: none;
+}
+
+/* Onboarding buttons — quieter, modern */
+.btn-primary {
+  background: var(--s-ink);
+  color: var(--s-surface);
+  border: 1px solid var(--s-ink);
+  border-radius: var(--s-radius-md);
+  padding: 9px 20px;
+  font-size: var(--s-fs-13);
+  font-weight: 500;
+}
+.btn-primary:hover {
+  background: #1e293b;
+  border-color: #1e293b;
+}
+.btn-primary:disabled {
+  background: var(--s-hairline-strong);
+  border-color: var(--s-hairline-strong);
+  color: var(--s-ink-faint);
+}
+.btn-secondary {
+  background: transparent;
+  color: var(--s-ink-muted);
+  border: 1px solid var(--s-hairline-strong);
+  border-radius: var(--s-radius-md);
+  padding: 9px 18px;
+  font-size: var(--s-fs-13);
+}
+.btn-secondary:hover {
+  background: var(--s-surface);
+  color: var(--s-ink);
+}
+.btn-trial {
+  background: var(--s-surface);
+  color: var(--s-ink);
+  border: 1px solid var(--s-hairline-strong);
+  border-radius: var(--s-radius-md);
+  padding: 10px 20px;
+  font-size: var(--s-fs-13);
+  font-weight: 500;
+}
+.btn-trial:hover {
+  background: var(--s-surface-soft);
+  border-color: var(--s-ink-faint);
+}
+
+/* Divider in onboarding (e.g. step 2 "don't have a key?") — quieter */
+.onboarding-divider {
+  color: var(--s-ink-faint);
+  font-size: var(--s-fs-12);
+}
+.onboarding-divider span {
+  background: var(--s-surface-soft);
+}
+.onboarding-divider::before {
+  background: var(--s-hairline);
+}
+
+/* Onboarding toggle card — match settings card aesthetic */
+.onboarding-toggle {
+  background: var(--s-surface);
+  border: 1px solid var(--s-hairline);
+  border-radius: var(--s-radius-md);
+  padding: var(--s-space-3) var(--s-space-4);
+}
+.onboarding-toggle-title {
+  font-size: var(--s-fs-13);
+  font-weight: 600;
+  color: var(--s-ink);
+}
+.onboarding-toggle-hint {
+  font-size: var(--s-fs-12);
+  color: var(--s-ink-muted);
+  line-height: 1.5;
+}
+
+/* ── macOS glass overrides for v2 — preserve vibrancy on Mac ─────── */
+/* The onboarding window is transparent (BrowserWindow vibrancy:'under-window'),
+   so the body must be transparent for the native frosted material to show
+   through. The .onboarding panel below is the translucent glass layer. The
+   settings window keeps its soft gradient. */
+[data-platform="mac"].settings-window {
+  background:
+    linear-gradient(135deg,
+      rgba(248, 250, 252, 0.92) 0%,
+      rgba(241, 245, 249, 0.88) 100%);
+}
+[data-platform="mac"].onboarding-window {
+  background: #ffffff;
+}
+/* Pure white onboarding backdrop (user preference): the inner panel is white
+   and flat — the glassy cards (.perm-card, .done-mark, buttons) still pop. */
+[data-platform="mac"] .onboarding {
+  background: #ffffff;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+[data-platform="mac"] .settings-nav,
+[data-platform="mac"] .settings-content {
+  background: transparent;
+}
+[data-platform="mac"] .s-card,
+[data-platform="mac"] .onboarding-toggle {
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+}
+[data-platform="mac"] .settings-nav-item.active {
+  background: rgba(255, 255, 255, 0.85);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+[data-platform="mac"] .btn-primary {
+  background: var(--s-accent);
+  color: var(--s-accent-ink);
+  border-color: var(--s-accent);
+}
+[data-platform="mac"] .btn-primary:hover {
+  background: #ffdb33;
+  border-color: #ffdb33;
+}
+[data-platform="mac"] .progress-dots {
+  background: transparent;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+[data-platform="mac"] .progress-dots .dot {
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  transform: none;
+}
+[data-platform="mac"] .progress-dots .dot.active {
+  background: var(--s-ink);
+  transform: none;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Reduced motion (WCAG 2.3.3 / vestibular safety).
+   Covers every renderer surface — settings, onboarding, and the floating
+   bubble. Users who set "Reduce motion" in macOS get near-instant state
+   changes instead of slides/grows/pulses. The follow-window glide itself is
+   handled in the main process (window-follow.ts) via matchMedia.
+   ────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

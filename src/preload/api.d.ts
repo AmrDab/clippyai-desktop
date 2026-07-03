@@ -30,12 +30,47 @@ interface Window {
     testClawdCursor: () => Promise<boolean>;
 
     // ── License management
-    validateLicense: (key: string) => Promise<{ valid: boolean; plan: string }>;
+    validateLicense: (key: string) => Promise<{ valid: boolean; plan: string; reason?: string }>;
+    /** Free-tier signup. Returns the issued license key + plan on success,
+     *  or an `error` token ('invalid_email' | 'rate_limited' | 'offline' | …)
+     *  the renderer maps to a friendly inline message. */
+    freeSignup: (email: string) => Promise<{ licenseKey: string; plan: string } | { error: string }>;
     saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
     clearLicense: () => Promise<boolean>;
+    /** Full local reset → relaunch into onboarding. Main shows a native
+     *  confirm dialog first and resolves false if the user cancels; on
+     *  confirm the app relaunches, so this never resolves true in practice. */
+    resetApp: () => Promise<boolean>;
+
+    /** Permission walkthrough (onboarding). */
+    getPermissions: () => Promise<{
+      screenRecording: 'granted' | 'denied' | 'undetermined';
+      accessibility: 'granted' | 'denied';
+      automation: Record<string, 'granted' | 'denied' | 'undetermined' | 'unknown'>;
+    } | null>;
+    openPermissionPane: (kind: 'accessibility' | 'screenRecording' | 'automation') => Promise<boolean>;
+    requestScreenRecording: () => Promise<{ granted: boolean }>;
+    restartApp: () => Promise<boolean>;
+
     openExternalUrl: (url: string) => Promise<boolean>;
     openOnboarding: () => void;
     onOnboardingComplete: () => Promise<void>;
+
+    // ── v0.19.0 PR-6 — onboarding app picker + API-key state.
+    // Tokens never leave main once written: setApiKey is write-only,
+    // getApiKeys returns presence booleans (not raw values), clearApiKey
+    // wipes both keychain + the in-store flag.
+    getUserApps?: () => Promise<string[]>;
+    setUserApps?: (apps: string[]) => Promise<string[]>;
+    getApiKeys?: () => Promise<Record<string, boolean>>;
+    setApiKey?: (appId: string, token: string) => Promise<{ ok: boolean; error?: string }>;
+    clearApiKey?: (appId: string) => Promise<{ ok: boolean; error?: string }>;
+    fireFirstWinChip?: (text: string) => Promise<boolean>;
+    onFirstWinOverlay?: (cb: () => void) => void;
+    onFirstWinChip?: (cb: (text: string) => void) => void;
+
+    // ── Brain orientation (soul.md → identity.md → …)
+    orientBrain: () => Promise<{ ok: boolean; files: Record<string, boolean>; bytesRead: number; brainDir: string }>;
 
     // ── Settings
     getConfig: () => Promise<Record<string, unknown>>;
@@ -51,26 +86,46 @@ interface Window {
         actionClass: string | null; argsSummary: string;
         outcome: 'success' | 'failure' | 'unverified' | 'approval_denied' | 'blocked';
         detail: string; taskId?: string;
+        /** v0.19.0 — inverse action descriptor. Present if entry is undoable (or noop). */
+        inverse?: {
+          kind: 'restore-file' | 'rename' | 'move' | 'delete-calendar-event' | 'delete-email-draft' | 'restore-clipboard' | 'recreate-from-args' | 'noop';
+          reason?: string;
+          [key: string]: unknown;
+        };
+        /** v0.19.0 — true once undo has been successfully applied. */
+        undone?: boolean;
+        /** v0.19.0 — ISO timestamp of when undo was applied. */
+        undoneAt?: string;
       }>>;
       clearHistory: () => Promise<boolean>;
+      /** v0.19.0 — undo a recorded action by id. Returns { ok, detail }. */
+      undoAction: (id: string) => Promise<{ ok: boolean; detail?: string }>;
     };
 
     // ── Speech / TTS
-    onSpeak: (cb: (payload: { text: string; animate: string }) => void) => void;
-
-    // ── Narration crumbs — short bubble updates fired on every Tool.call
-    onClippyCrumb: (cb: (payload: { text: string; tool: string; step: number }) => void) => void;
+    // v0.19.0 — ruleId present when a deterministic rule fired the tip
+    onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string }) => void) => void;
+    /** feat/pricing-free-tier — token-cap upsell for capped free users. */
+    onUpgrade?: (cb: (payload: { text: string; cta: string }) => void) => void;
     onTtsToggle: (cb: (enabled: boolean) => void) => void;
     onSpeechRate: (cb: (rate: number) => void) => void;
     /** v0.16.0 — pitch + volume live updates */
     onSpeechPitch?: (cb: (pitch: number) => void) => void;
     onSpeechVolume?: (cb: (volume: number) => void) => void;
+    /** v0.20.0-alpha.20 — live TTS voice change (was restart-only). */
+    onSpeechVoice?: (cb: (voice: string) => void) => void;
 
     // ── Mode
     onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
     onProactiveToggle: (cb: (enabled: boolean) => void) => void;
+    /** v0.18.0 — separate channel for interval-only changes */
+    onProactiveInterval: (cb: (intervalMs: number) => void) => void;
     /** v0.12.3 — bubble auto-hide ms; 0 = manual */
     onBubbleAutoHide: (cb: (ms: number) => void) => void;
+    /** v0.19.0 PR-2 — bubble v2 default state + pin. */
+    onBubbleDefaultState?: (cb: (state: 'compact' | 'standard') => void) => void;
+    /** v0.19.0 — bubble pinned flag broadcast from settings */
+    onBubblePinned?: (cb: (pinned: boolean) => void) => void;
     /** v0.12.5 — manual proactive trigger from Settings UI */
     fireProactiveTip?: () => Promise<{ ok: boolean; reason?: string }>;
 
@@ -98,20 +153,36 @@ interface Window {
     skillsUninstall?: (slug: string) => Promise<{ ok: boolean; error?: string }>;
     /** v0.14.1 — Brain → Mail Setup status panel */
     mailEnvStatus?: () => Promise<{
-      classic_outlook_com: boolean;
-      new_outlook_installed: boolean;
+      apple_mail_installed: boolean;
+      outlook_mac_installed: boolean;
       default_mailto_handler: string | null;
-      default_is_olk: boolean;
+      default_is_outlook: boolean;
       probed_at: string;
     } | null>;
-    /** v0.14.1 — About → active AI model string (kimi-k2.5 / kimi-k2.6 / ...) */
+    /** v0.14.1 — About → active AI model string (e.g. gpt-4o-mini / gpt-5.x) */
     activeModel?: () => Promise<string | null>;
     /** v0.16.0 — task-in-progress animation loop signals */
     onWorkingStart?: (cb: () => void) => void;
     onWorkingStop?: (cb: () => void) => void;
+    /** Step ticker: called before each tool so the bubble can show what Clippy is doing. */
+    onTaskStep?: (cb: (step: { label: string; tool: string }) => void) => void;
     /** v0.17.0 — Voice input (offline whisper.cpp transcription) */
     transcribeAudio?: (wav: Uint8Array, initialPrompt?: string) => Promise<{ ok: boolean; text?: string; error?: string; elapsedMs?: number }>;
     sttStatus?: () => Promise<{ ready: boolean; reason?: string }>;
+    /** v0.20.0 (voice v1) — optional OpenAI TTS proxy. Returns audio bytes
+     *  on ok; `unavailable` means no key configured (renderer uses local
+     *  SpeechSynthesis). The key never crosses this bridge. */
+    synthesizeSpeech?: (text: string, voice?: string) => Promise<{
+      ok: boolean;
+      audio?: Uint8Array;
+      mimeType?: string;
+      error?: string;
+      unavailable?: boolean;
+    }>;
+    /** Write-only: stores the OpenAI key in Keychain. No getter exists. */
+    setOpenAiKey?: (token: string) => Promise<{ ok: boolean; error?: string }>;
+    clearOpenAiKey?: () => Promise<{ ok: boolean; error?: string }>;
+    onTtsEngine?: (cb: (engine: 'system' | 'openai') => void) => void;
     onVoiceStart?: (cb: () => void) => void;
     onVoiceStop?: (cb: () => void) => void;
     onVoiceToggle?: (cb: (enabled: boolean) => void) => void;
@@ -120,6 +191,9 @@ interface Window {
     /** v0.16.0 — play-tag mode toggle */
     onPlayTagStart?: (cb: () => void) => void;
     onPlayTagStop?: (cb: () => void) => void;
+    /** v0.19.0 — follow-me cursor mode */
+    followMeActive?: () => Promise<boolean>;
+    followMeStop?: (reason: string) => void;
     /** v0.15.0 — Settings → Web → mcp-chrome extension status */
     mcpChromeStatus?: () => Promise<{
       ready: boolean;
@@ -141,11 +215,28 @@ interface Window {
     // ── Window control
     setClickThrough: (enabled: boolean) => void;
     openSettings: () => void;
-    showContextMenu: () => void;
+    /** v0.19.0 — optional ruleId for "Don't suggest this again" context-menu item */
+    showContextMenu: (ruleId?: string) => void;
+    /** v0.19.0 — append a rule_id to the suggestion denylist */
+    addSuggestionDenylist?: (ruleId: string) => Promise<boolean>;
     moveWindow: (deltaX: number, deltaY: number) => void;
     expandWindow: () => void;
     collapseWindow: () => void;
+    /** v0.19.0 PR-2.1 — state-keyed window resize for bubble v2 (compact/standard/expanded each map to a different window dimension so the bubble doesn't clip) */
+    setBubbleWindowSize: (state: 'collapsed' | 'compact' | 'standard' | 'expanded') => void;
+    /** v0.20.0-alpha.14 — main pushes the side the bubble body grows on
+     *  (anchor-aware / multi-display) so the renderer can flip the tail. */
+    onBubbleSide?: (cb: (side: 'above' | 'below') => void) => void;
     closeWindow: () => void;
+
+    // ── v1 writing assistant (⌥G)
+    /** Apply the corrected text to the system-wide focused field. Returns
+     *  ok:false (+ error) when the surface isn't AX-writable. */
+    writingApply?: (value: string) => Promise<{ ok: boolean; error?: string }>;
+    /** Close the writing-assist card window. */
+    writingDismiss?: () => void;
+    /** Receive the correction payload pushed from main once the card loads. */
+    onWritingAssistData?: (cb: (d: { original: string; corrected: string; count: number; app: string }) => void) => void;
 
     // ── Animation playback
     onPlayAnimation: (cb: (name: string) => void) => void;

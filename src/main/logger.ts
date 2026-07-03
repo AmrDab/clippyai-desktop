@@ -10,7 +10,7 @@ const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB per file
 const MAX_LOG_FILES = 5;
 const MAX_DATA_LENGTH = 1000;
 
-let logStream: fs.WriteStream | null = null;
+let logFileReady = false;
 let currentLogPath = '';
 // Production default: INFO. Dev (electron-vite dev): DEBUG.
 let minLevel: LogLevel = app?.isPackaged ? 'INFO' : 'DEBUG';
@@ -67,7 +67,9 @@ function rotateIfNeeded(): void {
   try {
     const stats = fs.statSync(currentLogPath);
     if (stats.size > MAX_LOG_SIZE) {
-      if (logStream) { logStream.end(); logStream = null; }
+      // Drain anything still buffered into the soon-to-be-archived file first
+      // so we don't split a line across the rotation boundary.
+      flushBuffer();
       for (let i = MAX_LOG_FILES - 1; i >= 1; i--) {
         const from = `${currentLogPath}.${i}`;
         const to = `${currentLogPath}.${i + 1}`;
@@ -77,15 +79,110 @@ function rotateIfNeeded(): void {
         }
       }
       fs.renameSync(currentLogPath, `${currentLogPath}.1`);
-      openLogStream();
+      openLogFile();
     }
   } catch { /* file might not exist yet */ }
 }
 
-function openLogStream(): void {
+function openLogFile(): void {
   ensureLogDir();
   currentLogPath = path.join(LOG_DIR, getLogFileName());
-  logStream = fs.createWriteStream(currentLogPath, { flags: 'a' });
+  logFileReady = true;
+}
+
+// ── Buffered write path (v0.20.0 perf) ──────────────────────────────
+// Every log call used to do synchronous scrubPII(JSON.stringify(...)) and a
+// fs.statSync rotate check inline. A long task emits ~160 lines → 50-200ms of
+// synchronous overhead + a syscall per line. We now buffer already-formatted
+// lines (scrubPII/JSON.stringify still runs per call, preserving the exact
+// format and PII guarantee) and flush them in FIFO order on a single ~250ms
+// timer, check rotation at most every ~30s, and flush synchronously on exit
+// and on ERROR so a crash never drops the line that explains it.
+//
+// The flush uses fs.appendFileSync (not a WriteStream): the per-call hot path
+// is now zero-I/O (push to an array), and the once-per-250ms drain is a single
+// synchronous append. Synchronous append is what makes the crash-safety
+// guarantee real — once flushBuffer() returns, the bytes are in the OS, so an
+// 'exit'/fatal-error flush cannot leave the explaining line stuck in a stream
+// buffer the way logStream.write() could.
+const FLUSH_INTERVAL_MS = 250;
+const ROTATE_CHECK_INTERVAL_MS = 30_000;
+
+let pendingLines: string[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let rotateTimer: ReturnType<typeof setInterval> | null = null;
+let lastRotateCheck = 0;
+let exitHooksInstalled = false;
+
+/**
+ * Append all buffered lines to the current log file in order, then clear the
+ * buffer. Ordering is preserved: single-threaded JS means no call can
+ * interleave between the join and the reset, and we write the whole batch as
+ * one synchronous append. Durable on return (survives an immediately-following
+ * crash), so it's safe to call from exit/fatal paths.
+ */
+function flushBuffer(): void {
+  if (pendingLines.length === 0) return;
+  if (!logFileReady) openLogFile();
+  // Detach the batch BEFORE the syscall so lines logged during/after the write
+  // queue cleanly behind it instead of being dropped or duplicated.
+  const chunk = pendingLines.join('');
+  pendingLines = [];
+  try {
+    fs.appendFileSync(currentLogPath, chunk);
+  } catch { /* dir vanished mid-shutdown — nothing more we can safely do */ }
+}
+
+/** Periodic + throttled rotate check, kept off the per-line hot path. */
+function maybeRotate(force = false): void {
+  const now = Date.now();
+  if (!force && now - lastRotateCheck < ROTATE_CHECK_INTERVAL_MS) return;
+  lastRotateCheck = now;
+  rotateIfNeeded();
+}
+
+function flushAndCheckRotate(): void {
+  flushBuffer();
+  maybeRotate();
+}
+
+/** Ensure the 250ms flush timer + 30s rotate timer + exit hooks are armed. */
+function ensureTimers(): void {
+  if (flushTimer === null) {
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      flushAndCheckRotate();
+      // Re-arm only if more lines arrived while we were flushing.
+      if (pendingLines.length > 0) ensureTimers();
+    }, FLUSH_INTERVAL_MS);
+    // Don't keep the event loop (and thus the app) alive just for logging.
+    if (typeof flushTimer.unref === 'function') flushTimer.unref();
+  }
+  if (rotateTimer === null) {
+    rotateTimer = setInterval(() => maybeRotate(true), ROTATE_CHECK_INTERVAL_MS);
+    if (typeof rotateTimer.unref === 'function') rotateTimer.unref();
+  }
+  if (!exitHooksInstalled) {
+    exitHooksInstalled = true;
+    // CRITICAL crash-safety: drain the buffer synchronously on the way out so
+    // a process exiting (clean or fatal) never drops the lines explaining why.
+    // 'exit' fires for normal/most fatal terminations and must be synchronous.
+    const drain = () => { flushBuffer(); };
+    process.once('exit', drain);
+    process.once('beforeExit', drain);
+    process.once('SIGINT', () => { flushBuffer(); });
+    process.once('SIGTERM', () => { flushBuffer(); });
+  }
+}
+
+/**
+ * Public flush hook (used by shutdown paths / tests). Drains buffered lines
+ * and forces an immediate rotate check. Exported so callers that want a hard
+ * guarantee (e.g. just before app.quit) can demand it without waiting 250ms.
+ */
+export function flushLogs(): void {
+  flushBuffer();
+  maybeRotate(true);
 }
 
 // ── Structured JSON log line ────────────────────────────────────────
@@ -143,9 +240,37 @@ function truncateData(data: unknown): unknown {
     }
     return data;
   } catch {
-    // If we can't serialize, return a safe placeholder
-    if (data instanceof Error) return { error: data.message, stack: data.stack?.substring(0, 300) };
-    return '[unserializable]';
+    // v0.19.0 — was a bare `return '[unserializable]'` which produced
+    // useless log lines (saw it on every electron-updater error in
+    // 0.19.0-rc.3 production logs — `data: "[unserializable]"`).
+    // JSON.stringify chokes on circular refs (common with electron-
+    // updater errors wrapping HTTPError + Response objects). Replace
+    // with a structured best-effort snapshot.
+    if (data instanceof Error) {
+      const e = data as Error & { code?: string | number; cause?: unknown };
+      return {
+        error: e.message,
+        name: e.name,
+        code: e.code,
+        stack: e.stack?.split('\n').slice(0, 6).join('\n'),
+        cause: e.cause instanceof Error
+          ? { message: e.cause.message, name: e.cause.name }
+          : String(e.cause ?? ''),
+      };
+    }
+    if (data && typeof data === 'object') {
+      const obj = data as Record<string, unknown>;
+      const safe: Record<string, string> = {};
+      // First level only — no recursion so we can't re-enter a cycle.
+      for (const k of Object.keys(obj).slice(0, 12)) {
+        try {
+          const v = obj[k];
+          safe[k] = v instanceof Error ? v.message : String(v).substring(0, 200);
+        } catch { safe[k] = '[unreadable]'; }
+      }
+      return { _serializerFallback: 'circular-or-non-json', keys: safe };
+    }
+    return { _serializerFallback: 'unknown', type: typeof data, str: String(data).substring(0, 200) };
   }
 }
 
@@ -182,14 +307,18 @@ function writeLog(
   }
 
   // ── File output: structured JSON (one object per line) ──────────
-  if (!logStream) openLogStream();
+  // Format (scrubPII + JSON.stringify) still runs per call — same line shape,
+  // same PII guarantee — but the result is buffered and flushed on a timer
+  // instead of written + statSync'd synchronously on every call.
+  let line: string;
   try {
-    const jsonLine = scrubPII(JSON.stringify(entry));
-    logStream!.write(jsonLine + '\n');
+    line = scrubPII(JSON.stringify(entry)) + '\n';
   } catch {
-    // Fallback: at least write something
-    logStream!.write(`${entry.ts} [${level}] [${component}] ${scrubPII(message)}\n`);
+    // Fallback: at least buffer something
+    line = `${entry.ts} [${level}] [${component}] ${scrubPII(message)}\n`;
   }
+  pendingLines.push(line);
+  ensureTimers();
 
   // ── Console output: colored human-readable (dev convenience) ────
   const reset = '\x1b[0m';
@@ -199,7 +328,10 @@ function writeLog(
   else if (level === 'WARN') console.warn(consoleMsg, data !== undefined ? data : '');
   else console.log(consoleMsg, data !== undefined ? data : '');
 
-  rotateIfNeeded();
+  // Flush ERROR lines promptly: if the process is about to crash, the line
+  // explaining the crash must already be on disk, not stuck in the 250ms
+  // buffer. WARN/INFO/DEBUG ride the normal flush timer.
+  if (level === 'ERROR') flushBuffer();
 }
 
 // ── Public API ──────────────────────────────────────────────────────

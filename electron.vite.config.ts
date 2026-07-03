@@ -16,6 +16,8 @@ export default defineConfig({
           settings: resolve(__dirname, 'src/renderer/settings.html'),
           onboarding: resolve(__dirname, 'src/renderer/onboarding.html'),
           logs: resolve(__dirname, 'src/renderer/logs.html'),
+          'writing-card': resolve(__dirname, 'src/renderer/writing-card.html'),
+          'writing-badge': resolve(__dirname, 'src/renderer/writing-badge.html'),
         },
       },
     },

@@ -27,6 +27,10 @@
  * The approval dialog itself is the renderer's responsibility (Clippy emits
  * `approval-request`, the bubble shows a Yes/No, the renderer IPCs back
  * the answer). This module just decides whether to ASK.
+ *
+ * Mac port note: identical to clippyai-desktop/src/main/permission-policy.ts
+ * (v0.19.0 PR-5). Storage path resolves to
+ * ~/Library/Application Support/ClippyAI/permission-policy.json on macOS.
  */
 
 import { app } from 'electron';
@@ -41,6 +45,15 @@ const log = createLogger('Policy');
 export type Mode = 'cautious' | 'standard' | 'trusted';
 export type ClassDecision = 'allow' | 'approve' | 'block';
 
+/**
+ * Runtime allow-list of valid ClassDecision string values. Kept adjacent to
+ * the type above so the two never drift: if a member is added to the union,
+ * it must be added here too (and the type-cast below makes a stale set a
+ * compile error). Used to reject junk override values fed in via IPC or a
+ * tampered on-disk policy file.
+ */
+const VALID_DECISIONS: ReadonlySet<ClassDecision> = new Set<ClassDecision>(['allow', 'approve', 'block']);
+
 export interface PermissionPolicy {
   mode: Mode;
   /** Per-class overrides — only honored when present. */
@@ -52,19 +65,25 @@ const DEFAULTS: Record<Mode, Record<ActionClass, ClassDecision>> = {
     destructive_file:     'approve',
     destructive_send:     'approve',
     destructive_purchase: 'approve',
+    destructive_exec:     'approve',
+    destructive_web:      'approve',
     share_public:         'approve',
     system_control:       'approve',
     browser_navigate:     'approve',
     desktop_input:        'approve',
+    read_only:            'allow',
   },
   standard: {
     destructive_file:     'approve',
     destructive_send:     'approve',
     destructive_purchase: 'approve',
+    destructive_exec:     'approve',
+    destructive_web:      'approve',
     share_public:         'approve',
     system_control:       'allow',
     browser_navigate:     'allow',
     desktop_input:        'allow',
+    read_only:            'allow',
   },
   trusted: {
     destructive_file:     'allow',
@@ -73,88 +92,137 @@ const DEFAULTS: Record<Mode, Record<ActionClass, ClassDecision>> = {
     // the one hard floor: the policy CAN be overridden per-class via UI,
     // but the default stays opt-in.
     destructive_purchase: 'approve',
+    destructive_exec:     'allow',
+    destructive_web:      'allow',
     share_public:         'allow',
     system_control:       'allow',
     browser_navigate:     'allow',
     desktop_input:        'allow',
+    read_only:            'allow',
   },
 };
+
+/**
+ * Runtime allow-list of valid ActionClass keys, derived from the SOURCE OF
+ * TRUTH (the DEFAULTS map maps every ActionClass under each mode). We read
+ * the keys of one mode's record rather than hardcoding the union members, so
+ * adding a new ActionClass to tool-meta + DEFAULTS automatically extends this
+ * set with no second edit site.
+ */
+const VALID_ACTION_CLASSES: ReadonlySet<ActionClass> =
+  new Set(Object.keys(DEFAULTS.standard) as ActionClass[]);
+
+/**
+ * Sanitize a caller-supplied classOverrides object: drop any entry whose KEY
+ * is not a known ActionClass or whose VALUE is not a valid ClassDecision.
+ * Lenient by design — never throws; invalid entries are silently dropped and
+ * logged at warn so a fat-fingered UI payload or a tampered policy file can't
+ * inject arbitrary keys or downgrade a guardrail class to an unknown/junk
+ * decision. `source` is purely for the warn log.
+ */
+function sanitizeClassOverrides(
+  raw: unknown,
+  source: string,
+): Partial<Record<ActionClass, ClassDecision>> {
+  const clean: Partial<Record<ActionClass, ClassDecision>> = {};
+  if (!raw || typeof raw !== 'object') return clean;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!VALID_ACTION_CLASSES.has(key as ActionClass)) {
+      log.warn('Dropped classOverride with unknown ActionClass key', { source, key });
+      continue;
+    }
+    if (typeof value !== 'string' || !VALID_DECISIONS.has(value as ClassDecision)) {
+      log.warn('Dropped classOverride with invalid ClassDecision value', { source, key, value });
+      continue;
+    }
+    clean[key as ActionClass] = value as ClassDecision;
+  }
+  return clean;
+}
 
 const FACTORY_DEFAULT: PermissionPolicy = {
   mode: 'standard',
   classOverrides: {},
 };
 
+let _policy: PermissionPolicy | null = null;
+let _policyPath: string | null = null;
+
 function policyPath(): string {
-  return path.join(app.getPath('userData'), 'permission-policy.json');
+  if (!_policyPath) {
+    _policyPath = path.join(app.getPath('userData'), 'permission-policy.json');
+  }
+  return _policyPath;
 }
 
-let cached: PermissionPolicy | null = null;
+function load(): PermissionPolicy {
+  try {
+    const raw = fs.readFileSync(policyPath(), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<PermissionPolicy>;
+    return {
+      mode: (['cautious', 'standard', 'trusted'] as const).includes(parsed.mode as Mode)
+        ? (parsed.mode as Mode)
+        : FACTORY_DEFAULT.mode,
+      classOverrides: sanitizeClassOverrides(parsed.classOverrides, 'disk'),
+    };
+  } catch {
+    return { ...FACTORY_DEFAULT };
+  }
+}
 
+function flush(p: PermissionPolicy): void {
+  const fp = policyPath();
+  const tmp = fp + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(p), 'utf8');
+    fs.renameSync(tmp, fp);
+  } catch (err) {
+    log.warn('policy flush failed', { err });
+  }
+}
+
+function ensureLoaded(): PermissionPolicy {
+  if (!_policy) _policy = load();
+  return _policy;
+}
+
+/** Return the current policy (lazy-loaded). */
 export function getPolicy(): PermissionPolicy {
-  if (cached) return cached;
-  try {
-    const p = policyPath();
-    if (fs.existsSync(p)) {
-      const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-      // Defensive shape check — never load a file we can't trust.
-      if (raw && typeof raw.mode === 'string' && (['cautious', 'standard', 'trusted'] as const).includes(raw.mode as Mode)) {
-        cached = {
-          mode: raw.mode as Mode,
-          classOverrides: typeof raw.classOverrides === 'object' && raw.classOverrides ? raw.classOverrides : {},
-        };
-        return cached;
-      }
-    }
-  } catch (err) {
-    log.warn('getPolicy load failed — falling back to defaults', { err: (err as Error).message });
-  }
-  cached = { ...FACTORY_DEFAULT, classOverrides: { ...FACTORY_DEFAULT.classOverrides } };
-  return cached;
+  return { ...ensureLoaded(), classOverrides: { ...ensureLoaded().classOverrides } };
 }
 
+/** Merge a partial update into the current policy and persist. */
 export function setPolicy(next: Partial<PermissionPolicy>): PermissionPolicy {
-  const current = getPolicy();
-  const merged: PermissionPolicy = {
-    mode: next.mode ?? current.mode,
-    classOverrides: { ...current.classOverrides, ...(next.classOverrides ?? {}) },
-  };
-  cached = merged;
-  try {
-    fs.writeFileSync(policyPath(), JSON.stringify(merged, null, 2), 'utf8');
-    log.info('Policy.update', { mode: merged.mode, overrides: merged.classOverrides });
-  } catch (err) {
-    log.error('setPolicy write failed', { err: (err as Error).message });
+  const current = ensureLoaded();
+  if (next.mode && (['cautious', 'standard', 'trusted'] as const).includes(next.mode)) {
+    current.mode = next.mode;
   }
-  return merged;
+  if (next.classOverrides && typeof next.classOverrides === 'object') {
+    current.classOverrides = {
+      ...current.classOverrides,
+      ...sanitizeClassOverrides(next.classOverrides, 'ipc'),
+    };
+  }
+  _policy = current;
+  flush(current);
+  log.info('Policy updated', { mode: current.mode });
+  return getPolicy();
 }
 
-/**
- * Decide whether a tool call is allowed under the current policy.
- *
- * Returns:
- *   'allow'   — run the tool. No approval needed.
- *   'approve' — caller must ask the user before running. (The caller wires
- *               the approval dialog; this module never blocks unilaterally.)
- *   'block'   — refuse outright. Tool returns a "(error:policy_blocked) …"
- *               result. Used when a user has explicitly disabled a class.
- *
- * Tools without an actionClass (read-only / harmless) always return 'allow'.
- */
+/** Decide what to do with a given tool call. */
 export function decide(toolName: string): ClassDecision {
   const meta = TOOL_META[toolName];
-  const cls = meta?.actionClass;
-  if (!cls) return 'allow';
-  const policy = getPolicy();
-  const override = policy.classOverrides[cls];
-  if (override) return override;
+  if (!meta || !meta.actionClass) return 'allow'; // no class = no gate
+  const policy = ensureLoaded();
+  const cls = meta.actionClass;
+  // Per-class override wins
+  if (cls in policy.classOverrides) {
+    return policy.classOverrides[cls]!;
+  }
   return DEFAULTS[policy.mode][cls];
 }
 
-export function getDefaultsFor(mode: Mode): Record<ActionClass, ClassDecision> {
-  return { ...DEFAULTS[mode] };
-}
-
+/** Return the actionClass for a tool (or null). */
 export function classFor(toolName: string): ActionClass | null {
   return TOOL_META[toolName]?.actionClass ?? null;
 }

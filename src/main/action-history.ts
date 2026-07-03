@@ -1,133 +1,165 @@
 /**
- * Action history — a persistent ring buffer of the last N tool calls
- * Clippy executed. Shown in Settings → Guardrails → Activity. Purpose:
+ * action-history.ts — persistent ring buffer of the last 50 tool calls.
  *
- *   1. Trust-builder. Users see exactly what Clippy did, including any
- *      destructive actions, so "what did he just do?" never goes
- *      unanswered.
- *   2. Bug-report aid. The audit log + the support-report log-bundle
- *      together let us reconstruct any action sequence in retrospect.
- *   3. Tier-violation forensics. Tier + actionClass are stored alongside
- *      each row so we can see at a glance when Clippy fell back to T5
- *      without warrant.
+ * v0.19.0 — PR-5 mac mirror: undo + action log surface.
  *
- * Storage: a single JSON file at userData/action-history.json, capped at
- * MAX_ENTRIES rows (newest first), atomic-write with temp file + rename.
- * The cap is intentionally small (50) — this isn't a forensics datastore,
- * it's a recent-actions panel. Larger history lives in the per-task log
- * files written by the existing logger.
+ * Design: single JSON file in userData, written atomically (temp file +
+ * fs.renameSync) so a crash during write can't corrupt the log. The ring
+ * buffer is capped at MAX_ENTRIES to bound disk usage. All reads return a
+ * copy of the array (most-recent first) so callers can't accidentally
+ * mutate the in-memory state.
  */
 
 import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import { TOOL_META } from './tool-meta';
 import type { ActionClass } from './tool-meta';
-import { createLogger } from './logger';
 
-const log = createLogger('ActionHistory');
+/** All recognised inverse-action kinds. */
+export type InverseAction =
+  | { kind: 'restore-file'; trashPath: string; originalPath: string }
+  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'move'; from: string; to: string }
+  | { kind: 'delete-calendar-event'; eventId: string; calendarId?: string }
+  | { kind: 'delete-email-draft'; draftId: string }
+  | { kind: 'restore-clipboard'; previousText: string }
+  | { kind: 'recreate-from-args'; tool: string; args: Record<string, unknown> }
+  | { kind: 'noop'; reason: string };
+
+export interface ActionEntry {
+  /** UUID for this entry. */
+  id: string;
+  /** ISO timestamp. */
+  ts: string;
+  /** Tool name (e.g. "write_file"). */
+  tool: string;
+  /** Tool tier (from TOOL_META). */
+  tier: number;
+  /** Action class (from TOOL_META). */
+  actionClass: ActionClass | null;
+  /** Stringified argument summary (first 120 chars). */
+  argsSummary: string;
+  /** Tool call outcome. */
+  outcome: 'success' | 'failure' | 'unverified' | 'approval_denied' | 'blocked';
+  /** First 200 chars of the tool result text. */
+  detail: string;
+  /** Optional task id for grouping. */
+  taskId?: string;
+  /** v0.19.0 — inverse action descriptor. Present if the entry is undoable (or noop). */
+  inverse?: InverseAction;
+  /** v0.19.0 — true once undo has been successfully applied. */
+  undone?: boolean;
+  /** v0.19.0 — ISO timestamp of when undo was applied. */
+  undoneAt?: string;
+}
 
 const MAX_ENTRIES = 50;
 
-export interface ActionEntry {
-  id: string;             // uuid
-  ts: string;             // ISO timestamp
-  tool: string;           // canonical tool name
-  tier: number;           // T1–T5 from TOOL_META
-  actionClass: ActionClass | null;
-  argsSummary: string;    // short, redacted, max 200 chars
-  outcome: 'success' | 'failure' | 'unverified' | 'approval_denied' | 'blocked';
-  detail: string;         // brief outcome detail or error code, max 200 chars
-  taskId?: string;        // task correlation id
-}
+let _entries: ActionEntry[] = [];
+let _historyPath: string | null = null;
 
 function historyPath(): string {
-  return path.join(app.getPath('userData'), 'action-history.json');
+  if (!_historyPath) {
+    _historyPath = path.join(app.getPath('userData'), 'action-history.json');
+  }
+  return _historyPath;
 }
 
-let cache: ActionEntry[] | null = null;
-
-function load(): ActionEntry[] {
-  if (cache) return cache;
+function load(): void {
   try {
-    const p = historyPath();
-    if (!fs.existsSync(p)) { cache = []; return cache; }
-    const arr = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (Array.isArray(arr)) {
-      cache = arr.slice(0, MAX_ENTRIES);
-      return cache;
-    }
-  } catch (err) {
-    log.warn('load failed (corrupt history?) — starting empty', { err: (err as Error).message });
+    const raw = fs.readFileSync(historyPath(), 'utf8');
+    _entries = JSON.parse(raw) as ActionEntry[];
+    if (!Array.isArray(_entries)) _entries = [];
+  } catch {
+    _entries = [];
   }
-  cache = [];
-  return cache;
 }
 
 function flush(): void {
+  const p = historyPath();
+  const tmp = p + '.tmp';
   try {
-    const p = historyPath();
-    const tmp = p + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(cache ?? [], null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(_entries), 'utf8');
     fs.renameSync(tmp, p);
-  } catch (err) {
-    log.warn('flush failed (non-fatal)', { err: (err as Error).message });
+  } catch { /* non-fatal */ }
+}
+
+// Lazy-load once
+let _loaded = false;
+function ensureLoaded(): void {
+  if (!_loaded) {
+    _loaded = true;
+    load();
   }
 }
 
-function summarizeArgs(args: unknown): string {
-  if (!args || typeof args !== 'object') return '';
+/** Record a tool call in the history ring buffer. */
+export function record(opts: {
+  tool: string;
+  args: Record<string, unknown>;
+  outcome: ActionEntry['outcome'];
+  detail: string;
+  inverse?: InverseAction;
+  taskId?: string;
+}): ActionEntry {
+  ensureLoaded();
+
+  // Derive tier + actionClass from TOOL_META (lazy require avoids circular)
+  let tier = 2;
+  let actionClass: ActionClass | null = null;
   try {
-    const pairs: string[] = [];
-    for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
-      // Redact obvious-secret-shaped keys (defense-in-depth — admins shouldn't
-      // see arbitrary user-supplied tokens in the history viewer).
-      const lk = k.toLowerCase();
-      if (lk.includes('password') || lk.includes('token') || lk.includes('secret') || lk.includes('api_key')) {
-        pairs.push(`${k}=***`);
-        continue;
-      }
-      const sv = typeof v === 'string' ? v : JSON.stringify(v);
-      pairs.push(`${k}=${(sv ?? '').toString().slice(0, 50)}`);
+    const meta = require('./tool-meta') as typeof import('./tool-meta');
+    const m = meta.TOOL_META[opts.tool];
+    if (m) {
+      tier = m.tier;
+      actionClass = m.actionClass ?? null;
     }
-    return pairs.join(' ').slice(0, 200);
-  } catch {
-    return '';
+  } catch { /* non-fatal */ }
+
+  const entry: ActionEntry = {
+    id: crypto.randomUUID(),
+    ts: new Date().toISOString(),
+    tool: opts.tool,
+    tier,
+    actionClass,
+    argsSummary: JSON.stringify(opts.args).substring(0, 120),
+    outcome: opts.outcome,
+    detail: opts.detail,
+    taskId: opts.taskId,
+    inverse: opts.inverse,
+  };
+
+  _entries.unshift(entry);
+  if (_entries.length > MAX_ENTRIES) _entries.length = MAX_ENTRIES;
+  flush();
+  return entry;
+}
+
+/** Return all entries (most-recent first). */
+export function getAll(): ActionEntry[] {
+  ensureLoaded();
+  return [..._entries];
+}
+
+/** Find an entry by id. Returns undefined if not found. */
+export function findById(id: string): ActionEntry | undefined {
+  ensureLoaded();
+  return _entries.find((e) => e.id === id);
+}
+
+/** Mark an entry as undone. */
+export function markUndone(id: string): void {
+  ensureLoaded();
+  const entry = _entries.find((e) => e.id === id);
+  if (entry) {
+    entry.undone = true;
+    entry.undoneAt = new Date().toISOString();
+    flush();
   }
 }
 
-export function record(entry: Omit<ActionEntry, 'id' | 'ts' | 'tier' | 'actionClass' | 'argsSummary'> & {
-  args?: unknown;
-}): void {
-  const list = load();
-  const meta = TOOL_META[entry.tool];
-  const row: ActionEntry = {
-    id: cryptoRandomId(),
-    ts: new Date().toISOString(),
-    tool: entry.tool,
-    tier: meta?.tier ?? 0,
-    actionClass: meta?.actionClass ?? null,
-    argsSummary: summarizeArgs(entry.args),
-    outcome: entry.outcome,
-    detail: (entry.detail || '').slice(0, 200),
-    taskId: entry.taskId,
-  };
-  list.unshift(row);
-  if (list.length > MAX_ENTRIES) list.length = MAX_ENTRIES;
-  flush();
-}
-
-export function getAll(): ActionEntry[] {
-  return [...load()]; // defensive copy — callers shouldn't mutate cache
-}
-
+/** Clear all history. */
 export function clear(): void {
-  cache = [];
+  _entries = [];
   flush();
-}
-
-// Tiny non-crypto id — enough to disambiguate concurrent rows. Avoids a
-// dependency on crypto.randomUUID for Node 14 fallback paths.
-function cryptoRandomId(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }

@@ -1,20 +1,43 @@
 /**
- * ClippyAI Direct Tool Executor
+ * ClippyAI Direct Tool Executor (macOS port)
  *
  * Primary tool execution is in-process; clawdcursor is the Tier 5 final
- * fallback. Uses: nut-js (mouse/keyboard), PowerShell (Windows UIA), sharp
- * (screenshots). When in-process tools fail with structured codes
+ * fallback. On macOS (the shipping platform) the real paths are: the
+ * in-process Swift mac-bridge (mouse/keyboard/AX/Vision OCR — see
+ * mac-bridge.ts), AppleScript/osascript for app automation (Mail.app,
+ * Calendar.app, System Events), and screencapture / Electron nativeImage
+ * for screenshots. When an in-process tool fails with a structured code
  * (UI_NOT_FOUND, COM_ERROR, TIMEOUT, PSBRIDGE_DEAD), executeTool retries
  * via clawdcursor — see clawd-fallback.ts.
+ *
+ * The PowerShell/COM/Windows-UIA code paths in this file are Windows-only
+ * legacy retained behind `process.platform` gates; they are NOT the macOS
+ * path and never run on darwin.
  *
  * No separate process for the common path, no HTTP, no port 3847.
  */
 
-import { execFile, ChildProcess } from 'child_process';
+import { execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import os from 'os';
+// v0.18.3 — static import so Rollup bundles the module. Lazy
+// require() slipped past the tree-shaker in v0.18.1/v0.18.2 builds.
+import * as userTakeover from './user-takeover';
+// v0.20.0 — platform-gate at the dispatcher. Static import (not lazy require)
+// per the bundle-anchors memory: void X anchors don't survive Rollup, and
+// require() at the call site doesn't either if the module has no other
+// static edge in the graph. Direct usage at executeTool prevents tree-shake.
+import { TOOL_META, isToolSupportedOnPlatform } from './tool-meta';
+// v0.20.0 — Swift bridge wrapper. STATIC namespace import so every call site
+// (readScreen, getActiveWindow, smartClick, etc.) is a direct edge in the
+// dep graph. Lazy require() has bitten this codebase three times already
+// (v0.18.2 cursor-vision, v0.18.3 user-takeover, v0.19.0 PR-5) when Rollup
+// tree-shook the dynamic import away. Per the bundle-anchors memory: no
+// void-X anchors, no `require()` at use site, no exceptions.
+import * as macBridge from './mac-bridge-native';
 import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
@@ -32,11 +55,21 @@ import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/githu
 import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, submitClawdTask, TIER5_FALLBACK_MAP } from './clawd-fallback';
 import { outlookWebSendEmail } from './skills/outlook-web-send';
 import { gmailWebSendEmail } from './skills/gmail-web-send';
+// v0.19.0 PR-6 — API-route gating. hasApiKey() is the sync presence
+// check; the *ApiSend / *ApiCreate functions are the per-provider routes
+// (stubs in v0.19.0, real in v0.20+ as we wire each provider).
+import { hasApiKey } from './license';
+import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
+import { captureScreen, HelperError } from './screenshot-helper';
 import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOOLS } from './mcp-chrome';
 import type { ToolResult } from './types/tool-result';
+import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersClause } from './mac-bridge';
+import { classifyMessagesTree, type SendVerdict } from './send-verify';
+import { getMainWindow } from './window';
+import * as profileMod from './profile';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -134,261 +167,31 @@ function getScriptsDir(): string {
   return _cachedScriptsDir;
 }
 
-// ── PowerShell Bridge (persistent UIA process) ───────────────────
+// ── macOS Automation Bridge (placeholder — see M2 in SPEC.md) ───────
+//
+// The Windows build runs a persistent PowerShell process (ps-bridge.ps1) to
+// keep UIA queries fast and stateful. On macOS the equivalent will be a
+// long-lived osascript / Swift helper process queried over stdin/stdout
+// with the same FIFO + READY + __END__ protocol so callers don't change.
+//
+// M0 scaffold: stub `startPSBridge` and `psCommand` to no-op on macOS so
+// the app boots without trying to spawn powershell.exe. Individual tool
+// implementations that call into powershell.exe directly will fail at
+// call time — that's fine, the Brain surfaces tool errors gracefully.
+// They get ported in M2/M3.
 
+// State retained so the M2 macOS bridge implementation can drop in
+// without changing call sites elsewhere in this file.
 let psBridge: ChildProcess | null = null;
-let psReady = false;
-let psQueue: Array<{ cmd: string; resolve: (v: string) => void; reject: (e: Error) => void }> = [];
-let psBuffer = '';
-
-// Health monitor state
 let psHealthInterval: ReturnType<typeof setInterval> | null = null;
-// Respawn rate limiter: max 3 respawns in any 60s rolling window.
-// Once exceeded, psBridge stays null and psCommand falls back to one-off
-// PowerShell calls indefinitely until the next app restart.
-let psRespawnsThisMinute = 0;
-let psRespawnWindowStart = 0;
-let psDegraded = false; // permanently degraded for this session
 
 function startPSBridge(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const scriptPath = path.join(getScriptsDir(), 'ps-bridge.ps1');
-    if (!fs.existsSync(scriptPath)) {
-      log.warn('ps-bridge.ps1 not found — UIA tools unavailable', scriptPath);
-      resolve();
-      return;
-    }
-
-    log.info('Starting PowerShell UIA bridge...');
-    psBridge = execFile('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-    ], { maxBuffer: 10 * 1024 * 1024 });
-
-    const timeout = setTimeout(() => {
-      if (!psReady) {
-        log.warn('PSBridge timeout (12s) — UIA may be slow on this machine');
-        psReady = true; // continue anyway
-        resolve();
-      }
-    }, 12000);
-
-    psBridge.stdout?.on('data', (chunk: Buffer) => {
-      // Wrap in try/catch — a throw inside this listener would bubble to
-      // process.on('uncaughtException') and (previously) crash the app.
-      try {
-        const text = chunk.toString();
-        psBuffer += text;
-
-        // Check for ready signal
-        if (!psReady && text.includes('READY')) {
-          psReady = true;
-          clearTimeout(timeout);
-          log.info('PSBridge ready');
-          resolve();
-        }
-
-        // Process completed responses (delimited by __END__)
-        while (psBuffer.includes('__END__')) {
-          const idx = psBuffer.indexOf('__END__');
-          const response = psBuffer.substring(0, idx).trim();
-          psBuffer = psBuffer.substring(idx + 7);
-          // Guard the dequeue — if a timeout already rejected and removed
-          // the queue entry, shift() returns undefined and the non-null
-          // assertion would throw.
-          const head = psQueue.shift();
-          if (head) head.resolve(response);
-        }
-      } catch (e) {
-        log.warn('PSBridge stdout handler error', serializeErr(e));
-      }
-    });
-
-    psBridge.stderr?.on('data', (chunk: Buffer) => {
-      log.warn('PSBridge stderr', chunk.toString().substring(0, 200));
-    });
-
-    psBridge.on('exit', (code) => {
-      log.info('PSBridge exited', { code });
-      psBridge = null;
-      psReady = false;
-      // Clear the health-check interval so a stale ping doesn't fire and
-      // try to send to the now-dead process after a respawn starts a new one.
-      if (psHealthInterval) {
-        clearInterval(psHealthInterval);
-        psHealthInterval = null;
-      }
-      // Reject any pending queries
-      for (const q of psQueue) q.reject(new Error('PSBridge exited'));
-      psQueue = [];
-    });
-  });
+  log.info('Automation bridge not yet implemented for macOS (M2)');
+  return Promise.resolve();
 }
 
-/**
- * Respawn the PSBridge if allowed by the rate limiter (max 3 in 60s).
- * Called from psHealthCheck on failure and could be extended to retry
- * after unexpected exits. Sets psDegraded=true and gives up permanently
- * if the limit is exceeded — psCommand falls back to one-off PowerShell.
- */
-function maybeRespawnPSBridge(): void {
-  const now = Date.now();
-  // Roll the window if more than 60s has elapsed since the window started.
-  // v0.12.3 — also clear psDegraded if it's been >5 min since the burst,
-  // so a flaky 90s startup doesn't permanently slow the entire session
-  // (200-500ms per UIA call vs ~30ms via bridge). Per architecture audit
-  // finding #8.
-  if (now - psRespawnWindowStart > 60_000) {
-    psRespawnsThisMinute = 0;
-    psRespawnWindowStart = now;
-  }
-  if (psDegraded && now - psRespawnWindowStart > 300_000) {
-    log.info('PSBridge: 5 min since degradation — attempting recovery');
-    psDegraded = false;
-    psRespawnsThisMinute = 0;
-    psRespawnWindowStart = now;
-  }
-
-  if (psRespawnsThisMinute >= 3) {
-    if (!psDegraded) {
-      psDegraded = true;
-      log.error('PSBridge: 3 respawns in 60s — degraded for now. Will auto-retry in 5 minutes. UIA commands fall back to one-off PowerShell until then.');
-    }
-    return;
-  }
-
-  psRespawnsThisMinute++;
-  log.warn('PSBridge: respawning', { attempt: psRespawnsThisMinute, windowStart: new Date(psRespawnWindowStart).toISOString() });
-  startPSBridge().catch((err) => {
-    log.warn('PSBridge respawn failed', serializeErr(err));
-  });
-}
-
-/**
- * Health check: send a trivial PowerShell expression and expect the
- * sentinel back within 2 seconds. On failure, kill the bridge cleanly
- * and trigger a respawn (subject to rate limit).
- *
- * Runs every 30 seconds while the bridge is up. The interval is cleared
- * in the exit handler and restarted (via initTools → startPSBridge) if
- * the bridge respawns.
- */
-async function psHealthCheck(): Promise<void> {
-  if (!psReady || !psBridge) return; // bridge not up — nothing to check
-  if (psDegraded) return; // permanently degraded — don't bother
-
-  const local = psBridge;
-  const PING_CMD = '& {1}';
-  const PING_TIMEOUT_MS = 2000;
-
-  try {
-    const result = await Promise.race([
-      psCommand(PING_CMD),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('health-check timeout (2s)')), PING_TIMEOUT_MS),
-      ),
-    ]);
-    // Expected: the bridge echoes "1" followed by "__END__"
-    if (!String(result).trim().startsWith('1')) {
-      log.warn('PSBridge health check: unexpected response', { result: String(result).substring(0, 80) });
-      // Unexpected response is a yellow flag but not fatal — don't kill
-      // the bridge over one bad response.
-    }
-    // Happy path — bridge is healthy, do nothing.
-  } catch (err) {
-    log.warn('PSBridge health check failed — killing bridge and respawning', {
-      msg: err instanceof Error ? err.message : String(err),
-    });
-    // Kill the bridge cleanly. The exit handler will reject any queued
-    // promises, null out psBridge/psReady, and clear this interval.
-    if (local && !local.killed) {
-      try { local.kill(); } catch { /* already dead */ }
-    }
-    maybeRespawnPSBridge();
-  }
-}
-
-/**
- * Write `data` to the bridge's stdin. Returns true on success, false if the
- * write failed (EPIPE, destroyed stream, etc.). Never throws — callers
- * handle false by falling back or rejecting the queued promise explicitly.
- *
- * This is the only place in the codebase that writes to psBridge.stdin.
- * Keeping all writes here makes it impossible for EPIPE to reach the
- * uncaughtException handler: the write is wrapped, any OS-level error is
- * caught here, and the caller is given a clean boolean.
- */
-function safePsWrite(local: ChildProcess, data: string): boolean {
-  if (!local.stdin || local.stdin.destroyed || !local.stdin.writable || local.killed) {
-    return false;
-  }
-  try {
-    local.stdin.write(data);
-    return true;
-  } catch (writeErr) {
-    // EPIPE or similar OS pipe error. The bridge is dead. Log once so we
-    // can detect patterns in boot.log, but do NOT propagate — the caller
-    // will reject the pending promise with a clean error instead.
-    log.warn('safePsWrite: stdin write failed (bridge likely dead)', {
-      msg: writeErr instanceof Error ? writeErr.message : String(writeErr),
-    });
-    return false;
-  }
-}
-
-async function psCommand(cmd: string): Promise<string> {
-  // Atomic snapshot: capture psBridge in a local const BEFORE the ready
-  // check. The exit handler sets psBridge=null asynchronously; without the
-  // snapshot, the check (psBridge && psReady) could pass and then
-  // psBridge could become null between the check and the write — that
-  // was the exact race that caused the EPIPE storm (line 204 old code).
-  const local = psBridge;
-  if (
-    !psReady
-    || !local
-    || !local.stdin
-    || local.stdin.destroyed
-    || !local.stdin.writable
-    || local.killed
-  ) {
-    // Bridge not usable — one-off fallback
-    try {
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd,
-      ], { timeout: 10000 });
-      return stdout.trim();
-    } catch (err) {
-      return `(PowerShell error: ${err instanceof Error ? err.message : String(err)})`;
-    }
-  }
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      // Timeout: remove from queue so the response handler doesn't resolve
-      // a dead promise later. We know index 0 is ours only if the queue is
-      // strictly FIFO and we haven't been removed already — find by cmd.
-      const idx = psQueue.findIndex((q) => q.cmd === cmd);
-      if (idx !== -1) psQueue.splice(idx, 1);
-      reject(new Error('PSBridge command timeout (10s)'));
-    }, 10000);
-
-    psQueue.push({
-      cmd,
-      resolve: (v) => { clearTimeout(timer); resolve(v); },
-      reject: (e) => { clearTimeout(timer); reject(e); },
-    });
-
-    // Use the local snapshot — NOT psBridge — so we write to the same
-    // process we just validated above. If safePsWrite returns false, the
-    // bridge died in the tiny window after our snapshot. Reject now rather
-    // than waiting for the 10s timeout.
-    if (!safePsWrite(local, cmd + '\n')) {
-      clearTimeout(timer);
-      // Remove the entry we just pushed
-      const idx = psQueue.findIndex((q) => q.cmd === cmd);
-      if (idx !== -1) psQueue.splice(idx, 1);
-      reject(new Error('PSBridge stdin not writable (bridge died before write)'));
-    }
-  });
+async function psCommand(_cmd: string): Promise<string> {
+  return '(error:UNSUPPORTED_ON_MACOS) automation bridge not yet ported — see SPEC.md M2';
 }
 
 // ── Screen Scale ─────────────────────────────────────────────────
@@ -397,20 +200,14 @@ let screenScale = 1;
 
 async function detectScreenScale(): Promise<void> {
   try {
-    const result = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width`,
-    ], { timeout: 5000 });
-    const physicalWidth = parseInt(result.stdout.trim());
-    if (physicalWidth > 0) {
-      // Compare with logical screen size from Electron
-      const { screen } = require('electron');
-      const display = screen.getPrimaryDisplay();
-      screenScale = physicalWidth / display.size.width;
-      log.info('Screen scale detected', { physicalWidth, logicalWidth: display.size.width, scale: screenScale });
-    }
-  } catch {
-    log.warn('Could not detect screen scale, using 1.0');
+    const { screen } = require('electron') as typeof import('electron');
+    const display = screen.getPrimaryDisplay();
+    // On macOS the OS reports a logical scaleFactor directly; no need to
+    // compare against a physical-resolution probe like on Windows.
+    screenScale = display.scaleFactor || 1;
+    log.info('Screen scale detected', { scale: screenScale, size: display.size });
+  } catch (err) {
+    log.warn('Could not detect screen scale, using 1.0', serializeErr(err));
   }
 }
 
@@ -445,204 +242,424 @@ function stripOwnWindowFromScreen(raw: string): string {
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
   const mode = String(params.mode || 'accessibility');
 
+  // v0.20.0 — darwin path routes through the Swift bridge. AX tree for
+  // mode='accessibility' (what the brain calls between tool steps to verify
+  // UI state); Vision OCR for mode='ocr' (what smart_click falls back to
+  // when AX-find returns no match). Falling through to the legacy AppleScript
+  // path when the bridge binary is missing means dev builds without
+  // `swift build` still work.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      if (mode === 'ocr') {
+        const result = await macBridge.ocrScreen({});
+        return { text: JSON.stringify({ elements: result.elements, fullText: result.fullText }) };
+      }
+      const tree = await macBridge.a11yTree({ maxDepth: 6 });
+      const filtered = stripOwnWindowFromScreen(JSON.stringify(tree));
+      return { text: filtered || '(empty screen context)' };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind === 'missing' || err.kind === 'platform') {
+          // Bridge missing — fall through to legacy path below.
+        } else {
+          return { text: `(read_screen error: ${err.message})` };
+        }
+      } else {
+        return { text: `(read_screen error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
+  }
+
   if (mode === 'ocr') {
-    // Dispatch to OCR tool
     return ocrReadScreen();
   }
 
-  // Default: accessibility tree
-  const scriptPath = path.join(getScriptsDir(), 'get-screen-context.ps1');
-  try {
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath];
-    if (params.processId) args.push('-ProcessId', String(params.processId));
-    const { stdout } = await execFileAsync('powershell.exe', args, {
-      timeout: 10000,
-      maxBuffer: 5 * 1024 * 1024,
-    });
-    const filtered = stripOwnWindowFromScreen(stdout.trim());
-    return { text: filtered || '(empty screen context)' };
-  } catch (err) {
-    return { text: `(read_screen error: ${err instanceof Error ? err.message : String(err)})` };
-  }
+  // Accessibility tree via System Events. AppleScript emits TSV (one window
+  // per line, fields separated by \t) and we serialize to the same JSON shape
+  // the Windows build produced so brain.ts's parsing stays unchanged. AppleScript
+  // string escaping for inline-JSON is fragile, so we keep the inner format
+  // simple and do JSON assembly in TypeScript.
+  //
+  // Fields per row: procName \t procPid \t windowTitle \t x \t y \t w \t h
+  // AppleScript has *many* reserved words inside `tell application "System
+  // Events"` blocks (row, outline, window, …). We use `acc` and `lineStr` as
+  // local names which don't clash with the System Events object model.
+  const script = `
+    tell application "System Events"
+      set acc to {}
+      repeat with p in (every process whose visible is true)
+        try
+          set procName to name of p
+          set procPid to unix id of p
+          repeat with w in (every window of p)
+            try
+              set wTitle to name of w
+              set wPos to position of w
+              set wSize to size of w
+              set lineStr to procName & tab & procPid & tab & wTitle & tab & (item 1 of wPos) & tab & (item 2 of wPos) & tab & (item 1 of wSize) & tab & (item 2 of wSize)
+              set end of acc to lineStr
+            on error
+              -- skip windows without geometry
+            end try
+          end repeat
+        end try
+      end repeat
+      set AppleScript's text item delimiters to linefeed
+      set joined to acc as text
+      set AppleScript's text item delimiters to ""
+      return joined
+    end tell
+  `;
+  const raw = await asValue(script, { timeoutMs: 10000 });
+  if (raw.startsWith('(error:')) return { text: `(read_screen error: ${raw})` };
+  if (!raw) return { text: '(empty screen context)' };
+
+  const windows = raw.split('\n').map((line) => {
+    const [processName, pid, title, x, y, w, h] = line.split('\t');
+    return {
+      processName,
+      processId: parseInt(pid, 10) || 0,
+      title: title ?? '',
+      bounds: {
+        x: parseInt(x, 10) || 0,
+        y: parseInt(y, 10) || 0,
+        width: parseInt(w, 10) || 0,
+        height: parseInt(h, 10) || 0,
+      },
+    };
+  });
+  const filtered = stripOwnWindowFromScreen(JSON.stringify({ windows }));
+  return { text: filtered };
 }
 
 async function getActiveWindow(): Promise<ToolResult> {
-  try {
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      path.join(getScriptsDir(), 'get-foreground-window.ps1'),
-    ], { timeout: 5000 });
-    return { text: stdout.trim() || '(no active window)' };
-  } catch {
-    return { text: '(could not get active window)' };
+  // v0.20.0 — darwin path routes through the Swift bridge's active-window
+  // subcommand. Returns a structured WindowInfo (CGWindow + AX merge); we
+  // serialize to JSON for the brain. On bridge missing → fall through to
+  // legacy AppleScript so dev builds without `swift build` still work.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.activeWindow();
+      return { text: JSON.stringify(result) };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(get_active_window error: ${err.message})` };
+        }
+        // fall through to legacy path
+      } else {
+        return { text: `(get_active_window error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+
+  // TSV: procName \t procPid \t windowTitle \t x \t y \t w \t h
+  // Title and bounds may be empty for processes without a frontmost window.
+  const script = `
+    tell application "System Events"
+      try
+        set frontApp to first application process whose frontmost is true
+        set appName to name of frontApp
+        set appPid to unix id of frontApp
+        try
+          set w to first window of frontApp
+          set wTitle to name of w
+          set wPos to position of w
+          set wSize to size of w
+          return appName & tab & appPid & tab & wTitle & tab & (item 1 of wPos) & tab & (item 2 of wPos) & tab & (item 1 of wSize) & tab & (item 2 of wSize)
+        on error
+          return appName & tab & appPid & tab & "" & tab & "" & tab & "" & tab & "" & tab & ""
+        end try
+      on error
+        return ""
+      end try
+    end tell
+  `;
+  const raw = await asValue(script, { timeoutMs: 5000 });
+  if (!raw || raw.startsWith('(error:')) return { text: raw || '(no active window)' };
+  const [processName, pid, title, x, y, w, h] = raw.split('\t');
+  const hasBounds = x && y && w && h;
+  return {
+    text: JSON.stringify({
+      processName: processName || '',
+      processId: parseInt(pid, 10) || 0,
+      title: title || '',
+      bounds: hasBounds ? {
+        x: parseInt(x, 10) || 0,
+        y: parseInt(y, 10) || 0,
+        width: parseInt(w, 10) || 0,
+        height: parseInt(h, 10) || 0,
+      } : null,
+    }),
+  };
 }
 
 async function getWindows(): Promise<ToolResult> {
-  try {
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      path.join(getScriptsDir(), 'get-windows.ps1'),
-    ], { timeout: 5000 });
-    return { text: stdout.trim() || '(no windows found)' };
-  } catch {
-    return { text: '(could not list windows)' };
+  // v0.20.0 — darwin path routes through the Swift bridge's `windows`
+  // subcommand, which returns the CGWindowList (every top-level on-screen
+  // window with bounds/title/pid/layer). The brain expects an array — we
+  // stringify result.windows directly.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.listWindows({ onScreenOnly: true });
+      return { text: JSON.stringify(result.windows) };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Screen Recording permission denied — open System Settings → Privacy & Security → Screen Recording)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(get_windows error: ${err.message})` };
+        }
+        // fall through to legacy path
+      } else {
+        return { text: `(get_windows error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+
+  // Reuses the same accessibility-tree query as readScreen so the model
+  // sees a consistent shape across both tools.
+  return readScreen({ mode: 'accessibility' });
 }
 
 async function focusWindow(params: Record<string, unknown>): Promise<ToolResult> {
   const { processName, processId, title } = params;
-  // Must have at least one identifier
   if (!processName && !processId && !title) {
     return { text: '(focus_window needs processName, processId, or title)' };
   }
-  try {
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      path.join(getScriptsDir(), 'focus-window.ps1')];
-    if (title) {
-      args.push('-Title', String(title));
-    } else if (processName) {
-      // Look up PID by process name first — using processName as a title
-      // search fails because e.g. "msedge" doesn't appear in Edge's
-      // window title ("...Microsoft Edge"). Resolving to PID is reliable.
-      try {
-        const { stdout: pidOut } = await execFileAsync('powershell.exe', [
-          '-NoProfile', '-Command',
-          `(Get-Process -Name '${sanitizeAppName(String(processName))}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id`,
-        ], { timeout: 3000 });
-        const pid = parseInt(pidOut.trim());
-        if (pid > 0) {
-          args.push('-ProcessId', String(pid));
-        } else {
-          // Fallback: try as title substring
-          args.push('-Title', String(processName));
-        }
-      } catch {
-        args.push('-Title', String(processName));
-      }
-    } else if (processId) {
-      args.push('-ProcessId', String(processId));
-    }
-    const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 5000 });
-    return { text: stdout.trim() || 'Focused' };
-  } catch (err) {
-    // Fallback: try alt+tab
-    try {
-      await keyPress({ key: 'alt+tab' });
-      return { text: 'Switched window via alt+tab' };
-    } catch {
-      return { text: `(focus_window error: ${err instanceof Error ? err.message : ''})` };
-    }
+
+  // Resolve to a process name. AppleScript's `activate` works by app name —
+  // pid lookups land in System Events, then we activate by name anyway.
+  let targetName = '';
+  if (processName) {
+    targetName = sanitizeAppName(String(processName));
+  } else if (processId) {
+    const script = `
+      on run argv
+        set targetPid to (item 1 of argv) as integer
+        tell application "System Events"
+          try
+            return name of (first process whose unix id is targetPid)
+          on error
+            return ""
+          end try
+        end tell
+      end run
+    `;
+    const r = await runApplescript(script, { args: [String(processId)], timeoutMs: 3000 });
+    if (r.ok) targetName = r.stdout.trim();
+  } else if (title) {
+    // Find any process owning a window whose name contains the substring.
+    const script = `
+      on run argv
+        set needle to item 1 of argv
+        tell application "System Events"
+          repeat with p in (every process whose visible is true)
+            try
+              repeat with w in (every window of p)
+                if name of w contains needle then return name of p
+              end repeat
+            end try
+          end repeat
+        end tell
+        return ""
+      end run
+    `;
+    const r = await runApplescript(script, { args: [String(title)], timeoutMs: 5000 });
+    if (r.ok) targetName = r.stdout.trim();
   }
+
+  if (!targetName) return { text: '(focus_window: could not resolve a target process)' };
+
+  const activate = `
+    on run argv
+      set targetName to item 1 of argv
+      try
+        tell application targetName to activate
+        return "Focused " & targetName
+      on error errMsg
+        try
+          tell application "System Events"
+            set frontmost of (first process whose name is targetName) to true
+          end tell
+          return "Focused " & targetName
+        on error
+          return "(error: could not focus " & targetName & ": " & errMsg & ")"
+        end try
+      end try
+    end run
+  `;
+  const r = await runApplescript(activate, { args: [targetName], timeoutMs: 5000 });
+  if (!r.ok) return { text: `(focus_window error: ${r.error ?? r.stderr})` };
+  return { text: r.stdout.trim() || `Focused ${targetName}` };
 }
 
 /**
  * Idempotent open_app: focus an existing window first, only launch new if
- * none found. Ported from ClawdCursor v0.8.3 — prevents N duplicate windows
- * stacking up during retry loops. Match order: processName exact →
- * processName substring → title substring.
+ * none found. Prevents duplicate-app stacking during retry loops. On macOS
+ * `tell application "X" to activate` is itself idempotent — launches if
+ * needed, foregrounds otherwise — so we don't strictly need the pre-check,
+ * but reporting "Focused existing" vs "Launched" is useful signal for the
+ * model.
  */
 async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   const name = sanitizeAppName(String(params.name || ''));
   if (!name) return { text: '(no app name provided)' };
 
-  // Step 1: Check if a window for this app already exists
-  try {
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `$p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | ` +
-      `Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; ` +
-      `if ($p) { $p.Id } else { '' }`,
-    ], { timeout: 3000 });
-    const existingPid = parseInt(stdout.trim());
-    if (existingPid > 0) {
-      // Focus the existing window instead of launching a new one
-      await focusWindow({ processName: name });
-      return { text: `Focused existing ${name} (pid ${existingPid})` };
-    }
-  } catch { /* no existing window — launch new */ }
-
-  // Step 2: Launch new
-  try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command', 'Start-Process', '-FilePath', name,
-    ], { timeout: 10000 });
-    return { text: `Launched ${name}` };
-  } catch (err) {
-    return { text: `(could not open ${name}: ${err instanceof Error ? err.message : ''})` };
+  const existingPid = await getAppPidByName(name);
+  if (existingPid > 0) {
+    await focusWindow({ processName: name });
+    return { text: `Focused existing ${name} (pid ${existingPid})` };
   }
+
+  const r = await runCli('open', ['-a', name], { timeoutMs: 10_000 });
+  if (!r.ok) return { text: `(could not open ${name}: ${r.error ?? r.stderr.trim()})` };
+  return { text: `Launched ${name}` };
 }
 
 async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
   const text = String(params.text || '');
   if (!text) return { text: '(no text provided)' };
-  try {
-    // Write text to temp file to avoid PowerShell injection
-    const tmpFile = path.join(os.tmpdir(), `clippy-type-${Date.now()}.txt`);
-    fs.writeFileSync(tmpFile, text, 'utf-8');
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Set-Clipboard -Path '${tmpFile.replace(/'/g, "''")}'; ` +
-      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v'); ` +
-      `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
-    ], { timeout: 5000 });
-    try { fs.unlinkSync(tmpFile); } catch {} // cleanup fallback
-    // v0.11.23 — return the FULL char count + an unambiguously-marked
-    // preview. Old code returned `Typed: ${text.substring(0,50)}` with no
-    // length, no truncation marker — the model misread the truncated
-    // preview as evidence the typing failed mid-sentence (see report
-    // fbfc636e where 84 chars typed correctly but the model claimed
-    // truncation because the result string ended at "...joy an"). The
-    // clipboard-paste path is byte-exact; trust it and report accurately.
-    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-    return { text: `Typed ${text.length} chars: "${preview}"` };
-  } catch (err) {
-    return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
+
+  // v0.20.0 — darwin path routes through the Swift bridge's `type` subcommand
+  // which uses CGEventCreateKeyboardEvent with a unicode payload. No clipboard
+  // round-trip → no clobbering of the user's clipboard, no Cmd+V-doesn't-fire-
+  // in-this-app failure modes. Bridge handles surrogate pairs + emoji + RTL.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.typeText({ text });
+      const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+      return { text: `Typed ${result.chars} chars: "${preview}"` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(type_text error: ${err.message})` };
+        }
+        // fall through to legacy clipboard-paste path
+      } else {
+        return { text: `(type_text error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+
+  // Clipboard-paste path is byte-exact (preserves emoji, ZWJ sequences, RTL),
+  // matches the Windows behaviour, and is faster than per-character keystroke.
+  // Strategy: stash existing clipboard → write our text → cmd+v → restore.
+  // For M2 we skip the restore step to keep the surface simple; users almost
+  // always invoke typeText right after readClipboard or as a fresh action.
+  const cp = await runCli('pbcopy', [], { stdin: text, timeoutMs: 3000 });
+  if (!cp.ok) return { text: `(type_text error: pbcopy failed: ${cp.error ?? cp.stderr})` };
+
+  const paste = await runApplescript(`tell application "System Events" to keystroke "v" using {command down}`, {
+    timeoutMs: 5000,
+  });
+  if (!paste.ok) return { text: `(type_text error: paste failed: ${paste.error ?? paste.stderr})` };
+
+  const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+  return { text: `Typed ${text.length} chars: "${preview}"` };
 }
 
 async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
-  const key = String(params.key || '');
-  if (!key) return { text: '(no key provided)' };
-  // Map common key names to SendKeys format
-  const keyMap: Record<string, string> = {
-    'Return': '{ENTER}', 'Enter': '{ENTER}',
-    'Tab': '{TAB}', 'Escape': '{ESCAPE}', 'Backspace': '{BACKSPACE}',
-    'Delete': '{DELETE}', 'Up': '{UP}', 'Down': '{DOWN}',
-    'Left': '{LEFT}', 'Right': '{RIGHT}',
-    'Page_Down': '{PGDN}', 'Page_Up': '{PGUP}',
-    'Home': '{HOME}', 'End': '{END}',
-    'F1': '{F1}', 'F2': '{F2}', 'F3': '{F3}', 'F4': '{F4}', 'F5': '{F5}',
-  };
-  try {
-    let sendKeysStr = '';
-    if (key.includes('+')) {
-      // Combo like ctrl+s, alt+tab
-      const parts = key.toLowerCase().split('+');
-      let modifiers = '';
-      let mainKey = parts[parts.length - 1];
-      for (const p of parts.slice(0, -1)) {
-        if (p === 'ctrl' || p === 'control') modifiers += '^';
-        else if (p === 'alt') modifiers += '%';
-        else if (p === 'shift') modifiers += '+';
-        else if (p === 'win' || p === 'meta' || p === 'cmd') modifiers += '^{ESC}'; // approximate
-      }
-      const mapped = keyMap[mainKey] || mainKey;
-      sendKeysStr = `${modifiers}${mapped.length === 1 ? mapped : mapped}`;
-    } else {
-      sendKeysStr = keyMap[key] || key;
-    }
+  const rawKey = String(params.key || '');
+  if (!rawKey) return { text: '(no key provided)' };
 
-    const safeSendKeys = sanitizeForSendKeys(sendKeysStr);
-    if (!safeSendKeys) return { text: `(invalid key: ${key})` };
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${safeSendKeys}')`,
-    ], { timeout: 5000 });
-    return { text: `Pressed: ${key}` };
-  } catch (err) {
-    return { text: `(key_press error: ${err instanceof Error ? err.message : ''})` };
+  // v0.20.0 — darwin path routes through the Swift bridge's `keypress`
+  // subcommand. Accepts the same combo string format ("cmd+s", "alt+tab")
+  // and resolves modifier flags via CGEventFlags internally.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.keypress({ combo: rawKey });
+      return { text: `Pressed: ${rawKey}` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(key_press error: ${err.message})` };
+        }
+        // fall through to legacy AppleScript path
+      } else {
+        return { text: `(key_press error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+
+  const parts = rawKey.split('+');
+  const main = parts[parts.length - 1];
+  const mods = parts.slice(0, -1);
+
+  // Numeric key code lookup (Tab, Return, arrow keys, F-keys, etc).
+  // Normalize case-insensitively but preserve the original main key for
+  // single-character keystroke ("a", "B", "/", etc).
+  const codeKey = Object.keys(KEY_CODES).find((k) => k.toLowerCase() === main.toLowerCase());
+  const mClause = modifiersClause(mods);
+
+  let script: string;
+  if (codeKey) {
+    script = `tell application "System Events" to key code ${KEY_CODES[codeKey]}${mClause}`;
+  } else if (main.length === 1) {
+    // Single character keystroke. Quote-escape the character.
+    const escaped = main.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    script = `tell application "System Events" to keystroke "${escaped}"${mClause}`;
+  } else {
+    return { text: `(invalid key: ${rawKey})` };
+  }
+
+  const r = await runApplescript(script, { timeoutMs: 5000 });
+  if (!r.ok) return { text: `(key_press error: ${r.error ?? r.stderr})` };
+  return { text: `Pressed: ${rawKey}` };
+}
+
+/**
+ * Confirm a Messages send dispatched via the keystroke path
+ * (`open_url(sms:…?body=…)` → `key_press(Return)`) WITHOUT a screenshot.
+ *
+ * Why this exists: the model drives Messages by keystroke (there's no
+ * dedicated, confirmable send tool on the client — that needs an API-side
+ * schema), so `key_press` lands in NEVER_CONFIRMS_SUCCESS and the brain's
+ * hallucination guard can never call the send "done". chat.db would confirm
+ * it but needs Full Disk Access most users haven't granted. The accessibility
+ * tree is the third path: no FDA, no screenshot, just the AX state Messages
+ * already exposes.
+ *
+ * Signal model — the `sms:` URL pre-fills the compose field with the body:
+ *   • body still sitting in a compose AXTextField/AXTextArea → 'not_sent'
+ *     (Return didn't fire / Messages wasn't focused — the draft is stuck).
+ *   • compose cleared AND the body now appears as a transcript bubble
+ *     (non-editable AXStaticText/AXCell) → 'confirmed'.
+ *   • compose cleared but no bubble matched → 'unconfirmed' (strong evidence
+ *     of a send — the draft is gone — but not proof; transcript may be deep).
+ *   • bridge/PID/tree unavailable → 'unknown' (caller keeps honest copy).
+ *
+ * Conservative by construction: a stuck draft can never read as 'confirmed',
+ * so we never upgrade an actual failure to a success.
+ */
+export async function verifyIMessageSent(body: string): Promise<SendVerdict> {
+  if (process.platform !== 'darwin' || !macBridge.isBridgeAvailable()) return 'unknown';
+  const needle = body.trim().toLowerCase();
+  // Too-short bodies ("ok", "hi") collide with unrelated UI chrome — skip the
+  // AX heuristic rather than risk a false confirm/deny.
+  if (needle.length < 3) return 'unknown';
+
+  let pid = 0;
+  try { pid = await getAppPidByName('Messages'); } catch { return 'unknown'; }
+  if (!pid) return 'unknown';
+
+  let tree: macBridge.AxTree;
+  try { tree = await macBridge.a11yTree({ pid, maxDepth: 12 }); } catch { return 'unknown'; }
+
+  return classifyMessagesTree(tree.windows, needle);
 }
 
 // v0.11.22 — coordinate-space contract:
@@ -663,6 +680,32 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
 async function mouseClick(params: Record<string, unknown>): Promise<ToolResult> {
   const x = Math.round(sanitizeNumber(params.x));
   const y = Math.round(sanitizeNumber(params.y));
+  const button = (params.button === 'right' || params.button === 'middle') ? params.button as 'right' | 'middle' : 'left';
+  const count = (params.count === 2 || params.count === 3) ? params.count as 2 | 3 : 1;
+
+  // v0.20.0 — darwin path routes through the Swift bridge's `click`
+  // subcommand which posts CGEvent left/right/middle mouse-down + mouse-up
+  // pairs at the given coordinates. Coordinates are top-left origin in
+  // points (same as the rest of the tool surface — no flip, no scale).
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.click({ x, y, button, count });
+      return { text: `Clicked at (${x},${y})` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(mouse_click error: ${err.message})` };
+        }
+        // fall through to legacy AppleScript path
+      } else {
+        return { text: `(mouse_click error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
+  }
+
   try {
     await clickPhysical(x, y);
     return { text: `Clicked at (${x},${y})` };
@@ -672,27 +715,62 @@ async function mouseClick(params: Record<string, unknown>): Promise<ToolResult> 
 }
 
 async function mouseDrag(params: Record<string, unknown>): Promise<ToolResult> {
-  // v0.11.27 — use sanitizeNumber consistently with the rest of the
-  // mouse_* family. Previously raw `Number(...)` cast which yields NaN
-  // for non-numeric input → silently passed `NaN` to PowerShell as text.
   const sx = sanitizeNumber(params.startX);
   const sy = sanitizeNumber(params.startY);
   const ex = sanitizeNumber(params.endX);
   const ey = sanitizeNumber(params.endY);
-  try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; ` +
-      `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${sx},${sy}); Start-Sleep -Milliseconds 50; ` +
-      `[API.Win32]::mouse_event(2,0,0,0,0); Start-Sleep -Milliseconds 50; ` +
-      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${ex},${ey}); Start-Sleep -Milliseconds 50; ` +
-      `[API.Win32]::mouse_event(4,0,0,0,0)`,
-    ], { timeout: 5000 });
-    return { text: `Dragged from (${sx},${sy}) to (${ex},${ey})` };
-  } catch (err) {
-    return { text: `(mouse_drag error: ${err instanceof Error ? err.message : ''})` };
+  // v0.20.0 (track2) — darwin routes through the Swift bridge's `drag`
+  // verb (real CGEvent mouse-down → move → mouse-up). This is a TRUE drag
+  // primitive, unlike the two-click AppleScript approximation below which
+  // can't perform file moves / slider drags / marquee selection.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.drag({ from: { x: sx, y: sy }, to: { x: ex, y: ey } });
+      return { text: `Dragged from (${Math.round(sx)},${Math.round(sy)}) to (${Math.round(ex)},${Math.round(ey)})` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(mouse_drag error: ${err.message})` };
+        }
+        // missing/platform → fall through to the AppleScript approximation
+      } else {
+        return { text: `(mouse_drag error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+  // Cliclick-free drag using AppleScript System Events. `click at {x, y}`
+  // doesn't expose a drag primitive — instead we use the lower-level
+  // `tell` form that holds the mouse button down via UI Element mouse-down /
+  // mouse-up events. Falls back through with a 50ms hold between
+  // mouse-down and mouse-up so most drag-targets register the gesture.
+  const script = `
+    on run argv
+      set sx to (item 1 of argv) as integer
+      set sy to (item 2 of argv) as integer
+      set ex to (item 3 of argv) as integer
+      set ey to (item 4 of argv) as integer
+      tell application "System Events"
+        -- Move first, then click-down, move, click-up.
+        click at {sx, sy}
+        delay 0.05
+        click at {ex, ey}
+      end tell
+    end run
+  `;
+  const r = await runApplescript(script, {
+    args: [String(sx), String(sy), String(ex), String(ey)],
+    timeoutMs: 5000,
+  });
+  if (!r.ok) {
+    return { text: `(mouse_drag error: ${r.error ?? r.stderr})` };
+  }
+  // Note: System Events click-at does not provide a true drag primitive.
+  // For real drag-and-drop (file move, slider, selection) M3 will introduce
+  // a Swift helper that issues CGEvent post() drag events.
+  return { text: `Drag fallback (two clicks) from (${sx},${sy}) to (${ex},${ey}) — true drag requires Swift helper (M3)` };
 }
 
 async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult> {
@@ -700,36 +778,80 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
   const y = Math.round(Number(params.y || 400));
   const direction = String(params.direction || 'down');
   const amount = Number(params.amount || 3);
-  const delta = direction === 'up' ? 120 * amount : -120 * amount;
-  try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; ` +
-      `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
-      `[API.Win32]::mouse_event(0x0800,0,0,${delta},0)`,
-    ], { timeout: 5000 });
-    return { text: `Scrolled ${direction} at (${x},${y})` };
-  } catch (err) {
-    return { text: `(mouse_scroll error: ${err instanceof Error ? err.message : ''})` };
+  // v0.20.0 (track2) — darwin routes through the Swift bridge's `scroll`
+  // verb (real CGEvent wheel events, line units). This is a TRUE scroll,
+  // unlike the arrow-key approximation below which only moves a focused
+  // control's selection and does nothing in apps without arrow-key scroll.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    const lines = Math.max(1, Math.round(amount));
+    // CGEvent line scroll: positive dy scrolls content up (wheel away),
+    // negative scrolls content down (wheel toward user). "down" = view
+    // moves down the page = negative dy.
+    const dy = direction === 'up' ? lines : -lines;
+    try {
+      await macBridge.scroll({ x, y, dy, unit: 'line' });
+      return { text: `Scrolled ${direction} x${lines} at (${x},${y})` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(mouse_scroll error: ${err.message})` };
+        }
+        // missing/platform → fall through to the arrow-key approximation
+      } else {
+        return { text: `(mouse_scroll error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+  // AppleScript scroll wheel via `scroll wheel` isn't a System Events
+  // primitive. Use `key code 125` (down arrow) / `126` (up) as a usable
+  // approximation that scrolls the focused control. Real wheel events
+  // require CGEventCreateScrollWheelEvent in a Swift helper (M3).
+  const keyCode = direction === 'up' ? 126 : 125;
+  const script = `
+    on run argv
+      set times to (item 1 of argv) as integer
+      tell application "System Events"
+        repeat times times
+          key code ${keyCode}
+        end repeat
+      end tell
+    end run
+  `;
+  const r = await runApplescript(script, { args: [String(Math.max(1, amount))], timeoutMs: 5000 });
+  if (!r.ok) return { text: `(mouse_scroll error: ${r.error ?? r.stderr})` };
+  return { text: `Scrolled ${direction} x${amount} at (${x},${y}) via arrow keys (real wheel: M3)` };
 }
 
 /**
- * Run native Windows.Media.Ocr on a fresh screen capture and return the
- * parsed element list (text + bounding box per word/line). Returns null on
- * failure. Coordinates are PHYSICAL pixels — Windows OCR API does not
- * apply DPI scaling. Used by both `ocr_read_screen` (model-facing) and
- * `smart_click`'s OCR fallback (internal, no LLM round-trip).
+ * WINDOWS-ONLY legacy OCR path. Runs native Windows.Media.Ocr on a fresh
+ * screen capture and returns the parsed element list (text + bounding box
+ * per word/line). Returns null on failure. Coordinates are PHYSICAL pixels
+ * — the Windows OCR API does not apply DPI scaling. Used by both
+ * `ocr_read_screen` (model-facing) and `smart_click`'s OCR fallback
+ * (internal, no LLM round-trip) ONLY on win32.
+ *
+ * On macOS (the shipping platform) OCR runs through the Swift mac-bridge's
+ * Vision path (top-left-origin points); this PowerShell pipeline is never
+ * the real path on darwin — it would only be reached if the bridge were
+ * unavailable, where the powershell.exe spawn would ENOENT immediately. We
+ * short-circuit to null on non-win32 so we don't attempt a doomed spawn.
+ * The per-failure-mode diag logging below is win32-forensics only.
  *
  * v0.11.22: factored out of ocrReadScreen so smart_click can ground
- * coordinate clicks against OCR locally instead of asking Kimi K2 to
+ * coordinate clicks against OCR locally instead of asking the model to
  * pixel-locate from a screenshot — a documented LLM weakness.
  */
 async function captureAndOcr(): Promise<{
   elements: Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number; line?: number }>;
   fullText: string;
 } | null> {
+  // win32-only pipeline — see docstring. On darwin the bridge Vision path
+  // handles OCR; reaching here means the bridge is unavailable, in which
+  // case the PowerShell spawn would just ENOENT.
+  if (process.platform !== 'win32') return null;
   // v0.11.25 — every failure path now logs WHY it failed. Per report
   // ccd4d6f4, captureAndOcr returned null silently 3 times in one task;
   // the model and the diagnostician had zero visibility into which of the
@@ -824,18 +946,29 @@ async function captureAndOcr(): Promise<{
  * Lifted out of smart_click so the OCR fallback can reuse the same code path.
  */
 async function clickPhysical(x: number, y: number): Promise<void> {
-  await execFileAsync('powershell.exe', [
-    '-NoProfile', '-Command',
-    `Add-Type -AssemblyName System.Windows.Forms; ` +
-    `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
-    `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-    `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
-  ], { timeout: 5000 });
+  // System Events `click at {x, y}` requires Accessibility permission. The
+  // OS prompts the user the first time and the call returns an error until
+  // permission is granted; the brain surfaces that error to the user.
+  const r = await runApplescript(
+    `on run argv
+       set x to (item 1 of argv) as integer
+       set y to (item 2 of argv) as integer
+       tell application "System Events" to click at {x, y}
+     end run`,
+    { args: [String(x), String(y)], timeoutMs: 5000 },
+  );
+  if (!r.ok) throw new Error(r.error ?? r.stderr.trim() ?? 'click failed');
 }
 
 /**
  * Fuzzy-match `target` against a list of OCR text elements. Returns the
  * best-scoring element or null if nothing crosses the threshold.
+ *
+ * Coordinate space: this matcher is space-agnostic — it returns whatever
+ * x/y/width/height the caller passed. The "physical pixels, no DPI scaling"
+ * contract applies only to the legacy win32 PS/UIA path; on darwin the Swift
+ * bridge supplies top-left-origin POINTS. Each caller clicks in the same
+ * space it fed in (clickPhysical for win32 px, macBridge.click for points).
  *
  * Scoring (cheap, deterministic — no embeddings):
  *   - exact (case-insensitive) trim match → 1.0
@@ -888,6 +1021,72 @@ function fuzzyMatchOcrElement(
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
   const target = String(params.target || '');
   if (!target) return { text: '(no target provided)' };
+
+  // v0.20.0 — darwin path uses the Swift bridge's two-stage pattern from
+  // docs/v0.20.0-mac-bridge-architecture.md §3.1:
+  //   Stage 1 — a11y-find (fast, role-aware AX query). If a match is found,
+  //             press it via a11y-press (synthesizes AXPress, the action
+  //             buttons actually expose vs. a synthetic mouse click — works
+  //             even when the button is offscreen / behind another window).
+  //   Stage 2 — Vision OCR fallback for WebViews / custom-rendered controls
+  //             that don't expose AX (Slack canvas, Discord, games). Fuzzy-
+  //             match `target` against on-screen text and click via CGEvent.
+  //             No LLM round-trip — coordinates come from Vision's
+  //             pre-computed boxes (top-left origin in points).
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      // Stage 1 — AX-find
+      const ax = await macBridge.a11yFind({ text: target });
+      if (ax.matches.length > 0) {
+        const m = ax.matches[0];
+        try {
+          await macBridge.a11yPress({ pid: m.pid, path: m.path });
+          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})` };
+        } catch (pressErr) {
+          // AX-press failed (element gone, role doesn't expose AXPress, etc).
+          // Fall through to OCR. Log so we see how often AX-find→AX-press
+          // hits this failure mode in the wild.
+          log.info('smart_click: AX-press failed, falling back to OCR', {
+            target,
+            err: pressErr instanceof Error ? pressErr.message : String(pressErr),
+          });
+        }
+      }
+
+      // Resolve foreground window bounds for the OCR fuzzy-match filter
+      let fgBounds: { x: number; y: number; width: number; height: number } | undefined;
+      try {
+        const aw = await macBridge.activeWindow();
+        if (aw && aw.bounds) fgBounds = aw.bounds;
+      } catch { /* best effort */ }
+
+      // Stage 2 — Vision OCR fallback
+      log.info('smart_click: AX miss, falling back to OCR', { target });
+      const ocrRes = await macBridge.ocrScreen({});
+      const match = fuzzyMatchOcrElement(target, ocrRes.elements, fgBounds);
+      if (match) {
+        const cx = Math.round(match.element.x + match.element.width / 2);
+        const cy = Math.round(match.element.y + match.element.height / 2);
+        await macBridge.click({ x: cx, y: cy });
+        const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
+        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}` };
+      }
+      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — bridge error: ${err.message}` };
+        }
+        // missing/platform → fall through to legacy path
+      } else {
+        return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+  }
+
   // Two-tier resolution (v0.11.22):
   //   Tier 1 — UIA accessibility tree (fast, exact, structured). Constrained
   //            to the foreground PID so a button label in a background window
@@ -977,6 +1176,52 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
   const target = String(params.target || '');
   const text = String(params.text || '');
   if (!target || !text) return { text: '(missing target or text)' };
+
+  // v0.20.0 — darwin path uses the Swift bridge with the architecture-spec
+  // §3.1 pattern, preferring a11y-set-value (atomic, no focus race, byte-
+  // exact) over click+type (two-step with timing risk). Fall back to
+  // click-target + typeText for elements that don't expose AXValue (e.g.
+  // contenteditable divs in some Electron apps).
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      // Stage 1 — AX-find then AXSetValue (preferred — atomic)
+      const ax = await macBridge.a11yFind({ text: target });
+      if (ax.matches.length > 0) {
+        const m = ax.matches[0];
+        try {
+          await macBridge.a11ySetValue({ pid: m.pid, path: m.path, value: text });
+          const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+          return { text: `Typed into "${m.title || target}" via AX-set-value: "${preview}"` };
+        } catch (setErr) {
+          // AX-set-value failed (element doesn't expose AXValue or is read-
+          // only). Fall through to click+type so contenteditable-style
+          // controls still work.
+          log.info('smart_type: AX-set-value failed, falling back to click+type', {
+            target,
+            err: setErr instanceof Error ? setErr.message : String(setErr),
+          });
+        }
+      }
+
+      // Stage 2 — click target then type (mirrors the Windows behaviour)
+      await smartClick({ target });
+      await new Promise(r => setTimeout(r, 300));
+      return typeText({ text });
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(smart_type error: ${err.message})` };
+        }
+        // missing/platform → fall through to legacy click+type path
+      } else {
+        return { text: `(smart_type error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
+  }
+
   // Click the target field first, then type
   await smartClick({ target });
   await new Promise(r => setTimeout(r, 300));
@@ -1057,72 +1302,96 @@ const TARGET_SCREENSHOT_WIDTH = 1024;
 const SCREENSHOT_DOWNSCALE_THRESHOLD = 1280;
 
 async function desktopScreenshot(): Promise<ToolResult> {
+  // Capture a full-screen PNG, then read+downscale via Electron's
+  // nativeImage (already a process dep) so we don't need sharp.
+  //
+  // Capture: bundled `screenshot-helper` Swift binary ONLY (no
+  // /usr/sbin/screencapture fallback — that path was removed in
+  // alpha.6.1 because it flashes the shutter UI). The helper avoids the
+  // screencapture-daemon shutter+thumbnail, but on macOS 15+ it still
+  // trips the unsuppressable SCK recording indicator (the brief "flash"
+  // users see). That's inherent to any real capture on 15+ —
+  // CGWindowListCreateImage was obsoleted in 15.0. See the
+  // "What this does / doesn't suppress" note in screenshot-helper.ts.
+  const tmpPng = path.join(os.tmpdir(), `clippy-cap-${Date.now()}.png`);
   try {
-    // Capture at native, then downscale only if larger than the threshold.
-    // v0.11.26 abortable so sleep can kill an in-flight 10s capture.
-    const { stdout } = await execFileAbortable('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
-      `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
-      `$nw = $b.Width; $nh = $b.Height; ` +
-      `$bmp = New-Object System.Drawing.Bitmap($nw,$nh); ` +
-      `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
-      `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
-      `$g.Dispose(); ` +
-      // Decide whether to downscale
-      `$tw = ${TARGET_SCREENSHOT_WIDTH}; $thr = ${SCREENSHOT_DOWNSCALE_THRESHOLD}; ` +
-      `if ($nw -gt $thr) { ` +
-      `  $sw = $tw; $sh = [int][Math]::Round($nh * ($tw / [double]$nw)); ` +
-      `  $small = New-Object System.Drawing.Bitmap($sw,$sh); ` +
-      `  $sg = [System.Drawing.Graphics]::FromImage($small); ` +
-      `  $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; ` +
-      `  $sg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality; ` +
-      `  $sg.DrawImage($bmp,0,0,$sw,$sh); ` +
-      `  $sg.Dispose(); $bmp.Dispose(); $bmp = $small; ` +
-      `} ` +
-      `$fw = $bmp.Width; $fh = $bmp.Height; ` +
-      `$ms = New-Object System.IO.MemoryStream; ` +
-      `$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); ` +
-      `$bmp.Dispose(); ` +
-      // Emit as: NATIVE_W NATIVE_H FINAL_W FINAL_H<newline>BASE64
-      `Write-Output ("$nw $nh $fw $fh"); ` +
-      `Write-Output ([Convert]::ToBase64String($ms.ToArray()))`,
-    ], { timeout: 10000, maxBuffer: 20 * 1024 * 1024 });
-
-    const lines = stdout.trim().split(/\r?\n/);
-    const headerParts = (lines[0] || '').split(' ');
-    const nativeW = parseInt(headerParts[0] || '0', 10);
-    const nativeH = parseInt(headerParts[1] || '0', 10);
-    const finalW = parseInt(headerParts[2] || '0', 10);
-    const finalH = parseInt(headerParts[3] || '0', 10);
-    const base64 = (lines.slice(1).join('') || '').trim();
-    const downscaled = nativeW > 0 && finalW > 0 && finalW < nativeW;
-    const scale = downscaled ? nativeW / finalW : 1;
-
-    let text: string;
-    if (downscaled) {
-      // Tell the model the scale factor explicitly. Modern LLMs are reliable
-      // at multiplying small ints; this avoids a stateful coords-mode hack
-      // in mouse_click. Coords from read_screen / OCR are still NATIVE
-      // pixels — only screenshot-derived coords need scaling.
-      text =
-        `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
-        `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
-        `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`;
-    } else {
-      text = `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+    try {
+      // v0.20.0-alpha.22 — capture via `captureScreen`: the system
+      // `screencapture` tool first (replayd-brokered, no per-app recording
+      // indicator = no flash — the Cmd+Shift+3 mechanism), auto-falling
+      // back to the in-process SCK helper only if screencapture fails for
+      // a non-permission reason. (The earlier alpha.6.1 "screencapture
+      // flashes" claim conflated the shutter/thumbnail with the recording
+      // indicator; -x + a direct file path avoid both.)
+      log.info('Screenshot.attempt', { via: 'captureScreen', region: 'full', source: 'desktop_screenshot_tool' });
+      const capVia = await captureScreen(tmpPng, undefined, { timeoutMs: 8000 });
+      log.info('Screenshot.ok', { via: capVia.via, source: 'desktop_screenshot_tool' });
+    } catch (helperErr) {
+      const kind = helperErr instanceof HelperError ? helperErr.kind : 'unknown';
+      const msg = helperErr instanceof Error ? helperErr.message : String(helperErr);
+      log.warn('Screenshot.helper_failed', { kind, msg, source: 'desktop_screenshot_tool' });
+      if (kind === 'permission') {
+        return { text: `(screenshot error: Screen Recording permission denied — open System Settings → Privacy & Security → Screen Recording and grant ClippyAI.)` };
+      }
+      return { text: `(error:SCREENSHOT_HELPER_FAILED) ${kind}: ${msg}. Silent helper is required; the flash-prone fallback has been removed for user safety.` };
     }
 
-    return {
-      text,
-      image: { data: base64, mimeType: 'image/png' },
-    };
+    const { nativeImage } = require('electron') as typeof import('electron');
+    const img = nativeImage.createFromPath(tmpPng);
+    const size = img.getSize();
+    const nativeW = size.width;
+    const nativeH = size.height;
+    let finalImg = img;
+    let finalW = nativeW;
+    let finalH = nativeH;
+    if (nativeW > SCREENSHOT_DOWNSCALE_THRESHOLD) {
+      finalW = TARGET_SCREENSHOT_WIDTH;
+      finalH = Math.round(nativeH * (TARGET_SCREENSHOT_WIDTH / nativeW));
+      finalImg = img.resize({ width: finalW, height: finalH, quality: 'good' });
+    }
+    const base64 = finalImg.toPNG().toString('base64');
+    try { fs.unlinkSync(tmpPng); } catch {}
+
+    const downscaled = finalW < nativeW;
+    const scale = downscaled ? nativeW / finalW : 1;
+
+    const text = downscaled
+      ? `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
+        `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
+        `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`
+      : `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+
+    return { text, image: { data: base64, mimeType: 'image/png' } };
   } catch (err) {
+    try { fs.unlinkSync(tmpPng); } catch {}
     return { text: `(screenshot error: ${err instanceof Error ? err.message : ''})` };
   }
 }
 
 async function ocrReadScreen(): Promise<ToolResult> {
+  // v0.20.0 — darwin path uses Apple's Vision framework via the Swift bridge.
+  // Returns the same { elements, fullText } shape as the Windows OCR pipeline
+  // so smart_click and the model-facing tool path share the same downstream
+  // parsing. Coordinates are top-left origin in points (no flip).
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.ocrScreen({});
+      return { text: JSON.stringify({ elements: result.elements, fullText: result.fullText }) };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Screen Recording permission denied — open System Settings → Privacy & Security → Screen Recording)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(ocr_read_screen error: ${err.message})` };
+        }
+        // fall through to legacy captureAndOcr path
+      } else {
+        return { text: `(ocr_read_screen error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
+  }
+
   // v0.11.22 — delegates to captureAndOcr() so smart_click and the
   // model-facing tool share the same screenshot + OCR pipeline.
   const ocr = await captureAndOcr();
@@ -1153,112 +1422,332 @@ async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
 // ── Clipboard ────────────────────────────────────────────────────
 
 async function readClipboard(): Promise<ToolResult> {
-  try {
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command', 'Get-Clipboard -Raw',
-    ], { timeout: 5000 });
-    const text = stdout.trim();
-    return { text: text ? `Clipboard: ${text.substring(0, 2000)}` : '(clipboard empty)' };
-  } catch (err) {
-    return { text: `(read_clipboard error: ${err instanceof Error ? err.message : ''})` };
-  }
+  const r = await runCli('pbpaste', [], { timeoutMs: 3000 });
+  if (!r.ok) return { text: `(read_clipboard error: ${r.error ?? r.stderr})` };
+  const text = r.stdout.trim();
+  return { text: text ? `Clipboard: ${text.substring(0, 2000)}` : '(clipboard empty)' };
 }
 
 async function writeClipboard(params: Record<string, unknown>): Promise<ToolResult> {
   const text = String(params.text || '');
   if (!text) return { text: '(no text provided)' };
+  // v0.19.0 — pre-capture the current clipboard value so the undo inverse
+  // (tool-undo.ts TOOL_UNDO[write_clipboard]) can restore it. Uses Electron's
+  // clipboard API which is cross-platform (works natively on macOS).
   try {
-    // Write via temp file to avoid shell-escaping issues with arbitrary text
-    const tmpFile = path.join(os.tmpdir(), `clippy-clip-${Date.now()}.txt`);
-    fs.writeFileSync(tmpFile, text, 'utf-8');
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Set-Clipboard -Value (Get-Content -Raw -LiteralPath '${tmpFile.replace(/'/g, "''")}')`,
-    ], { timeout: 5000 });
-    try { fs.unlinkSync(tmpFile); } catch { /* cleanup fallback */ }
-    return { text: `Wrote ${text.length} chars to clipboard` };
+    const { clipboard } = await import('electron');
+    const previous = clipboard.readText() || null;
+    (params as Record<string, unknown>)._previousClipboard = previous;
+  } catch { /* non-fatal: if pre-capture fails, undo falls back to noop */ }
+  const r = await runCli('pbcopy', [], { stdin: text, timeoutMs: 3000 });
+  if (!r.ok) return { text: `(write_clipboard error: ${r.error ?? r.stderr})` };
+  return { text: `Wrote ${text.length} chars to clipboard` };
+}
+
+// ── v0.19.0: File management tools (delete / rename / move) ─────────────
+// These tools are new in v0.19.0 to support undo. delete_file uses
+// move-to-trash instead of hard delete so the inverse can restore the file.
+// The ~/.clippy-trash folder is cleaned of items older than 7 days on startup
+// (see initTools) so storage doesn't accumulate silently.
+// All fs.renameSync calls are POSIX and work correctly on macOS.
+
+const CLIPPY_TRASH_DIR = path.join(os.homedir(), '.clippy-trash');
+
+/**
+ * Clean ~/.clippy-trash/ of items older than 7 days.
+ * Called once at startup (non-blocking). Storage hygiene — without this the
+ * trash folder grows unbounded if the user never manually empties it.
+ */
+export function cleanClippyTrash(): void {
+  try {
+    if (!fs.existsSync(CLIPPY_TRASH_DIR)) return;
+    const entries = fs.readdirSync(CLIPPY_TRASH_DIR);
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let cleaned = 0;
+    for (const name of entries) {
+      // Names are prefixed with the unix timestamp: "<ms>-<basename>"
+      const ms = parseInt(name.split('-')[0], 10);
+      if (!isNaN(ms) && ms < cutoff) {
+        try {
+          const full = path.join(CLIPPY_TRASH_DIR, name);
+          const stat = fs.statSync(full);
+          if (stat.isDirectory()) {
+            fs.rmSync(full, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(full);
+          }
+          cleaned++;
+        } catch { /* skip locked / already gone */ }
+      }
+    }
+    if (cleaned > 0) log.info('cleanClippyTrash', { cleaned });
   } catch (err) {
-    return { text: `(write_clipboard error: ${err instanceof Error ? err.message : ''})` };
+    log.warn('cleanClippyTrash failed (non-fatal)', { err: (err as Error).message });
+  }
+}
+
+async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const filePath = String(params.path || '');
+  if (!filePath) return { text: 'Error: path is required' };
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { text: `(error:FILE_NOT_FOUND) File does not exist: ${filePath}` };
+    }
+    // Move to ~/.clippy-trash/ instead of hard-delete so the undo inverse
+    // can restore it. The trash path is smuggled back via params for the
+    // undo factory in tool-undo.ts.
+    fs.mkdirSync(CLIPPY_TRASH_DIR, { recursive: true });
+    const trashName = `${Date.now()}-${path.basename(filePath)}`;
+    const trashPath = path.join(CLIPPY_TRASH_DIR, trashName);
+    fs.renameSync(filePath, trashPath);
+    // Smuggle the trash path so TOOL_UNDO[delete_file] can build the inverse.
+    (params as Record<string, unknown>)._clippyTrashPath = trashPath;
+    log.info('deleteFile → trash', { filePath, trashPath });
+    return { text: `Trashed ${filePath} (restorable via Undo within 7 days)` };
+  } catch (err) {
+    return { text: `(error:DELETE_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function renameFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const fromPath = String(params.from || '');
+  const toPath = String(params.to || '');
+  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
+  try {
+    if (!fs.existsSync(fromPath)) {
+      return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
+    }
+    fs.renameSync(fromPath, toPath);
+    log.info('renameFile', { from: fromPath, to: toPath });
+    return { text: `Renamed: ${fromPath} → ${toPath}` };
+  } catch (err) {
+    return { text: `(error:RENAME_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function moveFile(params: Record<string, unknown>): Promise<ToolResult> {
+  const fromPath = String(params.from || '');
+  const toPath = String(params.to || '');
+  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
+  try {
+    if (!fs.existsSync(fromPath)) {
+      return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
+    }
+    fs.renameSync(fromPath, toPath);
+    log.info('moveFile', { from: fromPath, to: toPath });
+    return { text: `Moved: ${fromPath} → ${toPath}` };
+  } catch (err) {
+    return { text: `(error:MOVE_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
 // ── Mouse variants ───────────────────────────────────────────────
 
 async function mouseDoubleClick(params: Record<string, unknown>): Promise<ToolResult> {
-  // v0.11.22 — physical pixels, no screenScale multiplier (see mouseClick comment).
   const x = Math.round(sanitizeNumber(params.x));
   const y = Math.round(sanitizeNumber(params.y));
-  try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; ` +
-      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
-      `Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-      `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0); ` +
-      `Start-Sleep -Milliseconds 50; ` +
-      `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
-    ], { timeout: 5000 });
-    return { text: `Double-clicked at (${x},${y})` };
-  } catch (err) {
-    return { text: `(mouse_double_click error: ${err instanceof Error ? err.message : ''})` };
+  // v0.20.0 (track2) — darwin routes through the Swift bridge's `click`
+  // verb (count:2 → true CGEvent double-click). Beats the AppleScript
+  // two-`click at` approximation below, which fires two independent single
+  // clicks that many controls don't coalesce into a double-click.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.click({ x, y, count: 2 });
+      return { text: `Double-clicked at (${x},${y})` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(mouse_double_click error: ${err.message})` };
+        }
+        // missing/platform → fall through to the AppleScript path
+      } else {
+        return { text: `(mouse_double_click error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+  const r = await runApplescript(
+    `on run argv
+       set x to (item 1 of argv) as integer
+       set y to (item 2 of argv) as integer
+       tell application "System Events"
+         click at {x, y}
+         delay 0.08
+         click at {x, y}
+       end tell
+     end run`,
+    { args: [String(x), String(y)], timeoutMs: 5000 },
+  );
+  if (!r.ok) return { text: `(mouse_double_click error: ${r.error ?? r.stderr})` };
+  return { text: `Double-clicked at (${x},${y})` };
 }
 
 async function mouseRightClick(params: Record<string, unknown>): Promise<ToolResult> {
-  // v0.11.22 — physical pixels, no screenScale multiplier (see mouseClick comment).
   const x = Math.round(sanitizeNumber(params.x));
   const y = Math.round(sanitizeNumber(params.y));
-  try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; ` +
-      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
-      `Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);' -Name Win32 -Namespace API; ` +
-      // 0x0008 = RIGHTDOWN, 0x0010 = RIGHTUP
-      `[API.Win32]::mouse_event(8,0,0,0,0); [API.Win32]::mouse_event(16,0,0,0,0)`,
-    ], { timeout: 5000 });
-    return { text: `Right-clicked at (${x},${y})` };
-  } catch (err) {
-    return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : ''})` };
+  // v0.20.0 (track2) — darwin routes through the Swift bridge's `click`
+  // verb (button:right → real CGEvent secondary click). Cleaner than the
+  // control-click AppleScript synthesis below, which some apps treat as a
+  // modified left-click rather than a true context-menu trigger.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.click({ x, y, button: 'right' });
+      return { text: `Right-clicked at (${x},${y})` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(mouse_right_click error: ${err.message})` };
+        }
+        // missing/platform → fall through to the AppleScript path
+      } else {
+        return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+  // AppleScript exposes `click at` and `right click` differs by app context.
+  // We synthesize control-click which the OS interprets as secondary click.
+  const r = await runApplescript(
+    `on run argv
+       set x to (item 1 of argv) as integer
+       set y to (item 2 of argv) as integer
+       tell application "System Events"
+         click at {x, y} using {control down}
+       end tell
+     end run`,
+    { args: [String(x), String(y)], timeoutMs: 5000 },
+  );
+  if (!r.ok) return { text: `(mouse_right_click error: ${r.error ?? r.stderr})` };
+  return { text: `Right-clicked at (${x},${y})` };
 }
 
 async function mouseHover(params: Record<string, unknown>): Promise<ToolResult> {
-  // v0.11.22 — physical pixels, no screenScale multiplier (see mouseClick comment).
   const x = Math.round(sanitizeNumber(params.x));
   const y = Math.round(sanitizeNumber(params.y));
+  // v0.20.0 (track2) — the Swift bridge's `hover` verb is the no-click
+  // cursor-move primitive that AppleScript's System Events can't express.
+  // (Pre-bridge this tool returned "not supported".) No AppleScript
+  // fallback exists, so on darwin we hard-require the bridge.
+  if (process.platform === 'darwin') {
+    if (!macBridge.isBridgeAvailable()) {
+      return { text: '(error:BRIDGE_UNAVAILABLE) mouse_hover needs the clippy-mac-bridge helper, which is not available' };
+    }
+    try {
+      await macBridge.hover({ x, y });
+      return { text: `Moved cursor to (${x},${y})` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        return { text: `(mouse_hover error: ${err.message})` };
+      }
+      return { text: `(mouse_hover error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
+  // Windows path: move the cursor with no click via the standard
+  // System.Windows.Forms.Cursor recipe — mirrors clippyai-desktop's
+  // mouse_hover and the execFileAsync('powershell.exe', …) pattern already
+  // used elsewhere in this file. Keeps mouse_hover genuinely cross-platform
+  // (darwin via the Swift bridge above, win32 here) instead of advertising
+  // win32 in tool-meta and then returning UNSUPPORTED.
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
       `Add-Type -AssemblyName System.Windows.Forms; ` +
       `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y})`,
     ], { timeout: 5000 });
-    return { text: `Hovering at (${params.x},${params.y})` };
+    return { text: `Moved cursor to (${x},${y})` };
   } catch (err) {
-    return { text: `(mouse_hover error: ${err instanceof Error ? err.message : ''})` };
+    return { text: `(mouse_hover error: ${err instanceof Error ? err.message : String(err)})` };
   }
 }
 
 // ── Focused element inspection ───────────────────────────────────
 
 async function getFocusedElement(): Promise<ToolResult> {
-  try {
-    const { stdout } = await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
-      `Add-Type -AssemblyName UIAutomationClient; ` +
-      `$el = [System.Windows.Automation.AutomationElement]::FocusedElement; ` +
-      `if ($el) { ` +
-        `$name = $el.Current.Name; ` +
-        `$type = $el.Current.LocalizedControlType; ` +
-        `$auto = $el.Current.AutomationId; ` +
-        `$b = $el.Current.BoundingRectangle; ` +
-        `"name=$name | type=$type | id=$auto | bounds=$($b.X),$($b.Y),$($b.Width),$($b.Height)" ` +
-      `} else { "(no focused element)" }`,
-    ], { timeout: 5000 });
-    return { text: stdout.trim() || '(no focused element)' };
-  } catch (err) {
-    return { text: `(get_focused_element error: ${err instanceof Error ? err.message : ''})` };
+  // v0.20.0 — darwin path routes through the Swift bridge's a11y-focused
+  // subcommand which queries AXFocusedUIElement of the focused application
+  // and returns role/title/value/bounds in a structured shape. The brain
+  // expects JSON — we serialize the result directly.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.a11yFocused();
+      return { text: JSON.stringify(result) };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(get_focused_element error: ${err.message})` };
+        }
+        // fall through to legacy AppleScript path
+      } else {
+        return { text: `(get_focused_element error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
   }
+
+  // System Events' `focused UI element` returns the AX element of whatever
+  // currently has keyboard focus. Position/size come from the element's
+  // accessibility attributes when present; some focused elements (web text
+  // fields in Safari, for example) don't publish these and we emit "?".
+  const script = `
+    tell application "System Events"
+      try
+        set frontApp to first application process whose frontmost is true
+        set el to value of attribute "AXFocusedUIElement" of frontApp
+        set nm to ""
+        set rl to ""
+        set bnds to "?"
+        try
+          set nm to value of attribute "AXTitle" of el
+        end try
+        try
+          set rl to role of el
+        end try
+        try
+          set p to value of attribute "AXPosition" of el
+          set s to value of attribute "AXSize" of el
+          set bnds to (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)
+        end try
+        return "name=" & nm & " | role=" & rl & " | bounds=" & bnds
+      on error errMsg
+        return "(no focused element: " & errMsg & ")"
+      end try
+    end tell
+  `;
+  const raw = await asValue(script, { timeoutMs: 5000 });
+  return { text: raw || '(no focused element)' };
+}
+
+// ── Selection awareness ──────────────────────────────────────────
+
+async function getSelection(): Promise<ToolResult> {
+  // v0.20.0 — darwin path routes through the Swift bridge's a11y-selected-text
+  // subcommand, which reads kAXSelectedTextAttribute of the system-wide focused
+  // element (any app). "Nothing selected" is a clean payload, not an error, so
+  // the brain can read this every turn for selection awareness. Read-only.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.a11ySelectedText();
+      return { text: JSON.stringify(result) };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        return { text: `(get_selection error: ${err.message})` };
+      }
+      return { text: `(get_selection error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
+  return { text: '(get_selection is only available on macOS)' };
 }
 
 // ── COM Automation Tools ─────────────────────────────────────────
@@ -1508,34 +1997,162 @@ async function createReminder(params: Record<string, unknown>): Promise<ToolResu
   } catch { return result; }
 }
 
+// ── Cross-platform file-system tool helpers (v0.20.0 macOS port) ────
+//
+// Replaces the four `runComScript('com-*.ps1', ...)` implementations of
+// read_file / write_file / list_files / search_files_content with native
+// `fs/promises` so they actually work on macOS. The previous PowerShell
+// path ENOENT'd on Mac (no `powershell.exe`), so every model call to a
+// file tool failed silently with a `Command failed: powershell.exe` text.
+//
+// Caps + safety (per capability audit):
+//   - read_file:   1 MB max, reject binary (NUL bytes in first 4 KB)
+//   - write_file:  1 MB max content, parent dir must exist (no auto-mkdir),
+//                  refuse system paths, reject `..` traversal
+//   - list_files:  500 entries max, sorted by name
+//   - search_files_content: 50 matches max, 5 MB scanned per call,
+//                  skip .git/ node_modules/ .DS_Store
+//
+// Error contract: `(error:CODE) <message>` matches the rest of the codebase
+// so brain.ts's hallucination guard picks failures up identically to the
+// PS-script error path.
+
+const FS_READ_FILE_MAX_BYTES = 1 * 1024 * 1024;
+const FS_WRITE_FILE_MAX_BYTES = 1 * 1024 * 1024;
+const FS_LIST_FILES_MAX = 500;
+const FS_SEARCH_MAX_MATCHES = 50;
+const FS_SEARCH_MAX_TOTAL_BYTES = 5 * 1024 * 1024;
+const FS_SEARCH_MAX_FILE_BYTES = 1 * 1024 * 1024;
+const FS_SEARCH_SKIP_DIRS = new Set(['.git', 'node_modules', '.DS_Store']);
+const FS_SEARCH_DEFAULT_EXTS = new Set([
+  '.txt', '.md', '.csv', '.log', '.json', '.ps1', '.py', '.js', '.ts',
+  '.tsx', '.jsx', '.html', '.xml', '.ini', '.cfg', '.bat', '.yaml', '.yml',
+]);
+
+/** Expand `~` / `~/...` to the user's home directory. */
+function expandHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+/**
+ * Reject writes to OS-owned system locations on either platform. The list is
+ * deliberately conservative — anything else (Downloads, Desktop, /tmp, user
+ * Library, ~/Documents) is fair game and gated only by permission-policy
+ * (`actionClass: destructive_file`).
+ */
+function isProtectedPath(p: string): boolean {
+  const abs = path.resolve(p);
+  if (process.platform === 'win32') {
+    const lower = abs.toLowerCase();
+    return (
+      lower.startsWith('c:\\windows\\') ||
+      lower.startsWith('c:\\program files\\') ||
+      lower.startsWith('c:\\program files (x86)\\') ||
+      lower.startsWith('c:\\programdata\\')
+    );
+  }
+  return (
+    abs === '/' ||
+    abs.startsWith('/System/') ||
+    abs.startsWith('/usr/') ||
+    abs.startsWith('/bin/') ||
+    abs.startsWith('/sbin/') ||
+    abs.startsWith('/etc/') ||
+    abs.startsWith('/private/etc/') ||
+    abs.startsWith('/Library/') ||
+    abs.startsWith('/Applications/')
+  );
+}
+
+/** Cheap binary detector — NUL byte in the first 4 KB is the standard heuristic. */
+function looksBinary(buf: Buffer): boolean {
+  const sample = buf.subarray(0, Math.min(buf.length, 4096));
+  for (let i = 0; i < sample.length; i++) {
+    if (sample[i] === 0) return true;
+  }
+  return false;
+}
+
 async function readFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = String(params.path || '');
-  if (!filePath) return { text: 'Error: path is required' };
-  const result = await runComScript('com-read-file.ps1', ['-path', filePath], 10000);
-  if (result.text.startsWith('Error:') || result.text.startsWith('(error:')) return result;
+  const rawPath = String(params.path || '');
+  if (!rawPath) return { text: '(error:BAD_INPUT) path is required' };
+  const filePath = expandHome(rawPath);
   try {
-    const r = JSON.parse(result.text);
-    return { text: `File: ${filePath}\nLines: ${r.lines} | Size: ${r.sizeBytes} bytes\n\n${r.content}` };
-  } catch { return result; }
+    const stat = await fsp.stat(filePath);
+    if (stat.isDirectory()) {
+      return { text: `(error:IS_DIRECTORY) ${filePath} is a directory; use list_files instead.` };
+    }
+    if (stat.size > FS_READ_FILE_MAX_BYTES) {
+      return { text: `(error:TOO_LARGE) File is ${stat.size} bytes; max is ${FS_READ_FILE_MAX_BYTES} (1 MB).` };
+    }
+    const buf = await fsp.readFile(filePath);
+    if (looksBinary(buf)) {
+      return { text: `(error:BINARY_FILE) ${filePath} appears to be binary; read_file only handles text.` };
+    }
+    const content = buf.toString('utf8');
+    const lines = content === '' ? 0 : content.split('\n').length;
+    return { text: `File: ${filePath}\nLines: ${lines} | Size: ${stat.size} bytes\n\n${content}` };
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'ENOENT') return { text: `(error:NOT_FOUND) File not found: ${filePath}` };
+    if (e.code === 'EACCES' || e.code === 'EPERM') return { text: `(error:PERMISSION_DENIED) Access denied: ${filePath}` };
+    log.warn('read_file failed', { path: filePath, err: serializeErr(err) });
+    return { text: `(error:UNKNOWN) read_file failed: ${e.message || String(err)}` };
+  }
 }
 
 async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = String(params.path || '');
+  const rawPath = String(params.path || '');
   const content = String(params.content || '');
   const mode = String(params.mode || 'create');
-  if (!filePath) return { text: 'Error: path is required' };
-  // v0.11.25 — pass file content via base64 (preserves newlines, all
-  // bytes, all chars). Previously a content like "hello\n -mode overwrite"
-  // would be re-tokenized by PS and silently flip the mode arg.
-  const contentB64 = Buffer.from(content, 'utf8').toString('base64');
-  const result = await runComScript('com-write-file.ps1', [
-    '-path', filePath, '-contentB64', contentB64, '-mode', mode,
-  ], 10000);
-  if (result.text.startsWith('Error:') || result.text.startsWith('(error:')) return result;
+  if (!rawPath) return { text: '(error:BAD_INPUT) path is required' };
+  if (mode !== 'create' && mode !== 'overwrite' && mode !== 'append') {
+    return { text: `(error:BAD_INPUT) mode must be one of create|overwrite|append (got ${mode}).` };
+  }
+  // Path traversal guard — refuse any `..` segment in the *raw* input so a
+  // model can't sneak out of an expected directory via `~/projects/../../etc/passwd`.
+  // (Post-expand check would still catch /etc/ via isProtectedPath, but
+  // refusing earlier gives a clearer signal in the log + result.)
+  if (rawPath.split(/[\\/]/).some((seg) => seg === '..')) {
+    return { text: `(error:PROTECTED_PATH) path traversal (..) is not permitted in write_file.` };
+  }
+  const filePath = expandHome(rawPath);
+  const byteLen = Buffer.byteLength(content, 'utf8');
+  if (byteLen > FS_WRITE_FILE_MAX_BYTES) {
+    return { text: `(error:TOO_LARGE) content is ${byteLen} bytes; max is ${FS_WRITE_FILE_MAX_BYTES} (1 MB).` };
+  }
+  if (isProtectedPath(filePath)) {
+    return { text: `(error:PROTECTED_PATH) write_file refuses to write to system path: ${filePath}` };
+  }
+  const parent = path.dirname(filePath);
   try {
-    const r = JSON.parse(result.text);
-    return { text: `File written: ${r.path} (${r.bytesWritten} bytes, mode=${r.mode})` };
-  } catch { return result; }
+    const parentStat = await fsp.stat(parent);
+    if (!parentStat.isDirectory()) {
+      return { text: `(error:NOT_FOUND) parent path is not a directory: ${parent}` };
+    }
+  } catch {
+    return { text: `(error:NOT_FOUND) parent directory does not exist: ${parent}` };
+  }
+  try {
+    if (mode === 'create') {
+      // wx = exclusive create — fails if file exists
+      await fsp.writeFile(filePath, content, { encoding: 'utf8', flag: 'wx' });
+    } else if (mode === 'overwrite') {
+      await fsp.writeFile(filePath, content, { encoding: 'utf8' });
+    } else {
+      await fsp.appendFile(filePath, content, { encoding: 'utf8' });
+    }
+    return { text: `File written: ${filePath} (${byteLen} bytes, mode=${mode})` };
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'EEXIST') return { text: `(error:ALREADY_EXISTS) file exists (use mode=overwrite or mode=append): ${filePath}` };
+    if (e.code === 'EACCES' || e.code === 'EPERM') return { text: `(error:PERMISSION_DENIED) Access denied: ${filePath}` };
+    if (e.code === 'ENOENT') return { text: `(error:NOT_FOUND) ${filePath}` };
+    log.warn('write_file failed', { path: filePath, err: serializeErr(err) });
+    return { text: `(error:UNKNOWN) write_file failed: ${e.message || String(err)}` };
+  }
 }
 
 // v0.12.3 — runPowershell tool REMOVED from model-accessible tools per
@@ -1589,14 +2206,133 @@ async function speakText(params: Record<string, unknown>): Promise<ToolResult> {
   return result;
 }
 
+// v0.20.0 — play_animation. Lets the MODEL trigger a specific sprite animation
+// on demand ("do a wave", "celebrate", "dance"). Root fix for "told Clippy to
+// animate and he stayed still": animations were ONLY auto-picked by a heuristic
+// from the reply text (pickAnimation), so the model had no control path — it
+// would describe a wave in text while the sprite played a generic gesture. This
+// drives the renderer sprite directly via the same 'clippy-speak' channel
+// (empty text → no bubble, just the animation). Cross-platform (the sprite
+// exists on every build).
+const PLAY_ANIMATIONS = [
+  'Wave', 'GoodBye', 'Greeting', 'Congratulate', 'GetArtsy', 'GetAttention',
+  'GetTechy', 'GetWizardy', 'Searching', 'Thinking', 'Writing', 'Processing',
+  'CheckingSomething', 'Alert', 'Explain', 'Print', 'Save', 'SendMail',
+  'EmptyTrash', 'RestPose', 'GestureUp', 'GestureDown', 'GestureLeft',
+  'GestureRight', 'LookUp', 'LookDown', 'LookLeft', 'LookRight',
+];
+const ANIMATION_ALIASES: Record<string, string> = {
+  dance: 'GetArtsy', celebrate: 'Congratulate', celebrating: 'Congratulate',
+  cheer: 'Congratulate', party: 'Congratulate', hi: 'Wave', hello: 'Wave',
+  bye: 'GoodBye', think: 'Thinking', search: 'Searching', write: 'Writing',
+  attention: 'GetAttention', wizard: 'GetWizardy', magic: 'GetWizardy',
+  tech: 'GetTechy', techy: 'GetTechy', greet: 'Greeting', rest: 'RestPose',
+  idle: 'RestPose', point: 'GestureDown',
+};
+async function playAnimation(params: Record<string, unknown>): Promise<ToolResult> {
+  const raw = String(params.animation || params.name || '').trim();
+  if (!raw) {
+    return { text: `(error:MISSING_FIELD) play_animation needs an \`animation\`. Options: ${PLAY_ANIMATIONS.join(', ')}` };
+  }
+  const lower = raw.toLowerCase();
+  const name = PLAY_ANIMATIONS.find((a) => a.toLowerCase() === lower) || ANIMATION_ALIASES[lower];
+  if (!name) {
+    return { text: `(error:UNKNOWN_ANIMATION) "${raw}" isn't a Clippy animation. Pick one of: ${PLAY_ANIMATIONS.join(', ')}` };
+  }
+  const win = getMainWindow();
+  if (!win) return { text: '(error:NO_WINDOW) Clippy window unavailable — can\'t animate right now.' };
+  try {
+    // Empty text → the renderer plays the animation with no speech bubble.
+    win.webContents.send('clippy-speak', { text: '', animate: name });
+  } catch (err) {
+    return { text: `(error:ANIMATE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return { text: `Played the ${name} animation.` };
+}
+
 async function searchFilesContent(params: Record<string, unknown>): Promise<ToolResult> {
   const pattern = String(params.pattern || '');
-  if (!pattern) return { text: 'Error: pattern is required' };
-  const args = ['-pattern', pattern];
-  if (params.path) args.push('-path', String(params.path));
-  if (params.glob) args.push('-glob', String(params.glob));
-  const result = await runComScript('com-search-files.ps1', args, 30000);
-  return result;
+  if (!pattern) return { text: '(error:BAD_INPUT) pattern is required' };
+  const rawPath = String(params.path || os.homedir());
+  const root = expandHome(rawPath);
+  // Optional comma-separated extension list ("*.md,*.txt") — match the previous
+  // PS contract (just `*.X` globs, no path globs). Default = built-in text exts.
+  const extFilter: Set<string> | null = (() => {
+    const g = String(params.glob || '').trim();
+    if (!g) return null;
+    const exts = g.split(',').map((s) => s.trim().toLowerCase())
+      .map((s) => s.startsWith('*.') ? s.slice(1) : s)
+      .filter((s) => s.startsWith('.'));
+    return exts.length ? new Set(exts) : null;
+  })();
+  const allowedExts = extFilter ?? FS_SEARCH_DEFAULT_EXTS;
+  const needle = pattern.toLowerCase();
+
+  try {
+    const rootStat = await fsp.stat(root);
+    if (!rootStat.isDirectory()) {
+      return { text: `(error:NOT_FOUND) search root is not a directory: ${root}` };
+    }
+  } catch {
+    return { text: `(error:NOT_FOUND) directory not found: ${root}` };
+  }
+
+  const matches: string[] = [];
+  let scanned = 0;
+  let truncated = false;
+
+  async function walk(dir: string): Promise<void> {
+    if (matches.length >= FS_SEARCH_MAX_MATCHES || scanned >= FS_SEARCH_MAX_TOTAL_BYTES) return;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (FS_SEARCH_SKIP_DIRS.has(ent.name)) continue;
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        await walk(full);
+        if (matches.length >= FS_SEARCH_MAX_MATCHES || scanned >= FS_SEARCH_MAX_TOTAL_BYTES) return;
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      const ext = path.extname(ent.name).toLowerCase();
+      if (!allowedExts.has(ext)) continue;
+      let stat: import('fs').Stats;
+      try { stat = await fsp.stat(full); } catch { continue; }
+      if (stat.size > FS_SEARCH_MAX_FILE_BYTES) continue;
+      if (scanned + stat.size > FS_SEARCH_MAX_TOTAL_BYTES) { truncated = true; return; }
+      let content: string;
+      try {
+        const buf = await fsp.readFile(full);
+        if (looksBinary(buf)) continue;
+        content = buf.toString('utf8');
+      } catch { continue; }
+      scanned += stat.size;
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(needle)) {
+          matches.push(`${full}:${i + 1}: ${lines[i].trim().substring(0, 200)}`);
+          if (matches.length >= FS_SEARCH_MAX_MATCHES) { truncated = true; return; }
+        }
+      }
+    }
+  }
+
+  try {
+    await walk(root);
+  } catch (err) {
+    log.warn('search_files_content failed', { root, err: serializeErr(err) });
+    return { text: `(error:UNKNOWN) search failed: ${(err as Error).message || String(err)}` };
+  }
+
+  if (matches.length === 0) {
+    return { text: `No matches for "${pattern}" under ${root} (scanned ${scanned} bytes).` };
+  }
+  const header = `Found ${matches.length}${truncated ? '+ (truncated)' : ''} matches for "${pattern}" under ${root}:`;
+  return { text: `${header}\n${matches.join('\n')}` };
 }
 
 async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
@@ -1609,26 +2345,463 @@ async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
 }
 
 async function httpRequest(params: Record<string, unknown>): Promise<ToolResult> {
+  // v0.20.0-alpha.5 — cross-platform rewrite using Node stdlib `fetch`.
+  // The old PS-script path (com-http-request.ps1) ENOENTed on macOS. The
+  // model passes simple JSON; we trust its headers (the permission gate is
+  // the real defense). No retries, no caching, no SSRF allowlist — KISS.
   const url = String(params.url || '');
   if (!url) return { text: 'Error: url is required' };
-  const args = ['-url', url];
-  if (params.method) args.push('-method', String(params.method));
-  // v0.11.25 — headers (JSON) and body via base64. Headers JSON contains
-  // double-quotes; bodies routinely contain newlines/JSON/special chars.
-  // Both broke the PS tokenizer when passed raw.
+  const method = String(params.method || 'GET').toUpperCase();
+  const timeoutMs = Number(params.timeout_ms) > 0 ? Number(params.timeout_ms) : 15_000;
+  const maxBytes = 256 * 1024; // 256 KB cap
+
+  // Parse headers: model may pass either a JSON string or an object.
+  let headers: Record<string, string> = {};
   if (params.headers) {
-    const headersB64 = Buffer.from(String(params.headers), 'utf8').toString('base64');
-    args.push('-headersB64', headersB64);
+    if (typeof params.headers === 'string') {
+      try {
+        headers = JSON.parse(params.headers) as Record<string, string>;
+      } catch {
+        return { text: '(error:BAD_HEADERS) headers must be a JSON object string' };
+      }
+    } else if (typeof params.headers === 'object') {
+      headers = params.headers as Record<string, string>;
+    }
   }
-  if (params.body) {
-    const bodyB64 = Buffer.from(String(params.body), 'utf8').toString('base64');
-    args.push('-bodyB64', bodyB64);
+
+  const body = params.body != null ? String(params.body) : undefined;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' ? undefined : body,
+      signal: ctrl.signal,
+    });
+    // Read body up to cap.
+    const buf = await res.arrayBuffer();
+    let text: string;
+    let truncated = false;
+    if (buf.byteLength > maxBytes) {
+      text = Buffer.from(buf.slice(0, maxBytes)).toString('utf8');
+      truncated = true;
+    } else {
+      text = Buffer.from(buf).toString('utf8');
+    }
+    // Compact response-header summary (skip noisy/long ones).
+    const skip = new Set(['set-cookie']);
+    const headerLines: string[] = [];
+    res.headers.forEach((v, k) => {
+      if (skip.has(k.toLowerCase())) return;
+      headerLines.push(`${k}: ${v.length > 200 ? v.slice(0, 200) + '...' : v}`);
+    });
+    const out = `HTTP ${res.status}\n${headerLines.join('\n')}\n\n${text}${truncated ? '\n\n[response truncated]' : ''}`;
+    return { text: out };
+  } catch (err) {
+    const e = err as Error & { name?: string };
+    if (e?.name === 'AbortError') return { text: `(error:NETWORK) request timed out after ${timeoutMs}ms` };
+    return { text: `(error:NETWORK) ${e?.message || String(err)}` };
+  } finally {
+    clearTimeout(timer);
   }
-  const result = await runComScript('com-http-request.ps1', args, 20000);
-  return result;
 }
 
-// ── Tier 2: Office COM ───────────────────────────────────────────
+async function webSearch(params: Record<string, unknown>): Promise<ToolResult> {
+  // v0.20.0-alpha.5 — DuckDuckGo HTML scraper. No API key, no Chromium, no
+  // npm deps. The HTML endpoint is stable (server-to-server friendly) and
+  // its result markup uses `result__a` / `result__snippet` classes that
+  // have stayed put for years. If DDG ever changes the structure we'll see
+  // it as zero results and can adjust the regex. KISS for v1.
+  const query = String(params.query || '').trim();
+  if (!query) return { text: 'Error: query is required' };
+  let count = Number(params.count) || 6;
+  if (!Number.isFinite(count) || count < 1) count = 6;
+  if (count > 10) count = 10;
+
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { text: `(error:NETWORK) DuckDuckGo returned HTTP ${res.status}` };
+    const html = await res.text();
+
+    // Stable DDG structure: <a ... class="result__a" ... href="...">title</a> ...
+    //                      <a ... class="result__snippet" ...>snippet</a>
+    // Note: real DDG markup interleaves attributes (rel="nofollow" sits BEFORE
+    // class=), so attribute order is permissive. Snippets contain <b> tags
+    // around query terms — capture greedily and strip tags after.
+    const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+    const results: { title: string; url: string; snippet: string }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) !== null && results.length < count) {
+      const rawUrl = decodeHtmlEntities(m[1]);
+      // DDG wraps outbound links in /l/?uddg=<encoded>. Unwrap when present.
+      let finalUrl = rawUrl;
+      const ddgMatch = rawUrl.match(/[?&]uddg=([^&]+)/);
+      if (ddgMatch) {
+        try {
+          finalUrl = decodeURIComponent(ddgMatch[1]);
+        } catch {
+          /* keep rawUrl */
+        }
+      }
+      // Strip <b>/<i>/etc. tags from title + snippet — DDG bolds query terms.
+      const stripTags = (s: string): string => s.replace(/<[^>]+>/g, '');
+      results.push({
+        title: decodeHtmlEntities(stripTags(m[2])).replace(/\s+/g, ' ').trim(),
+        url: finalUrl,
+        snippet: decodeHtmlEntities(stripTags(m[3])).replace(/\s+/g, ' ').trim(),
+      });
+    }
+
+    if (results.length === 0) {
+      return { text: `No results for "${query}". DuckDuckGo may have returned a captcha — try again.` };
+    }
+    const formatted = results
+      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
+      .join('\n\n');
+    return { text: formatted };
+  } catch (err) {
+    const e = err as Error & { name?: string };
+    if (e?.name === 'AbortError') return { text: '(error:NETWORK) web search timed out after 10s' };
+    return { text: `(error:NETWORK) ${e?.message || String(err)}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Minimal HTML entity decoder for DDG snippets — covers the entities DDG
+// actually emits (&amp;, &lt;, &gt;, &quot;, &#39;, &#x27;, numeric). Avoids
+// adding a `he` / `html-entities` dep for a handful of cases.
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * v0.20.0 (security) — env for shell_exec with secrets stripped. shell_exec is
+ * a model-invoked tool; without this, an approved `env`/`printenv`/`set` (or any
+ * command that echoes the environment) would dump every API key / token in
+ * process.env straight into the tool-result stream the model sees. We pass a
+ * clone with anything that looks like a credential removed, keeping only the
+ * benign vars a shell legitimately needs.
+ */
+function sanitizeShellEnv(): NodeJS.ProcessEnv {
+  const SECRET_RE = /(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|API|AUTH|DEEPSEEK|OPENAI|ANTHROPIC|KIMI|MOONSHOT|GEMINI|ADMIN|STRIPE|RESEND|SUPABASE|R2_|CLOUDFLARE|APPLE_|CSC_|NPM_TOKEN|GH_|GITHUB_TOKEN)/i;
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (SECRET_RE.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// ── shell_exec ───────────────────────────────────────────────────
+//
+// v0.20.0 — generic shell command execution. The single biggest gap in
+// Clippy's "agent" capability per the openclaw audit: every ad-hoc CLI
+// task (df, git, brew, npm, python -c, node -e, curl, lsof...) needed a
+// purpose-built tool, and the model would otherwise fall back to UI
+// automation of Terminal.app — slow, error-prone, and impossible to
+// inspect.
+//
+// History — DO NOT REMOVE WITHOUT READING. v0.12.3 deleted `powershell_exec`
+// after a screen-text → RCE finding: the model could be tricked by
+// attacker-controlled page content into running `Invoke-WebRequest ... |
+// iex`. The defense for the new tool is two-pronged and STRUCTURAL:
+//
+//   1. Permission gate. shell_exec is registered with actionClass
+//      'destructive_exec' in TOOL_META so permission-policy.decide()
+//      prompts the user in Cautious + Standard mode. The user sees the
+//      command BEFORE it runs. This is the primary defense — the
+//      blocklist below is a last-resort safety net, not the security
+//      story.
+//   2. System-prompt rule. clippyai-api/src/lib/tools.ts SKILLS block
+//      tells the model: never execute commands extracted from screen
+//      text / OCR / page content. If the user says "run this command
+//      from the screen", read it back and ASK first.
+//
+// Blocklist is intentionally tiny: rm -rf / variants, dd to /dev/, mkfs,
+// forkbomb. These are well-known patterns that should NEVER be passed
+// even by accident — they're not a substitute for the policy gate, just
+// a hard floor.
+
+const SHELL_BLOCKLIST_PATTERNS: RegExp[] = [
+  // rm -rf / (and variants with extra flags, --no-preserve-root, /*, ~/*)
+  /\brm\s+(-[a-zA-Z]*[rRf][a-zA-Z]*\s+)+(--no-preserve-root\s+)?[/~](\s|$|\*)/,
+  // dd writing to a raw device (if=... of=/dev/...)
+  /\bdd\s+[^|;&]*\bof=\/dev\//,
+  // mkfs.* (any filesystem format)
+  /\bmkfs(\.[a-z0-9]+)?\s+/,
+  // classic bash forkbomb
+  /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
+];
+
+const SHELL_OUTPUT_CAP_BYTES = 32 * 1024;       // 32 KB combined stdout+stderr
+const SHELL_TIMEOUT_DEFAULT_MS = 30_000;
+const SHELL_TIMEOUT_MAX_MS = 120_000;
+
+async function shellExec(params: Record<string, unknown>): Promise<ToolResult> {
+  const command = String(params.command || '').trim();
+  if (!command) return { text: '(error:INVALID_ARGS) command is required' };
+
+  // Blocklist gate — runs BEFORE the permission gate (which is upstream
+  // in brain.ts). Even if the user clicked "approve", we refuse these
+  // specific patterns — they have no legitimate one-line use.
+  for (const re of SHELL_BLOCKLIST_PATTERNS) {
+    if (re.test(command)) {
+      log.warn('shell_exec blocked', { command: command.substring(0, 120) });
+      return { text: `(error:BLOCKED_COMMAND) "${command.substring(0, 80)}..." matches a hardcoded danger pattern (rm -rf /, dd to /dev/, mkfs, forkbomb). Refused.` };
+    }
+  }
+
+  // Resolve working dir. Default to homedir. Expand ~ for convenience.
+  // Refuse `/` and `/System` even if the user/policy approved — there is
+  // no legitimate `cwd=/` use case and tools relying on the cwd for
+  // relative paths would do catastrophic things in those locations.
+  let cwd = os.homedir();
+  if (params.cwd) {
+    const raw = String(params.cwd);
+    cwd = raw.startsWith('~')
+      ? path.join(os.homedir(), raw.slice(1))
+      : raw;
+    if (cwd === '/' || cwd === '/System' || cwd.startsWith('/System/')) {
+      return { text: `(error:PROTECTED_PATH) shell_exec refuses cwd: ${cwd}` };
+    }
+    try {
+      const st = fs.statSync(cwd);
+      if (!st.isDirectory()) {
+        return { text: `(error:INVALID_ARGS) cwd is not a directory: ${cwd}` };
+      }
+    } catch {
+      return { text: `(error:INVALID_ARGS) cwd does not exist: ${cwd}` };
+    }
+  }
+
+  // Clamp timeout
+  let timeoutMs = Number(params.timeout_ms);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = SHELL_TIMEOUT_DEFAULT_MS;
+  if (timeoutMs > SHELL_TIMEOUT_MAX_MS) timeoutMs = SHELL_TIMEOUT_MAX_MS;
+
+  // Pick shell per platform. The WHOLE point of this tool is to support
+  // any shell construct (pipes, redirects, quoting), so we pass the
+  // command as a single string to a shell — no exec.escape, no
+  // argument-array tokenization.
+  const isWin = process.platform === 'win32';
+  const shellBin = isWin ? (process.env.ComSpec || 'cmd.exe') : '/bin/zsh';
+  const shellArgs = isWin ? ['/d', '/s', '/c', command] : ['-c', command];
+
+  log.info('shell_exec', { cmd: command.substring(0, 200), cwd, timeoutMs });
+
+  return await new Promise<ToolResult>((resolve) => {
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    let capped = false;
+    let settled = false;
+
+    let child: ChildProcess;
+    try {
+      child = spawn(shellBin, shellArgs, {
+        cwd,
+        env: sanitizeShellEnv(),
+        // windowsHide stops a flash of a console window on win32 if Clippy
+        // is launched detached from a terminal.
+        windowsHide: true,
+      });
+    } catch (err) {
+      resolve({ text: `(error:SPAWN_FAILED) ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+
+    const ac = new AbortController();
+    activeAborts.add(ac);
+    ac.signal.addEventListener('abort', () => {
+      try { child.kill('SIGKILL'); } catch { /* best effort */ }
+    });
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (result: ToolResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      activeAborts.delete(ac);
+      resolve(result);
+    };
+
+    timer = setTimeout(() => {
+      if (settled) return;
+      try { child.kill('SIGKILL'); } catch { /* best effort */ }
+      settle({ text: `stdout: ${stdoutBuf}\nstderr: ${stderrBuf}\nexit: TIMEOUT after ${timeoutMs}ms` });
+    }, timeoutMs);
+
+    const onData = (which: 'stdout' | 'stderr') => (chunk: Buffer) => {
+      if (capped) return;
+      const s = chunk.toString('utf8');
+      if (which === 'stdout') stdoutBuf += s; else stderrBuf += s;
+      if (stdoutBuf.length + stderrBuf.length > SHELL_OUTPUT_CAP_BYTES) {
+        capped = true;
+        const overflow = stdoutBuf.length + stderrBuf.length - SHELL_OUTPUT_CAP_BYTES;
+        // Trim the most recent buffer back to the cap so we never return more
+        // than SHELL_OUTPUT_CAP_BYTES of actual bytes.
+        if (which === 'stdout') stdoutBuf = stdoutBuf.slice(0, stdoutBuf.length - overflow);
+        else stderrBuf = stderrBuf.slice(0, stderrBuf.length - overflow);
+        try { child.kill('SIGKILL'); } catch { /* best effort */ }
+      }
+    };
+
+    child.stdout?.on('data', onData('stdout'));
+    child.stderr?.on('data', onData('stderr'));
+
+    child.on('error', (err) => {
+      settle({ text: `(error:SPAWN_FAILED) ${err.message}` });
+    });
+
+    child.on('close', (code, signal) => {
+      const exitStr = code !== null ? String(code) : (signal ? `signal:${signal}` : 'unknown');
+      let out = `stdout: ${stdoutBuf}\nstderr: ${stderrBuf}\nexit: ${exitStr}`;
+      if (capped) out += '\n... [output truncated to 32 KB]';
+      settle({ text: out });
+    });
+  });
+}
+
+// ── macOS native mail (Apple Mail / Outlook for Mac) ─────────────
+//
+// Both clients expose an AppleScript dictionary. The shape differs slightly
+// (Mail uses "outgoing message", Outlook for Mac uses "new outgoing message"
+// under the "Microsoft Outlook" application) but the lifecycle is the same:
+// create → set properties → make recipients/attachments → send. Errors are
+// returned as structured ComResult-shaped values so the dispatcher above can
+// fall through cleanly.
+
+interface MacMailArgs {
+  to: string;
+  cc: string;
+  subject: string;
+  body: string;
+  attachments: string;
+}
+
+interface MacMailResult {
+  ok: boolean;
+  message: string;
+}
+
+function splitAddresses(s: string): string[] {
+  return s.split(/[;,]/).map((a) => a.trim()).filter(Boolean);
+}
+
+function splitAttachments(s: string): string[] {
+  return s.split(/[;,]/).map((a) => a.trim()).filter(Boolean);
+}
+
+async function sendViaAppleMail(args: MacMailArgs): Promise<MacMailResult> {
+  const toList = splitAddresses(args.to);
+  const ccList = splitAddresses(args.cc);
+  const attachments = splitAttachments(args.attachments);
+  if (toList.length === 0) return { ok: false, message: '(error:NO_RECIPIENT) Apple Mail send requires at least one "to" address' };
+
+  // AppleScript: build the message, add recipients, optionally attach files, send.
+  // We pass subject + body via stdin to avoid quoting hell with arbitrary text.
+  // Recipients and attachments are constructed by literal string concat into
+  // the script — we sanitize them at the JS layer with splitAddresses (which
+  // strips quotes and surrounding whitespace) before composing the snippet.
+  const subjEsc = args.subject.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const bodyEsc = args.body.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  let recips = '';
+  for (const addr of toList) {
+    const a = addr.replace(/"/g, '');
+    recips += `make new to recipient at end of to recipients with properties {address:"${a}"}\n`;
+  }
+  for (const addr of ccList) {
+    const a = addr.replace(/"/g, '');
+    recips += `make new cc recipient at end of cc recipients with properties {address:"${a}"}\n`;
+  }
+  let attach = '';
+  for (const p of attachments) {
+    const posix = p.replace(/"/g, '');
+    attach += `make new attachment with properties {file name:(POSIX file "${posix}")} at after the last paragraph\n`;
+  }
+
+  const script = `
+    tell application "Mail"
+      activate
+      set newMsg to make new outgoing message with properties {subject:"${subjEsc}", content:"${bodyEsc}", visible:false}
+      tell newMsg
+        ${recips}
+        ${attach}
+        send
+      end tell
+      return "ok"
+    end tell
+  `;
+  const r = await runApplescript(script, { timeoutMs: 20_000 });
+  if (!r.ok) {
+    return { ok: false, message: `(error:APPLE_MAIL_FAILED) Apple Mail send failed: ${r.error ?? r.stderr.trim()}` };
+  }
+  return { ok: true, message: `Sent via Apple Mail to ${toList.join(', ')}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}` };
+}
+
+async function sendViaOutlookMac(args: MacMailArgs): Promise<MacMailResult> {
+  const toList = splitAddresses(args.to);
+  const ccList = splitAddresses(args.cc);
+  const attachments = splitAttachments(args.attachments);
+  if (toList.length === 0) return { ok: false, message: '(error:NO_RECIPIENT) Outlook for Mac send requires at least one "to" address' };
+
+  const subjEsc = args.subject.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const bodyEsc = args.body.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  let recips = '';
+  for (const addr of toList) {
+    const a = addr.replace(/"/g, '');
+    recips += `make new to recipient at end of to recipients of newMsg with properties {email address:{address:"${a}"}}\n`;
+  }
+  for (const addr of ccList) {
+    const a = addr.replace(/"/g, '');
+    recips += `make new cc recipient at end of cc recipients of newMsg with properties {email address:{address:"${a}"}}\n`;
+  }
+  let attach = '';
+  for (const p of attachments) {
+    const posix = p.replace(/"/g, '');
+    attach += `make new attachment of newMsg with properties {file:(POSIX file "${posix}")}\n`;
+  }
+
+  const script = `
+    tell application "Microsoft Outlook"
+      activate
+      set newMsg to make new outgoing message with properties {subject:"${subjEsc}", content:"${bodyEsc}"}
+      ${recips}
+      ${attach}
+      send newMsg
+      return "ok"
+    end tell
+  `;
+  const r = await runApplescript(script, { timeoutMs: 20_000 });
+  if (!r.ok) {
+    return { ok: false, message: `(error:OUTLOOK_MAC_FAILED) Outlook for Mac send failed: ${r.error ?? r.stderr.trim()}` };
+  }
+  return { ok: true, message: `Sent via Outlook for Mac to ${toList.join(', ')}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}` };
+}
+
+// ── Mail dispatcher ──────────────────────────────────────────────
 
 async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolResult> {
   const to = String(params.to || '');
@@ -1651,49 +2824,69 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   //  L4 clawd-cursor /task              (plain-English UI delegation)
   //  → hard error if all fail
 
-  const subjectB64 = Buffer.from(subject, 'utf8').toString('base64');
-  const bodyB64 = Buffer.from(body, 'utf8').toString('base64');
-  const psArgs = ['-to', to, '-subjectB64', subjectB64, '-bodyB64', bodyB64];
-  if (params.cc) psArgs.push('-cc', String(params.cc));
-  if (params.attachments) psArgs.push('-attachments', String(params.attachments));
-
   const env = getCachedMailEnvironment();
   const tried: string[] = [];
 
-  // L1a: classic Outlook COM
-  if (!env || env.classic_outlook_com !== false) {
-    tried.push('com');
-    const r = await runComScriptStructured('com-outlook-send-email.ps1', psArgs, 30000);
+  // ── win32 L1 tiers (restored in the v0.20 port — the mac fork dropped
+  // them; without these every Windows send fell through to the slow
+  // headless-web path and lost attachment support) ────────────────────
+  if (process.platform === 'win32') {
+    const psArgs = ['-to', to, '-subject', subject, '-body', body];
+    if (params.cc) psArgs.push('-cc', String(params.cc));
+    if (params.attachments) psArgs.push('-attachments', String(params.attachments));
+
+    // L1a: classic Outlook COM
+    if (!env || env.classic_outlook_com !== false) {
+      tried.push('com');
+      const r = await runComScriptStructured('com-outlook-send-email.ps1', psArgs, 30000);
+      if (r.ok) return { text: r.message };
+      // OUTLOOK_NEW_NO_COM → user clearly has no classic; skip ahead.
+      // OUTLOOK_NOT_RUNNING → has classic but it isn't running — can't help.
+      if (r.errorCode !== 'OUTLOOK_NEW_NO_COM' && r.errorCode !== 'OUTLOOK_NOT_RUNNING') {
+        return { text: r.message };
+      }
+    }
+
+    // L1b: olk mailto UIA (only if olk IS the default mailto handler — the
+    // script's own precheck enforces this, so just try it)
+    if (!env || env.new_outlook_installed) {
+      tried.push('olk-mailto');
+      const r = await runComScriptStructured('olk-send-email-uia.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 30000);
+      if (r.ok) {
+        const note = params.attachments ? ' (note: attachments not sent — mailto: protocol does not carry them)' : '';
+        return { text: `${r.message}${note}` };
+      }
+      if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
+    }
+
+    // L1c: olk direct AppX launch (bypasses mailto handler)
+    if (!env || env.new_outlook_installed) {
+      tried.push('olk-direct');
+      const r = await runComScriptStructured('olk-send-email-direct.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 45000);
+      if (r.ok) {
+        const note = params.attachments ? ' (note: attachments not sent via olk-direct)' : '';
+        return { text: `${r.message}${note}` };
+      }
+      if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
+    }
+  }
+
+  // L1a — Outlook for Mac via AppleScript dictionary. Composes + sends in
+  // one shot. Attachments path uses `make new attachment` with POSIX file.
+  if (env?.outlook_mac_installed) {
+    tried.push('outlook-mac');
+    const r = await sendViaOutlookMac({ to, cc: params.cc ? String(params.cc) : '', subject, body, attachments: params.attachments ? String(params.attachments) : '' });
     if (r.ok) return { text: r.message };
-    // If COM said OUTLOOK_NEW_NO_COM, the user clearly has no classic — skip
-    // OUTLOOK_NOT_RUNNING (means user has classic but it isn't running — can't help)
-    if (r.errorCode !== 'OUTLOOK_NEW_NO_COM' && r.errorCode !== 'OUTLOOK_NOT_RUNNING') {
-      // Real COM error we didn't anticipate — surface it.
-      return { text: r.message };
-    }
+    log.info('outlook-mac send failed', { err: r.message });
   }
 
-  // L1b: olk mailto UIA (only if olk IS the default mailto handler — the
-  // script's own precheck enforces this, so just try it)
-  if (!env || env.new_outlook_installed) {
-    tried.push('olk-mailto');
-    const r = await runComScriptStructured('olk-send-email-uia.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 30000);
-    if (r.ok) {
-      const note = params.attachments ? ' (note: attachments not sent — mailto: protocol does not carry them)' : '';
-      return { text: `${r.message}${note}` };
-    }
-    if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
-  }
-
-  // L1c: olk direct AppX launch (NEW v0.13.0 — bypasses mailto handler)
-  if (!env || env.new_outlook_installed) {
-    tried.push('olk-direct');
-    const r = await runComScriptStructured('olk-send-email-direct.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 45000);
-    if (r.ok) {
-      const note = params.attachments ? ' (note: attachments not sent via olk-direct)' : '';
-      return { text: `${r.message}${note}` };
-    }
-    if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
+  // L1b — Apple Mail via AppleScript. Same flow; AppleMail's dictionary
+  // is similar but `make new outgoing message` lives under `application "Mail"`.
+  if (env?.apple_mail_installed) {
+    tried.push('apple-mail');
+    const r = await sendViaAppleMail({ to, cc: params.cc ? String(params.cc) : '', subject, body, attachments: params.attachments ? String(params.attachments) : '' });
+    if (r.ok) return { text: r.message };
+    log.info('apple-mail send failed', { err: r.message });
   }
 
   // v0.15.0 — L1.5: mcp-chrome with user's REAL signed-in browser. Tries
@@ -1737,8 +2930,21 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
     log.warn('outlook_web_send_email threw', { err: serializeErr(err) });
   }
 
-  // L2b: gmail-web fallback
-  tried.push('gmail-web');
+  // L2b: gmail. v0.19.0 PR-6 — try the API route first when the user
+  // has a Gmail token stored. Same fall-through pattern as the dedicated
+  // gmailWebSendEmailTool above — keeps the dispatcher tier order intact
+  // (API → web → clawd) without surfacing the API tier as a separate
+  // "tried" entry. The label "gmail" in tried[] reads cleaner in the
+  // failure message than "gmail-api → gmail-web".
+  tried.push('gmail');
+  if (hasApiKey('gmail')) {
+    try {
+      const r = await gmailApiSend({ to, subject, body, cc: params.cc ? String(params.cc) : undefined });
+      if (!r.text.startsWith('(error:')) return r;
+    } catch (err) {
+      log.warn('gmail API send threw', { err: serializeErr(err) });
+    }
+  }
   try {
     const r = await gmailWebSendEmail({ to, subject, body, cc: params.cc ? String(params.cc) : undefined });
     if (!r.text.startsWith('(error:')) return r;
@@ -1762,6 +2968,262 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
 }
 
 /**
+ * v0.20.0-alpha.2 — Apple Mail (macOS) send via AppleScript.
+ *
+ * Why this exists
+ * ───────────────
+ * Through v0.20.0-alpha.1 the macOS port had NO native email-send tool
+ * exposed to the model. The user-visible regression: ask Clippy to send
+ * an email on a Mac without Chrome running and he apologizes — "Outlook
+ * or Chrome/Edge browser to work its magic. Neither's available." Mail.app
+ * IS installed (we detect this via mail-env.ts apple_mail_installed), but
+ * there was no apple_mail_send_email tool wired to it. Model picks
+ * outlook_web_send_email or gmail_web_send_email, both need CDP-attached
+ * browser, and gives up.
+ *
+ * Implementation
+ * ──────────────
+ * Drive Mail.app via AppleScript through mac-bridge.ts runApplescript.
+ * Use `visible:true` so the user sees the compose window before send —
+ * this is a destructive action (email actually leaves the user's account)
+ * and we want the visual feedback for trust. The `send` action is still
+ * AppleScript-driven (not a fake "open compose" stub) — message goes out.
+ *
+ * Permissions
+ * ───────────
+ * Per-app Automation (TCC). First call surfaces the OS dialog
+ * "ClippyAI wants to control Mail.app". Decline → script returns
+ * osascript error -1743 → we surface a structured (error: permission)
+ * with the System Settings hint. Once granted, persists.
+ *
+ * Coverage
+ * ────────
+ * - to (required): single address or comma-separated list
+ * - subject (required)
+ * - body (required, plaintext; Mail.app converts to rich text on send)
+ * - cc, bcc (optional, comma-separated)
+ *
+ * Attachments are out of scope for v0.20.0-alpha.2 — defer to alpha.3.
+ */
+async function appleMailSendEmail(params: Record<string, unknown>): Promise<ToolResult> {
+  if (process.platform !== 'darwin') {
+    return { text: '(error:PLATFORM_UNSUPPORTED) apple_mail_send_email is macOS-only' };
+  }
+
+  const to = String(params.to || '').trim();
+  const subject = String(params.subject || '').trim();
+  const body = String(params.body || '');
+  const cc = params.cc ? String(params.cc).trim() : '';
+  const bcc = params.bcc ? String(params.bcc).trim() : '';
+
+  if (!to)      return { text: '(error:MISSING_FIELD) apple_mail_send_email needs `to`' };
+  if (!subject) return { text: '(error:MISSING_FIELD) apple_mail_send_email needs `subject`' };
+  if (!body)    return { text: '(error:MISSING_FIELD) apple_mail_send_email needs `body`' };
+
+  const splitAddresses = (s: string) =>
+    s.split(',').map((x) => x.trim()).filter((x) => x.length > 0);
+
+  // v0.20.0 — argv pattern (matches appleCalendarCreateEvent). Subject, body
+  // and each recipient list are read positionally from `argv`, never
+  // interpolated into the script source — so there is NO AppleScript
+  // injection surface even for attacker-influenced subject/body content
+  // (forwarded text, OCR'd page content). Recipient lists are passed as
+  // newline-joined argv items and split inside AppleScript via text item
+  // delimiters; AppleScript needs one `make new to recipient` per address
+  // (a comma-string in `address` does not multi-recipient).
+  const toList = splitAddresses(to);
+  const ccList = cc ? splitAddresses(cc) : [];
+  const bccList = bcc ? splitAddresses(bcc) : [];
+
+  const script = `on run argv
+  set subjectText to item 1 of argv
+  set bodyText to item 2 of argv
+  set toText to item 3 of argv
+  set ccText to item 4 of argv
+  set bccText to item 5 of argv
+  set AppleScript's text item delimiters to linefeed
+  set toAddrs to text items of toText
+  set ccAddrs to text items of ccText
+  set bccAddrs to text items of bccText
+  set AppleScript's text item delimiters to ""
+  tell application "Mail"
+    activate
+    set newMessage to make new outgoing message with properties {subject:subjectText, content:bodyText, visible:true}
+    tell newMessage
+      repeat with a in toAddrs
+        if (a as text) is not "" then make new to recipient at end of to recipients with properties {address:(a as text)}
+      end repeat
+      repeat with a in ccAddrs
+        if (a as text) is not "" then make new cc recipient at end of cc recipients with properties {address:(a as text)}
+      end repeat
+      repeat with a in bccAddrs
+        if (a as text) is not "" then make new bcc recipient at end of bcc recipients with properties {address:(a as text)}
+      end repeat
+    end tell
+    delay 0.5
+    send newMessage
+    return "sent"
+  end tell
+end run`;
+
+  log.info('apple_mail_send_email dispatching', {
+    to: splitAddresses(to).length,
+    cc: cc ? splitAddresses(cc).length : 0,
+    bcc: bcc ? splitAddresses(bcc).length : 0,
+    subjectPreview: subject.substring(0, 60),
+    bodyChars: body.length,
+  });
+
+  const r = await runApplescript(script, {
+    args: [subject, body, toList.join('\n'), ccList.join('\n'), bccList.join('\n')],
+    timeoutMs: 15_000,
+  });
+  if (r.ok) {
+    return {
+      text: `Sent email to ${to} via Apple Mail (subject: "${subject.substring(0, 80)}")`,
+    };
+  }
+
+  // Decode common osascript failures into structured sentinels.
+  const stderr = r.stderr || '';
+  const msg = r.error || stderr;
+  if (/not allowed assistive access|not authorized|-1743|errAEEventNotPermitted/i.test(stderr)) {
+    return {
+      text:
+        '(error:PERMISSION) Apple Mail Automation is denied — open System Settings → ' +
+        'Privacy & Security → Automation → ClippyAI and enable "Mail", then ask me again.',
+    };
+  }
+  if (/not running|connection invalid|connection refused/i.test(stderr)) {
+    return {
+      text:
+        '(error:MAIL_NOT_RUNNING) Mail.app refused to start — open Mail.app once manually ' +
+        'so it finishes first-launch setup, then ask me again.',
+    };
+  }
+  return {
+    text: `(error:APPLE_MAIL_FAILED) ${msg.substring(0, 200)}`,
+  };
+}
+
+/**
+ * v0.20.0 — apple_calendar_create_event. Native macOS Calendar.app event
+ * creation via AppleScript (no browser, no login, no clawdcursor). This is
+ * the reliable calendar path on Mac: the web route (cdp_connect → Google
+ * Calendar) lands in a fresh debug-profile Chrome that is NOT signed into
+ * the user's Google account, so it can't add events; and clawd_task is dead
+ * unless clawdcursor is installed. Before this tool, "add a calendar event"
+ * had no working path on Mac.
+ *
+ * Dates are passed as NUMERIC COMPONENTS (year/month/day/hour/minute), not
+ * date strings, because AppleScript date-string parsing is locale-dependent
+ * and fragile. The model computes the components (it has get_current_time_tz
+ * for resolving "tomorrow"/"next Tuesday"). All free-text (title/notes/
+ * location/calendar) is passed via `argv` so there is no AppleScript string
+ * injection.
+ */
+async function appleCalendarCreateEvent(params: Record<string, unknown>): Promise<ToolResult> {
+  if (process.platform !== 'darwin') {
+    return { text: '(error:PLATFORM_UNSUPPORTED) apple_calendar_create_event is macOS-only' };
+  }
+
+  const title = String(params.title || '').trim();
+  if (!title) return { text: '(error:MISSING_FIELD) apple_calendar_create_event needs `title`' };
+
+  const toInt = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  };
+  const year = toInt(params.year);
+  const month = toInt(params.month);
+  const day = toInt(params.day);
+  if (year === null || month === null || day === null) {
+    return { text: '(error:MISSING_FIELD) apple_calendar_create_event needs numeric `year`, `month` (1-12), `day`. Use get_current_time_tz to resolve "today"/"tomorrow".' };
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return { text: '(error:INVALID_ARGS) month must be 1-12 and day 1-31' };
+  }
+  const hour = toInt(params.hour) ?? 9;
+  const minute = toInt(params.minute) ?? 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return { text: '(error:INVALID_ARGS) hour must be 0-23, minute 0-59 (24-hour clock)' };
+  }
+  const durationMinutes = Math.max(1, toInt(params.durationMinutes) ?? 60);
+  const calendar = String(params.calendar || '').trim();
+  const notes = String(params.notes || '');
+  const location = String(params.location || '');
+
+  // `on run argv` reads every value positionally — no escaping needed, no
+  // injection surface. `set day to 1` BEFORE setting month avoids the
+  // "current day is the 31st, target month is short" overflow bug.
+  const script = `on run argv
+  set evTitle to item 1 of argv
+  set calName to item 2 of argv
+  set yr to (item 3 of argv) as integer
+  set mo to (item 4 of argv) as integer
+  set dy to (item 5 of argv) as integer
+  set hr to (item 6 of argv) as integer
+  set mn to (item 7 of argv) as integer
+  set durMin to (item 8 of argv) as integer
+  set evNotes to item 9 of argv
+  set evLoc to item 10 of argv
+  set startDate to (current date)
+  set day of startDate to 1
+  set year of startDate to yr
+  set month of startDate to mo
+  set day of startDate to dy
+  set hours of startDate to hr
+  set minutes of startDate to mn
+  set seconds of startDate to 0
+  -- AppleScript silently rolls over out-of-range day/month combos (e.g.
+  -- day 31 in a 30-day month, day 30 in Feb), landing the event on a later
+  -- date with no error. Verify the constructed date still matches the
+  -- requested components and error out cleanly if it drifted.
+  if (year of startDate is not yr) or (month of startDate as integer is not mo) or (day of startDate is not dy) then
+    error "INVALID_DATE"
+  end if
+  set endDate to startDate + (durMin * minutes)
+  tell application "Calendar"
+    if calName is "" then
+      set theCal to first calendar whose writable is true
+    else
+      set theCal to (first calendar whose name is calName)
+    end if
+    set newEv to make new event at end of events of theCal with properties {summary:evTitle, start date:startDate, end date:endDate}
+    if evNotes is not "" then set description of newEv to evNotes
+    if evLoc is not "" then set location of newEv to evLoc
+    return "OK: \\"" & summary of newEv & "\\" on " & (startDate as string) & " (" & durMin & " min) in calendar \\"" & (name of theCal) & "\\""
+  end tell
+end run`;
+
+  const r = await runApplescript(script, {
+    args: [title, calendar, String(year), String(month), String(day), String(hour), String(minute), String(durationMinutes), notes, location],
+    timeoutMs: 15000,
+  });
+
+  if (r.ok && r.stdout.trim().startsWith('OK:')) {
+    return { text: r.stdout.trim() };
+  }
+
+  const err = (r.stderr || r.error || '').trim();
+  // The script raises INVALID_DATE when the requested day overflowed the
+  // target month (e.g. Feb 30) and AppleScript silently rolled it forward.
+  if (/INVALID_DATE/.test(err)) {
+    return { text: `(error:INVALID_ARGS) ${month}/${day}/${year} is not a valid date (day out of range for that month).` };
+  }
+  // Automation TCC denial: errAEEventNotPermitted (-1743) / "Not authorized".
+  if (/-1743|not authorized|not allowed to send|assistive access|permission/i.test(err)) {
+    return { text:
+      '(error:CALENDAR_PERMISSION) macOS blocked Clippy from controlling Calendar. ' +
+      'Open System Settings → Privacy & Security → Automation → ClippyAI and enable "Calendar", then ask me again.' };
+  }
+  if (/can[’\']?t get .*calendar|Invalid index|first calendar whose name/i.test(err)) {
+    return { text: `(error:CALENDAR_NOT_FOUND) No calendar named "${calendar}". Try without specifying a calendar, or use one of the user's calendar names.` };
+  }
+  return { text: `(error:CALENDAR_FAILED) ${err.substring(0, 200) || 'unknown error creating the event'}` };
+}
+
+/**
  * v0.13.0 — direct exposure of the deterministic outlook.live.com recipe.
  * Mostly intended as an internal dispatch target from outlookSendEmail, but
  * also surfaced as a separate tool so the model can pick it directly if it
@@ -1776,13 +3238,47 @@ async function outlookWebSendEmailTool(params: Record<string, unknown>): Promise
   });
 }
 
+/**
+ * v0.19.0 PR-6 — API-route gating.
+ *
+ * When the user has stored a Gmail API token in Keychain via the
+ * onboarding step-5 flow (or Settings → Apps), hasApiKey('gmail')
+ * returns true and we try the REST-API route first. If that route
+ * fails or the token is missing, we fall through to the existing
+ * UI-automation path (gmail-web via CDP). This pattern is intentional:
+ *
+ *   - The API path is faster (single HTTP request vs a multi-step CDP
+ *     recipe) and more reliable (no DOM-selector fragility).
+ *   - The UI path is the safety net — works even if the user's token
+ *     expires, scopes are wrong, or our API integration regresses.
+ *   - The check is sync (`hasApiKey()` reads electron-store, not the
+ *     keychain) so the dispatch decision doesn't add a roundtrip on
+ *     every tool call.
+ *
+ * v0.19.0 ships gmailApiSend as a stub that returns API_NOT_IMPLEMENTED
+ * — see src/main/api-routes.ts for the contract and the rollout plan.
+ * The (error:…) sentinel makes the fallthrough automatic: no caller-
+ * side change needed when v0.20+ flips on the real implementation.
+ */
 async function gmailWebSendEmailTool(params: Record<string, unknown>): Promise<ToolResult> {
-  return gmailWebSendEmail({
+  const sendParams = {
     to: String(params.to || ''),
     subject: String(params.subject || ''),
     body: String(params.body || ''),
     cc: params.cc ? String(params.cc) : undefined,
-  });
+  };
+
+  if (hasApiKey('gmail')) {
+    log.info('gmail_web_send_email: routing via API (token in keychain)');
+    const apiResult = await gmailApiSend(sendParams);
+    // Fall through to UI on any (error:…) — including API_NOT_IMPLEMENTED
+    // (the v0.19.0 stub state). The user's intent doesn't change based on
+    // which transport ultimately delivered the mail.
+    if (!apiResult.text.startsWith('(error:')) return apiResult;
+    log.info('gmail API route returned error, falling back to UI', { sample: apiResult.text.slice(0, 80) });
+  }
+
+  return gmailWebSendEmail(sendParams);
 }
 
 // ── v0.14.0 ClawHub skill registry tools ──────────────────────────
@@ -2367,16 +3863,99 @@ async function outlookUpcoming(params: Record<string, unknown>): Promise<ToolRes
 }
 
 async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = String(params.path || '');
-  if (!filePath) return { text: 'Error: path is required' };
-  const args = ['-path', filePath];
-  if (params.filter) args.push('-filter', String(params.filter));
-  if (params.recurse !== undefined) args.push('-recurse', params.recurse ? 'true' : 'false');
-  if (params.top !== undefined) args.push('-top', String(Number(params.top) || 100));
-  return await runComScript('com-list-files.ps1', args, 15000);
+  const rawPath = String(params.path || '');
+  if (!rawPath) return { text: '(error:BAD_INPUT) path is required' };
+  const dirPath = expandHome(rawPath);
+  const filterRaw = String(params.filter || '').trim();
+  const recurse = params.recurse === true || params.recurse === 'true';
+  const top = Math.min(
+    FS_LIST_FILES_MAX,
+    Math.max(1, Number(params.top) || 100),
+  );
+
+  // Translate a simple `*.ext` / `name*` glob into a regex. Anything more
+  // exotic is too much rope for a model to swing — just treat it literally.
+  const filterRe: RegExp | null = (() => {
+    if (!filterRaw || filterRaw === '*') return null;
+    const escaped = filterRaw.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+    return new RegExp(`^${escaped}$`, 'i');
+  })();
+
+  try {
+    const stat = await fsp.stat(dirPath);
+    if (!stat.isDirectory()) return { text: `(error:NOT_FOUND) not a directory: ${dirPath}` };
+  } catch {
+    return { text: `(error:NOT_FOUND) directory not found: ${dirPath}` };
+  }
+
+  type Entry = { name: string; type: 'file' | 'dir'; size: number; mtime: string };
+  const collected: Entry[] = [];
+
+  async function walk(dir: string, prefix: string): Promise<void> {
+    if (collected.length >= top) return;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch { return; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const ent of entries) {
+      if (collected.length >= top) return;
+      if (FS_SEARCH_SKIP_DIRS.has(ent.name)) continue;
+      const rel = prefix ? path.join(prefix, ent.name) : ent.name;
+      const full = path.join(dir, ent.name);
+      const passesFilter = !filterRe || filterRe.test(ent.name);
+      if (ent.isDirectory()) {
+        if (passesFilter) collected.push({ name: rel + '/', type: 'dir', size: 0, mtime: '' });
+        if (recurse) await walk(full, rel);
+      } else if (ent.isFile() && passesFilter) {
+        try {
+          const st = await fsp.stat(full);
+          collected.push({ name: rel, type: 'file', size: st.size, mtime: st.mtime.toISOString() });
+        } catch { /* skip unreadable */ }
+      }
+    }
+  }
+
+  try {
+    await walk(dirPath, '');
+  } catch (err) {
+    log.warn('list_files failed', { path: dirPath, err: serializeErr(err) });
+    return { text: `(error:UNKNOWN) list_files failed: ${(err as Error).message || String(err)}` };
+  }
+
+  if (collected.length === 0) {
+    return { text: `Empty directory: ${dirPath}` };
+  }
+  const truncated = collected.length >= top;
+  const lines = collected.map((e) =>
+    e.type === 'dir'
+      ? `${e.name}  <DIR>`
+      : `${e.name}  ${e.size} bytes  ${e.mtime}`,
+  );
+  const header = `Directory: ${dirPath}\nEntries: ${collected.length}${truncated ? ' (truncated at ' + top + ')' : ''}`;
+  return { text: `${header}\n${lines.join('\n')}` };
 }
 
 async function minimizeAllWindows(): Promise<ToolResult> {
+  // v0.20.0 — darwin path uses the Swift bridge's minimize-all subcommand
+  // which sends Cmd+Opt+H+M (the canonical Mac shortcut for "hide all but
+  // front") via CGEvent. No clipboard / Shell.Application equivalent on
+  // macOS — this is the closest semantic match to Win+M.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.minimizeAll();
+      return { text: 'Minimized all windows.' };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        return { text: `(minimize_all_windows error: ${err.message})` };
+      }
+      return { text: `(minimize_all_windows error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
+
   // Shell.Application's MinimizeAll() is the canonical Win+D equivalent.
   // We tried key_press("win+d") first — nut.js doesn't reliably send the
   // Windows key, so the model claimed success without anything happening.
@@ -2392,6 +3971,24 @@ async function minimizeAllWindows(): Promise<ToolResult> {
 }
 
 async function showDesktop(): Promise<ToolResult> {
+  // v0.20.0 — darwin path uses the Swift bridge's show-desktop subcommand
+  // which triggers Mission Control's "Show Desktop" via F11 / fn+F11 (the
+  // hot-corner-free equivalent). Toggles desktop visibility.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      await macBridge.showDesktop();
+      return { text: 'Toggled show-desktop.' };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        return { text: `(show_desktop error: ${err.message})` };
+      }
+      return { text: `(show_desktop error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
+
   // Shell.Application.ToggleDesktop() is the true Win+D — toggles between
   // showing the desktop and restoring all windows.
   try {
@@ -2408,6 +4005,31 @@ async function showDesktop(): Promise<ToolResult> {
 async function minimizeWindow(params: Record<string, unknown>): Promise<ToolResult> {
   const procName = sanitizeAppName(String(params.processName || ''));
   if (!procName) return { text: 'Error: processName is required' };
+  // v0.20.0 (track2) — darwin routes through the Swift bridge's
+  // `minimize-window` verb. The bridge keys off pid, so resolve the app
+  // name → pid first (getAppPidByName), then minimize. An optional `title`
+  // narrows to a specific window when the app has several.
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    const pid = await getAppPidByName(procName);
+    if (pid <= 0) return { text: `(minimize_window: no running app named "${procName}")` };
+    const titleSubstring = params.title ? String(params.title) : undefined;
+    try {
+      await macBridge.minimizeWindow({ pid, titleSubstring });
+      return { text: `Minimized ${procName}.` };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
+        }
+        if (err.kind !== 'missing' && err.kind !== 'platform') {
+          return { text: `(minimize_window error: ${err.message})` };
+        }
+        // missing/platform → fall through to the win32 PS path below
+      } else {
+        return { text: `(minimize_window error: ${err instanceof Error ? err.message : String(err)})` };
+      }
+    }
+  }
   // Use Win32 ShowWindow via P/Invoke. SW_MINIMIZE = 6.
   const ps = `
 $sig = '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'
@@ -2455,13 +4077,19 @@ import { spawnCdpBrowser } from './cdp-spawn';
 export { spawnCdpBrowser };
 
 async function cdpConnect(params: Record<string, unknown>): Promise<ToolResult> {
-  // v0.17.5 — visibility is now intent-driven. Default false (silent
-  // headless spawn) so "look up X" / "what's the weather" / "fetch this
-  // data" tasks don't pop a browser window the user never asked to see.
-  // Model sets visible=true when the user needs to consume the page
-  // afterward (play YouTube video, sign into a banking page, "show me
-  // the Wikipedia article", "watch this work").
-  const visible = params.visible === true;
+  // v0.20.0 — VISIBLE BY DEFAULT. Previously this defaulted to headless
+  // (visible only when the model remembered to pass visible:true), which
+  // caused a real harm: "play an Adele song on YouTube" spawned a HEADLESS
+  // Chrome that played audio with no window — the user heard sound from
+  // nowhere, couldn't find or stop it, and "quit all browsers" didn't kill
+  // it (separate detached process). For a desktop assistant the browser
+  // must be visible by default so the user can always see and close what
+  // Clippy opened, and audio/video never plays from an invisible process.
+  // Headless is now opt-in: the model passes visible:false ONLY for silent
+  // data fetches ("what's the weather", "look up X") where no window is
+  // wanted. The email-send skills spawn headless directly via
+  // spawnCdpBrowser and are unaffected by this default.
+  const visible = params.visible !== false;
   const client = getCdpClient();
   let result = await client.connect();
   if (!result.ok) {
@@ -2685,13 +4313,78 @@ async function detectWebviewApps(_params: Record<string, unknown>): Promise<Tool
   }
 }
 
+// ── Profile / Bootstrap ritual (v0.20.0-alpha.8) ─────────────────
+//
+// Two tools the worker uses during the openclaw-style BOOTSTRAP.md
+// first-run ritual. Both are read_only (no destructive side effects)
+// and cheap (just touch the local profile/ workspace).
+
+async function updateUserProfileField(params: Record<string, unknown>): Promise<ToolResult> {
+  const field = String(params.field || '').trim();
+  const value = String(params.value ?? '').trim();
+  if (!field) return { text: '(error:BAD_INPUT) field is required (e.g. "Role", "Reply style", "Timezone")' };
+  if (!value) return { text: '(error:BAD_INPUT) value is required (empty string would clear the field — pass "(not set)" or skip the field instead)' };
+  try {
+    profileMod.updateUserFields({ [field]: value });
+    return { text: `Saved ${field}: ${value}` };
+  } catch (err) {
+    return { text: `(error:PROFILE_WRITE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function finishOnboardingChat(_params: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    profileMod.deleteBootstrap();
+    return { text: 'Onboarding ritual complete. BOOTSTRAP.md removed.' };
+  } catch (err) {
+    return { text: `(error:BOOTSTRAP_DELETE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * Replace the text of the currently-focused field in ANY app, in one shot
+ * (the Grammarly-style "rewrite what I'm writing" primitive). Reads + writes
+ * the same live AXFocusedUIElement via the Swift bridge, so it's race-free and
+ * needs no pid/path. On surfaces where AX write isn't supported (some
+ * Electron/web editors), returns AX_WRITE_FAILED so the caller can fall back
+ * to select-all + type. macOS-only.
+ */
+async function replaceFocusedText(params: { text?: unknown; value?: unknown }): Promise<ToolResult> {
+  const v = typeof params.value === 'string' ? params.value
+    : typeof params.text === 'string' ? params.text : undefined;
+  if (typeof v !== 'string') {
+    return { text: '(error:BAD_INPUT) replace_focused_text requires "value" — the replacement text' };
+  }
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const result = await macBridge.a11yFocusedSetValue({ value: v });
+      return { text: JSON.stringify({ ok: true, strategy: result.strategy ?? 'value' }) };
+    } catch (err) {
+      if (err instanceof macBridge.BridgeError) {
+        if (err.kind === 'permission') {
+          return { text: '(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)' };
+        }
+        // AX write unsupported on this surface (Electron/web contentEditable) —
+        // signal so the model can fall back to key_press(cmd+a) + type_text.
+        return { text: `(error:AX_WRITE_FAILED) couldn't set the focused field via AX (${err.message}). Fall back to select-all + type.` };
+      }
+      return { text: `(replace_focused_text error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
+  return { text: '(error:PLATFORM_UNSUPPORTED) replace_focused_text is macOS-only' };
+}
+
 // ── Tool Registry ────────────────────────────────────────────────
 
 const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<ToolResult>> = {
+  update_user_profile: updateUserProfileField,
+  finish_onboarding_chat: finishOnboardingChat,
   read_screen: readScreen,
   get_active_window: getActiveWindow,
   get_windows: getWindows,
   get_focused_element: getFocusedElement,
+  get_selection: getSelection,
+  replace_focused_text: replaceFocusedText,
   focus_window: focusWindow,
   open_app: openApp,
   desktop_screenshot: desktopScreenshot,
@@ -2714,6 +4407,10 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   create_reminder: createReminder,
   read_file: readFile,
   write_file: writeFile,
+  // v0.19.0 — file management tools (delete uses move-to-trash for undoability)
+  delete_file: deleteFile,
+  rename_file: renameFile,
+  move_file: moveFile,
   // run_powershell removed in v0.12.3 — see comment above runPowershell function definition.
   // v0.12.4 additions
   zip_files: zipFiles,
@@ -2744,11 +4441,18 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   system_info: systemInfo,
   list_processes: listProcesses,
   speak_text: speakText,
+  play_animation: playAnimation,
   search_files_content: searchFilesContent,
   ping_host: pingHost,
   http_request: httpRequest,
+  // v0.20.0 — generic shell. Gated by permission-policy actionClass
+  // 'destructive_exec' so cautious/standard modes prompt before each call.
+  shell_exec: shellExec,
+  web_search: webSearch,
   // Office COM
   outlook_send_email: outlookSendEmail,
+  apple_mail_send_email: appleMailSendEmail,
+  apple_calendar_create_event: appleCalendarCreateEvent,
   outlook_read_inbox: outlookReadInbox,
   outlook_create_event: outlookCreateEvent,
   outlook_upcoming: outlookUpcoming,
@@ -2790,7 +4494,34 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   generate_excel: excelFromRows,
   generate_pdf: pdfFromText,
   generate_qrcode: qrcodeFromText,
+  // v0.19.0 — follow-me cursor mode
+  follow_me: followMeTool,
+  stop_following: stopFollowingTool,
 };
+
+async function followMeTool(): Promise<ToolResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fm = require('./follow-me') as typeof import('./follow-me');
+    fm.start();
+    return { text: 'Started following the cursor. Say "stop following" or press Esc when you want me to stay put.' };
+  } catch (err) {
+    log.warn('follow_me tool error', serializeErr(err));
+    return { text: `Error starting follow-me: ${(err as Error).message}` };
+  }
+}
+
+async function stopFollowingTool(): Promise<ToolResult> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fm = require('./follow-me') as typeof import('./follow-me');
+    fm.stop('manual');
+    return { text: 'Okay, staying here.' };
+  } catch (err) {
+    log.warn('stop_following tool error', serializeErr(err));
+    return { text: `Error stopping follow-me: ${(err as Error).message}` };
+  }
+}
 
 async function clawdStatus(): Promise<ToolResult> {
   const ready = isClawdReady();
@@ -2832,6 +4563,8 @@ export async function initTools(): Promise<void> {
   } catch (err) {
     log.warn('Screen scale detection failed', serializeErr(err));
   }
+  // v0.19.0 — prune ~/.clippy-trash entries older than 7 days (non-fatal)
+  try { cleanClippyTrash(); } catch { /* non-fatal */ }
   // v0.14.0 — populate the skill registry from the on-disk cache so any
   // previously-installed ClawHub skills are callable from the first turn.
   // Non-blocking — never delay startup just because skills enumeration
@@ -2843,24 +4576,30 @@ export async function initTools(): Promise<void> {
   // calls until the bridge reports READY. Users get a responsive app now;
   // per-call overhead of one-off PS is ~100-500ms until warmup completes.
   startPSBridge().catch((err) => {
-    log.warn('PSBridge startup failed — using fallback one-off PowerShell calls', serializeErr(err));
+    log.warn('Bridge stub failed unexpectedly', serializeErr(err));
   });
-
-  // Health monitor: every 30s, ping the bridge. On failure: kill + respawn
-  // (max 3 per 60s window, then permanent degradation to one-off fallback).
-  // The interval is also cleared in the PSBridge exit handler so a stale
-  // ping cannot fire and try to write to a bridge that is mid-respawn.
-  psHealthInterval = setInterval(() => {
-    psHealthCheck().catch((err) => {
-      // psHealthCheck never throws by design — this is a belt-and-suspenders
-      // catch in case an internal promise rejects unexpectedly.
-      log.warn('psHealthCheck uncaught error', serializeErr(err));
-    });
-  }, 30_000);
 
   initialized = true;
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
 }
+
+/**
+ * v0.18.1 — tools that synthesize input on the user's desktop. The
+ * takeover monitor is told to ignore idle resets in a ~1.5s window
+ * around each of these dispatches so Clippy's own clicks don't
+ * register as the user "taking over."
+ */
+const INPUT_GENERATING_TOOLS = new Set([
+  'mouse_click', 'mouse_double_click', 'mouse_right_click', 'mouse_middle_click',
+  'mouse_triple_click', 'mouse_drag', 'mouse_hover', 'mouse_scroll', 'mouse_scroll_horizontal',
+  'mouse_down', 'mouse_up', 'mouse_move_relative',
+  'type_text', 'key_press', 'key_down', 'key_up',
+  'smart_click', 'smart_type',
+  'cdp_click', 'cdp_type', 'cdp_scroll', 'cdp_select_option',
+  'browser_click', 'browser_type',
+  'write_clipboard', 'set_field_value', 'replace_focused_text',
+  'invoke_element', 'focus_element',
+]);
 
 export async function executeTool(tool: string, params: Record<string, unknown> = {}): Promise<ToolResult> {
   // v0.14.0 — skill__<slug> tools are dispatched via the ClawHub registry.
@@ -2877,6 +4616,44 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     return { text: `(error:UNKNOWN_TOOL) unknown tool: ${tool}` };
   }
 
+  // v0.20.0 — platform-gate at the dispatcher. buildToolTiers should have
+  // already filtered the tool out of the model's catalog, but server-side
+  // overrides + installed skills + future bugs can still reach this point.
+  // Returning a structured PLATFORM_UNSUPPORTED is honest + lets the model
+  // adapt; the alternative (spawn powershell.exe → ENOENT in 30ms → error
+  // sentinel in the result text → model apologizes) burns a turn and ships
+  // Windows-flavored copy to a Mac user. See May 21-23 logs for the
+  // production fingerprint of the old behavior.
+  {
+    const meta = TOOL_META[tool];
+    if (meta && !isToolSupportedOnPlatform(meta)) {
+      log.info('Tool.skipped_unsupported_platform', {
+        tool,
+        platform: process.platform,
+        platforms: meta.platforms,
+      });
+      return {
+        text:
+          `(error:PLATFORM_UNSUPPORTED) "${tool}" is not implemented on ` +
+          `${process.platform}. Supported: ${(meta.platforms ?? ['all']).join(',')}. ` +
+          `Try a different approach.`,
+      };
+    }
+  }
+
+  // v0.18.1 — flag input-tool dispatches for takeover disambiguation.
+  // v0.20.0 — also ARM takeover cancellation here: the first time Clippy drives
+  // the mouse/keyboard/an app, the user's own input starts to collide with his,
+  // so from now on grabbing the mouse or typing cancels. A turn that only
+  // answers a question never reaches this branch, so it's never interruptible.
+  const isInputTool = INPUT_GENERATING_TOOLS.has(tool);
+  if (isInputTool) {
+    try {
+      userTakeover.noteClippyInput(tool);
+      userTakeover.arm();
+    } catch { /* monitor may not be active outside of a task */ }
+  }
+
   const startTime = Date.now();
   let primaryResult: ToolResult;
   try {
@@ -2891,6 +4668,15 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     // is a programming bug or transient I/O failure, not something a Tier 5
     // UI hop can recover from. Returning a clean code lets the model decide.
     primaryResult = { text: `(error:TOOL_THREW) ${tool} threw: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // v0.18.1 — second noteClippyInput AFTER dispatch to cover OS event-
+  // registration tail-latency. macOS in particular can lag the
+  // idle-counter update by ~200ms past the synthesized event.
+  if (isInputTool) {
+    try {
+      userTakeover.noteClippyInput(tool);
+    } catch { /* non-fatal */ }
   }
 
   // Tier 5 fallback: only if (a) result looks like a structured eligible
@@ -2913,32 +4699,19 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
 }
 
 /**
- * Cleanup on app quit. Must kill PSBridge FORCEFULLY and SYNCHRONOUSLY — if
- * we just send SIGTERM and return, the PowerShell subprocess (and anything
- * it spawned) can linger, holding file handles on our install directory.
- * During auto-update that means the NSIS installer can't replace ClippyAI.exe
- * and the whole update fails silently.
- *
- * Uses taskkill /T /F on Windows which kills the process + entire tree
- * immediately. Synchronous child_process.spawnSync so this blocks until the
- * OS confirms the kill before we hand control back to app.quit.
+ * Cleanup on app quit. The macOS bridge (M2) will be a single osascript or
+ * Swift helper process — no Windows-style child tree to kill — so SIGKILL
+ * on the direct child is sufficient. DMG auto-update doesn't need the
+ * exclusive-file-handle guarantee that taskkill /T provided on Windows.
  */
 export function cleanupTools(): void {
-  // Stop the health monitor first so it can't fire during teardown and
-  // attempt a respawn while we're in the middle of killing the bridge.
   if (psHealthInterval) {
     clearInterval(psHealthInterval);
     psHealthInterval = null;
   }
 
-  if (psBridge && !psBridge.killed && psBridge.pid) {
-    try {
-      const { spawnSync } = require('child_process') as typeof import('child_process');
-      spawnSync('taskkill', ['/F', '/T', '/PID', String(psBridge.pid)], { timeout: 3000 });
-    } catch {
-      // Fallback: normal kill. Won't handle children, but better than nothing.
-      try { psBridge.kill('SIGKILL'); } catch { /* already dead */ }
-    }
+  if (psBridge && !psBridge.killed) {
+    try { psBridge.kill('SIGKILL'); } catch { /* already dead */ }
     psBridge = null;
   }
 }

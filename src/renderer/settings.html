@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
@@ -7,389 +7,768 @@
 </head>
 <body class="settings-window">
   <div class="settings-layout">
-    <nav class="settings-nav">
-      <button class="settings-nav-item active" data-section="general">General</button>
+    <!-- Sidebar nav. Grouped via uppercase eyebrow labels so the user can
+         scan three buckets (Setup / Connections / Safety / Account) at a
+         glance. Tab IDs are unchanged — settings.ts switches sections by
+         the `data-section` attribute, not the group label. -->
+    <nav class="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+      <div class="settings-nav-group" role="presentation">Setup</div>
+      <button class="settings-nav-item active" data-section="general" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true">General</button>
       <!-- v0.12.5 — Appearance tab hidden. Was a dead stub ("Clippy's
            appearance is fixed in this version. Custom sizes and themes
            coming soon!") + a permanently-disabled toggle. Per polish
            audit: visible-but-empty tab screams "unfinished." Re-enable
            when we ship a real character/size/theme picker. -->
-      <button class="settings-nav-item" data-section="appearance" style="display:none">Appearance</button>
-      <button class="settings-nav-item" data-section="voice">Voice</button>
-      <button class="settings-nav-item" data-section="brain">Brain</button>
-      <button class="settings-nav-item" data-section="skills">Skills</button>
-      <button class="settings-nav-item" data-section="web">Web</button>
-      <button class="settings-nav-item" data-section="tools">Tools</button>
-      <button class="settings-nav-item" data-section="guardrails">Guardrails</button>
-      <button class="settings-nav-item" data-section="license">License</button>
-      <button class="settings-nav-item" data-section="about">About</button>
+      <button class="settings-nav-item" data-section="appearance" role="tab" id="tab-appearance" aria-controls="panel-appearance" aria-selected="false" hidden>Appearance</button>
+      <button class="settings-nav-item" data-section="voice" role="tab" id="tab-voice" aria-controls="panel-voice" aria-selected="false">Voice</button>
+      <button class="settings-nav-item" data-section="brain" role="tab" id="tab-brain" aria-controls="panel-brain" aria-selected="false">Brain</button>
+
+      <div class="settings-nav-group" role="presentation">Connections</div>
+      <!-- v0.19.0 PR-6 — Apps tab: mirror of onboarding step 4 + 5 so
+           the user can change their app picks and API tokens after the
+           initial setup. Same persistence shape (userApps + apiKeys). -->
+      <button class="settings-nav-item" data-section="apps" role="tab" id="tab-apps" aria-controls="panel-apps" aria-selected="false">Apps</button>
+      <button class="settings-nav-item" data-section="skills" role="tab" id="tab-skills" aria-controls="panel-skills" aria-selected="false">Skills</button>
+      <button class="settings-nav-item" data-section="web" role="tab" id="tab-web" aria-controls="panel-web" aria-selected="false">Web</button>
+      <button class="settings-nav-item" data-section="tools" role="tab" id="tab-tools" aria-controls="panel-tools" aria-selected="false">Tools</button>
+
+      <div class="settings-nav-group" role="presentation">Safety</div>
+      <button class="settings-nav-item" data-section="guardrails" role="tab" id="tab-guardrails" aria-controls="panel-guardrails" aria-selected="false">Guardrails</button>
+
+      <div class="settings-nav-group" role="presentation">Account</div>
+      <button class="settings-nav-item" data-section="license" role="tab" id="tab-license" aria-controls="panel-license" aria-selected="false">License</button>
+      <button class="settings-nav-item" data-section="about" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false">About</button>
     </nav>
 
     <div class="settings-content">
-      <!-- General -->
-      <div class="settings-section active" data-section="general">
-        <h2>General</h2>
-        <div class="settings-group">
-          <label for="setting-buddy-name">Buddy Name</label>
-          <input id="setting-buddy-name" type="text" maxlength="20" />
+      <!-- ── General ──────────────────────────────────────────────── -->
+      <div class="settings-section active" data-section="general" role="tabpanel" id="panel-general" aria-labelledby="tab-general" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">General</h2>
+          <p class="s-section-subtitle">How Clippy starts up and how he addresses you.</p>
         </div>
-        <div class="settings-toggle">
-          <label>Launch on startup</label>
-          <label class="toggle-switch" for="setting-launch-startup">
-            <input type="checkbox" id="setting-launch-startup" />
-            <span class="toggle-slider"></span>
-          </label>
+
+        <div class="s-card">
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Launch on startup</div>
+              <div class="s-row__help">Open Clippy automatically when you log in.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-launch-startup">
+                <input type="checkbox" id="setting-launch-startup" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-user-name">Your name</label>
+            <input id="setting-user-name" type="text" maxlength="40"
+                   placeholder="What should I call you?" />
+            <p class="s-row__help">How Clippy addresses you. Leave blank to be addressed generically.</p>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" id="summon-hotkey-label">Hotkey</label>
+            <!-- Read-only summon shortcut. Rendered as macOS glyphs; remapping
+                 is not wired yet so this is presented as a non-editable
+                 keycap row rather than a fake-editable text input. -->
+            <div class="s-keycap" role="group" aria-labelledby="summon-hotkey-label" aria-label="Summon hotkey: Command Shift C">
+              <kbd>&#8984;</kbd><kbd>&#8679;</kbd><kbd>C</kbd>
+            </div>
+            <p class="s-row__help">Press anywhere to summon Clippy. Remapping coming soon.</p>
+          </div>
         </div>
-        <div class="settings-group">
-          <label>Hotkey</label>
-          <input type="text" value="Ctrl+Shift+C" disabled style="background: #f5f5f5; color: #888;" />
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Permissions</h3>
+            <p class="s-card__subtitle">What Clippy can access on this Mac. Grant these so Clippy can see and control your screen.</p>
+          </div>
+          <div class="s-row s-row--inline"><div class="s-row__main"><div class="s-row__label">Accessibility</div><div class="s-row__help">Click &amp; type for you</div></div><div class="s-row__control"><span id="perm-stat-acc">—</span> <button class="s-button" id="perm-open-acc" style="display:none;">Open</button></div></div>
+          <div class="s-row s-row--inline"><div class="s-row__main"><div class="s-row__label">Screen Recording</div><div class="s-row__help">See your screen</div></div><div class="s-row__control"><span id="perm-stat-sr">—</span> <button class="s-button" id="perm-open-sr" style="display:none;">Open</button></div></div>
+          <div class="s-row s-row--inline"><div class="s-row__main"><div class="s-row__label">Automation</div><div class="s-row__help">Drive your browser</div></div><div class="s-row__control"><span id="perm-stat-auto">—</span> <button class="s-button" id="perm-open-auto" style="display:none;">Open</button></div></div>
         </div>
       </div>
 
-      <!-- Appearance -->
-      <div class="settings-section" data-section="appearance">
-        <h2>Appearance</h2>
-        <div class="settings-group">
-          <p style="font-size: 13px; color: #666;">Clippy's appearance is fixed in this version. Custom sizes and themes coming soon!</p>
+      <!-- ── Appearance (hidden — see nav comment) ─────────────────── -->
+      <div class="settings-section" data-section="appearance" role="tabpanel" id="panel-appearance" aria-labelledby="tab-appearance" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Appearance</h2>
+          <p class="s-section-subtitle">Clippy's appearance is fixed in this version. Custom sizes and themes coming soon.</p>
         </div>
-        <div class="settings-toggle">
-          <label>Always on top</label>
-          <label class="toggle-switch" for="setting-always-top">
-            <input type="checkbox" id="setting-always-top" checked disabled />
-            <span class="toggle-slider"></span>
-          </label>
-          <p style="font-size: 11px; color: #aaa; margin-top: 4px;">Always enabled — Clippy stays visible on your desktop.</p>
+        <div class="s-card">
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Always on top</div>
+              <div class="s-row__help">Always enabled — Clippy stays visible on your desktop.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-always-top">
+                <input type="checkbox" id="setting-always-top" checked disabled />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Voice -->
-      <div class="settings-section" data-section="voice">
-        <h2>Voice</h2>
-        <div class="settings-toggle">
-          <label>Text-to-Speech</label>
-          <label class="toggle-switch" for="setting-tts-enabled">
-            <input type="checkbox" id="setting-tts-enabled" checked />
-            <span class="toggle-slider"></span>
-          </label>
+      <!-- ── Voice ─────────────────────────────────────────────────── -->
+      <div class="settings-section" data-section="voice" role="tabpanel" id="panel-voice" aria-labelledby="tab-voice" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Voice</h2>
+          <p class="s-section-subtitle">How Clippy speaks to you and listens back.</p>
         </div>
-        <div class="settings-group">
-          <label for="setting-voice">Voice</label>
-          <select id="setting-voice"></select>
-          <!-- v0.12.5 — preview button so user can hear the chosen voice
-               without closing settings and waiting for Clippy to speak. -->
-          <button id="btn-test-voice" type="button" style="margin-top:6px;padding:4px 10px;font-size:12px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">▶ Play sample</button>
-        </div>
-        <div class="settings-group">
-          <label for="setting-speech-rate">Speech Rate</label>
-          <input id="setting-speech-rate" type="range" min="0.5" max="2" step="0.1" value="1.1" />
-          <span id="speech-rate-value" style="font-size: 12px; color: #888;">1.1x</span>
-        </div>
-        <div class="settings-group">
-          <label for="setting-speech-pitch">Pitch</label>
-          <input id="setting-speech-pitch" type="range" min="0.5" max="2" step="0.1" value="1.0" />
-          <span id="speech-pitch-value" style="font-size: 12px; color: #888;">1.0</span>
-        </div>
-        <div class="settings-group">
-          <label for="setting-speech-volume">Volume</label>
-          <input id="setting-speech-volume" type="range" min="0" max="1" step="0.05" value="0.9" />
-          <span id="speech-volume-value" style="font-size: 12px; color: #888;">90%</span>
-        </div>
-        <!-- v0.16.0 — engine picker placeholder. SAPI is the only engine
-             shipped today; Piper TTS (neural, more natural) coming in a
-             future patch as an opt-in download. The menu exists now so
-             users can see the roadmap and don't have to guess. -->
-        <div class="settings-group" style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;">
-          <label for="setting-tts-engine">Voice Engine</label>
-          <select id="setting-tts-engine">
-            <option value="sapi" selected>Windows (SAPI) — built-in</option>
-            <option value="piper" disabled>Piper TTS (neural) — coming soon</option>
-            <option value="elevenlabs" disabled>ElevenLabs (cloud) — coming soon</option>
-          </select>
-          <p style="font-size:11px;color:#888;margin-top:4px;">More natural voices are on the roadmap. Vote at <a href="#" id="link-voices-feedback" style="color:#4CAF50;">clippyai.app/voices</a>.</p>
+
+        <!-- Speech output -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Speech output</h3>
+            <p class="s-card__subtitle">Text-to-speech voice, rate, pitch, and volume.</p>
+          </div>
+
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Text-to-speech</div>
+              <div class="s-row__help">Read responses aloud through your speakers.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-tts-enabled">
+                <input type="checkbox" id="setting-tts-enabled" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-voice">Voice</label>
+            <select id="setting-voice"></select>
+            <!-- v0.12.5 — preview button so user can hear the chosen voice
+                 without closing settings and waiting for Clippy to speak. -->
+            <button id="btn-test-voice" type="button" class="s-button">Play sample</button>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-speech-rate">Speech rate</label>
+            <div class="s-row__range">
+              <input id="setting-speech-rate" type="range" min="0.5" max="2" step="0.1" value="1.1" />
+              <span id="speech-rate-value" class="s-value-chip">1.1x</span>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-speech-pitch">Pitch</label>
+            <div class="s-row__range">
+              <input id="setting-speech-pitch" type="range" min="0.5" max="2" step="0.1" value="1.0" />
+              <span id="speech-pitch-value" class="s-value-chip">1.0</span>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-speech-volume">Volume</label>
+            <div class="s-row__range">
+              <input id="setting-speech-volume" type="range" min="0" max="1" step="0.05" value="0.9" />
+              <span id="speech-volume-value" class="s-value-chip">90%</span>
+            </div>
+          </div>
+
+          <!-- v0.20.0 (voice v1) — engine picker. System (free, offline,
+               default) vs OpenAI (premium, ~$0.015/min, opt-in, needs a
+               key). The free path stays the default + the fallback. -->
+          <div class="s-row">
+            <label class="s-row__label" for="setting-tts-engine">Voice engine</label>
+            <select id="setting-tts-engine">
+              <option value="system" selected>System voice (free, offline)</option>
+              <option value="openai">OpenAI (premium — gpt-4o-mini-tts)</option>
+              <option value="piper" disabled>Piper TTS (neural) — coming soon</option>
+              <option value="elevenlabs" disabled>ElevenLabs (cloud) — coming soon</option>
+            </select>
+            <p class="s-row__help">System voice runs entirely on your Mac. <strong>OpenAI sends the text Clippy speaks to OpenAI</strong> for higher-quality audio (~$0.015/min) and needs your own API key below. If OpenAI is unavailable, Clippy automatically falls back to the system voice. Vote on more voices at <a href="#" id="link-voices-feedback" class="s-link">clippyai.app/voices</a>.</p>
+          </div>
+
+          <!-- v0.20.0 (voice v1) — user-provided OpenAI key. Write-only:
+               stored in macOS Keychain via main; never read back into the
+               UI. Powers both OpenAI TTS and (on macOS) OpenAI voice input. -->
+          <div class="s-row" id="row-openai-key">
+            <label class="s-row__label" for="setting-openai-key">OpenAI API key</label>
+            <div class="s-row__control" style="display:flex; gap:8px; align-items:center;">
+              <input id="setting-openai-key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" />
+              <button id="btn-save-openai-key" type="button" class="s-button">Save</button>
+              <button id="btn-clear-openai-key" type="button" class="s-button">Remove</button>
+            </div>
+            <p class="s-row__help" id="openai-key-status">Stored securely in your macOS Keychain — it stays on this Mac and is sent only to OpenAI when you use OpenAI voice. Get a key at <a href="https://platform.openai.com/api-keys" class="s-link" id="link-openai-keys">platform.openai.com/api-keys</a>.</p>
+          </div>
         </div>
 
         <!-- v0.17.0 — Voice input (speech-to-text). Bundled whisper.cpp +
              quantized base.en model, ~60 MB, runs locally. No audio
              leaves the machine. Wake-word is stubbed coming-soon. -->
-        <div class="settings-group" style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;">
-          <h3 style="margin:0 0 8px 0;font-size:14px;">🎤 Voice Input</h3>
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Voice input</h3>
+            <p class="s-card__subtitle">Dictate by holding the mic in the bubble or pressing the push-to-talk hotkey. Audio stays on this Mac — powered by bundled whisper.cpp.</p>
+          </div>
+
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Enable voice input</div>
+              <div class="s-row__help">Click and hold the mic in the chat bubble to dictate.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-voice-enabled">
+                <input type="checkbox" id="setting-voice-enabled" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" id="ptt-hotkey-label">Push-to-talk hotkey</label>
+            <!-- Read-only keycap row. Was a fake-editable input showing the
+                 raw Electron accelerator "CommandOrControl+Shift+Space" — now
+                 proper macOS glyphs. No remap handler ships yet. -->
+            <div class="s-keycap" id="setting-voice-hotkey" role="group" aria-labelledby="ptt-hotkey-label" aria-label="Push-to-talk hotkey: Command Shift Space">
+              <kbd>&#8984;</kbd><kbd>&#8679;</kbd><kbd>Space</kbd>
+            </div>
+            <p class="s-row__help">Press once to start, again to stop. <kbd>Esc</kbd> cancels.</p>
+          </div>
+
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Wake word — "Hey Clippy" <span class="s-badge">coming soon</span></div>
+              <div class="s-row__help">Your pick is saved now; on-device wake-word model ships in a future patch. Runs locally — no audio uploaded.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-wake-word">
+                <input type="checkbox" id="setting-wake-word" aria-label="Enable wake word (coming soon)" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <div id="stt-status" class="s-status">Checking STT availability…</div>
+          </div>
         </div>
-        <div class="settings-toggle">
-          <label>Enable voice input</label>
-          <label class="toggle-switch" for="setting-voice-enabled">
-            <input type="checkbox" id="setting-voice-enabled" checked />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <p style="font-size:11px;color:#888;margin-top:0;">Click and hold the 🎤 in the chat bubble, or press the hotkey to dictate. Local-only: powered by bundled whisper.cpp, never sends audio to a server.</p>
-        <div class="settings-group" style="margin-top:10px;">
-          <label for="setting-voice-hotkey">Push-to-talk hotkey</label>
-          <input id="setting-voice-hotkey" type="text" value="CommandOrControl+Shift+Space" readonly style="background:#f5f5f5;font-family:monospace;font-size:12px;" />
-          <p style="font-size:11px;color:#888;margin-top:4px;">Press once to start, press again to stop. <kbd>Esc</kbd> cancels.</p>
-        </div>
-        <div class="settings-toggle">
-          <label>Wake word — "Hey Clippy" <span style="font-size:10px;color:#888;font-weight:normal;margin-left:6px;">(coming soon)</span></label>
-          <label class="toggle-switch" for="setting-wake-word">
-            <input type="checkbox" id="setting-wake-word" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <p style="font-size:11px;color:#888;margin-top:0;">Your preference is saved now — wake-word listening activates automatically when we ship the on-device wake-word model in a future patch. Privacy-preserving (it'll run locally too, no audio uploaded).</p>
-        <div id="stt-status" style="margin-top:10px;padding:8px;border-radius:6px;font-size:12px;background:#f5f5f5;color:#666;">Checking STT availability…</div>
       </div>
 
-      <!-- Brain -->
-      <div class="settings-section" data-section="brain">
-        <h2>Brain</h2>
-        <div class="settings-group">
-          <label for="setting-proactive-interval">Proactive Interval</label>
-          <input id="setting-proactive-interval" type="range" min="10" max="300" step="5" value="30" />
-          <span id="proactive-interval-value" style="font-size: 12px; color: #888;">30s</span>
+      <!-- ── Brain ────────────────────────────────────────────────── -->
+      <div class="settings-section" data-section="brain" role="tabpanel" id="panel-brain" aria-labelledby="tab-brain" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Brain</h2>
+          <p class="s-section-subtitle">How Clippy decides when to chime in and how the chat bubble behaves.</p>
         </div>
-        <div class="settings-toggle">
-          <label>Proactive Mode</label>
-          <label class="toggle-switch" for="setting-proactive">
-            <input type="checkbox" id="setting-proactive" checked />
-            <span class="toggle-slider"></span>
-          </label>
+
+        <!-- Proactive cadence — the most important card on this tab. -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Proactive suggestions</h3>
+            <p class="s-card__subtitle">How often Clippy reads the screen and offers help on his own.</p>
+          </div>
+
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Proactive mode</div>
+              <div class="s-row__help">When off, Clippy only speaks when spoken to.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-proactive">
+                <input type="checkbox" id="setting-proactive" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-proactive-interval">Check interval</label>
+            <!-- v0.18.0 — value attribute now matches brainSettingsStore
+                 default (proactiveInterval: 300000ms = 300s). -->
+            <div class="s-row__range">
+              <input id="setting-proactive-interval" type="range" min="10" max="300" step="5" value="300" />
+              <span id="proactive-interval-value" class="s-value-chip">300s</span>
+            </div>
+            <p class="s-row__help">How often Clippy peeks at your screen for tip opportunities.</p>
+          </div>
+
+          <!-- v0.12.3 — Quiet Time After Tip. Replaces hardcoded 10-min cooldown
+               that was the actual reason "Clippy stays silent" per UX audit. -->
+          <div class="s-row">
+            <label class="s-row__label" for="setting-proactive-cooldown">Quiet time after a tip</label>
+            <div class="s-row__range">
+              <input id="setting-proactive-cooldown" type="range" min="0" max="30" step="1" value="10" />
+              <span id="proactive-cooldown-value" class="s-value-chip">10 min</span>
+            </div>
+            <p class="s-row__help">After a suggestion, wait at least this long before offering the next one.</p>
+          </div>
+
+          <!-- v0.19.0 — Clippy energy level for the contextual-suggestion rule engine -->
+          <div class="s-row">
+            <div class="s-row__label">Clippy energy</div>
+            <p class="s-row__help">Controls how willing Clippy is to suggest things. Higher energy = more suggestions.</p>
+            <div class="s-radio-group" id="clippy-energy-group">
+              <label class="s-radio-card">
+                <input type="radio" name="clippy-energy" value="subtle" id="energy-subtle" />
+                <div class="s-radio-card__body">
+                  <div class="s-radio-card__title">Subtle</div>
+                  <div class="s-radio-card__help">Only the most obvious suggestions. Longer cooldown between tips.</div>
+                </div>
+              </label>
+              <label class="s-radio-card">
+                <input type="radio" name="clippy-energy" value="default" id="energy-default" checked />
+                <div class="s-radio-card__body">
+                  <div class="s-radio-card__title">Default <span class="s-badge">recommended</span></div>
+                  <div class="s-radio-card__help">Balanced — common suggestions at a moderate cadence.</div>
+                </div>
+              </label>
+              <label class="s-radio-card">
+                <input type="radio" name="clippy-energy" value="lively" id="energy-lively" />
+                <div class="s-radio-card__body">
+                  <div class="s-radio-card__title">Lively</div>
+                  <div class="s-radio-card__help">Every relevant suggestion, shorter cooldown. Great for power users.</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- v0.12.5 — manual proactive trigger for testing settings without
+               waiting for the next interval. -->
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Test it now</div>
+              <div class="s-row__help">Trigger one proactive tip without waiting for the next interval.</div>
+            </div>
+            <div class="s-row__control" style="display:flex;align-items:center;gap:var(--s-space-3);">
+              <span id="fire-tip-status" class="s-help"></span>
+              <button id="btn-fire-tip" type="button" class="s-button">Try a tip now</button>
+            </div>
+          </div>
         </div>
-        <!-- v0.12.3 — Quiet Time After Tip. Replaces hardcoded 10-min cooldown
-             that was the actual reason "Clippy stays silent" per UX audit. -->
-        <div class="settings-group">
-          <label for="setting-proactive-cooldown">Quiet Time After Tip</label>
-          <input id="setting-proactive-cooldown" type="range" min="0" max="30" step="1" value="10" />
-          <span id="proactive-cooldown-value" style="font-size: 12px; color: #888;">10 min</span>
+
+        <!-- Bubble behavior -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Bubble</h3>
+            <p class="s-card__subtitle">How the chat bubble appears and disappears.</p>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-bubble-default-state">Default size for short tips</label>
+            <select id="setting-bubble-default-state">
+              <option value="standard" selected>Standard (multi-line + input)</option>
+              <option value="compact">Compact (one-line, auto-fade)</option>
+            </select>
+          </div>
+
+          <!-- v0.12.3 — Bubble dismiss. 0 = manual / never auto-hide. -->
+          <div class="s-row">
+            <label class="s-row__label" for="setting-bubble-hide">Auto-hide after</label>
+            <select id="setting-bubble-hide">
+              <option value="15000">15 seconds</option>
+              <option value="30000" selected>30 seconds</option>
+              <option value="60000">1 minute</option>
+              <option value="0">Manual (never auto-hide)</option>
+            </select>
+          </div>
+
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Keep bubble open across messages</div>
+              <div class="s-row__help">Pin the bubble so it stays visible between tips.</div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-bubble-pinned">
+                <input type="checkbox" id="setting-bubble-pinned" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
         </div>
-        <!-- v0.12.3 — Bubble dismiss. 0 = manual / never auto-hide. -->
-        <div class="settings-group">
-          <label for="setting-bubble-hide">Bubble Dismiss</label>
-          <select id="setting-bubble-hide">
-            <option value="15000">15 seconds</option>
-            <option value="30000" selected>30 seconds</option>
-            <option value="60000">1 minute</option>
-            <option value="0">Manual (never auto-hide)</option>
-          </select>
+
+        <!-- v0.20.0-alpha.11 — Focused-window follow. Glides Clippy to the
+             bottom-right corner of the newly-focused window at 1Hz so he
+             doesn't seem stuck when the user switches monitors or apps.
+             Distinct from the Follow Mode card below (cursor follow). -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Follow focused window</h3>
+            <p class="s-card__subtitle">When you switch apps or monitors, Clippy glides to the bottom-right corner of the new window so he never feels stuck. Pauses for 30s after you manually drag him.</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-window-follow">Follow focused window</label>
+            <div class="s-row__value">
+              <label class="toggle-switch" for="setting-window-follow">
+                <input type="checkbox" id="setting-window-follow" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
         </div>
-        <!-- v0.12.5 — manual proactive trigger for testing settings without
-             waiting for the next interval. -->
-        <div class="settings-group">
-          <button id="btn-fire-tip" type="button" style="padding:6px 14px;font-size:13px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">Try a tip now</button>
-          <span id="fire-tip-status" style="font-size:12px;color:#888;margin-left:8px;"></span>
+
+        <!-- v0.20.0 (Beta) — Writing assistant. ⌥G proofreads the text in the
+             focused field via Accessibility + on-device grammar (Harper). -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Writing assistant <span class="s-badge">Beta</span></h3>
+            <p class="s-card__subtitle">Press <strong>⌥G</strong> in any text field and Clippy proofreads what you're writing — grammar and clarity, checked on-device — then applies the fix with one click. Lets Clippy read the text you're editing.</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-writing-assist">Enable writing assistant (⌥G)</label>
+            <div class="s-row__value">
+              <label class="toggle-switch" for="setting-writing-assist">
+                <input type="checkbox" id="setting-writing-assist" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- v0.19.0 — Follow Mode. Controls how Clippy glides toward the cursor
+             when follow-me is active (voice: "follow me", tray menu, or tool). -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Follow mode</h3>
+            <p class="s-card__subtitle">When Clippy is following your cursor, where he hovers and how snappily he chases.</p>
+          </div>
+
+          <div class="s-row">
+            <label class="s-row__label" for="setting-follow-offset-x">Horizontal offset</label>
+            <div class="s-row__range">
+              <input id="setting-follow-offset-x" type="range" min="-400" max="400" step="10" value="220" />
+              <span id="follow-offset-x-value" class="s-value-chip">220 px</span>
+            </div>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-follow-offset-y">Vertical offset</label>
+            <div class="s-row__range">
+              <input id="setting-follow-offset-y" type="range" min="-300" max="300" step="10" value="120" />
+              <span id="follow-offset-y-value" class="s-value-chip">120 px</span>
+            </div>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-follow-easing">Follow easing</label>
+            <div class="s-row__range">
+              <input id="setting-follow-easing" type="range" min="0.05" max="0.40" step="0.01" value="0.18" />
+              <span id="follow-easing-value" class="s-value-chip">0.18</span>
+            </div>
+            <p class="s-row__help">Lower = smoother (lags slightly). Higher = snappier (more catch-up).</p>
+          </div>
         </div>
 
         <!-- v0.14.1 — Mail Setup status. Surfaces the boot-time probe of
              classic Outlook / new Outlook / default mailto handler so users
              troubleshooting email send can self-diagnose. -->
-        <div class="settings-group" style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;">
-          <label>Mail Setup</label>
-          <div id="mail-env-status" style="font-size:12px;color:#555;line-height:1.7;margin-top:6px;">Probing…</div>
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Mail setup</h3>
+            <p class="s-card__subtitle">Detected mail handlers Clippy can use to send messages.</p>
+          </div>
+          <div id="mail-env-status" class="s-status">Probing…</div>
         </div>
       </div>
 
+      <!-- ── Apps ─────────────────────────────────────────────────── -->
+      <!-- v0.19.0 PR-6 — Apps tab. Mirror of onboarding steps 4 (picker)
+           + 5 (API keys). Same persistence shape (userApps + apiKeys
+           in licenseStore; tokens in macOS Keychain via setSecret). -->
+      <div class="settings-section" data-section="apps" role="tabpanel" id="panel-apps" aria-labelledby="tab-apps" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Connected apps</h2>
+          <p class="s-section-subtitle">Apps where Clippy can use an API token to skip the UI and act faster — Gmail, Outlook, Notion, Slack, GitHub, etc. Toggle the apps you have accounts on, then paste a token below.</p>
+        </div>
+
+        <div class="s-card">
+          <h3>Pick your apps</h3>
+          <div class="app-picker" id="settings-app-picker">
+            <!-- v0.20.0-alpha.3 — populated from APP_CATALOG filtered to hasApi:true only. -->
+          </div>
+          <p class="s-help" style="margin-top:var(--s-space-3);">
+            Don't see your app? Clippy still works with anything else (Apple Mail, Notes, Safari, etc.) — he uses the regular UI path automatically.
+          </p>
+
+          <h3>API tokens</h3>
+          <div class="api-keys" id="settings-api-keys">
+            <!-- Populated from selected apps with hasApi=true. -->
+          </div>
+          <p id="settings-api-keys-empty" class="api-keys-empty s-help" style="display:none;">
+            None of the apps you picked have an API path. You're good — Clippy will use the UI path for everything.
+          </p>
+          <p id="settings-apps-save-status" class="s-help" style="margin-top:var(--s-space-3);min-height:14px;"></p>
+        </div>
+      </div>
+
+      <!-- ── Skills ───────────────────────────────────────────────── -->
       <!-- v0.14.1 — Skills tab. Shows installed ClawHub skills with version
            + install date + uninstall, plus inline search/install. Once
            installed, a skill is callable on the very next turn as
            skill__<slug> (the L1 promotion mechanism). -->
-      <div class="settings-section" data-section="skills">
-        <h2>Skills</h2>
-        <div class="settings-group">
-          <p style="font-size:13px;color:#666;line-height:1.6;">
-            Skills are deterministic capabilities downloaded from <a href="#" id="link-clawhub" style="color:#4CAF50;">ClawHub</a>.
-            Once installed, Clippy can call them like any built-in tool. Skills survive across restarts.
-          </p>
+      <div class="settings-section" data-section="skills" role="tabpanel" id="panel-skills" aria-labelledby="tab-skills" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Skills</h2>
+          <p class="s-section-subtitle">Deterministic capabilities downloaded from <a href="#" id="link-clawhub" class="s-link">ClawHub</a>. Once installed, Clippy can call them like any built-in tool. Skills survive across restarts.</p>
         </div>
 
-        <!-- Installed list -->
-        <div class="settings-group" style="margin-top:12px;">
-          <label style="display:flex;align-items:center;justify-content:space-between;">
-            <span>Installed Skills</span>
-            <button id="btn-refresh-skills" type="button" style="font-size:11px;padding:2px 8px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;cursor:pointer;">↻ Refresh</button>
-          </label>
-          <div id="installed-skills-list" style="margin-top:8px;font-size:12px;color:#555;">Loading…</div>
-        </div>
-
-        <!-- Search ClawHub -->
-        <div class="settings-group" style="margin-top:20px;padding-top:14px;border-top:1px solid #eee;">
-          <label for="skill-search-input">Browse ClawHub</label>
-          <div style="display:flex;gap:6px;margin-top:4px;">
-            <input id="skill-search-input" type="text" placeholder="e.g. weather, calendar, twitter" style="flex:1;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:13px;" />
-            <button id="btn-skill-search" type="button" style="padding:6px 14px;font-size:13px;border:1px solid #ccc;border-radius:4px;background:#f5f5f5;cursor:pointer;">Search</button>
+        <div class="s-card">
+          <div class="s-card__header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s-space-3);">
+            <div>
+              <h3 class="s-card__title">Installed skills</h3>
+              <p class="s-card__subtitle">Available to Clippy right now.</p>
+            </div>
+            <button id="btn-refresh-skills" type="button" class="s-button s-button--ghost">Refresh</button>
           </div>
-          <div id="skill-search-results" style="margin-top:8px;font-size:12px;color:#555;"></div>
+          <div id="installed-skills-list" class="s-help">Loading…</div>
+        </div>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Browse ClawHub</h3>
+            <p class="s-card__subtitle">Search for new skills by capability.</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="skill-search-input">Search</label>
+            <div style="display:flex;gap:var(--s-space-2);">
+              <input id="skill-search-input" type="text" placeholder="e.g. weather, calendar, twitter" style="flex:1;" />
+              <button id="btn-skill-search" type="button" class="s-button">Search</button>
+            </div>
+          </div>
+          <div id="skill-search-results" class="s-help" style="margin-top:var(--s-space-2);"></div>
         </div>
       </div>
 
+      <!-- ── Web ──────────────────────────────────────────────────── -->
       <!-- v0.15.0 — Web tab. Surfaces mcp-chrome extension status + install
            steps. When the extension is connected, Clippy's browser_* tools
-           drive the user's REAL signed-in browser (cookies, logins intact)
-           instead of a spawned debug-flagged Chromium. -->
-      <div class="settings-section" data-section="web">
-        <h2>Web Control</h2>
-        <div class="settings-group">
-          <p style="font-size:13px;color:#666;line-height:1.6;">
-            Clippy can drive any browser tab via the Chrome DevTools Protocol. By default we spawn a separate debug-flagged browser when needed — that's a <strong>fresh profile</strong> with none of your cookies or logged-in sessions.
-            <br><br>
-            For Clippy to use your <strong>real signed-in tabs</strong> (Outlook web, Gmail, anything you're already authenticated to), install our <strong>Clippy Browser Bridge</strong> Chrome extension.
-          </p>
+           drive the user's REAL signed-in browser. -->
+      <div class="settings-section" data-section="web" role="tabpanel" id="panel-web" aria-labelledby="tab-web" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Web control</h2>
+          <p class="s-section-subtitle">Let Clippy drive your real, signed-in browser tabs instead of a fresh debug profile.</p>
         </div>
 
-        <div class="settings-group" style="margin-top:14px;">
-          <label>Status</label>
-          <div id="mcp-chrome-status" style="font-size:12px;color:#555;line-height:1.7;margin-top:6px;">Probing…</div>
-          <button id="btn-refresh-mcp-chrome" type="button" style="margin-top:8px;font-size:11px;padding:3px 12px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;cursor:pointer;">↻ Refresh</button>
+        <div class="s-card">
+          <div class="s-card__header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s-space-3);">
+            <div>
+              <h3 class="s-card__title">Bridge status</h3>
+              <p class="s-card__subtitle">Whether the Clippy Browser Bridge extension is connected.</p>
+            </div>
+            <button id="btn-refresh-mcp-chrome" type="button" class="s-button s-button--ghost">Refresh</button>
+          </div>
+          <div id="mcp-chrome-status" class="s-status">Probing…</div>
         </div>
 
-        <div class="settings-group" style="margin-top:20px;padding-top:14px;border-top:1px solid #eee;">
-          <label>Install the bridge</label>
-          <p style="font-size:13px;color:#555;line-height:1.6;margin-top:6px;">
-            One-click install from our hosted page — guided steps, no terminal, no developer mode flipping required.
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Install the bridge</h3>
+            <p class="s-card__subtitle">A short guided install on our site — download straight from us (no GitHub), load into Chrome, done.</p>
+          </div>
+          <p class="s-help" style="margin-bottom:var(--s-space-3);">
+            By default we spawn a separate debug-flagged browser when needed — that's a <strong>fresh profile</strong> with none of your cookies. The Clippy Browser Bridge lets Clippy drive your <strong>real signed-in tabs</strong> (Outlook web, Gmail, anything you're already authenticated to).
           </p>
-          <a href="#" id="link-mcp-chrome-install" class="btn-install-extension" style="display:inline-block;margin-top:10px;padding:8px 16px;background:linear-gradient(180deg,#4CAF50 0%,#43A047 100%);color:white;text-decoration:none;border-radius:6px;font-size:13px;font-weight:600;box-shadow:0 1px 2px rgba(56,142,60,0.3);">⬇ Install Clippy Browser Bridge</a>
-          <p style="font-size:11px;color:#aaa;margin-top:10px;">
-            Opens <code>clippyai.app/extension</code> — our four-step install walkthrough with what it does and why it's safe. Chrome Web Store listing is in review; once that ships, this becomes a single click.
+          <a href="#" id="link-mcp-chrome-install" class="s-button s-button--accent btn-install-extension">Install Clippy Browser Bridge</a>
+          <p class="s-help" style="margin-top:var(--s-space-3);">
+            Opens <code>clippyai.app/extension</code> — the extension downloads directly from us, with what it does and why it's safe. Chrome Web Store listing is in review.
           </p>
         </div>
       </div>
 
-      <!-- Desktop Tools -->
-      <div class="settings-section" data-section="tools">
-        <h2>Desktop Tools</h2>
-        <div class="settings-group">
-          <p style="font-size: 13px; color: #666; line-height: 1.6;">
-            Desktop tools run directly inside ClippyAI — no external services needed.
-            Tools include: screen reading, mouse control, keyboard input, and app management.
-          </p>
+      <!-- ── Desktop Tools ────────────────────────────────────────── -->
+      <div class="settings-section" data-section="tools" role="tabpanel" id="panel-tools" aria-labelledby="tab-tools" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Desktop tools</h2>
+          <p class="s-section-subtitle">Built-in capabilities that run directly inside ClippyAI — no external services needed.</p>
         </div>
-        <div class="settings-group">
-          <div class="connection-status">
-            <span class="status-dot connected" id="cc-status-dot"></span>
-            <span id="cc-status-text">Tools ready</span>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Status</h3>
+            <p class="s-card__subtitle">Screen reading, mouse control, keyboard input, and app management.</p>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="connection-status">
+              <span class="status-dot connected" id="cc-status-dot" aria-hidden="true"></span>
+              <span id="cc-status-text">Tools ready</span>
+            </div>
+            <button class="s-button" id="btn-test-connection">Test tools</button>
           </div>
         </div>
-        <button class="btn-test" id="btn-test-connection">Test Tools</button>
-        <div class="settings-group" style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee;">
-          <label>Updates</label>
-          <button class="btn-secondary" id="btn-check-update">Check for Updates</button>
-          <p id="update-status" style="font-size: 12px; color: #888; margin-top: 6px;"></p>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Updates</h3>
+            <p class="s-card__subtitle">Check for a newer ClippyAI release.</p>
+          </div>
+          <div class="s-row s-row--inline">
+            <p id="update-status" class="s-help"></p>
+            <button class="s-button" id="btn-check-update">Check for updates</button>
+          </div>
         </div>
       </div>
 
-      <!-- Guardrails (v0.17.8) — permission policy + audit log -->
-      <div class="settings-section" data-section="guardrails">
-        <h2>Guardrails</h2>
-        <p style="font-size:13px;color:#555;margin-bottom:14px;line-height:1.55;">
-          Decide what Clippy can do on its own and what needs your sign-off.
-          Use <strong>Cautious</strong> while you're still learning to trust
-          Clippy, <strong>Standard</strong> for daily use, and
-          <strong>Trusted</strong> only after you've watched Clippy handle
-          your real workflows for a while.
-        </p>
+      <!-- ── Guardrails ───────────────────────────────────────────── -->
+      <!-- Permission policy + activity log (v0.17.8 / v0.19.0) -->
+      <div class="settings-section" data-section="guardrails" role="tabpanel" id="panel-guardrails" aria-labelledby="tab-guardrails" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Guardrails</h2>
+          <p class="s-section-subtitle">Decide what Clippy can do on its own and what needs your sign-off. Start in Cautious, move up as you build trust.</p>
+        </div>
 
-        <div class="settings-group">
-          <label style="font-weight:600;font-size:13px;">Permission policy</label>
-          <div class="policy-radios" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
-            <label class="policy-row" style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid #e2e5ea;border-radius:8px;cursor:pointer;">
-              <input type="radio" name="permission-mode" value="cautious" style="margin-top:3px;" />
-              <span>
-                <strong style="font-size:13px;">Cautious</strong><br />
-                <span style="font-size:12px;color:#666;">Ask before every consequential action. Newer users start here.</span>
-              </span>
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Permission policy</h3>
+            <p class="s-card__subtitle">The default trust level Clippy operates under.</p>
+          </div>
+          <div class="s-radio-group policy-radios">
+            <label class="s-radio-card policy-row">
+              <input type="radio" name="permission-mode" value="cautious" />
+              <div class="s-radio-card__body">
+                <div class="s-radio-card__title">Cautious</div>
+                <div class="s-radio-card__help">Ask before every consequential action. New users start here.</div>
+              </div>
             </label>
-            <label class="policy-row" style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid #e2e5ea;border-radius:8px;cursor:pointer;">
-              <input type="radio" name="permission-mode" value="standard" style="margin-top:3px;" />
-              <span>
-                <strong style="font-size:13px;">Standard <span style="font-size:11px;color:#888;font-weight:400;">— default</span></strong><br />
-                <span style="font-size:12px;color:#666;">Ask before sending/deleting/purchasing. Trust browser navigation and desktop input.</span>
-              </span>
+            <label class="s-radio-card policy-row">
+              <input type="radio" name="permission-mode" value="standard" />
+              <div class="s-radio-card__body">
+                <div class="s-radio-card__title">Standard <span class="s-badge">default</span></div>
+                <div class="s-radio-card__help">Ask before sending, deleting, or purchasing. Trust browser navigation and desktop input.</div>
+              </div>
             </label>
-            <label class="policy-row" style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid #e2e5ea;border-radius:8px;cursor:pointer;">
-              <input type="radio" name="permission-mode" value="trusted" style="margin-top:3px;" />
-              <span>
-                <strong style="font-size:13px;">Trusted</strong><br />
-                <span style="font-size:12px;color:#666;">Let Clippy work autonomously. Purchases still require confirmation (hard floor).</span>
-              </span>
+            <label class="s-radio-card policy-row">
+              <input type="radio" name="permission-mode" value="trusted" />
+              <div class="s-radio-card__body">
+                <div class="s-radio-card__title">Trusted</div>
+                <div class="s-radio-card__help">Let Clippy work autonomously. Purchases still require confirmation (hard floor).</div>
+              </div>
             </label>
           </div>
         </div>
 
-        <div class="settings-group" style="margin-top:18px;padding-top:14px;border-top:1px solid #eee;">
-          <label style="font-weight:600;font-size:13px;">Per-action overrides</label>
-          <p style="font-size:12px;color:#777;margin:4px 0 10px;">
-            Override the policy above for specific action classes. Most users leave these alone.
-          </p>
-          <div id="class-overrides" style="display:flex;flex-direction:column;gap:6px;">
-            <!-- Rows injected by settings.ts buildClassOverrides() -->
-          </div>
-        </div>
+        <!-- Per-action overrides card removed for launch: it rendered an empty
+             section (no buildClassOverrides() ever existed). The backend
+             (permission-policy.ts classOverrides + guardrails:setPolicy) is
+             fully functional; the advanced per-class UI is a fast-follow that
+             needs getPolicy() to expose effective decisions (or setPolicy to
+             support delete) since setPolicy currently only merges. The
+             Cautious/Standard/Trusted modes above cover all users today. -->
 
-        <div class="settings-group" style="margin-top:18px;padding-top:14px;border-top:1px solid #eee;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-            <label style="font-weight:600;font-size:13px;margin:0;">Activity — last 50 actions</label>
-            <button class="btn-secondary" id="btn-clear-history" style="font-size:11px;padding:4px 10px;">Clear</button>
+        <div class="s-card">
+          <div class="s-card__header" style="display:flex;align-items:center;justify-content:space-between;gap:var(--s-space-3);">
+            <div>
+              <h3 class="s-card__title">Activity — last 50 actions</h3>
+              <p class="s-card__subtitle">Audit log of recent tool calls. Clear is local-only.</p>
+            </div>
+            <button class="s-button s-button--ghost" id="btn-clear-history">Clear</button>
           </div>
-          <div id="action-history-list" style="border:1px solid #eee;border-radius:8px;max-height:340px;overflow-y:auto;font-family:'SFMono-Regular',Menlo,Consolas,monospace;font-size:11.5px;background:#fafbfc;">
-            <div id="action-history-empty" style="padding:24px;text-align:center;color:#888;">
+          <div id="action-history-list">
+            <div id="action-history-empty">
               No actions yet — when Clippy runs a tool, it'll appear here.
             </div>
           </div>
         </div>
       </div>
 
-      <!-- License -->
-      <div class="settings-section" data-section="license">
-        <h2>License</h2>
-        <div class="settings-group">
-          <label>License Key</label>
-          <div class="license-display" id="license-key-display"></div>
-        </div>
-        <div class="settings-group">
-          <label>Plan</label>
-          <span id="license-plan-display" style="font-size: 14px; text-transform: capitalize;"></span>
-        </div>
-        <a href="#" id="manage-subscription" style="font-size: 13px; color: #4CAF50;">Manage Subscription</a>
-        <div class="settings-group" style="margin-top: 16px;">
-          <button class="btn-secondary" id="btn-change-license">Change License Key</button>
+      <!-- ── License ──────────────────────────────────────────────── -->
+      <div class="settings-section" data-section="license" role="tabpanel" id="panel-license" aria-labelledby="tab-license" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">License</h2>
+          <p class="s-section-subtitle">Your activation key and plan.</p>
         </div>
 
-        <div class="settings-group" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee;">
-          <label>Plan Features</label>
-          <div id="plan-features" style="font-size: 13px; color: #666; line-height: 1.7;"></div>
+        <div class="s-card">
+          <div class="s-row">
+            <label class="s-row__label">License key</label>
+            <div class="license-display" id="license-key-display"></div>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Plan</div>
+              <div class="s-row__help"><span id="license-plan-display" style="text-transform:capitalize;"></span></div>
+            </div>
+            <div class="s-row__control" style="display:flex;gap:var(--s-space-2);">
+              <a href="#" id="manage-subscription" class="s-link" style="align-self:center;">Manage subscription</a>
+              <button class="s-button" id="btn-change-license">Change key</button>
+            </div>
+          </div>
+
+          <!-- feat/pricing-free-tier — monthly usage meter (free tier only). -->
+          <div class="s-row" id="usage-meter-row" style="display:none;flex-direction:column;align-items:stretch;gap:var(--s-space-1);">
+            <div class="s-row__label" id="usage-meter-label">Monthly free tokens</div>
+            <div id="usage-meter-track" role="progressbar" aria-labelledby="usage-meter-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="height:8px;border-radius:4px;background:var(--s-track,#e6e6e6);overflow:hidden;">
+              <div id="usage-meter-fill" style="height:100%;width:0%;border-radius:4px;background:var(--tint-accent,#3b82f6);transition:width .3s ease;"></div>
+            </div>
+            <div class="s-row__help" id="usage-meter-text" role="status" aria-live="polite"></div>
+            <a href="#" id="usage-upgrade-link" class="s-link" style="display:none;">Upgrade to Power for 50x the room →</a>
+          </div>
+        </div>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Plan features</h3>
+            <p class="s-card__subtitle">What you can do with your current plan.</p>
+          </div>
+          <div id="plan-features" class="s-help" style="line-height:1.8;"></div>
+          <!-- feat/pricing-max — shown for free + power users; hidden for max. -->
+          <div id="upgrade-to-max-row" style="margin-top:var(--s-space-2);">
+            <a href="#" id="upgrade-to-max-link" class="s-link">Upgrade to Max →</a>
+          </div>
+        </div>
+
+        <!-- Danger zone — explicit full local reset. Deleting/reinstalling the
+             .app never clears ~/Library/Application Support, so this is the
+             only in-app way to truly start fresh (and to re-test onboarding). -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Reset</h3>
+            <p class="s-card__subtitle">Erase everything stored on this Mac and start over from onboarding.</p>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Reset ClippyAI</div>
+              <div class="s-row__help">Clears your license, the profile Clippy has built about you, learned instincts, connected-app keys, and history — then relaunches into onboarding. Can't be undone.</div>
+            </div>
+            <div class="s-row__control">
+              <button class="s-button" id="btn-reset-app" style="color:var(--s-danger,#dc2626);border-color:var(--s-danger,#dc2626);">Reset…</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- About -->
-      <div class="settings-section" data-section="about">
-        <h2>About ClippyAI</h2>
-        <div class="settings-group">
-          <p style="font-size: 14px; margin-bottom: 12px;"><strong id="app-version">ClippyAI</strong></p>
-          <!-- v0.14.1 — active AI model. Server returns it in Turn.ok; we
-               populate this on first response. Surfaces K2.5 vs K2.6 routing. -->
-          <p style="font-size: 12px; color: #888; margin-bottom: 12px;">
-            AI: <span id="active-model">resolving…</span>
-          </p>
-          <p style="font-size: 13px; color: #666; line-height: 1.7;">
-            Your AI desktop buddy — the modern reincarnation of the classic Microsoft Office Assistant, now with real AI superpowers.
-          </p>
+      <!-- ── About ────────────────────────────────────────────────── -->
+      <div class="settings-section" data-section="about" role="tabpanel" id="panel-about" aria-labelledby="tab-about" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">About ClippyAI</h2>
+          <p class="s-section-subtitle">Your AI desktop buddy — the modern reincarnation of the classic Office Assistant, now with real AI superpowers.</p>
         </div>
 
-        <div class="settings-group" style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee;">
-          <label>Updates</label>
-          <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
-            <button class="btn-secondary" id="btn-check-update-about">Search for Updates</button>
+        <div class="s-card">
+          <div class="s-row">
+            <div class="s-row__label"><strong id="app-version">ClippyAI</strong></div>
+            <!-- v0.14.1 — active AI model. Server returns it in Turn.ok; we
+                 populate this on first response. Surfaces whichever model the
+                 server routed the turn to (model-agnostic). -->
+            <p class="s-row__help">AI: <span id="active-model">resolving…</span></p>
           </div>
-          <p id="update-status-about" style="font-size: 12px; color: #888; margin-top: 6px;"></p>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Updates</div>
+              <p id="update-status-about" class="s-row__help"></p>
+            </div>
+            <div class="s-row__control">
+              <button class="s-button" id="btn-check-update-about">Check for updates</button>
+            </div>
+          </div>
         </div>
 
-        <div class="settings-group" style="margin-top: 12px;">
-          <p style="font-size: 13px; line-height: 2;">
-            <a href="#" id="link-website" style="color: #4CAF50;">clippyai.app</a><br>
-            <a href="#" id="link-privacy" style="color: #4CAF50;">Privacy Policy</a><br>
-            <a href="#" id="link-terms" style="color: #4CAF50;">Terms of Service</a><br>
-            <a href="#" id="link-support" style="color: #4CAF50;">Support: hello@clippyai.app</a>
-          </p>
-        </div>
-        <div class="settings-group" style="margin-top: 16px;">
-          <p style="font-size: 12px; color: #aaa;">© 2026 Cloudana</p>
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Links</h3>
+          </div>
+          <div class="s-link-list">
+            <a href="#" id="link-website">clippyai.app</a>
+            <a href="#" id="link-privacy">Privacy Policy</a>
+            <a href="#" id="link-terms">Terms of Service</a>
+            <a href="#" id="link-support">Support: hello@clippyai.app</a>
+          </div>
+          <p class="s-help" style="margin-top:var(--s-space-4);color:var(--s-ink-faint);">© 2026 ClippyAI</p>
         </div>
       </div>
     </div>
