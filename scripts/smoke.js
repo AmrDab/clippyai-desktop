@@ -726,6 +726,20 @@ function layer1() {
       const sample = badFallbacks.map((e) => `${e.name}->${e.fallback}`).join(',');
       fail('tier-fallback-references-real-tools', `dangling=[${sample}]`);
     }
+
+    // Phase 3 guardrails — every TOOL_META entry must carry an explicit
+    // actionClass (permission-policy treats a missing class as
+    // destructive_exec, so a gap means a spurious prompt, not a bypass).
+    const unclassed = [];
+    for (const line of metaBody.split('\n')) {
+      const m = line.match(/^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*\{(.*)\},\s*$/);
+      if (m && !/actionClass:\s*'[a-z_]+'/.test(m[2])) unclassed.push(m[1]);
+    }
+    if (metaKeys.size > 0 && unclassed.length === 0) {
+      pass(`phase3: every TOOL_META entry has an actionClass (${metaKeys.size})`);
+    } else {
+      fail('phase3: TOOL_META actionClass coverage', `unclassed=[${unclassed.join(',')}]`);
+    }
   } catch (e) {
     fail('tier-meta tests', e.message.substring(0, 120));
   }
@@ -1858,17 +1872,14 @@ function layer1() {
       fail('v0.19.0 PR-6.5: brain.ts install-complete message', 'pattern not found');
     }
 
-    // 2. install_skill actionClass in tool-meta.ts
-    const hasInstallActionClass = /install_skill[^\n]*actionClass\s*:\s*'system_control'/.test(metaSrcPR65)
-      || (metaSrcPR65.includes('install_skill') && /actionClass\s*:\s*'system_control'/.test(metaSrcPR65));
+    // 2. install_skill actionClass in tool-meta.ts (Phase 3: destructive_exec —
+    //    installing a skill = running third-party code; prompts in standard mode)
+    const hasInstallActionClass = /install_skill[^\n]*actionClass\s*:\s*'destructive_exec'/.test(metaSrcPR65);
     const hasActionClassField   = /actionClass\s*\?\s*:/.test(metaSrcPR65);
     if (hasInstallActionClass && hasActionClassField) {
-      pass("v0.19.0 PR-6.5: tool-meta.ts — install_skill has actionClass='system_control' + ToolMeta interface has actionClass field");
+      pass("v0.19.0 PR-6.5: tool-meta.ts — install_skill has actionClass='destructive_exec' + ToolMeta interface has actionClass field");
     } else {
-      // KNOWN GAP: install_skill has no actionClass today, so it bypasses the
-      // permission-policy prompt. Phase 3 (real guardrails) adds it — skip,
-      // don't fail, until then.
-      skip("v0.19.0 PR-6.5: install_skill actionClass", `Phase 3 fixes this (installEntry=${hasInstallActionClass}, interfaceField=${hasActionClassField})`);
+      fail("v0.19.0 PR-6.5: install_skill actionClass", `installEntry=${hasInstallActionClass}, interfaceField=${hasActionClassField}`);
     }
 
     // 3. Settings → Skills tab required IDs (current layout: installed list +

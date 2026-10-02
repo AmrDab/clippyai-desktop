@@ -210,11 +210,9 @@ export function setPolicy(next: Partial<PermissionPolicy>): PermissionPolicy {
 }
 
 /** Decide what to do with a given tool call. */
-export function decide(toolName: string): ClassDecision {
-  const meta = TOOL_META[toolName];
-  if (!meta || !meta.actionClass) return 'allow'; // no class = no gate
+export function decide(toolName: string, args?: Record<string, unknown>): ClassDecision {
   const policy = ensureLoaded();
-  const cls = meta.actionClass;
+  const cls = classFor(toolName, args);
   // Per-class override wins
   if (cls in policy.classOverrides) {
     return policy.classOverrides[cls]!;
@@ -222,7 +220,23 @@ export function decide(toolName: string): ClassDecision {
   return DEFAULTS[policy.mode][cls];
 }
 
-/** Return the actionClass for a tool (or null). */
-export function classFor(toolName: string): ActionClass | null {
-  return TOOL_META[toolName]?.actionClass ?? null;
+const warnedUnclassed = new Set<string>();
+
+/**
+ * Return the actionClass for a tool call. Phase 3: never "no class".
+ *   - skill__* (runtime ClawHub skills run arbitrary code) → destructive_exec
+ *   - windows_service_control with action 'status' → read_only
+ *   - anything without a TOOL_META class → destructive_exec (prompts in
+ *     standard mode), with a one-time warn so the gap gets fixed.
+ */
+export function classFor(toolName: string, args?: Record<string, unknown>): ActionClass {
+  if (toolName.startsWith('skill__')) return 'destructive_exec';
+  if (toolName === 'windows_service_control' && String(args?.action ?? 'status') === 'status') return 'read_only';
+  const cls = TOOL_META[toolName]?.actionClass;
+  if (cls) return cls;
+  if (!warnedUnclassed.has(toolName)) {
+    warnedUnclassed.add(toolName);
+    log.warn('Tool has no actionClass — treating as destructive_exec', { tool: toolName });
+  }
+  return 'destructive_exec';
 }

@@ -39,7 +39,8 @@ export interface ToolMeta {
   description: string;
   /** Optional: alternate names of the same conceptual tool at higher tiers (for fallback) */
   fallback_alternative?: string;
-  /** v0.19.0 — permission-policy action class. Absent = no policy gating. */
+  /** v0.19.0 — permission-policy action class. Phase 3: required on every
+   *  entry; permission-policy falls back to destructive_exec if absent. */
   actionClass?: ActionClass;
   /** v0.19.0 — human-readable narration for activity log ("Wrote file …"). */
   narration?: string;
@@ -104,10 +105,10 @@ export function isToolSupportedOnPlatform(
 
 export const TOOL_META: Record<string, ToolMeta> = {
   // ── Tier 1 — local artifact generation (added by PR 2) ──────────────
-  generate_qrcode:   { tier: 1, cost: 'cheap',  description: 'Render text to a QR-code PNG file' },
-  generate_excel:    { tier: 1, cost: 'medium', description: 'Build an .xlsx workbook from row data (multi-sheet, exceljs, no Excel needed)' },
-  generate_docx:     { tier: 1, cost: 'medium', description: 'Build a .docx document from heading/paragraph/list blocks (no Word needed)' },
-  generate_pdf:      { tier: 1, cost: 'medium', description: 'Build a .pdf from text content with auto word-wrap (pdf-lib, no Word needed)' },
+  generate_qrcode:   { tier: 1, cost: 'cheap',  description: 'Render text to a QR-code PNG file', actionClass: 'destructive_file' },
+  generate_excel:    { tier: 1, cost: 'medium', description: 'Build an .xlsx workbook from row data (multi-sheet, exceljs, no Excel needed)', actionClass: 'destructive_file' },
+  generate_docx:     { tier: 1, cost: 'medium', description: 'Build a .docx document from heading/paragraph/list blocks (no Word needed)', actionClass: 'destructive_file' },
+  generate_pdf:      { tier: 1, cost: 'medium', description: 'Build a .pdf from text content with auto word-wrap (pdf-lib, no Word needed)', actionClass: 'destructive_file' },
 
   // ── Tier 2 — OS / shell direct ──────────────────────────────────────
   // v0.20.0 — platforms gating. UIA-based reads + OCR were Windows-only
@@ -116,26 +117,26 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // equivalents in v0.20.0 — see src/main/mac-bridge-native.ts. Each of the
   // tools tagged ['win32', 'darwin'] below now routes to the bridge on
   // darwin via the matching tools.ts implementation.
-  read_screen:        { tier: 2, cost: 'medium',    description: 'Read what is currently on screen via the OS accessibility tree (UIA on Windows, AX on macOS)', platforms: ['win32', 'darwin'] },
-  smart_read:         { tier: 2, cost: 'medium',    description: 'Alias of read_screen — read the foreground accessibility tree', platforms: ['win32', 'darwin'] },
-  get_active_window:  { tier: 2, cost: 'cheap',     description: 'Identify the foreground window (process name, title, bounds)', platforms: ['win32', 'darwin'] },
-  get_windows:        { tier: 2, cost: 'cheap',     description: 'List all top-level windows on the desktop', platforms: ['win32', 'darwin'] },
-  get_focused_element:{ tier: 2, cost: 'cheap',     description: 'Inspect the currently focused UI element via the accessibility tree', platforms: ['win32', 'darwin'] },
-  get_selection:      { tier: 2, cost: 'cheap',     description: 'Read the text the user currently has highlighted/selected (in any app, via Accessibility)', platforms: ['darwin'] },
-  replace_focused_text:{ tier: 5, cost: 'cheap',    description: 'Replace the text of the currently-focused field in any app (e.g. apply a grammar/clarity rewrite). Reads+writes the focused field via accessibility; falls back to select-all+type if AX write is unsupported', platforms: ['darwin'] },
-  open_app:           { tier: 2, cost: 'medium',    description: 'Launch a desktop application by name (Start-Process on Windows, `open -a` on macOS)', platforms: ['win32', 'darwin'], verifyAfter: 'always' },
-  desktop_screenshot: { tier: 2, cost: 'medium',    description: 'Capture a downscaled screenshot of the primary display' },
-  ocr_read_screen:    { tier: 2, cost: 'expensive', description: 'OCR the current screenshot to read text (Windows.Media.Ocr on Windows, Apple Vision on macOS)', platforms: ['win32', 'darwin'] },
-  read_clipboard:     { tier: 2, cost: 'cheap',     description: 'Read the current clipboard text', narration: 'Checking the clipboard' },
+  read_screen:        { tier: 2, cost: 'medium',    description: 'Read what is currently on screen via the OS accessibility tree (UIA on Windows, AX on macOS)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  smart_read:         { tier: 2, cost: 'medium',    description: 'Alias of read_screen — read the foreground accessibility tree', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  get_active_window:  { tier: 2, cost: 'cheap',     description: 'Identify the foreground window (process name, title, bounds)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  get_windows:        { tier: 2, cost: 'cheap',     description: 'List all top-level windows on the desktop', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  get_focused_element:{ tier: 2, cost: 'cheap',     description: 'Inspect the currently focused UI element via the accessibility tree', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  get_selection:      { tier: 2, cost: 'cheap',     description: 'Read the text the user currently has highlighted/selected (in any app, via Accessibility)', platforms: ['darwin'], actionClass: 'read_only' },
+  replace_focused_text:{ tier: 5, cost: 'cheap',    description: 'Replace the text of the currently-focused field in any app (e.g. apply a grammar/clarity rewrite). Reads+writes the focused field via accessibility; falls back to select-all+type if AX write is unsupported', platforms: ['darwin'], actionClass: 'desktop_input' },
+  open_app:           { tier: 2, cost: 'medium',    description: 'Launch a desktop application by name (Start-Process on Windows, `open -a` on macOS)', platforms: ['win32', 'darwin'], verifyAfter: 'always', actionClass: 'system_control' },
+  desktop_screenshot: { tier: 2, cost: 'medium',    description: 'Capture a downscaled screenshot of the primary display', actionClass: 'read_only' },
+  ocr_read_screen:    { tier: 2, cost: 'expensive', description: 'OCR the current screenshot to read text (Windows.Media.Ocr on Windows, Apple Vision on macOS)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  read_clipboard:     { tier: 2, cost: 'cheap',     description: 'Read the current clipboard text', narration: 'Checking the clipboard', actionClass: 'read_only' },
   write_clipboard:    { tier: 2, cost: 'cheap',     description: 'Write text to the clipboard', actionClass: 'destructive_file', narration: 'Copying to clipboard' },
-  read_file:          { tier: 2, cost: 'cheap',     description: 'Read a local file from disk', narration: 'Reading the file' },
+  read_file:          { tier: 2, cost: 'cheap',     description: 'Read a local file from disk', narration: 'Reading the file', actionClass: 'read_only' },
   write_file:         { tier: 2, cost: 'cheap',     description: 'Write a local file to disk', narration: 'Saving the file', actionClass: 'destructive_file' },
   // v0.19.0 — file management tools (delete uses move-to-trash for undoability)
   delete_file:        { tier: 2, cost: 'cheap',     description: 'Move a local file to ~/.clippy-trash (restorable via Undo within 7 days)', narration: 'Deleting the file', actionClass: 'destructive_file' },
   rename_file:        { tier: 2, cost: 'cheap',     description: 'Rename a local file (from → to path)', narration: 'Renaming the file', actionClass: 'destructive_file' },
   move_file:          { tier: 2, cost: 'cheap',     description: 'Move a local file to a new location (from → to path)', narration: 'Moving the file', actionClass: 'destructive_file' },
-  list_files:         { tier: 2, cost: 'cheap',     description: 'List files in a directory', narration: 'Listing files' },
-  search_files_content:{ tier: 2, cost: 'medium',   description: 'Search file contents for a regex/string pattern' },
+  list_files:         { tier: 2, cost: 'cheap',     description: 'List files in a directory', narration: 'Listing files', actionClass: 'read_only' },
+  search_files_content:{ tier: 2, cost: 'medium',   description: 'Search file contents for a regex/string pattern', actionClass: 'read_only' },
   // run_powershell removed v0.12.3 — security audit (prompt-injection → RCE).
   // Bundled PS scripts (outlook_*, excel_*, file ops) cover legitimate use.
   // v0.20.0 (track2) — these three still dispatch via com-*.ps1
@@ -145,14 +146,14 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // shell_exec (`sw_vers`/`system_profiler`, `ps`, `ping`) on macOS.
   // TODO(track2-phase3): add darwin impls (native fs/os for sysinfo +
   // process list; `say` already covers TTS) and re-tag cross-platform.
-  system_info:        { tier: 2, cost: 'cheap',     description: 'Get OS / hardware / disk info', platforms: ['win32'] },
-  list_processes:     { tier: 2, cost: 'cheap',     description: 'List running processes', platforms: ['win32'] },
+  system_info:        { tier: 2, cost: 'cheap',     description: 'Get OS / hardware / disk info', platforms: ['win32'], actionClass: 'read_only' },
+  list_processes:     { tier: 2, cost: 'cheap',     description: 'List running processes', platforms: ['win32'], actionClass: 'read_only' },
   // TODO(track2-phase3): kill_process dispatches com-kill-process.ps1 with
   // no darwin path / bridge verb; gated win32-only. macOS users can use
   // shell_exec (`kill`/`pkill`) until a native impl lands.
-  kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name or PID', platforms: ['win32'] },
-  ping_host:          { tier: 2, cost: 'medium',    description: 'Ping a network host', platforms: ['win32'] },
-  http_request:       { tier: 2, cost: 'medium',    description: 'Make an HTTP request to an arbitrary URL' },
+  kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name or PID', platforms: ['win32'], actionClass: 'destructive_exec' },
+  ping_host:          { tier: 2, cost: 'medium',    description: 'Ping a network host', platforms: ['win32'], actionClass: 'read_only' },
+  http_request:       { tier: 2, cost: 'medium',    description: 'Make an HTTP request to an arbitrary URL', actionClass: 'destructive_web' },
   // v0.20.0 — generic shell. destructive_exec actionClass triggers a
   // permission-policy prompt in cautious + standard modes (the default).
   // See tools.ts `shellExec` header for the screen-text-RCE history that
@@ -162,8 +163,8 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // TODO(track2-phase3): speak_text dispatches com-speak-text.ps1 (no darwin
   // path / bridge verb). Gated win32-only; macOS `say` would be the native
   // impl. shell_exec(`say "…"`) covers it meanwhile.
-  speak_text:         { tier: 2, cost: 'medium',    description: 'Speak text via the OS TTS engine', platforms: ['win32'] },
-  play_animation:     { tier: 1, cost: 'cheap',     description: 'Play a specific Clippy sprite animation on demand (wave, celebrate, dance, think, etc.). Use when the user asks Clippy to animate/react expressively.', narration: 'Showing off' },
+  speak_text:         { tier: 2, cost: 'medium',    description: 'Speak text via the OS TTS engine', platforms: ['win32'], actionClass: 'system_control' },
+  play_animation:     { tier: 1, cost: 'cheap',     description: 'Play a specific Clippy sprite animation on demand (wave, celebrate, dance, think, etc.). Use when the user asks Clippy to animate/react expressively.', narration: 'Showing off', actionClass: 'read_only' },
   // v0.20.0 — Win+M / Show-desktop / per-window minimize all go through
   // PowerShell on Windows. macOS equivalent ships in v0.20.0 via the Swift
   // bridge (`clippy-mac-bridge minimize-all|show-desktop|minimize-window`).
@@ -171,12 +172,12 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // via tools.ts. v0.20.0 (track2) — minimize_window now also has a darwin
   // path: resolve app name → pid (getAppPidByName) then call the bridge's
   // minimize-window verb, so it's cross-platform too.
-  minimize_all_windows:{ tier: 2, cost: 'cheap',    description: 'Minimize every top-level window (Win+M / Cmd+Opt+H+M equivalent)', platforms: ['win32', 'darwin'] },
-  show_desktop:       { tier: 2, cost: 'cheap',     description: 'Show the desktop (toggle minimize-all)', platforms: ['win32', 'darwin'] },
-  minimize_window:    { tier: 2, cost: 'cheap',     description: 'Minimize a specific window by process or title', platforms: ['win32', 'darwin'] },
-  wait:               { tier: 2, cost: 'cheap',     description: 'Sleep for N seconds (param: `seconds`, clamped 0.1-30; synchronization primitive)' },
-  plan:               { tier: 2, cost: 'cheap',     description: 'Record an internal plan step (no side effects)' },
-  detect_webview_apps:{ tier: 2, cost: 'medium',    description: 'Detect Electron/CEF apps that may have a CDP port available' },
+  minimize_all_windows:{ tier: 2, cost: 'cheap',    description: 'Minimize every top-level window (Win+M / Cmd+Opt+H+M equivalent)', platforms: ['win32', 'darwin'], actionClass: 'system_control' },
+  show_desktop:       { tier: 2, cost: 'cheap',     description: 'Show the desktop (toggle minimize-all)', platforms: ['win32', 'darwin'], actionClass: 'system_control' },
+  minimize_window:    { tier: 2, cost: 'cheap',     description: 'Minimize a specific window by process or title', platforms: ['win32', 'darwin'], actionClass: 'system_control' },
+  wait:               { tier: 2, cost: 'cheap',     description: 'Sleep for N seconds (param: `seconds`, clamped 0.1-30; synchronization primitive)', actionClass: 'read_only' },
+  plan:               { tier: 2, cost: 'cheap',     description: 'Record an internal plan step (no side effects)', actionClass: 'read_only' },
+  detect_webview_apps:{ tier: 2, cost: 'medium',    description: 'Detect Electron/CEF apps that may have a CDP port available', actionClass: 'read_only' },
 
   // ── Tier 3a — COM application APIs (Windows-only by definition) ─────
   // These all dispatch via COM bridges that don't exist on macOS. The
@@ -194,40 +195,40 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // L3 path on macOS — beats outlook_web/gmail_web (which need CDP-attached
   // Chrome) because Mail.app is always present on Mac.
   apple_mail_send_email:{ tier: 3, cost: 'medium',    description: 'Send an email via Apple Mail (Mail.app) using AppleScript. macOS native — works without a browser. Use this on Mac unless the user explicitly asks for Gmail/Outlook web.', narration: 'Sending via Apple Mail', actionClass: 'destructive_send', platforms: ['darwin'] },
-  outlook_read_inbox:  { tier: 3, cost: 'medium',    description: 'Read recent inbox messages via Outlook COM', narration: 'Reading your inbox', platforms: ['win32'] },
+  outlook_read_inbox:  { tier: 3, cost: 'medium',    description: 'Read recent inbox messages via Outlook COM', narration: 'Reading your inbox', platforms: ['win32'], actionClass: 'read_only' },
   outlook_create_event:{ tier: 3, cost: 'medium',    description: 'Create a calendar event via Outlook COM', narration: 'Adding to your calendar', actionClass: 'destructive_send', platforms: ['win32'] },
   // Local Calendar.app write with no attendees — nothing is "sent" to
   // anyone, so this is destructive_file (local write), not destructive_send.
   // Escalate to destructive_send only if attendee-invite support is added.
   apple_calendar_create_event:{ tier: 3, cost: 'cheap', description: 'Create an event in the native macOS Calendar app via AppleScript — no browser/login needed. The reliable way to add a calendar event on Mac. Required: title + numeric date components year/month/day (hour/minute default to 09:00). Optional: durationMinutes (default 60), calendar (name; default first writable), notes, location.', narration: 'Adding to your calendar', actionClass: 'destructive_file', platforms: ['darwin'] },
-  outlook_upcoming:    { tier: 3, cost: 'medium',    description: 'List upcoming calendar events via Outlook COM', narration: 'Checking your calendar', platforms: ['win32'] },
-  excel_read:          { tier: 3, cost: 'medium',    description: 'Read cells from an Excel workbook via COM', narration: 'Reading the spreadsheet', platforms: ['win32'] },
+  outlook_upcoming:    { tier: 3, cost: 'medium',    description: 'List upcoming calendar events via Outlook COM', narration: 'Checking your calendar', platforms: ['win32'], actionClass: 'read_only' },
+  excel_read:          { tier: 3, cost: 'medium',    description: 'Read cells from an Excel workbook via COM', narration: 'Reading the spreadsheet', platforms: ['win32'], actionClass: 'read_only' },
   excel_write:         { tier: 3, cost: 'medium',    description: 'Write cells to an Excel workbook via COM', narration: 'Updating the spreadsheet', actionClass: 'destructive_file', platforms: ['win32'] },
-  word_to_pdf:         { tier: 3, cost: 'expensive', description: 'Convert a Word document to PDF via Word COM', platforms: ['win32'] },
-  create_reminder:     { tier: 3, cost: 'medium',    description: 'Create a Windows reminder / scheduled toast', platforms: ['win32'] },
+  word_to_pdf:         { tier: 3, cost: 'expensive', description: 'Convert a Word document to PDF via Word COM', platforms: ['win32'], actionClass: 'destructive_file' },
+  create_reminder:     { tier: 3, cost: 'medium',    description: 'Create a Windows reminder / scheduled toast', platforms: ['win32'], actionClass: 'system_control' },
 
   // ── Tier 3b — Web service APIs (added by PR 3) ───────────────────────
   github_create_issue: { tier: 3, cost: 'medium',    description: 'Create a GitHub issue via REST API (requires PAT in keytar:clippy.github)', actionClass: 'destructive_web', narration: 'Created GitHub issue' },
-  github_list_issues:  { tier: 3, cost: 'medium',    description: 'List GitHub issues for a repo via REST API' },
-  github_get_pr:       { tier: 3, cost: 'medium',    description: 'Fetch a GitHub pull request by number via REST API' },
+  github_list_issues:  { tier: 3, cost: 'medium',    description: 'List GitHub issues for a repo via REST API', actionClass: 'read_only' },
+  github_get_pr:       { tier: 3, cost: 'medium',    description: 'Fetch a GitHub pull request by number via REST API', actionClass: 'read_only' },
 
   // ── Tier 3c — URL scheme / shell.openExternal ────────────────────────
-  navigate_browser:    { tier: 3, cost: 'medium',    description: 'Open a URL in the default browser via shell.openExternal', verifyAfter: 'always' },
-  open_url:            { tier: 3, cost: 'cheap',     description: 'Open a URL or deep-link via the OS handler — allowlisted schemes (mailto, spotify, vscode, slack, ms-teams, zoommtg, https, http, tel, sms)', verifyAfter: 'always' },
-  spotify_play_uri:    { tier: 3, cost: 'cheap',     description: 'Play a Spotify track/album/playlist/artist by URI via the spotify: deep link' },
+  navigate_browser:    { tier: 3, cost: 'medium',    description: 'Open a URL in the default browser via shell.openExternal', verifyAfter: 'always', actionClass: 'browser_navigate' },
+  open_url:            { tier: 3, cost: 'cheap',     description: 'Open a URL or deep-link via the OS handler — allowlisted schemes (mailto, spotify, vscode, slack, ms-teams, zoommtg, https, http, tel, sms)', verifyAfter: 'always', actionClass: 'browser_navigate' },
+  spotify_play_uri:    { tier: 3, cost: 'cheap',     description: 'Play a Spotify track/album/playlist/artist by URI via the spotify: deep link', actionClass: 'browser_navigate' },
 
   // ── Tier 4 — Browser automation via CDP ──────────────────────────────
-  cdp_connect:           { tier: 4, cost: 'medium',    description: 'Attach to a Chromium debugging port (CDP)' },
-  cdp_page_context:      { tier: 4, cost: 'cheap',     description: 'Get the active CDP tab URL/title' },
-  cdp_read_text:         { tier: 4, cost: 'medium',    description: 'Read text content from the CDP page (selector or full-doc)' },
-  cdp_click:             { tier: 4, cost: 'medium',    description: 'Click a CSS selector on the CDP page' },
-  cdp_type:              { tier: 4, cost: 'medium',    description: 'Type text into a CSS selector on the CDP page' },
-  cdp_select_option:     { tier: 4, cost: 'medium',    description: 'Set a <select> value via CDP' },
-  cdp_evaluate:          { tier: 4, cost: 'medium',    description: 'Run arbitrary JS in the CDP page context' },
-  cdp_wait_for_selector: { tier: 4, cost: 'medium',    description: 'Wait for a CSS selector to appear in the CDP page' },
-  cdp_list_tabs:         { tier: 4, cost: 'cheap',     description: 'List CDP tabs/targets' },
-  cdp_switch_tab:        { tier: 4, cost: 'cheap',     description: 'Switch active CDP tab' },
-  cdp_scroll:            { tier: 4, cost: 'cheap',     description: 'Scroll the CDP page' },
+  cdp_connect:           { tier: 4, cost: 'medium',    description: 'Attach to a Chromium debugging port (CDP)', actionClass: 'read_only' },
+  cdp_page_context:      { tier: 4, cost: 'cheap',     description: 'Get the active CDP tab URL/title', actionClass: 'read_only' },
+  cdp_read_text:         { tier: 4, cost: 'medium',    description: 'Read text content from the CDP page (selector or full-doc)', actionClass: 'read_only' },
+  cdp_click:             { tier: 4, cost: 'medium',    description: 'Click a CSS selector on the CDP page', actionClass: 'desktop_input' },
+  cdp_type:              { tier: 4, cost: 'medium',    description: 'Type text into a CSS selector on the CDP page', actionClass: 'desktop_input' },
+  cdp_select_option:     { tier: 4, cost: 'medium',    description: 'Set a <select> value via CDP', actionClass: 'desktop_input' },
+  cdp_evaluate:          { tier: 4, cost: 'medium',    description: 'Run arbitrary JS in the CDP page context', actionClass: 'destructive_exec' },
+  cdp_wait_for_selector: { tier: 4, cost: 'medium',    description: 'Wait for a CSS selector to appear in the CDP page', actionClass: 'read_only' },
+  cdp_list_tabs:         { tier: 4, cost: 'cheap',     description: 'List CDP tabs/targets', actionClass: 'read_only' },
+  cdp_switch_tab:        { tier: 4, cost: 'cheap',     description: 'Switch active CDP tab', actionClass: 'desktop_input' },
+  cdp_scroll:            { tier: 4, cost: 'cheap',     description: 'Scroll the CDP page', actionClass: 'desktop_input' },
 
   // ── Tier 5 — Desktop UI automation (PSBridge UIA + mouse/keyboard) ──
   // v0.20.0 — five tools migrated to the macOS Swift bridge in v0.20.0:
@@ -239,39 +240,39 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // The remaining Tier-5 tools (focus_window, mouse_double_click, mouse_*
   // variants, mouse_drag, mouse_scroll) keep their existing AppleScript /
   // PowerShell paths until the next bridge migration pass.
-  smart_click:          { tier: 5, cost: 'expensive', description: 'Click an element by label using accessibility fuzzy match (UIA on Windows, AX on macOS, OCR fallback)', platforms: ['win32', 'darwin'] },
-  smart_type:           { tier: 5, cost: 'expensive', description: 'Type into a labeled element via accessibility + keyboard (last-resort UI)', platforms: ['win32', 'darwin'] },
-  focus_window:         { tier: 5, cost: 'medium',    description: 'Bring a window to the foreground (UIA / Win32 on Windows, AppleScript activate on macOS)', platforms: ['win32', 'darwin'], verifyAfter: 'always' },
-  type_text:            { tier: 5, cost: 'medium',    description: 'Synthesize keystrokes to type literal text into the focused window', platforms: ['win32', 'darwin'] },
-  key_press:            { tier: 5, cost: 'medium',    description: 'Synthesize a keyboard shortcut (e.g. Ctrl+S / Cmd+S)', platforms: ['win32', 'darwin'] },
-  mouse_click:          { tier: 5, cost: 'medium',    description: 'Click at absolute screen coordinates', platforms: ['win32', 'darwin'] },
+  smart_click:          { tier: 5, cost: 'expensive', description: 'Click an element by label using accessibility fuzzy match (UIA on Windows, AX on macOS, OCR fallback)', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  smart_type:           { tier: 5, cost: 'expensive', description: 'Type into a labeled element via accessibility + keyboard (last-resort UI)', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  focus_window:         { tier: 5, cost: 'medium',    description: 'Bring a window to the foreground (UIA / Win32 on Windows, AppleScript activate on macOS)', platforms: ['win32', 'darwin'], verifyAfter: 'always', actionClass: 'desktop_input' },
+  type_text:            { tier: 5, cost: 'medium',    description: 'Synthesize keystrokes to type literal text into the focused window', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  key_press:            { tier: 5, cost: 'medium',    description: 'Synthesize a keyboard shortcut (e.g. Ctrl+S / Cmd+S)', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  mouse_click:          { tier: 5, cost: 'medium',    description: 'Click at absolute screen coordinates', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
   // v0.20.0 (track2) — these four now route to the Swift bridge on darwin
   // (click count:2 / click button:right / drag / scroll CGEvent verbs).
-  mouse_double_click:   { tier: 5, cost: 'medium',    description: 'Double-click at absolute screen coordinates', platforms: ['win32', 'darwin'] },
-  mouse_right_click:    { tier: 5, cost: 'medium',    description: 'Right-click at absolute screen coordinates', platforms: ['win32', 'darwin'] },
-  mouse_hover:          { tier: 5, cost: 'cheap',     description: 'Move the cursor to absolute screen coordinates', platforms: ['win32', 'darwin'] },
-  mouse_drag:           { tier: 5, cost: 'medium',    description: 'Drag from one set of screen coordinates to another', platforms: ['win32', 'darwin'] },
-  mouse_scroll:         { tier: 5, cost: 'cheap',     description: 'Scroll the mouse wheel at the cursor position', platforms: ['win32', 'darwin'] },
+  mouse_double_click:   { tier: 5, cost: 'medium',    description: 'Double-click at absolute screen coordinates', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  mouse_right_click:    { tier: 5, cost: 'medium',    description: 'Right-click at absolute screen coordinates', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  mouse_hover:          { tier: 5, cost: 'cheap',     description: 'Move the cursor to absolute screen coordinates', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  mouse_drag:           { tier: 5, cost: 'medium',    description: 'Drag from one set of screen coordinates to another', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
+  mouse_scroll:         { tier: 5, cost: 'cheap',     description: 'Scroll the mouse wheel at the cursor position', platforms: ['win32', 'darwin'], actionClass: 'desktop_input' },
 
   // ── Tier 5 diagnostic (added by PR 4) ────────────────────────────────
   // clawd_status reads the clawdcursor fallback subprocess state. Tagged
   // tier 2 because it is a status read with no UI driving — it just exposes
   // whether the Tier-5 fallback is ready, installing, or disabled.
-  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)' },
+  clawd_status:         { tier: 2, cost: 'cheap',     description: 'Diagnostic — current state of the Tier-5 clawdcursor fallback subprocess (ready / disabled / installing)', actionClass: 'read_only' },
 
   // ── v0.12.4 additions ──
   // TODO(track2-phase3): zip/unzip/hash dispatch zip-files.ps1 / unzip-files.ps1
   // / hash-file.ps1 with no darwin path / bridge verb — gated win32-only.
   // macOS: shell_exec(`zip`/`unzip`/`shasum`) or a native Node impl (zlib +
   // crypto) would make these cross-platform.
-  zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive', platforms: ['win32'] },
-  unzip_files:          { tier: 2, cost: 'medium',    description: 'Decompress a ZIP archive into a destination directory', platforms: ['win32'] },
-  hash_file:            { tier: 2, cost: 'cheap',     description: 'Return SHA256/MD5/SHA1/SHA384/SHA512 hash of a local file', platforms: ['win32'] },
-  ocr_from_image:       { tier: 2, cost: 'medium',    description: 'Extract text from an image file on disk via Windows OCR', platforms: ['win32'] },
-  windows_service_control: { tier: 2, cost: 'cheap',  description: 'Query / start / stop / restart a Windows service by name (start/stop need admin)', platforms: ['win32'] },
-  get_current_time_tz:  { tier: 1, cost: 'cheap',     description: 'Current time in any IANA timezone (e.g. "America/Los_Angeles")' },
-  weather_current:      { tier: 3, cost: 'cheap',     description: 'Current weather + 24h forecast via Open-Meteo (free, no API key)' },
-  shortcuts_execute:    { tier: 5, cost: 'medium',    description: 'Execute a keyboard shortcut by semantic intent (e.g. "save document") — clawdcursor resolves the right combo per app' },
+  zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive', platforms: ['win32'], actionClass: 'destructive_file' },
+  unzip_files:          { tier: 2, cost: 'medium',    description: 'Decompress a ZIP archive into a destination directory', platforms: ['win32'], actionClass: 'destructive_file' },
+  hash_file:            { tier: 2, cost: 'cheap',     description: 'Return SHA256/MD5/SHA1/SHA384/SHA512 hash of a local file', platforms: ['win32'], actionClass: 'read_only' },
+  ocr_from_image:       { tier: 2, cost: 'medium',    description: 'Extract text from an image file on disk via Windows OCR', platforms: ['win32'], actionClass: 'read_only' },
+  windows_service_control: { tier: 2, cost: 'cheap',  description: 'Query / start / stop / restart a Windows service by name (start/stop need admin)', platforms: ['win32'], actionClass: 'destructive_exec' },
+  get_current_time_tz:  { tier: 1, cost: 'cheap',     description: 'Current time in any IANA timezone (e.g. "America/Los_Angeles")', actionClass: 'read_only' },
+  weather_current:      { tier: 3, cost: 'cheap',     description: 'Current weather + 24h forecast via Open-Meteo (free, no API key)', actionClass: 'read_only' },
+  shortcuts_execute:    { tier: 5, cost: 'medium',    description: 'Execute a keyboard shortcut by semantic intent (e.g. "save document") — clawdcursor resolves the right combo per app', actionClass: 'desktop_input' },
 
   // ── v0.13.0 additions ──
   // outlook_send_email is the canonical dispatcher; the two web recipes
@@ -281,23 +282,23 @@ export const TOOL_META: Record<string, ToolMeta> = {
   gmail_web_send_email:   { tier: 4, cost: 'medium', description: 'Send email via mail.google.com using a deterministic CDP recipe (with verified "Message sent" snackbar)', narration: 'Sending via Gmail', actionClass: 'destructive_send' },
   // clawd_task is L5 — plain-English desktop task delegation to clawdcursor
   // for tasks that don't fit any L1-L4 native or recipe path.
-  clawd_task:             { tier: 5, cost: 'expensive', description: 'L5 LAST RESORT — delegate a plain-English desktop task to clawdcursor when no native tool, browser recipe, or installed skill fits' },
+  clawd_task:             { tier: 5, cost: 'expensive', description: 'L5 LAST RESORT — delegate a plain-English desktop task to clawdcursor when no native tool, browser recipe, or installed skill fits', actionClass: 'destructive_exec' },
 
   // ── v0.14.0 additions: ClawHub skill registry ──
   // darwin added 2026-06-13: clawhub.ts is cross-platform (ditto extraction +
   // sh/js entry points on macOS), so the agent can self-serve ClawHub skills
   // on Mac too — the win32-only gate was the loose end behind "Clippy can't
   // use ClawHub skills". Mirrors the backend ungate (clippyai-api).
-  find_skill:             { tier: 3, cost: 'cheap',     description: 'Search ClawHub (public skill registry) for a skill matching a user intent. Returns top results with safety classification.', platforms: ['win32', 'darwin'] },
-  install_skill:          { tier: 3, cost: 'medium',    description: 'Download + install a ClawHub skill into ~/.clippyai/skills/. After install, the skill is callable as skill__<slug> on the next turn — promoted to L1.', platforms: ['win32', 'darwin'] },
+  find_skill:             { tier: 3, cost: 'cheap',     description: 'Search ClawHub (public skill registry) for a skill matching a user intent. Returns top results with safety classification.', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  install_skill:          { tier: 3, cost: 'medium',    description: 'Download + install a ClawHub skill into ~/.clippyai/skills/. After install, the skill is callable as skill__<slug> on the next turn — promoted to L1.', platforms: ['win32', 'darwin'], actionClass: 'destructive_exec' },
 
   // ── v0.15.0 additions: high-level browser tools (mcp-chrome → CDP fallback) ──
-  browser_navigate:  { tier: 4, cost: 'medium', description: 'Navigate the browser to a URL. Uses the user\'s real signed-in browser when mcp-chrome extension is installed; otherwise spawns a debug-flagged browser.', verifyAfter: 'always' },
-  browser_click:     { tier: 4, cost: 'medium', description: 'Click an element by CSS selector OR text. Routes through mcp-chrome if available (real signed-in browser).' },
-  browser_type:      { tier: 4, cost: 'medium', description: 'Type text into a form field (selector or aria-label). Routes through mcp-chrome if available.' },
-  browser_read_text: { tier: 4, cost: 'cheap',  description: 'Read text content from a page element (default body). Routes through mcp-chrome if available.' },
-  browser_list_tabs: { tier: 4, cost: 'cheap',  description: 'List all open browser tabs. mcp-chrome only — CDP attach is single-tab.' },
-  browser_switch_tab:{ tier: 4, cost: 'cheap',  description: 'Switch to a tab by id, url-substring, or title-substring. mcp-chrome only.' },
+  browser_navigate:  { tier: 4, cost: 'medium', description: 'Navigate the browser to a URL. Uses the user\'s real signed-in browser when mcp-chrome extension is installed; otherwise spawns a debug-flagged browser.', verifyAfter: 'always', actionClass: 'browser_navigate' },
+  browser_click:     { tier: 4, cost: 'medium', description: 'Click an element by CSS selector OR text. Routes through mcp-chrome if available (real signed-in browser).', actionClass: 'desktop_input' },
+  browser_type:      { tier: 4, cost: 'medium', description: 'Type text into a form field (selector or aria-label). Routes through mcp-chrome if available.', actionClass: 'desktop_input' },
+  browser_read_text: { tier: 4, cost: 'cheap',  description: 'Read text content from a page element (default body). Routes through mcp-chrome if available.', actionClass: 'read_only' },
+  browser_list_tabs: { tier: 4, cost: 'cheap',  description: 'List all open browser tabs. mcp-chrome only — CDP attach is single-tab.', actionClass: 'read_only' },
+  browser_switch_tab:{ tier: 4, cost: 'cheap',  description: 'Switch to a tab by id, url-substring, or title-substring. mcp-chrome only.', actionClass: 'desktop_input' },
   // v0.19.0 — follow-me cursor mode
   follow_me:      { tier: 2, cost: 'cheap', description: "Have Clippy follow the user's cursor around the screen until told to stop", actionClass: 'desktop_input', narration: 'Following you' },
   stop_following: { tier: 2, cost: 'cheap', description: 'Stop following the cursor and stay in place', actionClass: 'desktop_input', narration: 'Standing still' },
