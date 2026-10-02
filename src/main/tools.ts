@@ -63,6 +63,9 @@ import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
+// Phase 3 guardrails — install consent comes from the user's Approve click,
+// never from a model-supplied argument.
+import * as approval from './approval';
 import { captureScreen, HelperError } from './screenshot-helper';
 import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOOLS } from './mcp-chrome';
 import type { ToolResult } from './types/tool-result';
@@ -3436,16 +3439,20 @@ function broadenSearchQuery(query: string): string {
  * `skill__<slug>` on the model's NEXT turn (the L1 promotion mechanism
  * the user asked for).
  *
- * For skills classified 'consent' (capability tags include shell-exec,
- * etc.), the model must pass `userConsent: true` after asking the user
- * verbally. Skills classified 'reject' (suspicious/malicious scan
- * verdict) are refused regardless of consent.
+ * Phase 3 guardrails: install_skill is destructive_exec, so in cautious /
+ * standard mode brain.ts already showed the Approve/Deny prompt and recorded
+ * the yes (approval.markApproved). For skills classified 'consent'
+ * (capability tags include shell-exec, etc.) in trusted mode — where the
+ * exec class auto-allows — this tool asks the user itself. The model has no
+ * argument that can grant consent. Skills classified 'reject'
+ * (suspicious/malicious scan verdict) are refused regardless.
  */
 async function installSkillTool(params: Record<string, unknown>): Promise<ToolResult> {
   const slug = String(params.slug || '');
   if (!slug.trim()) return { text: '(error:MISSING_SLUG) install_skill needs a `slug`. Call find_skill first to discover slugs.' };
   const version = params.version ? String(params.version) : undefined;
-  const userConsent = params.userConsent === true || params.userConsent === 'true';
+  // One-shot: consume the brain's approval mark whether or not we need it.
+  const preApproved = approval.wasApproved('install_skill', slug);
 
   try {
     const scan = await getSkillScan(slug);
@@ -3453,11 +3460,16 @@ async function installSkillTool(params: Record<string, unknown>): Promise<ToolRe
     if (safety === 'reject') {
       return { text: `(error:SKILL_REJECTED) ${slug} cannot be installed (scan verdict: ${scan?.verdict || 'unknown'}, tags: ${scan?.capability_tags?.join(',') || 'none'}).` };
     }
-    if (safety === 'consent' && !userConsent) {
+    if (safety === 'consent' && !preApproved) {
       const tags = scan?.capability_tags?.join(', ') || 'unknown capabilities';
-      return {
-        text: `(error:USER_CONSENT_REQUIRED) ${slug} requests potentially sensitive capabilities: ${tags}. Ask the user to confirm, then call install_skill again with userConsent=true.`,
-      };
+      const verdict = await approval.requestApproval(getMainWindow(), {
+        tool: 'install_skill',
+        summary: `Install skill ${slug} (${tags})`,
+        actionClass: 'destructive_exec',
+      });
+      if (verdict !== 'approved') {
+        return { text: `(error:user_denied) User declined installing ${slug} (${verdict}). Do not retry; ask what they'd like instead.` };
+      }
     }
     const manifest = await installSkill(slug, version);
     // L1 PROMOTION: refresh the registry so subsequent turns see this
