@@ -23,7 +23,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 /** A single grammar/style problem found in the text. */
 export interface LintResult {
@@ -81,7 +81,11 @@ function getLinter(): Promise<any> {
       const entryUrl = pathToFileURL(join(dirname(wasmPath), 'index.js')).href;
       const harper = await import(entryUrl);
       const { LocalLinter, createBinaryModuleFromUrl, Dialect } = harper;
-      const wasmUrl = pathToFileURL(wasmPath).href;
+      // Don't hand harper a file:// URL: its Node loader does
+      // fs.readFile(new URL(u).pathname), and on Windows that pathname is
+      // "/C:/…" which resolves to "C:\C:\…" (ENOENT). Read the bytes ourselves
+      // and pass a data: URL — the same path harper's own binaryInlined uses.
+      const wasmUrl = `data:application/wasm;base64,${readFileSync(wasmPath).toString('base64')}`;
       const binary = createBinaryModuleFromUrl(wasmUrl, 'full');
       const linter = new LocalLinter({ binary, dialect: Dialect.American });
       await linter.setup(); // force WASM init + dictionary build now
