@@ -70,7 +70,7 @@ const supported = (tool, platform) => isToolSupportedOnPlatform(TOOL_META[tool],
 // ── On darwin: Windows-only tools must NOT be supported ──────────────────────
 const WIN32_ONLY = [
   'speak_text', 'kill_process', 'list_processes', 'ping_host',
-  'zip_files', 'unzip_files', 'hash_file', 'system_info',
+  'zip_files', 'unzip_files', 'hash_file', 'system_info', 'security_sweep',
 ];
 for (const tool of WIN32_ONLY) {
   assert(TOOL_META[tool] !== undefined, `registry has ${tool}`, 'tool missing from TOOL_META');

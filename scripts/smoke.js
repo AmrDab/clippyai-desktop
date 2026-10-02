@@ -402,7 +402,7 @@ function layer1() {
   else fail('v0.11.27: Gemini code reappeared', 'found live Gemini reference in brain.ts');
 
   // 1.21 Tool count sanity (catches accidental mass-deletion or duplication)
-  if (tmKeys.length >= 30 && tmKeys.length <= 100) pass(`TOOL_MAP: ${tmKeys.length} tools registered (within sane bounds 30-100)`);
+  if (tmKeys.length >= 30 && tmKeys.length <= 120) pass(`TOOL_MAP: ${tmKeys.length} tools registered (within sane bounds 30-120)`);
   else fail('TOOL_MAP tool count', `${tmKeys.length} is out of expected range`);
 
   // ────────── v0.11.28 logging-overhaul invariants ──────────
@@ -2336,6 +2336,40 @@ function layer1() {
       } else {
         fail('writing-watch: WatchCore', `a=${a.kind} b=${b.kind} c=${c.kind} d=${d.kind} e=${e.kind} f=${f.kind}`);
       }
+    }
+  }
+
+  // ────────── security_sweep (read-only Windows security scan) ──────────
+  {
+    // Registered in TOOL_MAP + tool-meta (win32, read_only) + server prompt declaration.
+    const toolsSrcSec = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
+    const metaSrcSec = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
+    const inMap = /^\s+security_sweep:\s*securitySweep/m.test(toolsSrcSec);
+    const metaLine = metaSrcSec.match(/^\s+security_sweep:\s*\{[^\n]*\}/m);
+    const inMeta = !!metaLine && /actionClass:\s*'read_only'/.test(metaLine[0]) && /platforms:\s*\['win32'\]/.test(metaLine[0]);
+    const inServer = apiToolsSrc ? /name:\s*'security_sweep'/.test(apiToolsSrc) : true;
+    if (inMap && inMeta && inServer) {
+      pass(`security_sweep: registered (TOOL_MAP + tool-meta read_only/win32${apiToolsSrc ? ' + server prompt' : ' — server skipped, clippyai-api not cloned'})`);
+    } else {
+      fail('security_sweep: registration', `map=${inMap}, meta=${inMeta}, server=${inServer}`);
+    }
+
+    // Read-only guarantee: the scan script must contain no write / delete /
+    // network / process-launch cmdlets. Report-only by design — quarantine
+    // or removal would be a separate, permission-gated tool.
+    const scanSrc = readIfExists(path.join(ROOT, 'assets', 'scripts', 'security-scan.ps1'));
+    if (scanSrc == null) {
+      fail('security_sweep: script present', 'assets/scripts/security-scan.ps1 missing');
+    } else {
+      const forbidden = [
+        'Remove-Item', 'Set-ItemProperty', 'New-Item', 'Set-Content', 'Out-File',
+        'Move-Item', 'Copy-Item', 'Stop-Process', 'Start-Process',
+        'Invoke-WebRequest', 'Invoke-RestMethod', 'Set-MpPreference', 'Remove-MpThreat',
+        '.Delete(', '.Kill(',
+      ];
+      const hits = forbidden.filter((w) => scanSrc.includes(w));
+      if (hits.length === 0) pass('security_sweep: security-scan.ps1 contains no write/delete/network/process-launch calls');
+      else fail('security_sweep: read-only guarantee', `found ${hits.join(', ')}`);
     }
   }
 
