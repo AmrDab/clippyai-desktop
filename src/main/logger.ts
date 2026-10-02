@@ -55,6 +55,28 @@ export function scrubPII(text: string): string {
   return result;
 }
 
+// ── Tool-arg redaction (Phase 3 guardrails) ─────────────────────────
+// Tool args carry typed text, message bodies, HTTP headers and the like.
+// Never log them verbatim: secrets → '[redacted]', free text → its length,
+// other strings → first 80 chars, nested objects → their keys only.
+
+const SECRET_KEY_RE = /pass|token|secret|auth|cookie|api_?key|headers/i;
+const FREE_TEXT_KEY_RE = /^(text|body|content|message|script|expression|html|notes)$/i;
+const MAX_ARG_STRING = 80;
+
+export function redactArgs(args: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!args || typeof args !== 'object') return out;
+  for (const [k, v] of Object.entries(args as Record<string, unknown>)) {
+    if (SECRET_KEY_RE.test(k)) { out[k] = '[redacted]'; continue; }
+    if (FREE_TEXT_KEY_RE.test(k)) { out[k] = { len: typeof v === 'string' ? v.length : JSON.stringify(v ?? null).length }; continue; }
+    if (typeof v === 'string') { out[k] = v.length > MAX_ARG_STRING ? v.substring(0, MAX_ARG_STRING) + '…' : v; continue; }
+    if (v && typeof v === 'object') { out[k] = { keys: Object.keys(v as object) }; continue; }
+    out[k] = v;
+  }
+  return out;
+}
+
 // ── Log infrastructure ──────────────────────────────────────────────
 
 function ensureLogDir(): void {

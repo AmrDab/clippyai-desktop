@@ -14,6 +14,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import type { ActionClass } from './tool-meta';
+import { redactArgs } from './logger';
 
 /** All recognised inverse-action kinds. */
 export type InverseAction =
@@ -122,7 +123,7 @@ export function record(opts: {
     tool: opts.tool,
     tier,
     actionClass,
-    argsSummary: JSON.stringify(opts.args).substring(0, 120),
+    argsSummary: JSON.stringify(redactArgs(opts.args)).substring(0, 120),
     outcome: opts.outcome,
     detail: opts.detail,
     taskId: opts.taskId,

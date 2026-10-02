@@ -47,7 +47,7 @@ import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import { ToolLoopDetector } from './tool-loop-detection';
 import Store from 'electron-store';
-import { createLogger, serializeErr, setCurrentTaskId } from './logger';
+import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -202,6 +202,10 @@ function buildSuggestionContext(screenContext: string): import('./contextual-sug
  * "deleted", etc.) AND the most recent destructive attempt FAILED or
  * was unverified, we override the spoken text with an honest version.
  */
+// Phase 3 — tools whose result is the user's own content; Tool.result logs
+// only the length for these.
+const READ_TOOL_RE = /^(read_file|read_clipboard|get_selection|outlook_read_inbox|.*_read_text)$/;
+
 const DESTRUCTIVE_TOOLS = new Set([
   'outlook_send_email',
   'outlook_create_event',
@@ -1485,7 +1489,7 @@ export class Brain {
             break; // exit the per-call loop; outer loop will catch cancelRequested at top of next step
           }
           const toolStart = Date.now();
-          log.info('Tool.call', { step: step + 1, tool: call.name, args: call.args });
+          log.info('Tool.call', { step: step + 1, tool: call.name, args: redactArgs(call.args) });
           // Trigger an in-progress animation BEFORE the tool runs so the
           // sprite shows what Clippy is doing during the wait. Without
           // this, the sprite freezes on Thinking for the full tool duration
@@ -1559,7 +1563,9 @@ export class Brain {
               step: step + 1,
               tool: call.name,
               elapsed_ms: toolElapsed,
-              output: resultText.substring(0, 300),
+              // Read tools return the user's own text (file bodies, inbox,
+              // clipboard, selection) — log only its length, never the text.
+              output: READ_TOOL_RE.test(call.name) ? `{len:${resultText.length}}` : resultText.substring(0, 300),
               has_image: !!(result.image?.data),
             });
 
