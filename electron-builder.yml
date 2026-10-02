@@ -1,8 +1,11 @@
 appId: ai.cloudana.clippyai
 productName: ClippyAI
 copyright: Copyright © 2026 Cloudana · ClippyAI
-# Shown in the "File description" field of Properties → Details
-buildVersion: 0.20.0.1
+# Shown in the "File description" field of Properties → Details.
+# Becomes the exe's FileVersion (rcedit --set-file-version), so it must be
+# 4-part numeric. Convention for prereleases: 4th field = prerelease number
+# (0.20.0-alpha.24 → 0.20.0.24). For a stable X.Y.Z use X.Y.Z.0.
+buildVersion: 0.20.0.24
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -30,6 +33,22 @@ win:
   sign: ./build/signing/sign.js
   forceCodeSigning: true
   verifyUpdateCodeSignature: true
+  # Windows-only trims (merged with the top-level `files` list). The alpha.24
+  # installer grew from 145 MB (v0.17.7) to 266 MB; these are the inclusions
+  # that can never be loaded by a win32-x64 build:
+  #   - onnxruntime-node ships prebuilt addons for every platform
+  #     (darwin 35 MB, linux 53 MB, win32/arm64 65 MB) — only win32/x64 loads.
+  #   - onnxruntime-web (128 MB): @huggingface/transformers' node bundle
+  #     inlines the ORT web runtime and only require()s onnxruntime-node /
+  #     onnxruntime-common; nothing in out/ references onnxruntime-web.
+  #   - harper.js: harper-lint.ts imports the "." entry (index.js) and reads
+  #     harper_wasm_bg.wasm from disk; the inlined/slim variants (66 MB) are
+  #     separate entry points nothing imports.
+  files:
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
+    - "!**/node_modules/onnxruntime-web/**"
+    - "!**/node_modules/harper.js/dist/{binaryInlined.js,slimBinaryInlined.js,slimBinary.js,harper_wasm_slim_bg.wasm}"
 
 nsis:
   # oneClick MUST be true for reliable auto-updates. The update loop bug:
