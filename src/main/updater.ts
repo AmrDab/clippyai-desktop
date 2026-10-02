@@ -14,7 +14,12 @@ const log = createLogger('Updater');
 // page on clippyai.app, which is the single source of truth users already
 // know. The electron-updater feed itself lives at download.clippyai.app/
 // latest-mac.yml (configured in electron-builder.yml publish block).
-const RELEASE_PAGE = 'https://clippyai.app/downloads.html';
+//
+// Windows keeps the v0.17.7 value: AmrDab/clippyai-desktop is public, and its
+// releases page is where the NSIS installer + latest.yml actually live.
+const RELEASE_PAGE = process.platform === 'win32'
+  ? 'https://github.com/AmrDab/clippyai-desktop/releases/latest'
+  : 'https://clippyai.app/downloads.html';
 
 // macOS DMG/ZIP updates don't have the NSIS silent-failure failure mode that
 // drove the failureCount/skippedVersions machinery on Windows. electron-updater
@@ -47,8 +52,15 @@ interface UpdaterState {
 
 function cacheDir(): string {
   // electron-updater's `updaterCacheDirName: clippyai-updater` (app-update.yml)
-  // resolves to ~/Library/Caches/clippyai-updater on macOS. Electron 29's
+  // resolves to %LOCALAPPDATA%\clippyai-updater on Windows (v0.17.7 path —
+  // purgeCache/stale-installer cleanup depend on it) and to
+  // ~/Library/Caches/clippyai-updater on macOS. Electron 29's
   // app.getPath() doesn't expose 'cache' as a key — build it from $HOME.
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA
+      || path.join(app.getPath('home'), 'AppData', 'Local');
+    return path.join(base, 'clippyai-updater');
+  }
   const home = app.getPath('home');
   return path.join(home, 'Library', 'Caches', 'clippyai-updater');
 }
