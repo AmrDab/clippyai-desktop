@@ -682,6 +682,7 @@ function freeErrorMessage(code: string): string {
   switch (code) {
     case 'invalid_email': return "That email doesn't look right — double-check it and try again.";
     case 'rate_limited': return 'Too many attempts right now. Wait a minute, then try again — or paste a license key below.';
+    case 'email_failed': return "We couldn't send the email. Try again in a moment — or paste a license key below.";
     case 'offline': return "Couldn't reach our server. Check your connection and try again — or paste a license key below.";
     default: return 'Something went wrong. Try again, or paste a license key below.';
   }
@@ -709,33 +710,28 @@ async function submitFreeSignup(): Promise<void> {
     freeEmailInput.focus();
     return;
   }
+  freeError.className = 'onboarding-error';
   btnFreeConfirm.disabled = true;
-  btnFreeConfirm.textContent = 'Verifying…';
-  let succeeded = false;
+  btnFreeConfirm.textContent = 'Sending…';
+  let emailed = false;
   try {
     const result = await window.clippy.freeSignup(email);
-    if ('licenseKey' in result && result.licenseKey) {
-      // Main has already persisted the key (same store the paste flow
-      // writes). Mark the plan and skip straight past activation — the
-      // user is signed in. We deliberately don't echo the key here.
-      validatedPlan = result.plan || 'free';
-      licenseInput.value = result.licenseKey;
-      succeeded = true;
-      // Brief confirmation so the user trusts the email was accepted before
-      // we advance — and it doubles as a double-submit guard.
-      btnFreeConfirm.textContent = "✓ You're in!";
-      setTimeout(() => showStep(3), 700);
+    if ('emailed' in result && result.emailed) {
+      // The worker emailed the key; it never comes back over the wire. Stay
+      // on this step — the user pastes the key and continues via Next,
+      // which validates it through the normal step-2 path.
+      emailed = true;
+      freeError.className = 'onboarding-hint';
+      freeError.textContent = 'Check your inbox — paste your key below.';
+      licenseInput.focus();
     } else {
       freeError.textContent = freeErrorMessage((result as { error: string }).error);
     }
   } catch {
     freeError.textContent = freeErrorMessage('offline');
   } finally {
-    // Leave the success state intact while the 700ms confirmation plays out.
-    if (!succeeded) {
-      btnFreeConfirm.disabled = false;
-      btnFreeConfirm.textContent = 'Confirm';
-    }
+    btnFreeConfirm.disabled = false;
+    btnFreeConfirm.textContent = emailed ? 'Resend' : 'Confirm';
   }
 }
 

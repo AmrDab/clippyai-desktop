@@ -200,12 +200,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
 
   // Free-tier signup. POSTs { email } to the worker's /v1/free-signup
-  // endpoint; on 200 the worker mints a free license key, which we persist
-  // via the existing license store so subsequent /v1/turn calls are
-  // authenticated. Returns { licenseKey, plan } to onboarding, or
-  // { error } ('invalid_email' | 'rate_limited' | 'offline') for a
-  // friendly inline message. The key is logged main-side only — it never
-  // rides into a renderer console.
+  // endpoint; on 200 the worker emails the user a free license key (it
+  // never returns the key in the response). Returns { emailed: true } to
+  // onboarding — the user then pastes the key via the existing step-2
+  // path — or { error } ('invalid_email' | 'rate_limited' | 'email_failed'
+  // | 'offline') for a friendly inline message.
   ipcMain.handle('free-signup', async (_event, email: string) => {
     const trimmed = (typeof email === 'string' ? email : '').trim();
     // Cheap client-side gate so an obviously-bad address never hits the
@@ -216,7 +215,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
     try {
       const { net } = await import('electron');
-      return await new Promise<{ licenseKey: string; plan: string } | { error: string }>((resolve) => {
+      return await new Promise<{ emailed: true } | { error: string }>((resolve) => {
         const req = net.request({ url: `${WORKER_API_BASE}/v1/free-signup`, method: 'POST' });
         req.setHeader('Content-Type', 'application/json');
         const timeout = setTimeout(() => { req.abort(); resolve({ error: 'offline' }); }, 15_000);
@@ -226,20 +225,17 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           response.on('end', () => {
             clearTimeout(timeout);
             const status = response.statusCode || 0;
-            let parsed: { licenseKey?: string; plan?: string; error?: string } = {};
+            let parsed: { ok?: boolean; emailed?: boolean; error?: string } = {};
             try { parsed = JSON.parse(data); } catch { /* fall through to status-based mapping */ }
-            if (status === 200 && parsed.licenseKey) {
-              const plan = parsed.plan || 'free';
-              // Persist immediately so the very next turn is authenticated.
-              // buddyName/ttsVoice are committed later in step 3; pass the
-              // current stored values so we don't clobber a returning user.
-              saveLicense(parsed.licenseKey, plan, getBuddyName(), getTtsVoice());
-              log.info('FreeSignup.success', { plan, keyTail: parsed.licenseKey.slice(-4) });
-              resolve({ licenseKey: parsed.licenseKey, plan });
+            if (status === 200 && parsed.emailed) {
+              log.info('FreeSignup.emailed');
+              resolve({ emailed: true });
             } else if (status === 400) {
               resolve({ error: parsed.error || 'invalid_email' });
             } else if (status === 429) {
               resolve({ error: parsed.error || 'rate_limited' });
+            } else if (status === 502) {
+              resolve({ error: parsed.error || 'email_failed' });
             } else {
               log.warn('FreeSignup.unexpected', { status });
               resolve({ error: 'offline' });

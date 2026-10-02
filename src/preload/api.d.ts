@@ -31,10 +31,11 @@ interface Window {
 
     // ── License management
     validateLicense: (key: string) => Promise<{ valid: boolean; plan: string; reason?: string }>;
-    /** Free-tier signup. Returns the issued license key + plan on success,
-     *  or an `error` token ('invalid_email' | 'rate_limited' | 'offline' | …)
-     *  the renderer maps to a friendly inline message. */
-    freeSignup: (email: string) => Promise<{ licenseKey: string; plan: string } | { error: string }>;
+    /** Free-tier signup. Returns { emailed: true } once the worker has sent
+     *  the license key by email (the key never comes back over the wire),
+     *  or an `error` token ('invalid_email' | 'rate_limited' | 'email_failed'
+     *  | 'offline' | …) the renderer maps to a friendly inline message. */
+    freeSignup: (email: string) => Promise<{ emailed: true } | { error: string }>;
     saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
     clearLicense: () => Promise<boolean>;
     /** Full local reset → relaunch into onboarding. Main shows a native
