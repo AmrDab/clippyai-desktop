@@ -83,21 +83,32 @@ export function wasApproved(tool: string, key: string): boolean {
 
 // ── Human summary shown in the bubble ───────────────────────────────
 
-const s = (v: unknown, max = 60): string => String(v ?? '').substring(0, max);
+// Truncation is always VISIBLE: a value cut silently could hide its dangerous
+// tail behind a harmless-looking prefix the user then approves.
+const s = (v: unknown, max = 60): string => {
+  const str = String(v ?? '');
+  return str.length > max ? `${str.substring(0, max)}… (+${str.length - max} more chars)` : str;
+};
 
 export function summarizeArgs(tool: string, args: Record<string, unknown> = {}): string {
   switch (tool) {
     case 'kill_process': return `Kill ${s(args.name ?? args.procPid)}`;
     case 'http_request': {
       let target = s(args.url, 80);
-      try { const u = new URL(String(args.url)); target = u.host + u.pathname; } catch { /* keep raw */ }
-      return `${String(args.method ?? 'GET').toUpperCase()} ${target}`;
+      let dataLen = String(args.body ?? '').length;
+      try {
+        const u = new URL(String(args.url));
+        target = s(u.host + u.pathname, 80);
+        dataLen += u.search.length; // query strings can carry data out too
+      } catch { /* keep raw */ }
+      const data = dataLen > 0 ? `, sending ${dataLen.toLocaleString()} chars of data` : '';
+      return `${String(args.method ?? 'GET').toUpperCase()} ${target}${data}`;
     }
     case 'write_file': return `Write ${String(args.content ?? '').length.toLocaleString()} chars to ${s(args.path, 80)}`;
     case 'delete_file': return `Delete ${s(args.path, 80)}`;
     case 'rename_file': return `Rename ${s(args.from)} to ${s(args.to)}`;
     case 'move_file': return `Move ${s(args.from)} to ${s(args.to)}`;
-    case 'shell_exec': return `Run \`${s(args.command, 80)}\``;
+    case 'shell_exec': return `Run \`${s(args.command, 240)}\``;
     case 'cdp_evaluate': return 'Run JavaScript in the browser page';
     case 'clawd_task': return `Hand off desktop task: ${s(args.task)}`;
     case 'install_skill': return `Install skill ${s(args.slug)}`;

