@@ -35,6 +35,10 @@ const PII_PATTERNS: Array<[RegExp, string]> = [
   // Absolute paths containing the username → replace with ~
   [new RegExp(HOME_DIR.replace(/\\/g, '\\\\'), 'gi'), '~'],
   [new RegExp(HOME_DIR.replace(/\\/g, '/'), 'gi'), '~'],
+  // scrubPII runs on JSON.stringify output, where each Windows backslash is
+  // doubled ("C:\\Users\\name") — match that form too or the home path
+  // leaks through every structured line.
+  [new RegExp(JSON.stringify(HOME_DIR).slice(1, -1).replace(/\\/g, '\\\\'), 'gi'), '~'],
   // Username in isolation
   [new RegExp(`\\b${USERNAME}\\b`, 'gi'), '<user>'],
   // Email addresses
