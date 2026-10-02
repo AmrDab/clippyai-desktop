@@ -268,6 +268,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   zip_files:            { tier: 2, cost: 'medium',    description: 'Compress files/folders into a ZIP archive', platforms: ['win32'], actionClass: 'destructive_file' },
   unzip_files:          { tier: 2, cost: 'medium',    description: 'Decompress a ZIP archive into a destination directory', platforms: ['win32'], actionClass: 'destructive_file' },
   hash_file:            { tier: 2, cost: 'cheap',     description: 'Return SHA256/MD5/SHA1/SHA384/SHA512 hash of a local file', platforms: ['win32'], actionClass: 'read_only' },
+  security_sweep:       { tier: 2, cost: 'expensive', description: 'Read-only security check: auto-start entries, scheduled tasks, services, processes, hijack points, hosts file, Defender status — explains suspicious items in plain English, never changes anything', platforms: ['win32'], actionClass: 'read_only' },
   ocr_from_image:       { tier: 2, cost: 'medium',    description: 'Extract text from an image file on disk via Windows OCR', platforms: ['win32'], actionClass: 'read_only' },
   windows_service_control: { tier: 2, cost: 'cheap',  description: 'Query / start / stop / restart a Windows service by name (start/stop need admin)', platforms: ['win32'], actionClass: 'destructive_exec' },
   get_current_time_tz:  { tier: 1, cost: 'cheap',     description: 'Current time in any IANA timezone (e.g. "America/Los_Angeles")', actionClass: 'read_only' },

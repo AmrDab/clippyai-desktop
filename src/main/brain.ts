@@ -441,7 +441,7 @@ function animationForTool(tool: string): string {
   if (tool === 'cdp_evaluate' || tool === 'cdp_wait_for_selector' || tool === 'detect_webview_apps') return 'GetTechy';
   // System / power-tool
   if (tool === 'system_info' || tool === 'list_processes' || tool === 'kill_process') return 'GetTechy';
-  if (tool === 'http_request' || tool === 'ping_host') return 'GetTechy';
+  if (tool === 'http_request' || tool === 'ping_host' || tool === 'security_sweep') return 'GetTechy';
   // Drawing / mouse / spatial
   if (tool === 'mouse_drag') return 'GetArtsy';
   if (tool === 'mouse_click' || tool === 'mouse_double_click' || tool === 'mouse_right_click') return 'GestureDown';
@@ -474,7 +474,7 @@ function labelForTool(tool: string): string {
     outlook_send_email: 'Sending email…', outlook_read_inbox: 'Reading inbox…',
     outlook_create_event: 'Creating event…', create_reminder: 'Setting reminder…',
     submit_task: 'Delegating task…', agent_status: 'Checking progress…',
-    plan: 'Planning…',
+    plan: 'Planning…', security_sweep: 'Checking your PC…',
   };
   return MAP[tool] ?? `Running ${tool.replace(/_/g, ' ')}…`;
 }
@@ -2497,7 +2497,7 @@ export class Brain {
       if (/^outlook_(read_inbox|create_event|upcoming)|^read_screen|^smart_read|^get_(active_window|windows|focused_element)|^desktop_screenshot|^ocr_read_screen|^read_file|^read_clipboard|^list_files|^search_files_content|^excel_read|^list_processes|^system_info|^clawd_status/.test(t)) return pick(['Searching', 'CheckingSomething']);
       if (/^cdp_|^navigate_browser|^open_url|^spotify_play_uri|^github_/.test(t)) return 'Searching';
       if (/^smart_(click|type)|^mouse_|^key_press|^type_text|^focus_window|^minimize_(window|all_windows)|^show_desktop|^open_app|^detect_webview_apps/.test(t)) return pick(['Writing', 'Processing']);
-      if (/^kill_process|^ping_host|^http_request/.test(t)) return 'GetTechy';
+      if (/^kill_process|^ping_host|^http_request|^security_sweep/.test(t)) return 'GetTechy';
       return pick(['Searching', 'Processing', 'CheckingSomething']);
     }
 

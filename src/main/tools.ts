@@ -3681,6 +3681,54 @@ async function hashFile(params: Record<string, unknown>): Promise<ToolResult> {
   return await runComScript('hash-file.ps1', args, 30_000);
 }
 
+/**
+ * security_sweep — read-only "second opinion" scan of auto-start entries,
+ * scheduled tasks, services, running programs, Windows hijack points, hosts
+ * file and Defender status. The script never modifies anything; this wrapper
+ * only trims the JSON so the model gets verdict + findings without the bulky
+ * per-finding `command`/`id`/`score` fields. Findings are never dropped.
+ *
+ * quick=true (default) → autoruns,system,defender (~10-15 s on a typical PC).
+ * quick=false → every section (~60 s); timeouts sized accordingly.
+ */
+async function securitySweep(params: Record<string, unknown>): Promise<ToolResult> {
+  const quick = !(params.quick === false || params.quick === 'false');
+  const includeTrusted = params.includeTrusted === true || params.includeTrusted === 'true';
+  const args = ['-sections', quick ? 'autoruns,system,defender' : 'autoruns,tasks,services,processes,system,defender'];
+  if (includeTrusted) args.push('-includeTrusted', 'true');
+  const result = await runComScriptStructured('security-scan.ps1', args, quick ? 60_000 : 180_000);
+  if (!result.ok || typeof result.data !== 'object' || result.data === null) return { text: result.message };
+
+  const d = result.data as Record<string, unknown>;
+  const findings = Array.isArray(d.findings) ? (d.findings as Record<string, unknown>[]) : [];
+  const trimmed = {
+    ok: true,
+    readOnly: true,
+    verdict: d.verdict,
+    summary: d.summary,
+    sections: d.sections,
+    findings: findings.map((f) => ({
+      severity: f.severity,
+      title: f.title,
+      name: f.name,
+      source: f.source,
+      location: f.location,
+      path: f.path,
+      signer: f.signer || undefined,
+      signatureStatus: f.signatureStatus || undefined,
+      plainEnglish: f.plainEnglish,
+      signals: Array.isArray(f.signals) ? (f.signals as { code?: string }[]).map((s) => s.code) : undefined,
+      recommendation: f.recommendation,
+    })),
+    defender: d.defender,
+    notes: d.notes,
+    ...(includeTrusted && Array.isArray(d.trusted)
+      ? { trusted: (d.trusted as Record<string, unknown>[]).map((t) => ({ name: t.name, source: t.source, path: t.path, signer: t.signer })) }
+      : {}),
+  };
+  return { text: JSON.stringify(trimmed) };
+}
+
 async function ocrFromImage(params: Record<string, unknown>): Promise<ToolResult> {
   const filePath = String(params.path || '');
   if (!filePath) return { text: '(error:MISSING_PATH) path is required' };
@@ -4428,6 +4476,7 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   zip_files: zipFiles,
   unzip_files: unzipFiles,
   hash_file: hashFile,
+  security_sweep: securitySweep,
   ocr_from_image: ocrFromImage,
   windows_service_control: windowsServiceControl,
   get_current_time_tz: getCurrentTimeTz,
