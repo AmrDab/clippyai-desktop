@@ -45,6 +45,12 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('clippy-upgrade', (_e, payload) => cb(payload));
   },
 
+  // Phase 3 guardrails — main asks "Can I …?"; renderer answers by id.
+  onApprovalRequest: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string }) => void) => {
+    ipcRenderer.on('approval-request', (_e, payload) => cb(payload));
+  },
+  respondApproval: (id: string, approved: boolean) => ipcRenderer.invoke('approval-response', id, approved),
+
   onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => {
     ipcRenderer.on('mode-change', (_e, mode) => cb(mode));
   },

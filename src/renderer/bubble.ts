@@ -72,6 +72,9 @@ export class BubbleController {
   private typeTimer: number | null = null;
   private hideTimer: number | null = null;
   private hintTimer: number | null = null;
+  // Phase 3 — fires once if a speakWithActions prompt is replaced or hidden
+  // before the user picked a button (approval prompt → treat as "no").
+  private pendingDismiss: (() => void) | null = null;
   private chatHistory: ChatMessage[] = [];
   private showingHistory: boolean = false;
   // v0.12.3 — runtime-configurable auto-hide. 0 = manual / never auto-hide.
@@ -421,8 +424,14 @@ export class BubbleController {
    * built their own buttons or relied on click-Clippy semantics. Now
    * they have a real entry point with the warning tint baked in.
    */
-  speakWithActions(text: string, actions: BubbleActionButton[]): void {
-    this.speak(text, { autoState: 'standard', tint: 'warning' });
+  speakWithActions(text: string, actions: BubbleActionButton[], opts: { sticky?: boolean; onDismiss?: () => void } = {}): void {
+    this.speak(text, { autoState: 'standard', tint: 'warning', sticky: opts.sticky });
+    if (opts.sticky && this.state !== 'expanded') {
+      // Prompt the user is waiting on: show it whole (bold rendered), no typewriter.
+      this.clearTypeTimer();
+      this.bubbleText.innerHTML = this.renderMarkdown(text);
+    }
+    this.pendingDismiss = opts.onDismiss ?? null;
     this.actionsArea.innerHTML = '';
     this.actionsArea.classList.remove('hidden');
     for (const a of actions) {
@@ -432,6 +441,7 @@ export class BubbleController {
       if (a.variant === 'primary') btn.style.background = 'var(--tint-accent)';
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        this.pendingDismiss = null; // a button was chosen — not a dismissal
         if (a.onClick) {
           try { a.onClick(); } catch { /* caller logs */ }
         } else {
@@ -476,7 +486,8 @@ export class BubbleController {
   // Existing public API — kept backward compatible
   // ───────────────────────────────────────────────────────────────────
 
-  speak(text: string, opts: { autoState?: BubbleState; tint?: BubbleTint } = {}): void {
+  speak(text: string, opts: { autoState?: BubbleState; tint?: BubbleTint; sticky?: boolean } = {}): void {
+    this.fireDismiss();
     this.chatHistory.push({ role: 'clippy', text, time: new Date() });
     this.showingHistory = false;
     // Pick a sane state if the caller didn't ask for one. Short tips →
@@ -516,7 +527,15 @@ export class BubbleController {
         if (i >= text.length) this.clearTypeTimer();
       }, interval);
     }
-    this.resetAutoHide();
+    // sticky = wait for the user (approval prompt); never auto-hide.
+    if (opts.sticky) this.clearAutoHide();
+    else this.resetAutoHide();
+  }
+
+  private fireDismiss(): void {
+    const cb = this.pendingDismiss;
+    this.pendingDismiss = null;
+    if (cb) { try { cb(); } catch { /* caller logs */ } }
   }
 
   /**
@@ -525,6 +544,7 @@ export class BubbleController {
    * the wash and plays the shake animation once.
    */
   speakError(text: string, onRetry?: () => void): void {
+    this.fireDismiss();
     this.chatHistory.push({ role: 'clippy', text, time: new Date() });
     this.showingHistory = false;
     // Errors stay in whatever state we were in (don't escalate compact
@@ -565,6 +585,7 @@ export class BubbleController {
   }
 
   showThinking(): void {
+    this.fireDismiss();
     this.showingHistory = false;
     if (this.state === 'compact') this.setState('standard');
     this.setTint('busy');
@@ -589,6 +610,7 @@ export class BubbleController {
   }
 
   hide(): void {
+    this.fireDismiss();
     this.bubble.classList.add('hidden');
     this.hideInput();
     this.showingHistory = false;

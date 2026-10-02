@@ -72,6 +72,8 @@ import * as permissionPolicyMod from './permission-policy';
 import * as toolUndoMod from './tool-undo';
 import * as undoMod from './undo';
 import * as actionHistoryMod from './action-history';
+// Phase 3 guardrails — the bubble's Approve/Deny answer lands here.
+import * as approvalMod from './approval';
 // v0.20.0 — onboarding permission walkthrough: read macOS permission state,
 // open exact System Preferences panes, surface SR dialog, and restart.
 import { permissions, requestScreenRecording } from './mac-bridge-native';
@@ -1202,6 +1204,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
 
     return true;
+  });
+
+  // Phase 3 guardrails — Approve/Deny answer from the bubble. Only the main
+  // (bubble) window may answer, and only with a well-formed payload.
+  ipcMain.handle('approval-response', async (event, id: unknown, approved: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return false;
+    if (typeof id !== 'string' || typeof approved !== 'boolean') return false;
+    return approvalMod.resolveApproval(id, approved);
   });
 
   // v0.17.8 — Guardrails: permission policy + action history IPC handlers.

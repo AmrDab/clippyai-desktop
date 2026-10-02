@@ -108,6 +108,9 @@ interface Window {
     onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string }) => void) => void;
     /** feat/pricing-free-tier — token-cap upsell for capped free users. */
     onUpgrade?: (cb: (payload: { text: string; cta: string }) => void) => void;
+    /** Phase 3 guardrails — main asks "Can I …?" before a gated tool runs. */
+    onApprovalRequest?: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string }) => void) => void;
+    respondApproval: (id: string, approved: boolean) => Promise<boolean>;
     onTtsToggle: (cb: (enabled: boolean) => void) => void;
     onSpeechRate: (cb: (rate: number) => void) => void;
     /** v0.16.0 — pitch + volume live updates */

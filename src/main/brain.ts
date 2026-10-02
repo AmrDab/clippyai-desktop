@@ -75,6 +75,8 @@ import * as lumiereSeen from './proactive/seen-context';
 // Direct namespace usage at the call sites guarantees these stay bundled.
 import * as permissionPolicyMod from './permission-policy';
 import * as actionHistoryMod from './action-history';
+// Phase 3 guardrails — in-bubble Approve/Deny prompt for 'approve' decisions.
+import * as approvalMod from './approval';
 import * as toolUndoMod from './tool-undo';
 // v0.20.0-alpha.4 — STATIC IMPORTS for window + follow-me. Per the
 // bundle-anchors memory (`feedback_clippy_bundle_anchors.md`), this is now
@@ -831,6 +833,7 @@ export class Brain {
       //      was still driving the user's keyboard. Per report 8836f5ec.
       //   3. stopLoop() — stops the proactive timer.
       this.cancelRequested = true;
+      approvalMod.cancelAllApprovals();
       try { abortAllInFlightTools(); } catch (err) {
         log.warn('abortAllInFlightTools threw on sleep (non-fatal)', serializeErr(err));
       }
@@ -1058,6 +1061,7 @@ export class Brain {
     if (this.isExecuting) {
       log.info('User override — cancelling in-flight task', { newMessage: text.substring(0, 80) });
       this.cancelRequested = true;
+      approvalMod.cancelAllApprovals();
       // v0.12.3 — also kill in-flight execFileAbortable children. Per
       // architecture audit finding #4: previously the override branch only
       // set cancelRequested and waited up to 10s for the running tool to
@@ -1094,6 +1098,7 @@ export class Brain {
         log.warn('Takeover-driven cancel', { reason, idle_sec: detail.idleSec, cursor_delta: detail.cursorDelta });
         this.cancelRequested = true;
         this.cancelReason = reason;
+        approvalMod.cancelAllApprovals();
         try { abortAllInFlightTools(); } catch { /* non-fatal */ }
       });
     } catch (err) {
@@ -1508,29 +1513,58 @@ export class Brain {
           //   'block'   → refuse outright. Tool result records as blocked,
           //               audit log captures it, model sees the error and
           //               must adapt.
-          //   'approve' → not yet wired to a UI prompt (TODO v0.17.9).
-          //               For this PR we proceed but mark requires-approval
-          //               in the audit log; renderer dialog ships next PR.
+          //   'approve' → Phase 3: ask in the bubble (approval.ts) and wait.
+          //               Anything but an explicit Approve = denied.
           const policy = permissionPolicyMod;
           const history = actionHistoryMod;
-          const decision = policy.decide(call.name);
+          const actionClass = policy.classFor(call.name, call.args);
+          const decision = policy.decide(call.name, call.args);
           if (decision === 'block') {
-            log.warn('Tool.blocked_by_policy', { step: step + 1, tool: call.name, class: policy.classFor(call.name) });
+            log.warn('Tool.blocked_by_policy', { step: step + 1, tool: call.name, class: actionClass });
             history.record({
               tool: call.name,
               args: call.args,
               outcome: 'blocked',
-              detail: `Blocked by permission policy (class=${policy.classFor(call.name)})`,
+              detail: `Blocked by permission policy (class=${actionClass})`,
             });
             // Feed a synthetic "blocked" result back into the model so it
             // adapts rather than retrying forever.
             responseParts.push({
               functionResponse: {
                 name: call.name,
-                response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${policy.classFor(call.name)}). Suggest an alternative or tell the user how to enable it.` },
+                response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${actionClass}). Suggest an alternative or tell the user how to enable it.` },
               },
             });
             continue;
+          }
+          if (decision === 'approve') {
+            const summary = approvalMod.summarizeArgs(call.name, call.args);
+            // The user is about to click Approve/Deny — that's not a takeover.
+            try { userTakeover.pauseDetection(); } catch { /* non-fatal */ }
+            let verdict: approvalMod.ApprovalResult;
+            try {
+              verdict = await approvalMod.requestApproval(this.win, { tool: call.name, summary, actionClass });
+            } finally {
+              try { userTakeover.resumeDetection(); } catch { /* non-fatal */ }
+            }
+            if (verdict !== 'approved') {
+              log.info('Tool.approval_denied', { step: step + 1, tool: call.name, class: actionClass, verdict });
+              history.record({
+                tool: call.name,
+                args: call.args,
+                outcome: 'approval_denied',
+                detail: `User did not approve (${verdict}): ${summary}`,
+              });
+              responseParts.push({
+                functionResponse: {
+                  name: call.name,
+                  response: { content: `(error:user_denied) User declined (${verdict}). Do not retry; ask what they'd like instead.` },
+                },
+              });
+              continue;
+            }
+            log.info('Tool.approved', { step: step + 1, tool: call.name, class: actionClass });
+            approvalMod.markApproved(call.name, call.args);
           }
 
           try {

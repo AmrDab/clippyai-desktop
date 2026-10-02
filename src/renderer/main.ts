@@ -172,6 +172,24 @@ async function init(): Promise<void> {
     clippyCtrl.playNamed('Alert');
   });
 
+  // Phase 3 guardrails — "Can I …?" before a gated tool runs. Approve/Deny
+  // answer by id; replacing or hiding the bubble while pending counts as
+  // Deny. TTS says only the generic line — never the args.
+  window.clippy.onApprovalRequest?.(({ id, summary }) => {
+    let answered = false;
+    const answer = (approved: boolean) => {
+      if (answered) return;
+      answered = true;
+      void window.clippy.respondApproval(id, approved);
+    };
+    bubbleCtrl.speakWithActions(`Can I **${summary}**?`, [
+      { label: 'Approve', variant: 'primary', onClick: () => { answer(true); bubbleCtrl.showThinking(); } },
+      { label: 'Deny', variant: 'ghost', onClick: () => { answer(false); bubbleCtrl.hide(); } },
+    ], { sticky: true, onDismiss: () => answer(false) });
+    tts.speak('Can I go ahead?');
+    clippyCtrl.playNamed('GetAttention');
+  });
+
   window.clippy.onModeChange((mode) => {
     if (mode === 'sleep') {
       bubbleCtrl.hide();
