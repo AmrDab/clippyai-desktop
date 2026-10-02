@@ -25,7 +25,7 @@
     "smoke:1": "node scripts/smoke.js --layer=1",
     "smoke:2": "node scripts/smoke.js --layer=2",
     "typecheck": "tsc --noEmit",
-    "test": "for t in scripts/test-*.js; do echo \"\\n# $t\"; node \"$t\" || exit 1; done",
+    "test": "node scripts/run-tests.js",
     "unit": "vitest run"
   },
   "dependencies": {
