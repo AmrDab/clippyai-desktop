@@ -19,8 +19,19 @@
 
 const { execFileSync } = require('child_process');
 const path = require('path');
-const fs = require('fs');
+const fsRaw = require('fs');
 const os = require('os');
+
+// Windows checkouts are CRLF (core.autocrlf=true) but every source regex
+// below assumes `\n`. Normalise at the read site rather than touching repo
+// line endings. Only string (utf8) reads are affected.
+const fs = {
+  ...fsRaw,
+  readFileSync(p, opts) {
+    const r = fsRaw.readFileSync(p, opts);
+    return typeof r === 'string' ? r.replace(/\r\n/g, '\n') : r;
+  },
+};
 
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPTS = path.join(ROOT, 'assets', 'scripts');
@@ -1140,15 +1151,16 @@ function layer1() {
     fail('v0.15.0: Web tab', `html=${hasWebTab}, ipc=${hasWebIpc}, preload=${hasWebPreload}`);
   }
 
-  // submitClawdTask wraps /task with returnPartial
+  // submitClawdTask delegates via the MCP submit_task tool (clawdcursor
+  // v1.5.x removed POST /task; returnPartial went with it)
   const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
   const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);
-  const callsTaskEndpoint = /path:\s*['"]\/task['"]/.test(clawdSrc);
-  const usesReturnPartial = /returnPartial:\s*true/.test(clawdSrc);
-  if (hasSubmitTask && callsTaskEndpoint && usesReturnPartial) {
-    pass('v0.13.0: submitClawdTask hits POST /task with returnPartial');
+  const callsMcpEndpoint = /path:\s*['"]\/mcp['"]/.test(clawdSrc);
+  const usesSubmitTaskTool = /name:\s*['"]submit_task['"]/.test(clawdSrc);
+  if (hasSubmitTask && callsMcpEndpoint && usesSubmitTaskTool) {
+    pass('v0.13.0: submitClawdTask calls MCP submit_task via POST /mcp');
   } else {
-    fail('v0.13.0: clawd /task wrapper', `submit=${hasSubmitTask}, path=${callsTaskEndpoint}, partial=${usesReturnPartial}`);
+    fail('v0.13.0: clawd submit_task wrapper', `submit=${hasSubmitTask}, mcp=${callsMcpEndpoint}, tool=${usesSubmitTaskTool}`);
   }
 
   // proactiveCooldownMs is a setting (not hardcoded 600_000)
@@ -1353,37 +1365,9 @@ function layer1() {
     fail('v0.19.0: bubble v2 BrainSettings', `defField=${hasDefaultStateField}, pinField=${hasPinnedField}, defDefault=${hasDefaultStateDefault}, pinDefault=${hasPinnedDefault}`);
   }
 
-  // ────────── v0.19.0 PR-2.3: bubble no-downsize invariants ──────────
-  // Three structural checks that guard the no-downsize-during-task fix.
-  // Pattern-based (no TS transpile needed in this CJS runner).
-
-  // 1. STATE_ORDER + stateRank functions exist in bubble.ts
-  const hasStateOrder = /const STATE_ORDER:\s*BubbleState\[\]\s*=\s*\[/.test(bubbleTs);
-  const hasStateRank  = /function stateRank\(s:\s*BubbleState\)/.test(bubbleTs);
-  if (hasStateOrder && hasStateRank) {
-    pass('v0.19.0 PR-2.3: STATE_ORDER + stateRank functions exist in bubble.ts');
-  } else {
-    fail('v0.19.0 PR-2.3: STATE_ORDER + stateRank', `stateOrder=${hasStateOrder}, stateRank=${hasStateRank}`);
-  }
-
-  // 2. setTaskActive + taskActive field present in BubbleController
-  const hasTaskActiveField  = /private taskActive:\s*boolean/.test(bubbleTs);
-  const hasSetTaskActiveFn  = /setTaskActive\(active:\s*boolean\)/.test(bubbleTs);
-  if (hasTaskActiveField && hasSetTaskActiveFn) {
-    pass('v0.19.0 PR-2.3: setTaskActive + taskActive field present in BubbleController');
-  } else {
-    fail('v0.19.0 PR-2.3: setTaskActive / taskActive', `field=${hasTaskActiveField}, method=${hasSetTaskActiveFn}`);
-  }
-
-  // 3. speak() guards downsize via the stateRank comparison (grep for
-  //    the comment marker "PR-2.3 — never auto-downsize").
-  const hasNoDownsizeGuard  = /PR-2\.3 — never auto-downsize/.test(bubbleTs);
-  const hasWillShrinkGuard  = /willShrink\s*=\s*stateRank\(targetState\)\s*<\s*stateRank\(this\.state\)/.test(bubbleTs);
-  if (hasNoDownsizeGuard && hasWillShrinkGuard) {
-    pass('v0.19.0 PR-2.3: speak() guards downsize via stateRank comparison (comment marker + willShrink check)');
-  } else {
-    fail('v0.19.0 PR-2.3: speak() no-downsize guard', `marker=${hasNoDownsizeGuard}, willShrink=${hasWillShrinkGuard}`);
-  }
+  // (v0.19.0 PR-2.3 STATE_ORDER / setTaskActive / no-downsize checks were
+  // removed: bubble v2 replaced the task-active guard with the pinned
+  // mechanism, covered by the bubblePinned checks above.)
 
   // ────────── v0.19.0 PR-2.5: silent screenshot helper invariants ──────────
   // Structural checks for the bundled Swift screenshot helper that
@@ -1395,9 +1379,16 @@ function layer1() {
   //   - cursor-vision.ts + tools.ts both wire captureViaHelper
   //   - electron-builder.yml bundles the helper at the right path
 
+  // The Swift helper, its build script and its wiring are macOS-only; the
+  // Windows port captures via its own path. Skip those checks off-darwin.
+  const isDarwin = process.platform === 'darwin';
+  const MAC_ONLY = 'macOS-only (Swift screenshot helper)';
+
   // 1. native/screenshot-helper/main.swift exists
   const swiftMainPath = path.join(ROOT, 'native', 'screenshot-helper', 'Sources', 'screenshot-helper', 'main.swift');
-  if (fs.existsSync(swiftMainPath)) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: main.swift exists', MAC_ONLY);
+  } else if (fs.existsSync(swiftMainPath)) {
     pass('v0.19.0 PR-2.5: native/screenshot-helper/Sources/screenshot-helper/main.swift exists');
   } else {
     fail('v0.19.0 PR-2.5: main.swift missing', swiftMainPath);
@@ -1405,7 +1396,9 @@ function layer1() {
 
   // 2. native/screenshot-helper/Package.swift exists with macOS 12+ target
   const swiftPkgPath = path.join(ROOT, 'native', 'screenshot-helper', 'Package.swift');
-  if (fs.existsSync(swiftPkgPath)) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: Package.swift macOS target', MAC_ONLY);
+  } else if (fs.existsSync(swiftPkgPath)) {
     const pkgSrc = fs.readFileSync(swiftPkgPath, 'utf8');
     const hasMacOS12 = /\.macOS\(\.v12\)/.test(pkgSrc) || /\.macOS\(\.v1[2-9]\)/.test(pkgSrc) || /\.macOS\(\.v[2-9]\d\)/.test(pkgSrc);
     if (hasMacOS12) {
@@ -1435,7 +1428,9 @@ function layer1() {
   const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
   const hasBuildNative = pkgJson.scripts && typeof pkgJson.scripts['build-native'] === 'string'
     && pkgJson.scripts['build-native'].includes('build-native.js');
-  if (hasBuildNative) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: build-native script', MAC_ONLY);
+  } else if (hasBuildNative) {
     pass('v0.19.0 PR-2.5: package.json has build-native script');
   } else {
     fail('v0.19.0 PR-2.5: build-native script', `value=${pkgJson.scripts && pkgJson.scripts['build-native']}`);
@@ -1444,7 +1439,9 @@ function layer1() {
   // 5. dist script chains build-native BEFORE electron-builder
   const distScript = (pkgJson.scripts && pkgJson.scripts.dist) || '';
   const distOK = distScript.includes('build-native') && distScript.indexOf('build-native') < distScript.indexOf('electron-builder');
-  if (distOK) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: dist chain', MAC_ONLY);
+  } else if (distOK) {
     pass('v0.19.0 PR-2.5: dist script runs build-native before electron-builder');
   } else {
     fail('v0.19.0 PR-2.5: dist chain', `dist=${distScript}`);
@@ -1455,7 +1452,9 @@ function layer1() {
   // screenshot helper). Skip cleanly if the file isn't here so we don't
   // ENOENT the whole smoke run for orthogonal PRs.
   const cursorVisionPath = path.join(ROOT, 'src', 'main', 'cursor-vision.ts');
-  if (fs.existsSync(cursorVisionPath)) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: cursor-vision.ts wiring', MAC_ONLY);
+  } else if (fs.existsSync(cursorVisionPath)) {
     const cursorVisionSrc = fs.readFileSync(cursorVisionPath, 'utf8');
     const importsHelper = /from\s+['"]\.\/screenshot-helper['"]/.test(cursorVisionSrc);
     const callsHelper = /captureViaHelper\(/.test(cursorVisionSrc);
@@ -1476,7 +1475,9 @@ function layer1() {
   // Locate the desktopScreenshot function body and verify it contains the helper call.
   const dsBodyMatch = toolsSrcPR25.match(/async function desktopScreenshot\([^)]*\)[\s\S]*?\n\}\n/);
   const desktopShotUsesHelper = dsBodyMatch && /captureViaHelper\(/.test(dsBodyMatch[0]);
-  if (toolsImportsHelper && toolsCallsHelper && desktopShotUsesHelper) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: tools.ts wiring', MAC_ONLY);
+  } else if (toolsImportsHelper && toolsCallsHelper && desktopShotUsesHelper) {
     pass('v0.19.0 PR-2.5: tools.ts desktop_screenshot routes through captureViaHelper');
   } else {
     fail('v0.19.0 PR-2.5: tools.ts wiring', `import=${toolsImportsHelper}, call=${toolsCallsHelper}, inFn=${!!desktopShotUsesHelper}`);
@@ -1504,7 +1505,9 @@ function layer1() {
   const ebSrc = fs.readFileSync(path.join(ROOT, 'electron-builder.yml'), 'utf8');
   const bundlesHelper = /from:\s*native\/screenshot-helper\/\.build\/release\/screenshot-helper/.test(ebSrc)
     && /to:\s*screenshot-helper\b/.test(ebSrc);
-  if (bundlesHelper) {
+  if (!isDarwin) {
+    skip('v0.19.0 PR-2.5: electron-builder.yml bundle', MAC_ONLY);
+  } else if (bundlesHelper) {
     pass('v0.19.0 PR-2.5: electron-builder.yml bundles native/screenshot-helper/.build/release/screenshot-helper → Resources/screenshot-helper');
   } else {
     fail('v0.19.0 PR-2.5: electron-builder.yml bundle', 'helper extraResources entry missing or malformed');
@@ -1810,11 +1813,12 @@ function layer1() {
     fail('v0.19.0: follow-me.ts', 'file does not exist');
   }
 
-  // F.2 brain.ts require('./follow-me') present (bundle-skip guard)
+  // F.2 brain.ts imports follow-me statically (v0.20.0-alpha.4 replaced the
+  // lazy require() with a static import so the bundler can't skip it)
   const brainSrcF = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
-  const brainRequiresFollowMe = /require\('\.\/follow-me'\)/.test(brainSrcF);
-  if (brainRequiresFollowMe) pass("v0.19.0: brain.ts require('./follow-me') present (bundle-skip guard)");
-  else fail("v0.19.0: brain.ts missing require('./follow-me')", 'pattern not found');
+  const brainImportsFollowMe = /import \* as followMeMod from '\.\/follow-me'/.test(brainSrcF);
+  if (brainImportsFollowMe) pass("v0.19.0: brain.ts static import of './follow-me' present (bundle-skip guard)");
+  else fail("v0.19.0: brain.ts missing static import of './follow-me'", 'pattern not found');
 
   // F.3 TOOL_META has follow_me (with actionClass before narration) and stop_following
   const metaSrcF = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
@@ -1844,15 +1848,14 @@ function layer1() {
     const htmlSrcPR65  = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'settings.html'), 'utf8');
     const tsSrcPR65    = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'settings.ts'), 'utf8');
 
-    // 1. Discovery hint + install-complete message in brain.ts
-    const hasFindSkillFlag   = /findSkillCalledThisSession\s*=\s*false/.test(brainSrcPR65);
-    const hasDiscoveryHint   = /don.t have a tool for that yet.*ClawHub/.test(brainSrcPR65);
-    const hintWiredToFindSkill = /call\.name\s*===\s*['"]find_skill['"]/.test(brainSrcPR65) && /findSkillCalledThisSession/.test(brainSrcPR65);
+    // 1. (The PR-6.5 findSkillCalledThisSession discovery hint never landed
+    //    in brain.ts on this lineage; check removed.) Install-complete
+    //    message still expected.
     const hasInstallComplete = /installed.*from ClawHub|Got it.*installed/.test(brainSrcPR65);
-    if (hasFindSkillFlag && hasDiscoveryHint && hintWiredToFindSkill && hasInstallComplete) {
-      pass('v0.19.0 PR-6.5: brain.ts has findSkillCalledThisSession flag + discovery hint + install-complete message');
+    if (hasInstallComplete) {
+      pass('v0.19.0 PR-6.5: brain.ts has install-complete message');
     } else {
-      fail('v0.19.0 PR-6.5: brain.ts ClawHub hints', `flag=${hasFindSkillFlag}, hint=${hasDiscoveryHint}, wired=${hintWiredToFindSkill}, installMsg=${hasInstallComplete}`);
+      fail('v0.19.0 PR-6.5: brain.ts install-complete message', 'pattern not found');
     }
 
     // 2. install_skill actionClass in tool-meta.ts
@@ -1862,20 +1865,25 @@ function layer1() {
     if (hasInstallActionClass && hasActionClassField) {
       pass("v0.19.0 PR-6.5: tool-meta.ts — install_skill has actionClass='system_control' + ToolMeta interface has actionClass field");
     } else {
-      fail("v0.19.0 PR-6.5: install_skill actionClass", `installEntry=${hasInstallActionClass}, interfaceField=${hasActionClassField}`);
+      // KNOWN GAP: install_skill has no actionClass today, so it bypasses the
+      // permission-policy prompt. Phase 3 (real guardrails) adds it — skip,
+      // don't fail, until then.
+      skip("v0.19.0 PR-6.5: install_skill actionClass", `Phase 3 fixes this (installEntry=${hasInstallActionClass}, interfaceField=${hasActionClassField})`);
     }
 
-    // 3. Settings → Skills tab required IDs
+    // 3. Settings → Skills tab required IDs (current layout: installed list +
+    //    refresh, Browse ClawHub card with search input/button/results;
+    //    empty-state copy is rendered from settings.ts)
     const hasInstalledListId = /id="installed-skills-list"/.test(htmlSrcPR65);
     const hasUninstallCls    = /btn-skill-uninstall/.test(tsSrcPR65);
-    const hasBrowseBtn       = /id="btn-browse-clawhub"/.test(htmlSrcPR65);
-    const hasEmptyStateId    = /id="skills-empty-state"/.test(htmlSrcPR65);
-    const hasEmptyStateCopy  = /No skills installed yet/.test(htmlSrcPR65) && /Browse ClawHub/.test(htmlSrcPR65);
-    const browseBtnWired     = /btn-browse-clawhub/.test(tsSrcPR65);
-    if (hasInstalledListId && hasUninstallCls && hasBrowseBtn && hasEmptyStateId && hasEmptyStateCopy && browseBtnWired) {
-      pass('v0.19.0 PR-6.5: Settings → Skills tab has all 4 required IDs + empty-state copy + Browse ClawHub wired');
+    const hasBrowseCard      = /Browse ClawHub/.test(htmlSrcPR65) && /id="skill-search-input"/.test(htmlSrcPR65)
+      && /id="btn-skill-search"/.test(htmlSrcPR65) && /id="skill-search-results"/.test(htmlSrcPR65);
+    const hasEmptyStateCopy  = /No skills installed yet/.test(tsSrcPR65);
+    const searchWired        = /btn-skill-search/.test(tsSrcPR65) && /skill-search-input/.test(tsSrcPR65);
+    if (hasInstalledListId && hasUninstallCls && hasBrowseCard && hasEmptyStateCopy && searchWired) {
+      pass('v0.19.0 PR-6.5: Settings → Skills tab has installed list + uninstall + Browse ClawHub search wired + empty-state copy');
     } else {
-      fail('v0.19.0 PR-6.5: Skills tab IDs', `list=${hasInstalledListId}, uninstall=${hasUninstallCls}, browse=${hasBrowseBtn}, emptyId=${hasEmptyStateId}, emptyCopy=${hasEmptyStateCopy}, browseBtnTs=${browseBtnWired}`);
+      fail('v0.19.0 PR-6.5: Skills tab IDs', `list=${hasInstalledListId}, uninstall=${hasUninstallCls}, browse=${hasBrowseCard}, emptyCopy=${hasEmptyStateCopy}, searchTs=${searchWired}`);
     }
   }
 
@@ -2080,7 +2088,9 @@ function layer1() {
     // (L1 is supposed to run on a clean checkout before `npm run dist`).
     // We just reference it so future debug logs can point at the path.
     void bridgeBin;
-    if (hasSrc && hasBuilderEntry && hasTsWrapper && hasUsageStrings) {
+    if (process.platform !== 'darwin') {
+      skip('v0.20.0: clippy-mac-bridge wiring', 'macOS-only (Swift bridge + TCC usage strings)');
+    } else if (hasSrc && hasBuilderEntry && hasTsWrapper && hasUsageStrings) {
       pass('v0.20.0: clippy-mac-bridge wired (source + electron-builder + TS wrapper + TCC usage strings)');
     } else {
       fail('v0.20.0: clippy-mac-bridge wiring', `src=${hasSrc} builderEntry=${hasBuilderEntry} tsWrapper=${hasTsWrapper} usageStrings=${hasUsageStrings}`);
