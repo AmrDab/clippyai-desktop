@@ -1527,6 +1527,25 @@ function layer1() {
     fail('v0.19.0 PR-2.5: electron-builder.yml bundle', 'helper extraResources entry missing or malformed');
   }
 
+  // 10. Packaging regressions (v0.20.0 Windows release).
+  // orient.ts reads every BRAIN_FILES entry from resources/brain at launch.
+  const orientSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'orient.ts'), 'utf8');
+  const brainFiles = [...(orientSrc.match(/BRAIN_FILES[^=]*=\s*\[([\s\S]*?)\]/) || [, ''])[1].matchAll(/'([^']+\.md)'/g)].map((m) => m[1]);
+  const missingBrain = brainFiles.filter((f) => !fs.existsSync(path.join(ROOT, 'assets', 'brain', f)));
+  if (brainFiles.length && !missingBrain.length && /from:\s*assets\/brain\s*\r?\n\s*to:\s*brain\b/.test(ebSrc)) {
+    pass(`packaging: all ${brainFiles.length} orient brain files exist and assets/brain → resources/brain is bundled`);
+  } else {
+    fail('packaging: orient brain files', missingBrain.length ? `missing in assets/brain: ${missingBrain.join(', ')}` : 'assets/brain extraResources entry missing (or BRAIN_FILES not parsed)');
+  }
+  // A platform `files:` list of only "!" patterns makes electron-builder
+  // assume "**/*" and pack the whole repo (src/, vendor/, .wrangler/).
+  const winFiles = (ebSrc.match(/^win:[\s\S]*?^\s{2}files:\s*\r?\n((?:\s{4}-.*\r?\n?)+)/m) || [, ''])[1];
+  if (!winFiles || /^\s{4}-\s*(?!["']?!)\S/m.test(winFiles)) {
+    pass('packaging: win.files has explicit includes (no implicit "**/*")');
+  } else {
+    fail('packaging: win.files', 'only exclusion patterns — electron-builder will pack the entire repo');
+  }
+
   // 10. scripts/build-native.js exists and produces a universal binary
   const buildNativePath = path.join(ROOT, 'scripts', 'build-native.js');
   if (fs.existsSync(buildNativePath)) {
