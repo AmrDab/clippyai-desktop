@@ -44,7 +44,12 @@ win:
   #   - harper.js: harper-lint.ts imports the "." entry (index.js) and reads
   #     harper_wasm_bg.wasm from disk; the inlined/slim variants (66 MB) are
   #     separate entry points nothing imports.
+  # The two positive patterns are REQUIRED: a files list of only "!" patterns
+  # makes electron-builder assume "**/*" and pack the whole repo (src/,
+  # vendor/, .wrangler/ dev state, a 2nd 57 MB whisper model) into app.asar.
   files:
+    - out/**/*
+    - assets/**/*
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**"
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
     - "!**/node_modules/onnxruntime-web/**"
@@ -74,6 +79,7 @@ files:
   - assets/**/*
   - "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,readme,README,*.d.ts,__tests__,test,tests,docs,doc}"
   - "!**/node_modules/*/*.map"
+  - "!**/node_modules/**/*.map"
 
 extraResources:
   - from: assets/scripts
