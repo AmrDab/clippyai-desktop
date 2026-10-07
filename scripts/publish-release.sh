@@ -63,7 +63,7 @@ case "$(uname -s)" in
       echo "    latest.yml says version: $YML_VERSION but you asked for $VERSION" >&2
       exit 1
     fi
-    PKG_VERSION="$(node -p "require('$RELEASE_DIR/../package.json').version")"
+    PKG_VERSION="$(cd "$RELEASE_DIR/.." && node -p "require('./package.json').version")"
     if [[ "$PKG_VERSION" != "$VERSION" ]]; then
       echo "    package.json says version: $PKG_VERSION but you asked for $VERSION" >&2
       exit 1
