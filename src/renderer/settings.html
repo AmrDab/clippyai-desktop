@@ -32,6 +32,7 @@
       <button class="settings-nav-item" data-section="web" role="tab" id="tab-web" aria-controls="panel-web" aria-selected="false">Web</button>
       <button class="settings-nav-item" data-section="tools" role="tab" id="tab-tools" aria-controls="panel-tools" aria-selected="false">Tools</button>
       <button class="settings-nav-item" data-section="agent" role="tab" id="tab-agent" aria-controls="panel-agent" aria-selected="false">Connect an agent</button>
+      <button class="settings-nav-item" data-section="byok" role="tab" id="tab-byok" aria-controls="panel-byok" aria-selected="false">Your own AI model</button>
 
       <div class="settings-nav-group" role="presentation">Safety</div>
       <button class="settings-nav-item" data-section="guardrails" role="tab" id="tab-guardrails" aria-controls="panel-guardrails" aria-selected="false">Guardrails</button>
@@ -671,6 +672,66 @@
               <button id="btn-agent-reveal-skill" type="button" class="s-button s-button--ghost">Show file</button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ── Your own AI model (BYOK) ─────────────────────────────── -->
+      <!-- v0.21 — route turns straight from this PC to the user's own
+           provider. The key is encrypted at rest (safeStorage) and never
+           sent to clippyai.app. Off by default. -->
+      <div class="settings-section" data-section="byok" role="tabpanel" id="panel-byok" aria-labelledby="tab-byok" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Your own AI model</h2>
+          <p class="s-section-subtitle">Use your own API key or a local model (Ollama, LM Studio) as Clippy's brain. Requests go <strong>directly from this PC to the provider</strong> — never through clippyai.app — and usage is billed by the provider, not by us. Free on every plan, unmetered.</p>
+        </div>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Brain</h3>
+            <p class="s-card__subtitle" id="byok-brain-label">Brain: Clippy</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-byok-enabled">Use my own model</label>
+            <div class="s-row__value">
+              <label class="toggle-switch" for="setting-byok-enabled">
+                <input type="checkbox" id="setting-byok-enabled" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-byok-provider">Provider</label>
+            <select id="setting-byok-provider"></select>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-byok-base-url">Base URL</label>
+            <div class="s-row__control">
+              <input id="setting-byok-base-url" type="text" placeholder="https://…/v1" autocomplete="off" spellcheck="false" style="width:100%;" />
+            </div>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-byok-model">Model</label>
+            <div class="s-row__control">
+              <input id="setting-byok-model" type="text" placeholder="model name" autocomplete="off" spellcheck="false" style="width:100%;" />
+            </div>
+            <p class="s-row__help">Pick a model with tool/function calling. A model without it can chat, but can't control your PC.</p>
+          </div>
+          <div class="s-row" id="row-byok-key">
+            <label class="s-row__label" for="setting-byok-key">API key</label>
+            <div class="s-row__control" style="display:flex; gap:8px; align-items:center;">
+              <input id="setting-byok-key" type="password" placeholder="paste key" autocomplete="off" spellcheck="false" />
+              <button id="btn-byok-clear-key" type="button" class="s-button">Remove</button>
+            </div>
+            <p class="s-row__help" id="byok-key-status">No key saved.</p>
+          </div>
+          <div class="s-row s-row--inline" style="margin-top:var(--s-space-3);">
+            <div class="s-row__main"><p class="s-help" style="margin:0;" id="byok-save-status"></p></div>
+            <div style="display:flex;gap:var(--s-space-2);flex-shrink:0;">
+              <button id="btn-byok-test" type="button" class="s-button s-button--ghost">Test connection</button>
+              <button id="btn-byok-save" type="button" class="s-button">Save</button>
+            </div>
+          </div>
+          <div id="byok-test-status" class="s-status" style="margin-top:var(--s-space-3);display:none;"></div>
         </div>
       </div>
 

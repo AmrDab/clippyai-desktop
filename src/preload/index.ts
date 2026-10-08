@@ -147,6 +147,13 @@ contextBridge.exposeInMainWorld('clippy', {
   agentRegenerateToken: () => ipcRenderer.invoke('agent:regenerate-token'),
   agentRevealSkill: () => ipcRenderer.invoke('agent:reveal-skill'),
 
+  // v0.21 — "Your own AI model" (BYOK). The key goes main-ward once via
+  // byokSave; status only ever returns a "••••1234" hint.
+  byokStatus: () => ipcRenderer.invoke('byok:status'),
+  byokSave: (input: { enabled?: boolean; provider?: string; baseUrl?: string; model?: string; apiKey?: string }) => ipcRenderer.invoke('byok:save', input),
+  byokClearKey: () => ipcRenderer.invoke('byok:clear-key'),
+  byokTest: () => ipcRenderer.invoke('byok:test'),
+
   // v0.17.0 — Voice input. Renderer encodes WAV in src/renderer/recorder.ts
   // and calls this to transcribe via bundled whisper.cpp in main.
   transcribeAudio: (wav: Uint8Array, initialPrompt?: string) =>

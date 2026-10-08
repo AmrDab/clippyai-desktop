@@ -99,6 +99,8 @@ import * as profileMod from './profile';
 // `feedback_clippy_bundle_anchors.md`). Scans every Tool.result before
 // it's appended to `responseParts`. Always-on; cost is microseconds.
 import * as injectionScan from './security/injection-scan';
+// v0.21 — "Your own AI model" (BYOK). Static import (bundle-anchor rule).
+import * as byokMod from './byok';
 
 const log = createLogger('Brain');
 const API_BASE = 'https://api.clippyai.app';
@@ -872,6 +874,7 @@ export class Brain {
       //   3. stopLoop() — stops the proactive timer.
       this.cancelRequested = true;
       approvalMod.cancelAllApprovals();
+      byokMod.abortByokRequests();
       try { abortAllInFlightTools(); } catch (err) {
         log.warn('abortAllInFlightTools threw on sleep (non-fatal)', serializeErr(err));
       }
@@ -1108,6 +1111,7 @@ export class Brain {
       log.info('User override — cancelling in-flight task', { newMessage: text.substring(0, 80) });
       this.cancelRequested = true;
       approvalMod.cancelAllApprovals();
+      byokMod.abortByokRequests();
       // v0.12.3 — also kill in-flight execFileAbortable children. Per
       // architecture audit finding #4: previously the override branch only
       // set cancelRequested and waited up to 10s for the running tool to
@@ -1157,6 +1161,7 @@ export class Brain {
         this.cancelRequested = true;
         this.cancelReason = reason;
         approvalMod.cancelAllApprovals();
+        byokMod.abortByokRequests();
         try { abortAllInFlightTools(); } catch { /* non-fatal */ }
       });
     } catch (err) {
@@ -1353,6 +1358,10 @@ export class Brain {
         const turnMs = Date.now() - turnStart;
 
         if (isError(resp)) {
+          // v0.21 — a cancel (sleep / override / takeover) aborts an
+          // in-flight BYOK request; let the cancel check at the top of the
+          // loop handle it instead of showing a "can't reach my brain" error.
+          if (this.cancelRequested) continue;
           log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
           log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'error', error: resp.error });
@@ -2702,6 +2711,13 @@ export class Brain {
     contents: Content[],
     opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean; power_pass?: boolean } = {},
   ): Promise<TurnResponse> {
+    // v0.21 — "Your own AI model": route to the user's provider when it's
+    // enabled + configured. Falls through to /v1/turn only when the kit
+    // can't be obtained at all (no cache + offline/401).
+    if (byokMod.isByokActive()) {
+      const r = await this.callByokTurn(contents, opts);
+      if (r) return r;
+    }
     // v0.18.0 — was MAX_RETRIES=2 + 60s timeout = up to ~184s worst case
     // for one hung first request. With timeout reduced to 40s below AND
     // MAX_RETRIES dropped to 1, worst case caps at ~81s.
@@ -2725,6 +2741,53 @@ export class Brain {
       }
     }
     return { error: 'network' }; // unreachable but satisfies TS
+  }
+
+  // v0.21 — last time we told the user the kit couldn't be fetched and we
+  // fell back to the hosted brain. Rate-limited so a 40-step task doesn't
+  // repeat it every step.
+  private byokFallbackWarnedAt = 0;
+
+  /**
+   * v0.21 — BYOK turn. Same inputs/outputs as callTurnOnce, but the request
+   * goes from this PC straight to the user's provider. No metering, no
+   * upgrade CTAs, no passes: the result carries only parts/done/finish_reason
+   * (+ provider/model for the log line). Returns null when the kit is
+   * unavailable so the caller can fall back to /v1/turn.
+   */
+  private async callByokTurn(
+    contents: Content[],
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number },
+  ): Promise<TurnResponse | null> {
+    const kitRes = await byokMod.getKitForTurn({ caps: this.currentCaps(), toolTiers: buildToolTiers() });
+    if (!kitRes.kit) {
+      if (!opts.proactive && Date.now() - this.byokFallbackWarnedAt > 5 * 60_000) {
+        this.byokFallbackWarnedAt = Date.now();
+        const msg = kitRes.error === 'invalid_key'
+          ? "I couldn't load my toolkit for your own model — the license key was rejected. Using the regular Clippy brain for now."
+          : "I couldn't reach clippyai.app to load my toolkit for your own model (and nothing's cached yet). Using the regular Clippy brain for now.";
+        log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'byok_fallback', error: kitRes.error });
+        this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+      }
+      return null;
+    }
+    const keepImages = settingsStore.get('imageHistoryKeep') ?? 2;
+    const { pruned } = pruneStaleInlineData(contents, keepImages);
+    const r = await byokMod.runTurn(kitRes.kit, pruned as byokMod.WireContent[], opts);
+    if ('error' in r) return r;
+    // tokens_* are 0: nothing is metered in BYOK mode (recordTurnUsage /
+    // maybeWarnUsage ignore them because tokens_allowed is absent).
+    return { parts: r.parts as Part[], done: r.done, finish_reason: r.finish_reason, tokens_used: 0, tokens_remaining: 0, provider: r.provider, model: r.model };
+  }
+
+  /** Runtime capability report — see the comment at the /v1/turn call site. */
+  private currentCaps(): Record<string, boolean> {
+    try {
+      const cf = require('./clawd-fallback') as typeof import('./clawd-fallback');
+      const mb = require('./mac-bridge-native') as typeof import('./mac-bridge-native');
+      const m = require('./mcp-chrome') as typeof import('./mcp-chrome');
+      return { clawd: cf.isClawdReady(), bridge: mb.isBridgeAvailable(), mcp_chrome: !!m.getMcpChromeStatus()?.ready };
+    } catch { return {}; }
   }
 
   private callTurnOnce(

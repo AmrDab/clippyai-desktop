@@ -5,6 +5,7 @@ import { createSettingsWindow } from './window';
 import { getBuddyName } from './license';
 import * as followMe from './follow-me';
 import * as games from './games';
+import { isByokActive, getBrainLabel } from './byok';
 
 let tray: Tray | null = null;
 // v0.21 — "Connect an agent": name of the MCP client currently driving
@@ -12,11 +13,24 @@ let tray: Tray | null = null;
 let agentClient: string | null = null;
 let rebuildMenu: (() => void) | null = null;
 
+function tooltip(): string {
+  const parts = ['ClippyAI'];
+  // v0.21 — which brain answers: hosted Clippy or the user's own model.
+  if (isByokActive()) parts.push(`Brain: ${getBrainLabel()}`);
+  if (agentClient) parts.push(`Agent connected: ${agentClient}`);
+  return parts.join(' — ');
+}
+
+/** v0.21 — re-render the tooltip after BYOK settings change. */
+export function refreshTrayTooltip(): void {
+  if (!tray) return;
+  tray.setToolTip(tooltip());
+  rebuildMenu?.();
+}
+
 export function setTrayAgentStatus(clientName: string | null): void {
   agentClient = clientName;
-  if (!tray) return;
-  tray.setToolTip(agentClient ? `ClippyAI — Agent connected: ${agentClient}` : 'ClippyAI');
-  rebuildMenu?.();
+  refreshTrayTooltip();
 }
 
 function createTrayIcon(_awake: boolean): Electron.NativeImage {
@@ -26,7 +40,7 @@ function createTrayIcon(_awake: boolean): Electron.NativeImage {
 
 export function setupTray(win: BrowserWindow, brain: Brain): Tray {
   tray = new Tray(createTrayIcon(true));
-  tray.setToolTip('ClippyAI');
+  tray.setToolTip(tooltip());
 
   let muteVoice = false;
 
@@ -38,6 +52,7 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       { label: `ClippyAI \u2014 ${buddyName}`, enabled: false },
       { type: 'separator' },
       { label: isAwake ? 'Status: Awake' : 'Status: Sleeping', enabled: false },
+      ...(isByokActive() ? [{ label: `Brain: ${getBrainLabel()}`, enabled: false }] : []),
       ...(agentClient ? [{ label: `Agent connected: ${agentClient}`, enabled: false }] : []),
       {
         label: isAwake ? 'Go to Sleep' : 'Wake Up',

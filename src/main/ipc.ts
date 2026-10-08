@@ -42,6 +42,9 @@ import * as openaiVoice from './openai-voice';
 // survival must NOT depend on another module's import edge. See brain.ts /
 // index.ts which import follow-me the same way.
 import * as followMeMod from './follow-me';
+// v0.21 — "Your own AI model" (static import, bundle-anchor rule).
+import * as byokMod from './byok';
+import { refreshTrayTooltip } from './tray';
 import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import * as profileMod from './profile';
 // v0.20.0-alpha.12 — static import for window-follow (NOT lazy require)
@@ -1292,6 +1295,29 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     const m = await import('./agent-tools');
     return m.resolveAgentAsk(id, choice.slice(0, 40));
   });
+
+  // v0.21 — "Your own AI model" (BYOK). The key goes renderer → main once
+  // (byok:save) and is encrypted at rest; status only ever carries a
+  // "••••1234" hint back. byok:test makes one tiny request to the provider.
+  ipcMain.handle('byok:status', async () => byokMod.getByokStatus());
+  ipcMain.handle('byok:save', async (_event, input: unknown) => {
+    const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+    const r = byokMod.saveByokSettings({
+      enabled: typeof i.enabled === 'boolean' ? i.enabled : undefined,
+      provider: typeof i.provider === 'string' ? i.provider : undefined,
+      baseUrl: typeof i.baseUrl === 'string' ? i.baseUrl : undefined,
+      model: typeof i.model === 'string' ? i.model : undefined,
+      apiKey: typeof i.apiKey === 'string' ? i.apiKey : undefined,
+    });
+    refreshTrayTooltip();
+    return r;
+  });
+  ipcMain.handle('byok:clear-key', async () => {
+    const s = byokMod.clearByokKey();
+    refreshTrayTooltip();
+    return s;
+  });
+  ipcMain.handle('byok:test', async () => byokMod.testByokConnection());
 
   // v0.17.8 — Guardrails: permission policy + action history IPC handlers.
   // These are the renderer-facing API for Settings → Guardrails.

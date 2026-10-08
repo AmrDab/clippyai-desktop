@@ -1106,10 +1106,118 @@ document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
   });
 });
 
+// v0.21 — Settings → Your own AI model (BYOK). The key field is write-only:
+// it's sent once on Save and cleared; status only ever carries a hint.
+let byokStatusCache: ByokStatus | null = null;
+const byokEnabledEl = document.getElementById('setting-byok-enabled') as HTMLInputElement | null;
+const byokProviderEl = document.getElementById('setting-byok-provider') as HTMLSelectElement | null;
+const byokBaseUrlEl = document.getElementById('setting-byok-base-url') as HTMLInputElement | null;
+const byokModelEl = document.getElementById('setting-byok-model') as HTMLInputElement | null;
+const byokKeyEl = document.getElementById('setting-byok-key') as HTMLInputElement | null;
+
+function byokPreset(id: string): ByokStatus['presets'][number] | undefined {
+  return byokStatusCache?.presets.find((p) => p.id === id);
+}
+
+function renderByokKeyRow(): void {
+  const s = byokStatusCache;
+  const preset = byokPreset(byokProviderEl?.value || s?.provider || '');
+  const row = document.getElementById('row-byok-key');
+  const status = document.getElementById('byok-key-status');
+  if (row) row.style.display = preset && !preset.needsKey && !s?.keyPresent ? 'none' : '';
+  if (!status || !s) return;
+  const where = s.keyPresent ? `Saved ••••${escapeHtml(s.keyHint)} — encrypted on this PC, sent only to the provider.` : 'No key saved.';
+  const link = preset?.keyUrl ? ` Get one at <a href="#" class="s-link byok-key-link" data-url="${escapeHtml(preset.keyUrl)}">${escapeHtml(preset.keyUrl.replace(/^https?:\/\//, ''))}</a>.` : '';
+  const noEnc = s.encryptionAvailable ? '' : ' <strong>This system cannot encrypt secrets (safeStorage unavailable), so a key cannot be saved.</strong>';
+  status.innerHTML = where + link + noEnc;
+  status.querySelectorAll<HTMLAnchorElement>('.byok-key-link').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    void window.clippy.openExternalUrl?.(a.dataset.url || '');
+  }));
+}
+
+function renderByokStatus(s: ByokStatus | null): void {
+  byokStatusCache = s;
+  const label = document.getElementById('byok-brain-label');
+  if (!s) { if (label) label.textContent = 'Status unavailable.'; return; }
+  if (label) label.textContent = `Brain: ${s.brainLabel}${s.enabled && !s.active ? ' (your model is on but not fully set up yet — Clippy is answering)' : ''}`;
+  if (byokEnabledEl) byokEnabledEl.checked = s.enabled;
+  if (byokProviderEl) {
+    byokProviderEl.innerHTML = s.presets.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`).join('');
+    byokProviderEl.value = s.provider;
+  }
+  if (byokBaseUrlEl) byokBaseUrlEl.value = s.baseUrl;
+  if (byokModelEl) byokModelEl.value = s.model;
+  renderByokKeyRow();
+  void renderActiveModel();
+}
+async function loadByokStatus(): Promise<void> {
+  if (!window.clippy.byokStatus) return;
+  try { renderByokStatus(await window.clippy.byokStatus()); } catch { renderByokStatus(null); }
+}
+byokProviderEl?.addEventListener('change', () => {
+  // Prefill URL + model from the preset; the user can edit before saving.
+  const p = byokPreset(byokProviderEl.value);
+  if (!p) return;
+  if (byokBaseUrlEl) byokBaseUrlEl.value = p.baseUrl;
+  if (byokModelEl) byokModelEl.value = p.defaultModel;
+  renderByokKeyRow();
+});
+async function saveByok(extra: { enabled?: boolean } = {}): Promise<void> {
+  const msg = document.getElementById('byok-save-status');
+  if (!window.clippy.byokSave) return;
+  const apiKey = byokKeyEl?.value.trim() || undefined;
+  try {
+    const r = await window.clippy.byokSave({
+      provider: byokProviderEl?.value, baseUrl: byokBaseUrlEl?.value, model: byokModelEl?.value, apiKey,
+      enabled: extra.enabled ?? byokEnabledEl?.checked,
+    });
+    if (r.ok && byokKeyEl) byokKeyEl.value = '';
+    renderByokStatus(r.status);
+    if (msg) msg.textContent = r.ok ? 'Saved.' : r.error || 'Could not save.';
+  } catch (err) {
+    if (msg) msg.textContent = `Could not save: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+document.getElementById('btn-byok-save')?.addEventListener('click', () => { void saveByok(); });
+byokEnabledEl?.addEventListener('change', () => { void saveByok({ enabled: byokEnabledEl.checked }); });
+document.getElementById('btn-byok-clear-key')?.addEventListener('click', async () => {
+  if (!window.clippy.byokClearKey) return;
+  try { renderByokStatus(await window.clippy.byokClearKey()); } catch { void loadByokStatus(); }
+});
+document.getElementById('btn-byok-test')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  const out = document.getElementById('byok-test-status');
+  if (!window.clippy.byokTest || !out) return;
+  // Test what's on screen: save first (unsaved edits would otherwise test stale settings).
+  await saveByok();
+  btn.disabled = true;
+  out.style.display = '';
+  out.className = 's-status';
+  out.textContent = 'Testing…';
+  try {
+    const r = await window.clippy.byokTest();
+    out.className = r.ok ? 's-status s-status--ok' : 's-status s-status--error';
+    out.textContent = r.message;
+  } catch (err) {
+    out.className = 's-status s-status--error';
+    out.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+  item.addEventListener('click', () => { if (item.dataset.section === 'byok') void loadByokStatus(); });
+});
+void loadByokStatus();
+
 // Active model display (About tab)
 async function renderActiveModel(): Promise<void> {
   const el = document.getElementById('active-model');
   if (!el || !window.clippy.activeModel) return;
+  // v0.21 — when the user's own model is the brain, say so (the hosted
+  // model id would be stale/misleading).
+  if (byokStatusCache?.active) { el.textContent = byokStatusCache.brainLabel; return; }
   try {
     const model = await window.clippy.activeModel();
     el.textContent = model || '(no turn served yet)';

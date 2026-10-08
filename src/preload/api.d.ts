@@ -41,6 +41,21 @@ interface AgentConnectStatus {
   configPath: string;
 }
 
+/** v0.21 — mirrors src/main/byok.ts ByokStatus. Never carries the key. */
+interface ByokStatus {
+  enabled: boolean;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  keyPresent: boolean;
+  keyHint: string;
+  encryptionAvailable: boolean;
+  active: boolean;
+  brainLabel: string;
+  kit: { cached: boolean; version: string; checkedAt: number };
+  presets: Array<{ id: string; label: string; api: 'openai' | 'anthropic' | 'gemini'; baseUrl: string; defaultModel: string; needsKey: boolean; keyUrl?: string }>;
+}
+
 interface Window {
   clippy: {
     // ── Conversation
@@ -232,6 +247,11 @@ interface Window {
     agentSetEnabled?: (enabled: boolean) => Promise<AgentConnectStatus>;
     agentRegenerateToken?: () => Promise<AgentConnectStatus>;
     agentRevealSkill?: () => Promise<boolean>;
+    /** v0.21 — "Your own AI model" (BYOK) Settings panel. */
+    byokStatus?: () => Promise<ByokStatus>;
+    byokSave?: (input: { enabled?: boolean; provider?: string; baseUrl?: string; model?: string; apiKey?: string }) => Promise<{ ok: boolean; error?: string; status: ByokStatus }>;
+    byokClearKey?: () => Promise<ByokStatus>;
+    byokTest?: () => Promise<{ ok: boolean; message: string }>;
     /** v0.19.0 — follow-me cursor mode */
     followMeActive?: () => Promise<boolean>;
     followMeStop?: (reason: string) => void;
