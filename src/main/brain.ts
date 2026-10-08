@@ -1339,13 +1339,14 @@ export class Brain {
         // Settings meter can render it, then run the soft 85% heads-up.
         this.recordTurnUsage(okResp.tokens_used, okResp.tokens_allowed);
 
-        // feat/pricing-free-tier — token-cap paywall. A capped FREE user gets a
-        // successful turn carrying upgrade_cta:'power' + a warm Clippy line in
-        // `parts`. Surface that line WITH an Upgrade affordance (not the plain
-        // bubble) and stop the loop — there's no work to continue.
+        // feat/pricing-free-tier — Power paywall. A FREE user who hit the token
+        // cap OR asked for automation (onboarding v2) gets a successful turn
+        // carrying upgrade_cta:'power' + a warm Clippy line in `parts`. Surface
+        // that line WITH a Get Power affordance (not the plain bubble) and stop
+        // the loop — there's no work to continue.
         if (okResp.upgrade_cta === 'power') {
-          const capLine = spoken || "I'm tapped out on free tokens this month. Power gives me way more room — want to keep going?";
-          log.info('Clippy.upsell', { trigger: 'token_cap', cta: 'power', step: step + 1 });
+          const capLine = spoken || "That one needs Power — it gives me way more room. Want to keep going?";
+          log.info('Clippy.upsell', { trigger: 'upgrade_cta', cta: 'power', step: step + 1 });
           this.emit('clippy-upgrade', { text: capLine, cta: 'power' });
           finalSpoken = capLine;
           break;

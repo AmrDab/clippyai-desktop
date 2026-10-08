@@ -155,19 +155,27 @@ async function init(): Promise<void> {
     currentRuleId = ruleId;
   });
 
-  // feat/pricing-free-tier — capped free user hit the monthly token cap. Show
-  // the worker's warm Clippy line WITH an Upgrade button that opens the Power
-  // checkout. Speak it too so it reads naturally; the button is the affordance.
+  // feat/pricing-free-tier — a /v1/turn response carrying upgrade_cta:'power'
+  // (free user hit the monthly token cap, or asked for automation that needs
+  // Power). Show the worker's warm Clippy line WITH a "Get Power" button that
+  // opens the Power checkout. Speak it too so it reads naturally; the button
+  // is the affordance. Don't nag: the buttons show at most once per 24 h per
+  // session — later hits still show Clippy's line, just without them.
   const STRIPE_POWER_URL = 'https://buy.stripe.com/8x2bJ06jXfC65XDe2Oe3e03'; // $19.99/mo
-  const STRIPE_MAX_URL   = 'https://buy.stripe.com/5kQaEW7o1cpUdq52k6e3e05'; // $39.99/mo
-  void STRIPE_MAX_URL; // reserved — Max upgrade prompt will use this in a future turn
+  const UPGRADE_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  let lastUpgradePromptAt = 0;
   window.clippy.onUpgrade?.(({ text }) => {
     const safeText = text || "I'm tapped out on free tokens this month.";
-    bubbleCtrl.speakWithActions(safeText, [
-      { label: 'Upgrade', variant: 'primary', onClick: () => { void window.clippy.openExternalUrl(STRIPE_POWER_URL); } },
-      // No-op onClick so "Maybe later" dismisses without sending stray text.
-      { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
-    ]);
+    if (Date.now() - lastUpgradePromptAt < UPGRADE_PROMPT_COOLDOWN_MS) {
+      bubbleCtrl.speak(safeText);
+    } else {
+      lastUpgradePromptAt = Date.now();
+      bubbleCtrl.speakWithActions(safeText, [
+        { label: 'Get Power', variant: 'primary', onClick: () => { void window.clippy.openExternalUrl(STRIPE_POWER_URL); } },
+        // No-op onClick so "Maybe later" dismisses without sending stray text.
+        { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
+      ]);
+    }
     tts.speak(safeText);
     clippyCtrl.playNamed('Alert');
   });
