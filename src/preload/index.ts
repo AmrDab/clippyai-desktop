@@ -201,6 +201,36 @@ contextBridge.exposeInMainWorld('clippy', {
   followMeActive: () => ipcRenderer.invoke('follow-me-active'),
   followMeStop: (reason: string) => ipcRenderer.send('follow-me-stop', reason),
 
+  // v0.21 — local mini-games (games.ts). Main drives Clippy's bubble via
+  // game-say / game-prompt; the renderer answers with gameAction values.
+  onGameState: (cb: (payload: { game: 'catch' | 'hide' | 'rps' | null }) => void) => {
+    ipcRenderer.on('game-state', (_e, payload) => cb(payload));
+  },
+  onGameSay: (cb: (payload: { text?: string; animate?: string; hideBubble?: boolean }) => void) => {
+    ipcRenderer.on('game-say', (_e, payload) => cb(payload));
+  },
+  onGamePrompt: (cb: (payload: { text: string; actions: Array<{ label: string; value: string }>; animate?: string }) => void) => {
+    ipcRenderer.on('game-prompt', (_e, payload) => cb(payload));
+  },
+  gameAction: (value: string) => ipcRenderer.invoke('game-action', value),
+  // Catch overlay window (game-overlay.html) ⇄ main.
+  gameOverlay: {
+    ready: () => ipcRenderer.send('game-overlay:ready'),
+    setIgnoreMouse: (ignore: boolean) => ipcRenderer.send('game-overlay:ignore-mouse', ignore),
+    ballRest: (p: { x: number; y: number; r: number; speed: number; distance: number; weak: boolean }) =>
+      ipcRenderer.send('game-overlay:ball-rest', p),
+    stop: () => ipcRenderer.send('game-overlay:stop'),
+    onInit: (cb: (p: { wa: { x: number; y: number; width: number; height: number }; anchor: { x: number; y: number }; reducedMotion: boolean }) => void) => {
+      ipcRenderer.on('game-overlay:init', (_e, p) => cb(p));
+    },
+    onCarry: (cb: (p: { anchor: { x: number; y: number } | null }) => void) => {
+      ipcRenderer.on('game-overlay:carry', (_e, p) => cb(p));
+    },
+    onBallReady: (cb: (p: { anchor: { x: number; y: number } }) => void) => {
+      ipcRenderer.on('game-overlay:ball-ready', (_e, p) => cb(p));
+    },
+  },
+
   // v0.21 — free daily Power pass: re-run the last request with power_pass:true.
   usePowerPass: () => ipcRenderer.invoke('use-power-pass'),
   onPowerPass: (cb: (active: boolean) => void) => {

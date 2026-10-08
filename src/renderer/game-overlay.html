@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <style>
+    /* v0.21 — Catch overlay: a transparent, click-through window covering the
+       work area of the display Clippy is on. Only the ball takes pointer
+       events (main toggles setIgnoreMouseEvents when the pointer is over it). */
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+    #ball {
+      position: absolute;
+      left: 0; top: 0;
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #ff8a80 0%, #e53935 55%, #8e1b1b 100%);
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35), inset 0 -4px 8px rgba(0, 0, 0, 0.2);
+      cursor: grab;
+      touch-action: none;
+      will-change: transform;
+      transform: translate(-50%, -50%);
+    }
+    #ball.dragging { cursor: grabbing; }
+    #ball.hidden { display: none; }
+    #hint {
+      position: absolute;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font: 500 12.5px system-ui, -apple-system, 'Segoe UI', sans-serif;
+      color: #fff;
+      background: rgba(20, 20, 20, 0.72);
+      pointer-events: none;
+      white-space: nowrap;
+      transform: translate(-50%, 0);
+      transition: opacity 0.4s ease;
+    }
+    #hint.hidden { opacity: 0; }
+    @media (prefers-reduced-motion: reduce) { #hint { transition: none; } }
+  </style>
+</head>
+<body>
+  <div id="ball" class="hidden"></div>
+  <div id="hint" class="hidden">Drag the ball and fling it!</div>
+  <script type="module" src="./game-overlay.ts"></script>
+</body>
+</html>

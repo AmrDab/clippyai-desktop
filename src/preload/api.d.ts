@@ -208,6 +208,21 @@ interface Window {
     /** v0.19.0 — follow-me cursor mode */
     followMeActive?: () => Promise<boolean>;
     followMeStop?: (reason: string) => void;
+    /** v0.21 — local mini-games (main/games.ts ⇄ renderer) */
+    onGameState?: (cb: (payload: { game: 'catch' | 'hide' | 'rps' | null }) => void) => void;
+    onGameSay?: (cb: (payload: { text?: string; animate?: string; hideBubble?: boolean }) => void) => void;
+    onGamePrompt?: (cb: (payload: { text: string; actions: Array<{ label: string; value: string }>; animate?: string }) => void) => void;
+    gameAction?: (value: string) => Promise<void>;
+    /** v0.21 — Catch overlay window bridge (game-overlay.ts) */
+    gameOverlay?: {
+      ready: () => void;
+      setIgnoreMouse: (ignore: boolean) => void;
+      ballRest: (p: { x: number; y: number; r: number; speed: number; distance: number; weak: boolean }) => void;
+      stop: () => void;
+      onInit: (cb: (p: { wa: { x: number; y: number; width: number; height: number }; anchor: { x: number; y: number }; reducedMotion: boolean }) => void) => void;
+      onCarry: (cb: (p: { anchor: { x: number; y: number } | null }) => void) => void;
+      onBallReady: (cb: (p: { anchor: { x: number; y: number } }) => void) => void;
+    };
     /** v0.15.0 — Settings → Web → mcp-chrome extension status */
     mcpChromeStatus?: () => Promise<{
       ready: boolean;

@@ -91,6 +91,7 @@ import * as toolUndoMod from './tool-undo';
 // Direct namespace imports here force Rollup to keep both modules alive.
 import * as windowMod from './window';
 import * as followMeMod from './follow-me';
+import * as gamesMod from './games';
 import * as profileMod from './profile';
 // v0.20.0-alpha.13 — prompt-injection scanner for tool results. STATIC
 // import (sixth recurrence of the Rollup tree-shake bug class — see
@@ -973,6 +974,14 @@ export class Brain {
       } else if (!fresh) {
         this.lastAbortedGoal = null; // stale — drop it
       }
+    }
+
+    // v0.21 — local mini-games (catch / hide-and-seek / RPS). Same pattern as
+    // follow-me routing: deterministic regex, handled BEFORE any network turn.
+    // Placed ahead of play-tag so "give up" / "stop" reach the active game.
+    {
+      const gameReply = gamesMod.routeMessage(text);
+      if (gameReply) return gameReply;
     }
 
     // v0.16.0 — play-tag detection. Cheap client-side regex so we don't burn

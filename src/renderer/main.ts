@@ -384,6 +384,30 @@ async function init(): Promise<void> {
     handleTagCursor(pos);
   });
 
+  // v0.21 — local mini-games (main/games.ts drives them; this side only
+  // renders bubble lines / buttons and reports clicks + Esc).
+  let activeGame: 'catch' | 'hide' | 'rps' | null = null;
+  window.clippy.onGameState?.(({ game }) => {
+    activeGame = game;
+    if (game) playTagActive = false;
+  });
+  window.clippy.onGameSay?.(({ text, animate, hideBubble }) => {
+    if (hideBubble) bubbleCtrl.hide();
+    if (text) bubbleCtrl.speak(text);
+    if (animate) clippyCtrl.playNamed(animate);
+  });
+  window.clippy.onGamePrompt?.(({ text, actions, animate }) => {
+    bubbleCtrl.speakWithActions(text, actions.map((a) => ({
+      label: a.label,
+      variant: a.value.startsWith('rps:') || a.value.startsWith('start:') || a.value === 'again' ? 'primary' : 'ghost',
+      onClick: () => { void window.clippy.gameAction?.(a.value); },
+    })), { sticky: true });
+    if (animate) clippyCtrl.playNamed(animate);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeGame) void window.clippy.gameAction?.('stop:esc');
+  });
+
   // === v0.19.0 PR-6 — first-5-wins overlay (post-onboarding) ==========
   // Main process emits 'first-win-overlay' 3s after the user reaches
   // onboarding step 6 ("you're ready"). We surface a non-modal pop-up
@@ -611,7 +635,10 @@ async function init(): Promise<void> {
       const wasSpeaking = tts.isSpeaking();
       tts.stop();
 
-      if (pendingUpdate === 'download') {
+      if (activeGame === 'hide') {
+        // v0.21 — hide-and-seek: clicking him = found. Don't open the chat.
+        void window.clippy.gameAction?.('found');
+      } else if (pendingUpdate === 'download') {
         // User explicitly clicked after seeing "click me to download"
         pendingUpdate = null;
         bubbleCtrl.speak('Downloading update...');

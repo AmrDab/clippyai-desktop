@@ -18,6 +18,7 @@ export default defineConfig({
           logs: resolve(__dirname, 'src/renderer/logs.html'),
           'writing-card': resolve(__dirname, 'src/renderer/writing-card.html'),
           'writing-badge': resolve(__dirname, 'src/renderer/writing-badge.html'),
+          'game-overlay': resolve(__dirname, 'src/renderer/game-overlay.html'),
         },
       },
     },

@@ -109,6 +109,7 @@ import { startScheduler, stopScheduler } from './scheduler';
 // entry feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
+import * as gamesMod from './games';
 import { brainSettingsStore } from './brain';
 
 bootLog('IMPORTS_LOADED');
@@ -470,6 +471,8 @@ function launchMainApp(): void {
   import('./follow-me').then((fm) => {
     if (mainWindow) fm.setMainWindow(mainWindow);
   }).catch((err: Error) => log.warn('follow-me module load failed (non-fatal)', err.message));
+  // v0.21 — local mini-games: inject the window + register their IPC.
+  gamesMod.setMainWindow(mainWindow);
 
   // v0.20.0-alpha.11 — start the focused-window follow loop. Polls the
   // active-window API at 1Hz and glides Clippy to the bottom-right corner
@@ -531,6 +534,7 @@ function launchWithOnboarding(): void {
   registerIpcHandlers(brain, mainWindow);
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
+  gamesMod.setMainWindow(mainWindow);
 
   // Wire updater here too — unlicensed users are the MOST likely to be on
   // a stale version (they may have installed once long ago, never paid,

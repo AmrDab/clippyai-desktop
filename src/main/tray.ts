@@ -4,6 +4,7 @@ import { Brain, brainSettingsStore } from './brain';
 import { createSettingsWindow } from './window';
 import { getBuddyName } from './license';
 import * as followMe from './follow-me';
+import * as games from './games';
 
 let tray: Tray | null = null;
 
@@ -53,6 +54,21 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
           }
           updateMenu();
         },
+      },
+      {
+        // v0.21 — local mini-games (free on every plan, no AI calls).
+        label: 'Play',
+        submenu: [
+          { label: 'Catch', click: () => games.start('catch', 'tray') },
+          { label: 'Hide-and-seek', click: () => games.start('hide', 'tray') },
+          { label: 'Rock-paper-scissors', click: () => games.start('rps', 'tray') },
+          { type: 'separator' },
+          {
+            label: games.isActive() ? `Stop game (${games.GAME_LABELS[games.activeGame()!]})` : 'Stop game',
+            enabled: games.isActive(),
+            click: () => games.stop('tray'),
+          },
+        ],
       },
       {
         label: 'Center on Screen',
@@ -105,6 +121,7 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
   }
 
   updateMenu();
+  games.onStateChange(updateMenu);
 
   tray.on('double-click', () => {
     if (win.isVisible()) {
