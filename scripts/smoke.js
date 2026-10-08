@@ -2423,6 +2423,36 @@ function layer1() {
     }
   }
 
+  // ────────── v0.21 games + free Power pass wiring ──────────
+  {
+    // The Catch overlay is its own renderer entry: it must be in the
+    // electron-vite input map (or the packaged app has no game-overlay.html
+    // and games.ts loadFile() 404s at runtime).
+    const viteCfg = fs.readFileSync(path.join(ROOT, 'electron.vite.config.ts'), 'utf8');
+    const overlayHtml = fs.existsSync(path.join(ROOT, 'src', 'renderer', 'game-overlay.html'));
+    const overlayEntry = /'game-overlay':\s*resolve\(__dirname,\s*'src\/renderer\/game-overlay\.html'\)/.test(viteCfg);
+    const gamesSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'games.ts'), 'utf8');
+    const gamesLoads = /game-overlay\.html/.test(gamesSrc) && /setIgnoreMouseEvents\(true,\s*\{\s*forward:\s*true\s*\}\)/.test(gamesSrc);
+    if (overlayHtml && overlayEntry && gamesLoads) pass('v0.21: game-overlay renderer entry exists, is a vite input, and games.ts loads it click-through');
+    else fail('v0.21: game-overlay wiring', `html=${overlayHtml}, viteEntry=${overlayEntry}, gamesLoads=${gamesLoads}`);
+
+    // Game phrases must be routed BEFORE the network turn + tray Play submenu.
+    const brainSrcGames = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+    const traySrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tray.ts'), 'utf8');
+    const routed = brainSrcGames.indexOf('gamesMod.routeMessage(text)') > 0
+      && brainSrcGames.indexOf('gamesMod.routeMessage(text)') < brainSrcGames.indexOf('this.isExecuting = true;');
+    const trayPlay = /label:\s*'Play'/.test(traySrc) && /games\.start\('catch'/.test(traySrc) && /games\.stop\('tray'\)/.test(traySrc);
+    if (routed && trayPlay) pass('v0.21: game phrases routed client-side before any /v1/turn + tray Play submenu');
+    else fail('v0.21: game routing', `routed=${routed}, tray=${trayPlay}`);
+
+    // Free Power pass: power_pass sent on every turn of the task, cleared in finally{}.
+    const passSent = /\.\.\.\(this\.powerPassActive \? \{ power_pass: true \} : \{\}\)/.test(brainSrcGames);
+    const passCleared = /finally \{[\s\S]{0,400}this\.powerPassActive = false/.test(brainSrcGames);
+    const ctaCarries = /power_pass_available: okResp\.power_pass_available === true/.test(brainSrcGames);
+    if (passSent && passCleared && ctaCarries) pass('v0.21: power_pass on every turn of a pass task, cleared at task end, CTA carries power_pass_available');
+    else fail('v0.21: power pass wiring', `sent=${passSent}, cleared=${passCleared}, cta=${ctaCarries}`);
+  }
+
 }
 
 // ────────────────────────────────────────────────────────────────────
