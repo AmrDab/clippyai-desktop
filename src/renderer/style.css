@@ -1466,8 +1466,7 @@ body.settings-window {
 }
 
 /* ── Buttons. Pill-shaped, vibrancy-tinted, hover-lift translateY(-1px). */
-[data-platform="mac"] .btn-primary,
-[data-platform="mac"] .btn-trial {
+[data-platform="mac"] .btn-primary {
   background: linear-gradient(180deg, rgba(255, 212, 0, 0.95) 0%, rgba(255, 184, 0, 0.92) 100%);
   color: rgba(48, 30, 0, 0.95);
   border: 1px solid rgba(184, 130, 0, 0.35);
@@ -1480,8 +1479,7 @@ body.settings-window {
     0 4px 12px rgba(255, 184, 0, 0.25);
   transition: transform 0.16s var(--glass-spring), box-shadow 0.16s var(--glass-spring), background 0.16s ease;
 }
-[data-platform="mac"] .btn-primary:hover,
-[data-platform="mac"] .btn-trial:hover {
+[data-platform="mac"] .btn-primary:hover {
   background: linear-gradient(180deg, rgba(255, 220, 30, 0.98) 0%, rgba(255, 195, 0, 0.95) 100%);
   transform: translateY(-1px);
   box-shadow:
@@ -2993,6 +2991,30 @@ body.onboarding-window {
   border-color: var(--s-ink-faint);
 }
 
+/* Activate step (1) — must fit the 480×700 window with no scrolling, privacy
+   line included. Free CTA is full-width primary; the two paid plans sit
+   side-by-side as compact secondary buttons with their price under each. */
+.onboarding-step[data-step="1"] { gap: var(--s-space-3); }
+.onboarding-step[data-step="1"] .onboarding-divider { margin: var(--s-space-1) 0; }
+#free-section .btn-primary { width: 100%; }
+/* Email field + Confirm on one row (label above both). */
+#free-email-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--s-space-2);
+  align-items: stretch;
+  /* Keeps the "check your inbox" hint clear of the Confirm/Resend shadow. */
+  margin-bottom: var(--s-space-2);
+}
+#free-email-row label { grid-column: 1 / -1; margin-bottom: 0; }
+.plan-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-space-3);
+}
+.plan-grid .btn-trial { width: 100%; padding: 8px 12px; }
+.plan-grid .trial-hint { margin-top: var(--s-space-1); }
+
 /* Divider in onboarding (e.g. step 2 "don't have a key?") — quieter */
 .onboarding-divider {
   color: var(--s-ink-faint);
@@ -3376,19 +3398,23 @@ body.onboarding-window[data-platform="win"] {
   border-color: rgba(0, 0, 0, 0.2);
 }
 
+/* Paid-plan buttons are SECONDARY (same look as .btn-secondary) so the free
+   CTA stays the one accent button. Pre-fix this filled them with the accent
+   but inherited the v2 block's dark ink → navy-on-blue at 3.9:1. */
 [data-platform="win"] .btn-trial {
-  background: var(--fluent-accent);
+  background: var(--fluent-card-bg);
+  color: #1a1a1a;
+  border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: var(--fluent-radius-sm);
   font-family: var(--fluent-font);
   font-weight: 600;
-  box-shadow: var(--fluent-card-shadow);
   transition: background var(--fluent-transition),
-              box-shadow var(--fluent-transition);
+              border-color var(--fluent-transition);
 }
 
 [data-platform="win"] .btn-trial:hover {
-  background: var(--fluent-accent-hover);
-  box-shadow: var(--fluent-card-shadow-hover);
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 /* ── Step nav dots — accent fill when active ─────────────────────────── */
@@ -3416,6 +3442,11 @@ body.onboarding-window[data-platform="win"] {
 }
 [data-platform="win"] .onboarding-divider::before {
   background: rgba(0, 0, 0, 0.08);
+}
+/* The footer fade must match the Mica body, not the v2 white surface —
+   a white strip over grey read as a second (nested) scroll region. */
+[data-platform="win"] .onboarding-footer::before {
+  background: linear-gradient(to top, rgb(245, 245, 245), transparent);
 }
 
 /* ── Errors — keep Win 11 system red ─────────────────────────────────── */

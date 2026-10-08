@@ -16,7 +16,7 @@
          (clippyai://activate) or paste the key from the same email. -->
     <div class="onboarding-step active" data-step="1">
       <h2>Get started — free forever</h2>
-      <p class="onboarding-subhead">No card needed. Just an email and you're in. Already have a license key? You can paste it below.</p>
+      <p class="onboarding-subhead">No card needed — just an email and you're in.</p>
 
       <!-- Primary: free signup -->
       <div id="free-section">
@@ -33,12 +33,18 @@
       <div id="plans-section">
         <div class="onboarding-divider"><span>or</span></div>
         <p class="onboarding-subhead" style="margin-bottom:var(--s-space-2);">
-          Want Clippy to actually run your desktop? Power adds automation, browser control and multi-monitor.
+          Want Clippy to run your desktop? Power adds automation, browser control and multi-monitor.
         </p>
-        <button class="btn-trial" id="btn-get-power" type="button">Get Power</button>
-        <p class="trial-hint">$19.99/mo · cancel anytime</p>
-        <button class="btn-trial" id="btn-get-max" type="button" style="margin-top:var(--s-space-2);">Get Max</button>
-        <p class="trial-hint">$39.99/mo · premium voice, deeper reasoning · cancel anytime</p>
+        <div class="plan-grid">
+          <div>
+            <button class="btn-trial" id="btn-get-power" type="button">Get Power</button>
+            <p class="trial-hint">$19.99/mo · cancel anytime</p>
+          </div>
+          <div>
+            <button class="btn-trial" id="btn-get-max" type="button">Get Max</button>
+            <p class="trial-hint">$39.99/mo · premium voice, 4× usage · cancel anytime</p>
+          </div>
+        </div>
         <p class="trial-hint" id="plans-hint" style="display:none;">
           Checkout opened in your browser. After paying, click the activation button in your email — or paste the key from that email below.
         </p>
