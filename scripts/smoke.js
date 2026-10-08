@@ -1546,6 +1546,24 @@ function layer1() {
     fail('packaging: win.files', 'only exclusion patterns — electron-builder will pack the entire repo');
   }
 
+  // v0.21 — "Connect an agent": the stdio bridge + SKILL.md ship as
+  // extraResources (agent-connect.ts reads them under process.resourcesPath).
+  {
+    const bridge = path.join(ROOT, 'resources', 'mcp', 'clippy-mcp-bridge.js');
+    const skill = path.join(ROOT, 'assets', 'agent-skill', 'clippy', 'SKILL.md');
+    const bridgeBundled = /from:\s*resources\/mcp\s*\n\s*to:\s*mcp\b/.test(ebSrc);
+    const skillBundled = /from:\s*assets\/agent-skill\s*\n\s*to:\s*agent-skill\b/.test(ebSrc);
+    const skillSrc = fs.existsSync(skill) ? fs.readFileSync(skill, 'utf8') : '';
+    const skillFrontmatter = /^---\nname: clippy\ndescription: .+\n/.test(skillSrc);
+    // Node built-ins only — the bridge runs outside app.asar with no node_modules.
+    const bridgeNoDeps = fs.existsSync(bridge) && !/require\(['"](?!(fs|os|path|http|readline)['"])/.test(fs.readFileSync(bridge, 'utf8'));
+    if (bridgeBundled && skillBundled && skillFrontmatter && bridgeNoDeps) {
+      pass('packaging: v0.21 agent bridge (resources/mcp) + SKILL.md (assets/agent-skill) exist and are extraResources');
+    } else {
+      fail('packaging: v0.21 agent resources', `bridgeBundled=${bridgeBundled} skillBundled=${skillBundled} skillFrontmatter=${skillFrontmatter} bridgeNoDeps=${bridgeNoDeps}`);
+    }
+  }
+
   // 10. scripts/build-native.js exists and produces a universal binary
   const buildNativePath = path.join(ROOT, 'scripts', 'build-native.js');
   if (fs.existsSync(buildNativePath)) {

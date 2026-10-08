@@ -31,6 +31,7 @@
       <button class="settings-nav-item" data-section="skills" role="tab" id="tab-skills" aria-controls="panel-skills" aria-selected="false">Skills</button>
       <button class="settings-nav-item" data-section="web" role="tab" id="tab-web" aria-controls="panel-web" aria-selected="false">Web</button>
       <button class="settings-nav-item" data-section="tools" role="tab" id="tab-tools" aria-controls="panel-tools" aria-selected="false">Tools</button>
+      <button class="settings-nav-item" data-section="agent" role="tab" id="tab-agent" aria-controls="panel-agent" aria-selected="false">Connect an agent</button>
 
       <div class="settings-nav-group" role="presentation">Safety</div>
       <button class="settings-nav-item" data-section="guardrails" role="tab" id="tab-guardrails" aria-controls="panel-guardrails" aria-selected="false">Guardrails</button>
@@ -600,6 +601,75 @@
           <div class="s-row s-row--inline">
             <p id="update-status" class="s-help"></p>
             <button class="s-button" id="btn-check-update">Check for updates</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Connect an agent ─────────────────────────────────────── -->
+      <!-- v0.21 — local MCP server so Claude Code / Claude Desktop / Codex /
+           any MCP client can use Clippy as its face + hands. Unmetered. -->
+      <div class="settings-section" data-section="agent" role="tabpanel" id="panel-agent" aria-labelledby="tab-agent" tabindex="0">
+        <div class="s-section-head">
+          <h2 class="s-section-title">Connect an agent</h2>
+          <p class="s-section-subtitle">Let your own AI agent (Claude Code, Claude Desktop, Codex, Cursor…) talk through Clippy: show messages, point at things, ask you questions, and run desktop actions with your approval. Free on every plan.</p>
+        </div>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Agent access</h3>
+            <p class="s-card__subtitle">A local-only MCP endpoint on 127.0.0.1 with a private token. Off by default.</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-agent-enabled">Allow agents to connect</label>
+            <div class="s-row__value">
+              <label class="toggle-switch" for="setting-agent-enabled">
+                <input type="checkbox" id="setting-agent-enabled" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+          <div id="agent-status" class="s-status" style="margin-top:var(--s-space-3);">Loading…</div>
+          <div class="s-row s-row--inline" style="margin-top:var(--s-space-3);">
+            <p class="s-help" style="margin:0;">Regenerating the token disconnects every agent until you paste the new setup.</p>
+            <button id="btn-agent-regenerate" type="button" class="s-button s-button--ghost">Regenerate token</button>
+          </div>
+        </div>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Setup</h3>
+            <p class="s-card__subtitle">Copy the one for your client. Each includes this machine's port and token — treat it like a password.</p>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main"><strong>Claude Code</strong><p class="s-help" style="margin:0;">Run in a terminal.</p></div>
+            <button type="button" class="s-button btn-agent-copy" data-snippet="claudeCode">Copy command</button>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main"><strong>Claude Desktop</strong><p class="s-help" style="margin:0;">Paste into <code id="agent-claude-desktop-path">claude_desktop_config.json</code>, then restart Claude Desktop.</p></div>
+            <button type="button" class="s-button btn-agent-copy" data-snippet="claudeDesktop">Copy JSON</button>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main"><strong>Codex</strong><p class="s-help" style="margin:0;">Append to <code>~/.codex/config.toml</code>.</p></div>
+            <button type="button" class="s-button btn-agent-copy" data-snippet="codex">Copy TOML</button>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main"><strong>Any MCP client (HTTP)</strong><p class="s-help" style="margin:0;">URL + <code>Authorization: Bearer …</code> header.</p></div>
+            <button type="button" class="s-button btn-agent-copy" data-snippet="generic">Copy JSON</button>
+          </div>
+          <pre id="agent-snippet-preview" class="s-status" style="margin-top:var(--s-space-3);white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;"></pre>
+        </div>
+
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Teach your agent about Clippy</h3>
+            <p class="s-card__subtitle">An Agent Skills file (SKILL.md) that explains when and how to use Clippy. Drop it in your agent's skills folder or paste it into its instructions.</p>
+          </div>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main"><code id="agent-skill-path" style="font-size:11px;word-break:break-all;"></code></div>
+            <div style="display:flex;gap:var(--s-space-2);flex-shrink:0;">
+              <button id="btn-agent-copy-skill" type="button" class="s-button">Copy SKILL.md</button>
+              <button id="btn-agent-reveal-skill" type="button" class="s-button s-button--ghost">Show file</button>
+            </div>
           </div>
         </div>
       </div>

@@ -7,6 +7,17 @@ import * as followMe from './follow-me';
 import * as games from './games';
 
 let tray: Tray | null = null;
+// v0.21 — "Connect an agent": name of the MCP client currently driving
+// Clippy (null = none). Shown in the tooltip + a menu status line.
+let agentClient: string | null = null;
+let rebuildMenu: (() => void) | null = null;
+
+export function setTrayAgentStatus(clientName: string | null): void {
+  agentClient = clientName;
+  if (!tray) return;
+  tray.setToolTip(agentClient ? `ClippyAI — Agent connected: ${agentClient}` : 'ClippyAI');
+  rebuildMenu?.();
+}
 
 function createTrayIcon(_awake: boolean): Electron.NativeImage {
   // Use the actual paperclip app icon for the system tray
@@ -27,6 +38,7 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       { label: `ClippyAI \u2014 ${buddyName}`, enabled: false },
       { type: 'separator' },
       { label: isAwake ? 'Status: Awake' : 'Status: Sleeping', enabled: false },
+      ...(agentClient ? [{ label: `Agent connected: ${agentClient}`, enabled: false }] : []),
       {
         label: isAwake ? 'Go to Sleep' : 'Wake Up',
         click: () => {
@@ -122,6 +134,8 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
 
   updateMenu();
   games.onStateChange(updateMenu);
+  rebuildMenu = updateMenu;
+  setTrayAgentStatus(agentClient);
 
   tray.on('double-click', () => {
     if (win.isVisible()) {

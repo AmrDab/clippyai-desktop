@@ -1033,6 +1033,79 @@ document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
   });
 });
 
+// v0.21 — Settings → Connect an agent: enable toggle, status, setup snippets.
+let agentStatusCache: AgentConnectStatus | null = null;
+function renderAgentStatus(s: AgentConnectStatus | null): void {
+  agentStatusCache = s;
+  const el = document.getElementById('agent-status');
+  const toggle = document.getElementById('setting-agent-enabled') as HTMLInputElement | null;
+  if (!el || !s) { if (el) el.textContent = 'Status unavailable.'; return; }
+  if (toggle) toggle.checked = s.enabled;
+  if (!s.enabled) {
+    el.className = 's-status';
+    el.textContent = 'Off — no agent can connect.';
+  } else if (!s.running) {
+    el.className = 's-status s-status--error';
+    el.textContent = 'Enabled but the server is not running — see Logs.';
+  } else {
+    const who = s.clients.length ? `Agent connected: ${s.clients.map(escapeHtml).join(', ')}` : 'Waiting for an agent to connect…';
+    el.className = s.clients.length ? 's-status s-status--ok' : 's-status';
+    el.innerHTML = `${who}<br><span style="font-size:11px;">Listening on <code>${escapeHtml(s.snippets.url)}</code> (this computer only)</span>`;
+  }
+  const pathEl = document.getElementById('agent-claude-desktop-path');
+  if (pathEl) pathEl.textContent = s.snippets.claudeDesktopConfigPath;
+  const skillPathEl = document.getElementById('agent-skill-path');
+  if (skillPathEl) skillPathEl.textContent = s.skillMarkdown ? s.skillPath : `${s.skillPath} (missing)`;
+  const preview = document.getElementById('agent-snippet-preview');
+  if (preview) preview.textContent = s.snippets.claudeCode;
+}
+async function loadAgentStatus(): Promise<void> {
+  if (!window.clippy.agentStatus) return;
+  try { renderAgentStatus(await window.clippy.agentStatus()); } catch { renderAgentStatus(null); }
+}
+document.getElementById('setting-agent-enabled')?.addEventListener('change', async (e) => {
+  const enabled = (e.target as HTMLInputElement).checked;
+  try { renderAgentStatus(await window.clippy.agentSetEnabled!(enabled)); } catch { void loadAgentStatus(); }
+});
+document.getElementById('btn-agent-regenerate')?.addEventListener('click', async () => {
+  try { renderAgentStatus(await window.clippy.agentRegenerateToken!()); } catch { void loadAgentStatus(); }
+});
+document.querySelectorAll<HTMLButtonElement>('.btn-agent-copy').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const key = btn.dataset.snippet as keyof AgentConnectStatus['snippets'];
+    const text = agentStatusCache?.snippets[key];
+    if (!text) return;
+    const preview = document.getElementById('agent-snippet-preview');
+    if (preview) preview.textContent = text;
+    try { await navigator.clipboard.writeText(text); } catch { return; }
+    const label = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = label; }, 1500);
+  });
+});
+document.getElementById('btn-agent-copy-skill')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  if (!agentStatusCache?.skillMarkdown) return;
+  try { await navigator.clipboard.writeText(agentStatusCache.skillMarkdown); } catch { return; }
+  btn.textContent = 'Copied';
+  setTimeout(() => { btn.textContent = 'Copy SKILL.md'; }, 1500);
+});
+document.getElementById('btn-agent-reveal-skill')?.addEventListener('click', () => {
+  void window.clippy.agentRevealSkill?.();
+});
+let agentPoll: number | null = null;
+document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+  item.addEventListener('click', () => {
+    if (item.dataset.section === 'agent') {
+      void loadAgentStatus();
+      if (agentPoll === null) agentPoll = window.setInterval(() => { void loadAgentStatus(); }, 5000);
+    } else if (agentPoll !== null) {
+      window.clearInterval(agentPoll);
+      agentPoll = null;
+    }
+  });
+});
+
 // Active model display (About tab)
 async function renderActiveModel(): Promise<void> {
   const el = document.getElementById('active-model');

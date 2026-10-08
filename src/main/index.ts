@@ -111,6 +111,8 @@ import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
 import * as gamesMod from './games';
 import { brainSettingsStore } from './brain';
+// v0.21 — static import (same Rollup bundle-anchor rule as window-follow).
+import * as agentConnect from './agent-connect';
 
 bootLog('IMPORTS_LOADED');
 
@@ -505,6 +507,14 @@ function launchMainApp(): void {
   //   - linux: suspend = systemd sleep, lock-screen = X/Wayland session-lock
   wirePowerMonitor(brain, mainWindow);
 
+  // v0.21 — "Connect an agent": local MCP server for an outside agent.
+  // OFF by default; only listens when the user enabled it in Settings.
+  try {
+    agentConnect.initAgentConnect(mainWindow, brain);
+  } catch (err) {
+    log.warn('Agent connect init failed (non-fatal)', serializeErr(err));
+  }
+
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
@@ -562,6 +572,8 @@ app.on('will-quit', () => {
   try {
     windowFollowMod.stopWindowFollow();
   } catch { /* non-fatal */ }
+  // v0.21 — close the agent MCP listener + sessions so the port is freed.
+  agentConnect.shutdownAgentConnect().catch((err) => log.warn('Agent server stop failed', serializeErr(err)));
   // Stop clawdcursor first — SIGTERM is async, so this fires the signal
   // and returns immediately. clawdcursor exits cleanly on SIGTERM thanks
   // to the MCP server lifecycle changes; if it's slow, stopClawd's 2s
