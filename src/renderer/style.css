@@ -3520,3 +3520,19 @@ body.onboarding-window[data-platform="win"] {
     display: none;
   }
 }
+
+/* ── v0.21 — "⚡ Power" pill while a free daily Power-pass task runs ──── */
+#power-pass-pill {
+  position: fixed;
+  right: 6px;
+  bottom: 96px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font: 600 10.5px system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: #fff;
+  background: linear-gradient(135deg, #f59e0b, #ef4444);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.25);
+  pointer-events: none;
+  z-index: 30;
+}
+#power-pass-pill.hidden { display: none; }

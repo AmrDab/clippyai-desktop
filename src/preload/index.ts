@@ -41,7 +41,7 @@ contextBridge.exposeInMainWorld('clippy', {
 
   // feat/pricing-free-tier — capped free user hit the token cap. Carries the
   // worker's warm Clippy line; renderer shows it with an Upgrade affordance.
-  onUpgrade: (cb: (payload: { text: string; cta: string }) => void) => {
+  onUpgrade: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean }) => void) => {
     ipcRenderer.on('clippy-upgrade', (_e, payload) => cb(payload));
   },
 
@@ -200,6 +200,12 @@ contextBridge.exposeInMainWorld('clippy', {
   // when user presses Esc while follow mode is active.
   followMeActive: () => ipcRenderer.invoke('follow-me-active'),
   followMeStop: (reason: string) => ipcRenderer.send('follow-me-stop', reason),
+
+  // v0.21 — free daily Power pass: re-run the last request with power_pass:true.
+  usePowerPass: () => ipcRenderer.invoke('use-power-pass'),
+  onPowerPass: (cb: (active: boolean) => void) => {
+    ipcRenderer.on('power-pass', (_e, active) => cb(!!active));
+  },
 
   moveWindow: (deltaX: number, deltaY: number) => {
     ipcRenderer.send('move-window', deltaX, deltaY);

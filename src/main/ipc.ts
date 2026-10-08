@@ -191,6 +191,17 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     } catch { return false; }
   });
 
+  // v0.21 — free daily Power pass: re-run the last request with power_pass:true
+  // on every /v1/turn of that task (brain clears the flag when the task ends).
+  ipcMain.handle('use-power-pass', async () => {
+    try {
+      return await brain.retryLastWithPowerPass();
+    } catch (err) {
+      log.error('use-power-pass threw', serializeErr(err));
+      return 'Something went wrong — try again! 📎';
+    }
+  });
+
   // Click-through toggle
   ipcMain.on('set-click-through', (_event, enabled: boolean) => {
     setClickThrough(mainWindow, enabled);

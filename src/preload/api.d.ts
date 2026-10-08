@@ -114,7 +114,10 @@ interface Window {
     // v0.19.0 — ruleId present when a deterministic rule fired the tip
     onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string }) => void) => void;
     /** feat/pricing-free-tier — token-cap upsell for capped free users. */
-    onUpgrade?: (cb: (payload: { text: string; cta: string }) => void) => void;
+    onUpgrade?: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean }) => void) => void;
+    /** v0.21 — free daily Power pass: re-run the last request with power_pass:true. */
+    usePowerPass?: () => Promise<string>;
+    onPowerPass?: (cb: (active: boolean) => void) => void;
     /** Phase 3 guardrails — main asks "Can I …?" before a gated tool runs. */
     onApprovalRequest?: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string }) => void) => void;
     respondApproval: (id: string, approved: boolean) => Promise<boolean>;

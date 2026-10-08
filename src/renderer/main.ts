@@ -168,14 +168,31 @@ async function init(): Promise<void> {
   const STRIPE_POWER_URL = 'https://buy.stripe.com/8x2bJ06jXfC65XDe2Oe3e03'; // $19.99/mo
   const UPGRADE_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
   let lastUpgradePromptAt = 0;
-  window.clippy.onUpgrade?.(({ text }) => {
+  const upgradeAction = { label: 'Get Power', variant: 'primary' as const, onClick: () => { void window.clippy.openExternalUrl(STRIPE_POWER_URL); } };
+  window.clippy.onUpgrade?.(({ text, power_pass_available, power_pass_used }) => {
     const safeText = text || "I'm tapped out on free tokens this month.";
-    if (Date.now() - lastUpgradePromptAt < UPGRADE_PROMPT_COOLDOWN_MS) {
+    // A power_pass_used reply ("comes back tomorrow — want Power all the
+    // time?") always shows the CTA: the user just spent today's pass.
+    const cooledDown = Date.now() - lastUpgradePromptAt < UPGRADE_PROMPT_COOLDOWN_MS && !power_pass_used;
+    if (power_pass_available === true) {
+      // v0.21 — free daily Power pass. Offered whenever the server says it's
+      // still unused today (not subject to the 24 h upsell cooldown — it's a
+      // perk, not a nag). Clicking re-runs the last request with
+      // power_pass:true on every turn of that task (brain.ts).
+      bubbleCtrl.speakWithActions(safeText, [
+        { label: "⚡ Use today's free Power request", variant: 'primary', onClick: () => {
+          bubbleCtrl.showThinking();
+          clippyCtrl.think();
+          void window.clippy.usePowerPass?.();
+        } },
+        { ...upgradeAction, variant: 'ghost' },
+      ]);
+    } else if (cooledDown) {
       bubbleCtrl.speak(safeText);
     } else {
       lastUpgradePromptAt = Date.now();
       bubbleCtrl.speakWithActions(safeText, [
-        { label: 'Get Power', variant: 'primary', onClick: () => { void window.clippy.openExternalUrl(STRIPE_POWER_URL); } },
+        upgradeAction,
         // No-op onClick so "Maybe later" dismisses without sending stray text.
         { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
       ]);
@@ -183,6 +200,9 @@ async function init(): Promise<void> {
     tts.speak(safeText);
     clippyCtrl.playNamed('Alert');
   });
+  // v0.21 — "⚡ Power" pill while a pass task runs; main clears it at task end.
+  const powerPill = document.getElementById('power-pass-pill');
+  window.clippy.onPowerPass?.((active) => powerPill?.classList.toggle('hidden', !active));
 
   // Phase 3 guardrails — "Can I …?" before a gated tool runs. Approve/Deny
   // answer by id; replacing or hiding the bubble while pending counts as

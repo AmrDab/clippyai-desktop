@@ -392,6 +392,15 @@ type TurnSuccess = {
    * token cap. The worker also ships a warm Clippy line in `parts`; the brain
    * surfaces it in the bubble with an Upgrade affordance. Absent for paid. */
   upgrade_cta?: string;
+  /** v0.21 free-pass contract — on upgrade_cta:'power' responses: today's
+   * daily Power pass is still unused (client offers "Use today's free
+   * Power request"). Absent/false → plain upsell as before. */
+  power_pass_available?: boolean;
+  /** v0.21 — the pass was already consumed; the canned line in `parts`
+   * explains it comes back tomorrow. */
+  power_pass_used?: boolean;
+  /** v0.21 — 'active' on turns served on the pass. */
+  power_pass?: string;
 };
 
 // v0.14.1 — last model identifier seen in a successful Turn.ok. Updated on
@@ -739,6 +748,26 @@ export class Brain {
   private tutorialActive = false;
   setTutorial(on: boolean): void { this.tutorialActive = on; }
   isTutorialActive(): boolean { return this.tutorialActive; }
+
+  // v0.21 — free daily Power pass. While true, EVERY /v1/turn of the running
+  // task carries `power_pass: true` (contract: the server serves the task as
+  // Power, unbilled, for 15 min / 25 turns). Set only by
+  // retryLastWithPowerPass(); cleared in handleUserMessage's finally{} so
+  // done / error / cancel all end it. `lastUserRequest` is the text we re-run.
+  private powerPassActive = false;
+  private lastUserRequest: string | null = null;
+  async retryLastWithPowerPass(): Promise<string> {
+    const text = this.lastUserRequest;
+    if (!text) return "I don't have a request to retry — just ask me again! 📎";
+    log.info('PowerPass.start', { text: text.substring(0, 120) });
+    this.powerPassActive = true;
+    try {
+      return await this.handleUserMessage(text);
+    } finally {
+      // handleUserMessage clears this too; belt-and-braces for early returns.
+      if (this.powerPassActive) { this.powerPassActive = false; this.emit('power-pass', false); }
+    }
+  }
   /** v0.20.0 — openclaw-ported loop/stall detector (no-progress, ping-pong,
    *  circuit breaker). Compares tool RESULTS across the task, so it catches
    *  "opened YouTube, clicked, nothing changed, clicked again…" that the
@@ -1093,6 +1122,9 @@ export class Brain {
     this.isExecuting = true;
     this.cancelRequested = false;
     this.cancelReason = null;
+    // v0.21 — remember the request so the free Power pass can re-run it.
+    this.lastUserRequest = text;
+    if (this.powerPassActive) this.emit('power-pass', true);
 
     // v0.18.1 — start user-takeover monitor. See user-takeover.ts for
     // the disambiguation design (Clippy's own input vs organic user
@@ -1293,7 +1325,12 @@ export class Brain {
         // Show thinking animation while waiting for API response
         if (step > 0) this.emit('play-animation', 'Thinking');
         const turnStart = Date.now();
-        const resp = await this.callTurn(contents, { user_profile: userProfile, ...(this.tutorialActive ? { onboarding: true } : {}) });
+        const resp = await this.callTurn(contents, {
+          user_profile: userProfile,
+          ...(this.tutorialActive ? { onboarding: true } : {}),
+          // v0.21 — sent on EVERY turn of a pass task (all tool-loop steps).
+          ...(this.powerPassActive ? { power_pass: true } : {}),
+        });
         const turnMs = Date.now() - turnStart;
 
         if (isError(resp)) {
@@ -1346,8 +1383,16 @@ export class Brain {
         // the loop — there's no work to continue.
         if (okResp.upgrade_cta === 'power') {
           const capLine = spoken || "That one needs Power — it gives me way more room. Want to keep going?";
-          log.info('Clippy.upsell', { trigger: 'upgrade_cta', cta: 'power', step: step + 1 });
-          this.emit('clippy-upgrade', { text: capLine, cta: 'power' });
+          log.info('Clippy.upsell', { trigger: 'upgrade_cta', cta: 'power', step: step + 1, power_pass_available: okResp.power_pass_available === true, power_pass_used: okResp.power_pass_used === true });
+          // v0.21 — pass fields are additive: absent → the renderer behaves
+          // exactly as before. A power_pass_used reply never carries
+          // power_pass_available, so it renders text + the normal CTA.
+          this.emit('clippy-upgrade', {
+            text: capLine,
+            cta: 'power',
+            power_pass_available: okResp.power_pass_available === true,
+            power_pass_used: okResp.power_pass_used === true,
+          });
           finalSpoken = capLine;
           break;
         }
@@ -1948,6 +1993,9 @@ export class Brain {
       return bubble;
     } finally {
       this.isExecuting = false;
+      // v0.21 — the free Power pass covers exactly one task (done, error or
+      // cancel all land here); clear it and drop the renderer's ⚡ pill.
+      if (this.powerPassActive) { this.powerPassActive = false; this.emit('power-pass', false); }
       // v0.19.0-rc.5 — extend the proactive-quiet window past this reply. Replies
       // never set noRepeatUntil before, so the proactive loop would re-fire
       // ~10-60s after the user typed (depending on interval). Now any user
@@ -2632,7 +2680,7 @@ export class Brain {
    */
   private async callTurn(
     contents: Content[],
-    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean } = {},
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean; power_pass?: boolean } = {},
   ): Promise<TurnResponse> {
     // v0.18.0 — was MAX_RETRIES=2 + 60s timeout = up to ~184s worst case
     // for one hung first request. With timeout reduced to 40s below AND
@@ -2661,7 +2709,7 @@ export class Brain {
 
   private callTurnOnce(
     contents: Content[],
-    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean } = {},
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean; power_pass?: boolean } = {},
   ): Promise<TurnResponse> {
     const licenseKey = getLicenseKey();
     const startTime = Date.now();
