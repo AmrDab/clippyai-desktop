@@ -1,4 +1,4 @@
-import { ClippyController, AgentData } from './clippy';
+import { ClippyController, AgentData, HdSprite } from './clippy';
 import { BubbleController } from './bubble';
 import { TTS } from './tts';
 
@@ -49,16 +49,20 @@ async function init(): Promise<void> {
 
   let agentData: AgentData;
   let spriteDataUri: string;
+  let hdSprite: HdSprite | undefined;
 
   try {
-    const [agentModule, mapModule] = await Promise.all([
+    const [agentModule, mapModule, hdModule] = await Promise.all([
       import('../../assets/agents/clippy/agent.mjs'),
       import('../../assets/agents/clippy/map.mjs'),
+      // v0.20.2 — xBRZ 3x sheet; optional, the 1x sheet remains the fallback.
+      import('../../assets/agents/clippy/map@3x.mjs').catch(() => null),
     ]);
     // Wildcard `*.mjs` declarations type the default export as `unknown` to
     // avoid lying about an asset we don't validate. Cast at the boundary.
     agentData = agentModule.default as AgentData;
     spriteDataUri = mapModule.default as string;
+    hdSprite = (hdModule?.default as HdSprite | undefined) ?? undefined;
     console.log('[Main] Assets loaded. Animations:', Object.keys(agentData.animations).length);
   } catch (err) {
     console.error('[Main] Failed to load assets:', err);
@@ -70,7 +74,7 @@ async function init(): Promise<void> {
   }
 
   const canvas = document.getElementById('clippy-canvas') as HTMLCanvasElement;
-  const clippyCtrl = new ClippyController(canvas, spriteDataUri, agentData);
+  const clippyCtrl = new ClippyController(canvas, spriteDataUri, agentData, hdSprite);
   const tts = new TTS();
 
   try {

@@ -36,10 +36,41 @@ body.clippy-window {
   z-index: 20;
 }
 
+/* v0.20.2 — the canvas backing store is framesize × DPR, drawn from the
+ * xBRZ 3x sheet (clippy.ts drawFrame), so it is no longer `pixelated`;
+ * that only applies when the HD sheet is unavailable (.pixelated). */
 #clippy-canvas {
   display: block;
+  width: 100%;
+  height: 100%;
   cursor: pointer;
-  image-rendering: pixelated;
+}
+#clippy-canvas.pixelated { image-rendering: pixelated; }
+
+/* Previous animation's last frame, faded out over the new one (~100 ms)
+ * when the controller switches animations. */
+#clippy-ghost {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0;
+}
+#clippy-ghost.fading { animation: clippy-ghost-fade 100ms linear forwards; }
+@keyframes clippy-ghost-fade { from { opacity: 1; } to { opacity: 0; } }
+
+/* Idle breathing bob — ≤1.5px, on the container only while an idle-pool
+ * animation plays. Nothing reads the container's rect (window.ts anchors
+ * to the OS window's bottom-right; the bubble measures itself). */
+#clippy-container.idle { animation: clippy-breathe 3s ease-in-out infinite; }
+@keyframes clippy-breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.5px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #clippy-container.idle { animation: none; }
+  #clippy-ghost.fading { animation: none; }
 }
 
 /* ── Bubble v2 — adaptive three-state with six tints (v0.19.0 PR-2) ══════
