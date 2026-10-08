@@ -732,6 +732,13 @@ export class Brain {
    *  so the user can say "continue" / "keep going" to RESUME it instead of
    *  getting a contextless "I'm not sure what to do". Freshness-gated (2 min). */
   private lastAbortedGoal: { text: string; at: number } | null = null;
+
+  // Onboarding v2 — while the "Try it" screen is up, user turns are sent
+  // with `onboarding: true` so the server doesn't bill the first 3. Never
+  // set on proactive ticks; cleared when the onboarding window closes.
+  private tutorialActive = false;
+  setTutorial(on: boolean): void { this.tutorialActive = on; }
+  isTutorialActive(): boolean { return this.tutorialActive; }
   /** v0.20.0 — openclaw-ported loop/stall detector (no-progress, ping-pong,
    *  circuit breaker). Compares tool RESULTS across the task, so it catches
    *  "opened YouTube, clicked, nothing changed, clicked again…" that the
@@ -1286,7 +1293,7 @@ export class Brain {
         // Show thinking animation while waiting for API response
         if (step > 0) this.emit('play-animation', 'Thinking');
         const turnStart = Date.now();
-        const resp = await this.callTurn(contents, { user_profile: userProfile });
+        const resp = await this.callTurn(contents, { user_profile: userProfile, ...(this.tutorialActive ? { onboarding: true } : {}) });
         const turnMs = Date.now() - turnStart;
 
         if (isError(resp)) {
@@ -2624,7 +2631,7 @@ export class Brain {
    */
   private async callTurn(
     contents: Content[],
-    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number } = {},
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean } = {},
   ): Promise<TurnResponse> {
     // v0.18.0 — was MAX_RETRIES=2 + 60s timeout = up to ~184s worst case
     // for one hung first request. With timeout reduced to 40s below AND
@@ -2653,7 +2660,7 @@ export class Brain {
 
   private callTurnOnce(
     contents: Content[],
-    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number } = {},
+    opts: { user_profile?: string; proactive?: boolean; max_tokens?: number; onboarding?: boolean } = {},
   ): Promise<TurnResponse> {
     const licenseKey = getLicenseKey();
     const startTime = Date.now();

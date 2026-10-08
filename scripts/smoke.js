@@ -1942,17 +1942,23 @@ function layer1() {
     const toolsSrcPR6 = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
     const mainTsSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'main.ts'), 'utf8');
 
-    // 1. Onboarding HTML has all 6 steps + the new app-picker/api-keys/first-wins anchors
+    // 1. Onboarding v2 HTML: Activate (1) → Meet Clippy (2) → Permissions (3,
+    //    darwin only) → Try it (4). App picker / API keys / Browser Bridge
+    //    moved to Settings; the stub wake-word toggle and the fake
+    //    "7-Day Free Trial" copy are gone.
+    const hasStep3 = /data-step="3"\s+data-mac-only/.test(onbHtml);
     const hasStep4 = /data-step="4"/.test(onbHtml);
-    const hasStep5 = /data-step="5"/.test(onbHtml);
-    const hasStep6 = /data-step="6"/.test(onbHtml);
-    const hasAppPickerId = /id="app-picker"/.test(onbHtml);
-    const hasApiKeysId   = /id="api-keys"/.test(onbHtml);
+    const noStep5 = !/data-step="5"/.test(onbHtml);
+    const noAppPickerId = !/id="app-picker"/.test(onbHtml) && !/id="api-keys"/.test(onbHtml) && !/btn-install-bridge/.test(onbHtml);
     const hasFirstWinsId = /id="first-wins-chips"/.test(onbHtml);
-    if (hasStep4 && hasStep5 && hasStep6 && hasAppPickerId && hasApiKeysId && hasFirstWinsId) {
-      pass('v0.19.0 PR-6: onboarding.html has steps 4/5/6 + app-picker/api-keys/first-wins anchors');
+    const hasTryIt = /id="tryit-hotkey"/.test(onbHtml) && /id="btn-tryit-type"/.test(onbHtml) && /What's on my screen\?/.test(onbHtml);
+    const hasPlans = /id="btn-get-power"/.test(onbHtml) && /id="btn-get-max"/.test(onbHtml) && /\$19\.99\/mo · cancel anytime/.test(onbHtml);
+    const noTrial = !/7-Day|Free Trial|onboarding-wake-word/i.test(onbHtml) && !/wakeWordEnabled/.test(onbTs);
+    const hasPrivacy = /id="privacy-line"/.test(onbHtml) && /screenshots are never stored/.test(onbHtml);
+    if (hasStep3 && hasStep4 && noStep5 && noAppPickerId && hasFirstWinsId && hasTryIt && hasPlans && noTrial && hasPrivacy) {
+      pass('onboarding v2: html is Activate → Meet Clippy → (mac Permissions) → Try it; Get Power/Max, privacy line, no trial/wake-word');
     } else {
-      fail('v0.19.0 PR-6: onboarding HTML', `s4=${hasStep4}, s5=${hasStep5}, s6=${hasStep6}, picker=${hasAppPickerId}, keys=${hasApiKeysId}, wins=${hasFirstWinsId}`);
+      fail('onboarding v2: onboarding HTML', `s3mac=${hasStep3}, s4=${hasStep4}, noS5=${noStep5}, noPicker=${noAppPickerId}, wins=${hasFirstWinsId}, tryit=${hasTryIt}, plans=${hasPlans}, noTrial=${noTrial}, privacy=${hasPrivacy}`);
     }
 
     // 2. App catalog has all 19 app IDs across 7 groups
@@ -1966,7 +1972,8 @@ function layer1() {
       'chrome','safari','arc',
     ];
     const missingIds = REQUIRED_APP_IDS.filter((id) => !new RegExp(`id:\\s*'${id}'`).test(catSrc));
-    const hasFirstWinsList = /export const FIRST_WINS/.test(catSrc) && /Summarize this screen/.test(catSrc) && /Block 90 minutes/.test(catSrc);
+    const hasFirstWinsList = /export const FIRST_WINS/.test(catSrc) && /export function firstWinsForPlan/.test(catSrc)
+      && /Summarize what\\'s on my screen/.test(catSrc) && /Help me write a reply/.test(catSrc) && /Block 90 minutes[^\n]*paid: true/.test(catSrc);
     if (missingIds.length === 0 && hasFirstWinsList) {
       pass(`v0.19.0 PR-6: app-catalog.ts has all 19 app IDs + FIRST_WINS chips`);
     } else {
@@ -2073,17 +2080,41 @@ function layer1() {
       fail('v0.19.0 PR-6: Settings Apps tab', `nav=${setHasAppsNav}, section=${setHasAppsSection}, picker=${setHasPickerId}, keys=${setHasApiKeysId}, load=${setTsHasLoad}, render=${setTsHasRenderPicker}`);
     }
 
-    // 10. onboarding.ts wires the app picker, key rows, first-wins chips, and data-platform
+    // 10. onboarding.ts (v2): plan-aware chips, data-platform, per-platform
+    //     step order + dots, Ctrl/⌘ hotkey label, tutorial + activation wiring
     const onbTsImportsCatalog = /from\s+['"]\.\/app-catalog['"]/.test(onbTs);
     const onbTsSetsPlatform = /setAttribute\(['"]data-platform['"]/.test(onbTs);
-    const onbTsRendersPicker = /function renderAppPicker/.test(onbTs);
-    const onbTsRendersKeys   = /function renderApiKeyRows/.test(onbTs);
-    const onbTsRendersFirstWins = /function renderFirstWins/.test(onbTs);
+    const onbTsStepOrder = /STEP_ORDER = IS_MAC \? \[1, 2, 3, 4\] : \[1, 2, 4\]/.test(onbTs) && /for \(const step of STEP_ORDER\)/.test(onbTs);
+    const onbTsHotkey = /IS_MAC \? '⌘⇧Space' : 'Ctrl\+Shift\+Space'/.test(onbTs);
+    const onbTsRendersFirstWins = /function renderFirstWins/.test(onbTs) && /firstWinsForPlan\(validatedPlan\)/.test(onbTs);
     const onbTsFiresChip = /fireFirstWinChip/.test(onbTs);
-    if (onbTsImportsCatalog && onbTsSetsPlatform && onbTsRendersPicker && onbTsRendersKeys && onbTsRendersFirstWins && onbTsFiresChip) {
-      pass('v0.19.0 PR-6: onboarding.ts has 3 render functions + data-platform + fireFirstWinChip wiring');
+    const onbTsTutorial = /startTutorial\(\)/.test(onbTs) && /finishOnboarding\(\)/.test(onbTs) && /onTutorialEvent\(/.test(onbTs);
+    const onbTsActivation = /onActivationResult\(/.test(onbTs);
+    const onbTsNoPicker = !/renderAppPicker|renderApiKeyRows|setUserApps|setApiKey/.test(onbTs);
+    if (onbTsImportsCatalog && onbTsSetsPlatform && onbTsStepOrder && onbTsHotkey && onbTsRendersFirstWins && onbTsFiresChip && onbTsTutorial && onbTsActivation && onbTsNoPicker) {
+      pass('onboarding v2: onboarding.ts has per-platform step order, hotkey label, plan-aware chips, tutorial + activation wiring');
     } else {
-      fail('v0.19.0 PR-6: onboarding.ts', `import=${onbTsImportsCatalog}, plat=${onbTsSetsPlatform}, picker=${onbTsRendersPicker}, keys=${onbTsRendersKeys}, wins=${onbTsRendersFirstWins}, fire=${onbTsFiresChip}`);
+      fail('onboarding v2: onboarding.ts', `import=${onbTsImportsCatalog}, plat=${onbTsSetsPlatform}, order=${onbTsStepOrder}, hotkey=${onbTsHotkey}, wins=${onbTsRendersFirstWins}, fire=${onbTsFiresChip}, tutorial=${onbTsTutorial}, activation=${onbTsActivation}, noPicker=${onbTsNoPicker}`);
+    }
+
+    // 12. Onboarding v2 main-side wiring: clippyai:// protocol (installer +
+    //     runtime, both platforms), /v1/activate redeem with no token logging,
+    //     onboarding:true threaded only through the user-turn callTurn.
+    const ebYml = fs.readFileSync(path.join(ROOT, 'electron-builder.yml'), 'utf8');
+    const idxSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.ts'), 'utf8');
+    const actSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'activate.ts'), 'utf8');
+    const brainSrcV2 = fs.readFileSync(path.join(ROOT, 'src', 'main', 'brain.ts'), 'utf8');
+    const ymlProtocol = /protocols:\s*\n\s*- name: ClippyAI\s*\n\s*schemes:\s*\n\s*- clippyai/.test(ebYml);
+    const idxProtocol = /setAsDefaultProtocolClient\('clippyai', process\.execPath/.test(idxSrc) && /app\.on\('open-url'/.test(idxSrc)
+      && /app\.on\('second-instance', \(_event, argv\)/.test(idxSrc) && /findActivateUrl\(process\.argv\)/.test(idxSrc);
+    const actStrict = /url\.hostname !== 'activate'/.test(actSrc) && /\^\[A-Za-z0-9_-\]\{1,128\}\$/.test(actSrc) && /api\.clippyai\.app\/v1\/activate/.test(actSrc);
+    const actNoTokenLog = !/log\.(info|warn|error)\([^)]*(token|licenseKey|url)/.test(idxSrc.slice(idxSrc.indexOf('async function handleActivateUrl')));
+    const brainOnboarding = /tutorialActive \? \{ onboarding: true \} : \{\}/.test(brainSrcV2) && (brainSrcV2.match(/{ onboarding: true }/g) || []).length === 1;
+    const ipcTutorial = /'onboarding-tutorial-start'/.test(ipcSrc) && /'onboarding-finish'/.test(ipcSrc) && /brain\.setTutorial\(true\)/.test(ipcSrc) && /brain\.setTutorial\(false\)/.test(ipcSrc);
+    if (ymlProtocol && idxProtocol && actStrict && actNoTokenLog && brainOnboarding && ipcTutorial) {
+      pass('onboarding v2: clippyai:// registered (yml + runtime, open-url + argv), strict /v1/activate redeem, onboarding:true only on tutorial user turns');
+    } else {
+      fail('onboarding v2: main wiring', `yml=${ymlProtocol}, idx=${idxProtocol}, strict=${actStrict}, noTokenLog=${actNoTokenLog}, brain=${brainOnboarding}, ipc=${ipcTutorial}`);
     }
 
     // 11. main.ts (renderer) wires the overlay + chip pump

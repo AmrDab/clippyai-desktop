@@ -167,11 +167,22 @@ export const APP_BY_ID: Record<string, AppCatalogEntry> = (() => {
   return out;
 })();
 
-/** v0.19.0 PR-6 — the 5 chips wired on step 6 + the post-onboarding overlay. */
-export const FIRST_WINS: { label: string; prompt: string }[] = [
-  { label: 'Summarize this screen', prompt: 'Summarize what I have on my screen right now.' },
-  { label: 'Clean my desktop', prompt: 'Help me clean and organize my desktop.' },
-  { label: 'Draft a reply to my last email', prompt: 'Draft a reply to my last email.' },
-  { label: 'Find that file I worked on last week', prompt: 'Find the file I was working on last week.' },
-  { label: 'Block 90 minutes for deep work tomorrow', prompt: 'Block 90 minutes for deep work tomorrow.' },
+/**
+ * First-win chips for the onboarding "Try it" screen + the post-onboarding
+ * overlay. The first two work on the Free plan (chat + screen reading);
+ * `paid` chips need desktop automation and are only shown — labelled as
+ * Power features — to Power/Max users. See firstWinsForPlan().
+ */
+export const FIRST_WINS: { label: string; prompt: string; paid?: boolean }[] = [
+  { label: 'Summarize what\'s on my screen', prompt: 'Summarize what I have on my screen right now.' },
+  { label: 'Help me write a reply', prompt: 'Help me write a reply to the message on my screen.' },
+  { label: 'Clean my desktop', prompt: 'Help me clean and organize my desktop.', paid: true },
+  { label: 'Block 90 minutes for deep work tomorrow', prompt: 'Block 90 minutes for deep work tomorrow.', paid: true },
 ];
+
+export function firstWinsForPlan(plan: string): { label: string; prompt: string }[] {
+  const paid = /^(power|max)$/i.test(plan || '');
+  return FIRST_WINS
+    .filter((c) => paid || !c.paid)
+    .map((c) => ({ label: c.paid ? `${c.label} · Power` : c.label, prompt: c.prompt }));
+}

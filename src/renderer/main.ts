@@ -365,7 +365,9 @@ async function init(): Promise<void> {
   let firstWinOverlayEl: HTMLElement | null = null;
   async function showFirstWinOverlay(): Promise<void> {
     if (firstWinOverlayEl) return; // already showing — re-trigger is no-op
-    const { FIRST_WINS } = await import('./app-catalog');
+    const { firstWinsForPlan } = await import('./app-catalog');
+    let plan = '';
+    try { plan = String((await window.clippy.getConfig()).plan || ''); } catch { /* free-safe chips */ }
     firstWinOverlayEl = document.createElement('div');
     firstWinOverlayEl.id = 'first-win-overlay';
     const header = document.createElement('div');
@@ -381,7 +383,7 @@ async function init(): Promise<void> {
     closeBtn.addEventListener('click', dismissFirstWinOverlay);
     header.appendChild(closeBtn);
     firstWinOverlayEl.appendChild(header);
-    for (const chip of FIRST_WINS) {
+    for (const chip of firstWinsForPlan(plan)) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'first-win-chip';

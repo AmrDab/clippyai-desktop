@@ -1725,6 +1725,27 @@ body.settings-window {
 }
 .onboarding-hint strong { color: inherit; }
 .onboarding-hint em { font-style: italic; }
+
+/* Onboarding v2 — "Try it" screen: taught hotkey + the suggested first ask. */
+.onboarding-step kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--glass-text, #1c1c1e);
+  background: var(--glass-card-bg, rgba(255, 255, 255, 0.85));
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.tryit-prompt {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: center;
+  color: var(--glass-text, #1c1c1e);
+  margin: 10px 0;
+}
 .onboarding-skip-link {
   background: transparent;
   border: none;

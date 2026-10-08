@@ -12,15 +12,9 @@
       <p class="tagline">Your AI desktop buddy is waiting</p>
     </div>
 
-    <!-- Step 1: Welcome -->
+    <!-- Step 1: Activate — free is the primary path; one-click email link
+         (clippyai://activate) or paste the key from the same email. -->
     <div class="onboarding-step active" data-step="1">
-      <h2>Welcome</h2>
-      <p>ClippyAI is your personal AI desktop assistant. It watches your screen, helps proactively, and responds to your questions — all powered by the classic Clippy character you know and love.</p>
-      <p class="onboarding-subhead">Let's get you set up in just a moment.</p>
-    </div>
-
-    <!-- Step 2: Get started — free is the primary path -->
-    <div class="onboarding-step" data-step="2">
       <h2>Get started — free forever</h2>
       <p class="onboarding-subhead">No card needed. Just an email and you're in. Already have a license key? You can paste it below.</p>
 
@@ -35,29 +29,36 @@
         <div class="onboarding-error" id="free-error"></div>
       </div>
 
-      <!-- Secondary: upsell to a Power trial -->
-      <div id="trial-section">
+      <!-- Secondary: paid plans. No trial exists — Power/Max charge on checkout. -->
+      <div id="plans-section">
         <div class="onboarding-divider"><span>or</span></div>
         <p class="onboarding-subhead" style="margin-bottom:var(--s-space-2);">
-          Want Clippy to actually run your desktop? Start a 7-day Power trial — automation, browser control, multi-monitor.
+          Want Clippy to actually run your desktop? Power adds automation, browser control and multi-monitor.
         </p>
-        <button class="btn-trial" id="btn-start-trial">Start 7-Day Free Trial</button>
-        <p class="trial-hint" id="trial-hint" style="display:none;">
-          Checkout opened in your browser. After signing up, check your email (and spam folder) for the license key, then paste it below.
+        <button class="btn-trial" id="btn-get-power" type="button">Get Power</button>
+        <p class="trial-hint">$19.99/mo · cancel anytime</p>
+        <button class="btn-trial" id="btn-get-max" type="button" style="margin-top:var(--s-space-2);">Get Max</button>
+        <p class="trial-hint">$39.99/mo · premium voice, deeper reasoning · cancel anytime</p>
+        <p class="trial-hint" id="plans-hint" style="display:none;">
+          Checkout opened in your browser. After paying, click the activation button in your email — or paste the key from that email below.
         </p>
       </div>
 
-      <!-- Tertiary: existing license key -->
+      <!-- Tertiary: paste a key -->
       <div id="license-section">
         <div class="onboarding-divider"><span>already have a key?</span></div>
         <label for="license-key">License key</label>
         <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
         <div class="onboarding-error" id="license-error"></div>
       </div>
+
+      <p class="onboarding-hint" id="privacy-line">
+        Clippy reads your screen only to help with what you ask, or to offer a tip (tips can be turned off in Settings → Brain) — screenshots are never stored.
+      </p>
     </div>
 
-    <!-- Step 3: Personalize / Meet Clippy -->
-    <div class="onboarding-step" data-step="3">
+    <!-- Step 2: Meet Clippy -->
+    <div class="onboarding-step" data-step="2">
       <h2>Meet Clippy</h2>
       <p class="onboarding-subhead">Name your buddy and pick how he sounds.</p>
       <div>
@@ -80,31 +81,15 @@
           </span>
         </label>
       </div>
-      <!-- v0.19.0 PR-6.4 — wake-word opt-in. PREFERENCE-ONLY (stub) until the
-           on-device wake-word model ships. -->
-      <div class="onboarding-toggle">
-        <label class="onboarding-toggle-row" for="onboarding-wake-word">
-          <input id="onboarding-wake-word" type="checkbox" />
-          <span class="onboarding-toggle-label">
-            <span class="onboarding-toggle-title">Listen for "Hey Clippy"</span>
-            <span class="onboarding-toggle-hint">
-              Coming in a future patch — your pick is saved now. When the on-device wake-word
-              model ships, Clippy will start listening automatically. Runs locally — no audio uploaded.
-            </span>
-          </span>
-        </label>
-      </div>
     </div>
 
-    <!-- Step 4: Permissions — guided grant flow (JS wired in onboarding.ts, T7).
-         Clean glass card: each permission ask is shown one at a time. The flow
-         logic is unchanged — it drives #perm-why / #perm-status / #perm-open /
-         #perm-skip. onboarding.ts toggles `perm-enter` (re-entrance) and
-         `perm-granted` (confirmation tint) on #perm-card. -->
-    <div class="onboarding-step" data-step="4">
+    <!-- Step 3 (macOS only): Permissions — guided grant flow. Windows needs
+         no per-app grants, so onboarding.ts drops this step from the order
+         there (and from the dots). The ids are read by the PermissionFlow
+         renderer; onboarding.ts toggles `perm-enter` / `perm-granted`. -->
+    <div class="onboarding-step" data-step="3" data-mac-only>
       <h2>Let's give Clippy what he needs</h2>
       <p class="onboarding-subhead">One quick permission at a time. I'll point you right to it.</p>
-      <!-- KEEP the ids — the PermissionFlow renderer writes into these exact nodes. -->
       <div class="perm-card" id="perm-card">
         <div class="perm-why" id="perm-why"></div>
         <div class="perm-status" id="perm-status" role="status" aria-live="polite">Needed</div>
@@ -113,57 +98,20 @@
       </div>
     </div>
 
-    <!-- Step 5: App picker — v0.19.0 PR-6 -->
-    <div class="onboarding-step" data-step="5">
-      <h2>Which apps do you use?</h2>
-      <p class="onboarding-subhead">Pick what you live in. Clippy will know how to reach those — and skip the rest.</p>
-      <div class="app-picker" id="app-picker">
-        <!-- Populated from APP_CATALOG at runtime. -->
-      </div>
-      <!-- v0.19.0 PR-6.2 — "Not listed" + skip affordances. -->
-      <div class="app-picker-footer">
-        <p class="onboarding-hint">
-          Don't see your app? <strong>Clippy still works with it</strong> — just ask in chat
-          ("open Figma", "summarize this Cron page") and he'll find it. You can add it later in <em>Settings → Apps</em>.
-        </p>
-        <button id="btn-skip-apps" type="button" class="onboarding-skip-link">
-          I'll set this up later
-        </button>
-      </div>
-    </div>
-
-    <!-- Step 6: API keys — v0.19.0 PR-6 -->
-    <div class="onboarding-step" data-step="6">
-      <h2>Hook up the fast paths</h2>
-      <p class="onboarding-subhead">For apps with an API, give Clippy a token and he'll skip the slow UI route. Optional — you can always do this later in Settings.</p>
-      <div class="api-keys" id="api-keys">
-        <!-- Populated at runtime from the selected apps with hasApi=true. -->
-      </div>
-      <p id="api-keys-empty" class="onboarding-subhead" style="display:none;font-style:italic;">
-        None of the apps you picked have an API path. You're good — skip ahead.
+    <!-- Step 4: Try it — the "aha". Clippy is already on screen; the user
+         asks a real question with the voice hotkey (or the typed fallback). -->
+    <div class="onboarding-step" data-step="4">
+      <h2>Try it</h2>
+      <p class="onboarding-subhead">Clippy's in the corner of your screen now. Press
+        <kbd id="tryit-hotkey">Ctrl+Shift+Space</kbd> and ask:
       </p>
-    </div>
-
-    <!-- Step 7: Web Control (optional) — v0.20.0 -->
-    <div class="onboarding-step" data-step="7">
-      <h2>Let Clippy use your browser</h2>
-      <p class="onboarding-subhead">Optional, but worth it. Install the <strong>Clippy Browser Bridge</strong> so Clippy can drive your real, signed-in tabs — Gmail, Outlook web, anything you're already logged into — instead of clicking around the screen. Much more reliable for web tasks.</p>
-      <p class="onboarding-hint">A quick guided install on our site: download, load into Chrome, done. No GitHub. You can also set this up any time in <em>Settings → Web</em>.</p>
-      <button id="btn-install-bridge" type="button" class="btn-secondary" style="margin-top:var(--s-space-3);">⬇ Open install guide</button>
-      <p class="onboarding-hint" id="bridge-hint" hidden style="margin-top:var(--s-space-3);">Opened in your browser — follow the steps there, then come back and press Next. Or just press Next to skip and set it up later.</p>
-    </div>
-
-    <!-- Step 8: Setup complete. A simple glass success badge. -->
-    <div class="onboarding-step" data-step="8">
-      <div class="done-mark" aria-hidden="true">✓</div>
-      <h2>You're all set</h2>
-      <p class="onboarding-subhead">Try one of these as your first ask:</p>
+      <p class="tryit-prompt" id="tryit-prompt">"What's on my screen?"</p>
+      <button class="btn-secondary" id="btn-tryit-type" type="button">or type it</button>
+      <p class="onboarding-hint" id="tryit-status" role="status" aria-live="polite"></p>
+      <p class="onboarding-subhead" style="margin-top:var(--s-space-3);">Or try one of these:</p>
       <div class="first-wins" id="first-wins-chips">
-        <!-- Populated from FIRST_WINS at runtime. -->
+        <!-- Populated from FIRST_WINS at runtime (plan-aware). -->
       </div>
-      <p class="onboarding-subhead" style="margin-top:var(--s-space-3);font-size:var(--s-fs-12);">
-        Or just close this window and chat with Clippy any time.
-      </p>
 
       <!-- Shown only when Screen Recording was granted during setup: applying
            it needs a process restart. The user can do it now or defer — SR
@@ -182,16 +130,9 @@
     <div class="onboarding-footer">
       <button class="btn-secondary" id="btn-back" style="visibility: hidden;">Back</button>
       <div class="progress-dots" role="progressbar" aria-label="Onboarding progress">
-        <span class="dot active" data-dot="1"></span>
-        <span class="dot" data-dot="2"></span>
-        <span class="dot" data-dot="3"></span>
-        <span class="dot" data-dot="4"></span>
-        <span class="dot" data-dot="5"></span>
-        <span class="dot" data-dot="6"></span>
-        <span class="dot" data-dot="7"></span>
-        <span class="dot" data-dot="8"></span>
+        <!-- One dot per step in this platform's order; built in onboarding.ts. -->
       </div>
-      <button class="btn-primary" id="btn-next">Get Started</button>
+      <button class="btn-primary" id="btn-next">Next</button>
     </div>
   </div>
 

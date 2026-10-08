@@ -2,6 +2,7 @@ import { globalShortcut, BrowserWindow } from 'electron';
 import { Brain, brainSettingsStore as settingsStore } from './brain';
 import { createLogger } from './logger';
 import { triggerWritingAssist } from './writing-assist';
+import { getOnboardingWindow } from './window';
 
 const log = createLogger('Hotkey');
 
@@ -45,6 +46,9 @@ export function registerHotkey(win: BrowserWindow, brain: Brain): void {
     if (!win.isDestroyed()) {
       win.webContents.send(voiceRecording ? 'voice-start' : 'voice-stop');
     }
+    // Onboarding v2 — the "Try it" screen flips to "Clippy's listening" as
+    // soon as the taught hotkey is pressed (no-op when the wizard is closed).
+    if (voiceRecording) getOnboardingWindow()?.webContents.send('onboarding-tutorial', 'started');
   });
   if (!ok) {
     log.warn('Voice hotkey registration failed — another app may hold it', { shortcut: voiceShortcut });

@@ -47,7 +47,7 @@ import * as profileMod from './profile';
 // v0.20.0-alpha.12 — static import for window-follow (NOT lazy require)
 // to keep Rollup from tree-shaking it. See memory: feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
-import { setClickThrough, createSettingsWindow, createOnboardingWindow, createLogWindow, hideWritingBadge } from './window';
+import { setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge } from './window';
 // Badge click reuses the ⌥G correction flow.
 import { triggerWritingAssist } from './writing-assist';
 // updater imports moved to top of file
@@ -96,8 +96,18 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (typeof text !== 'string') return 'Invalid input.';
     const trimmed = text.trim().substring(0, 4096);
     if (!trimmed) return '';
+    // Onboarding v2 — "Try it": tell the wizard the first ask went out, and
+    // celebrate when the answer lands. Self-heals if the window went away.
+    const onboarding = getOnboardingWindow();
+    if (brain.isTutorialActive() && !onboarding) brain.setTutorial(false);
+    const tutorial = brain.isTutorialActive();
+    if (tutorial) onboarding!.webContents.send('onboarding-tutorial', 'started');
     try {
       const response = await brain.handleUserMessage(trimmed);
+      if (tutorial) {
+        getOnboardingWindow()?.webContents.send('onboarding-tutorial', 'answered');
+        mainWindow.webContents.send('play-animation', 'Congratulate');
+      }
       return response || "Hmm, try again! 📎";
     } catch (err) {
       log.error('handleUserMessage threw', serializeErr(err));
@@ -1139,8 +1149,15 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // closing its window. The old .on() (fire-and-forget) caused a race:
   // onboarding closed before the main window was ready, leaving Clippy
   // in a half-initialized state.
-  ipcMain.handle('onboarding-complete', async () => {
+  // Onboarding v2 splits this in two so the "Try it" screen can show Clippy
+  // and wake the brain while the wizard is still open (tutorial-start), and
+  // run the name prompt / first-win overlay only once the wizard closes
+  // (onboarding-finish). onboarding-complete still does both, in order.
+  let mainWoken = false; // idempotent: tutorial-start + finish both call it
+  async function showMainAndWake(): Promise<boolean> {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (mainWoken) return true;
+    mainWoken = true;
 
     // v0.20.0-alpha.6 — bootstrap the profile/ workspace (IDENTITY.md,
     // USER.md, SOUL.md, MEMORY.md) so the worker model has tailored
@@ -1179,7 +1196,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     initUpdater(mainWindow);
     setTimeout(() => checkForUpdates(), 10_000);
     startPeriodicUpdateChecks();
+    return true;
+  }
 
+  function postOnboardingPrompts(): void {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     // Clippy asks for the user's name (removed from onboarding form)
     if (!isProfileSetUp()) {
       setTimeout(() => {
@@ -1202,7 +1223,26 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
         }
       }, 3000);
     }
+  }
 
+  ipcMain.handle('onboarding-complete', async () => {
+    if (!(await showMainAndWake())) return false;
+    postOnboardingPrompts();
+    return true;
+  });
+
+  ipcMain.handle('onboarding-tutorial-start', async () => {
+    if (!(await showMainAndWake())) return false;
+    brain.setTutorial(true);
+    log.info('Onboarding.tutorial', { state: 'start' });
+    return true;
+  });
+
+  ipcMain.handle('onboarding-finish', async () => {
+    brain.setTutorial(false);
+    log.info('Onboarding.tutorial', { state: 'finish' });
+    if (!(await showMainAndWake())) return false;
+    postOnboardingPrompts();
     return true;
   });
 
