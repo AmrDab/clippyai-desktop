@@ -20,7 +20,7 @@ export interface ProviderPreset {
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze([
   { id: 'openai', label: 'OpenAI', api: 'openai', baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-5.4-mini', needsKey: true, keyUrl: 'https://platform.openai.com/api-keys' },
-  { id: 'anthropic', label: 'Anthropic', api: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', defaultModel: 'claude-sonnet-4-5', needsKey: true, keyUrl: 'https://console.anthropic.com/settings/keys' },
+  { id: 'anthropic', label: 'Anthropic', api: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', defaultModel: 'claude-sonnet-5-5', needsKey: true, keyUrl: 'https://console.anthropic.com/settings/keys' },
   { id: 'gemini', label: 'Google Gemini', api: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-2.5-flash', needsKey: true, keyUrl: 'https://aistudio.google.com/apikey' },
   { id: 'deepseek', label: 'DeepSeek', api: 'openai', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-v4-flash', needsKey: true, keyUrl: 'https://platform.deepseek.com/api_keys' },
   { id: 'openrouter', label: 'OpenRouter', api: 'openai', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'openai/gpt-5.4-mini', needsKey: true, keyUrl: 'https://openrouter.ai/keys' },
