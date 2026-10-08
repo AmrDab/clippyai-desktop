@@ -98,9 +98,12 @@ body.clippy-window {
    frosted backdrop (any heavier and contrast on the body text drops). */
 :root {
   --bubble-radius: 16px;
-  --bubble-bg:        rgba(252, 252, 254, 0.78);
-  --bubble-ink:       rgba(15, 23, 42, 0.88);
-  --bubble-ink-soft:  rgba(15, 23, 42, 0.55);
+  /* v0.20.2 — bg 0.78→0.92 and soft ink 0.55→0.70: over a busy/bright
+   * wallpaper the secondary text fell to ~3.7:1; now ≥5.9:1 on any
+   * backdrop while the blur still reads as frosted glass. */
+  --bubble-bg:        rgba(252, 252, 254, 0.92);
+  --bubble-ink:       rgba(15, 23, 42, 0.92);
+  --bubble-ink-soft:  rgba(15, 23, 42, 0.70);
   /* v0.19.0 RC-6 — harmonized with Settings v2 hairline (0.08) so the
    * bubble border reads as the same family of slate-ink strokes used
    * everywhere else in the app. Pre-fix the bubble's 0.10 alpha looked
@@ -866,9 +869,9 @@ body.clippy-window {
 /* ── Dark mode — keeps brand warmth ─────────────────────────────── */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bubble-bg:        rgba(28, 28, 32, 0.78);
+    --bubble-bg:        rgba(28, 28, 32, 0.92);
     --bubble-ink:       #e2e8f0;
-    --bubble-ink-soft:  rgba(226, 232, 240, 0.6);
+    --bubble-ink-soft:  rgba(226, 232, 240, 0.7);
     --bubble-hairline:  rgba(255, 255, 255, 0.10);
     --bubble-inner-stroke: rgba(255, 255, 255, 0.08);
     --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.5);
