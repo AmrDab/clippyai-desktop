@@ -427,9 +427,11 @@ function freeErrorMessage(code: string): string {
   }
 }
 
-// Reveal the email field on first tap; submit on the second.
+// Reveal the email field on first tap (the field replaces the button so the
+// step still fits the window); Confirm submits.
 btnUseFree.addEventListener('click', () => {
   freeError.textContent = '';
+  btnUseFree.style.display = 'none';
   freeEmailRow.style.display = '';
   freeEmailInput.focus();
 });
@@ -476,6 +478,11 @@ async function submitFreeSignup(): Promise<void> {
 btnFreeConfirm.addEventListener('click', submitFreeSignup);
 freeEmailInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); void submitFreeSignup(); }
+});
+// A validation error shouldn't outlive the typo it describes; the
+// "check your inbox" hint (onboarding-hint class) is not an error, keep it.
+freeEmailInput.addEventListener('input', () => {
+  if (freeError.className === 'onboarding-error') freeError.textContent = '';
 });
 
 // ── Paid plans → Stripe checkout in the browser ───────────────────────
