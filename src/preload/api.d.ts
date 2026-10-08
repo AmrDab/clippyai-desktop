@@ -56,6 +56,13 @@ interface Window {
     openExternalUrl: (url: string) => Promise<boolean>;
     openOnboarding: () => void;
     onOnboardingComplete: () => Promise<void>;
+    /** Onboarding v2 — result of a clippyai://activate deep link redeemed by main. */
+    onActivationResult: (cb: (r: { ok: boolean; plan?: string; licenseKey?: string; message?: string }) => void) => void;
+    /** Onboarding v2 — "Try it" tutorial: show Clippy + wake the brain while the wizard stays open. */
+    startTutorial: () => Promise<boolean>;
+    /** Onboarding v2 — post-tutorial close: name prompt / first-win overlay. */
+    finishOnboarding: () => Promise<boolean>;
+    onTutorialEvent: (cb: (ev: 'started' | 'answered') => void) => void;
 
     // ── v0.19.0 PR-6 — onboarding app picker + API-key state.
     // Tokens never leave main once written: setApiKey is write-only,

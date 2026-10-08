@@ -12,6 +12,14 @@ extraMetadata:
     name: Cloudana
     email: hello@clippyai.app
 
+# clippyai://activate?t=<token> — one-click license activation from the
+# key-delivery email. Registers the scheme in the NSIS installer (Windows
+# registry) and in Info.plist (macOS). Handled in src/main/index.ts.
+protocols:
+  - name: ClippyAI
+    schemes:
+      - clippyai
+
 win:
   target:
     - target: nsis

@@ -87,7 +87,9 @@ if (process.platform === 'win32') {
   bootLog('HW_ACCELERATION_DISABLED');
 }
 
-import { createWindow, createOnboardingWindow } from './window';
+import { createWindow, createOnboardingWindow, getOnboardingWindow } from './window';
+import { activateFromUrl, findActivateUrl, planLabel } from './activate';
+import { getBuddyName, getTtsVoice, saveLicense } from './license';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
 import { Brain } from './brain';
@@ -130,13 +132,74 @@ if (!gotLock) {
 let mainWindow: BrowserWindow | null = null;
 let brain: Brain | null = null;
 
-app.on('second-instance', () => {
+// ── clippyai:// deep links (one-click license activation) ────────────
+// electron-builder.yml `protocols` registers the scheme in the installer
+// (NSIS registry / Info.plist); setAsDefaultProtocolClient covers an
+// unpackaged dev run, where Windows needs the exe + script path to launch.
+if (process.defaultApp && process.argv.length >= 2) {
+  app.setAsDefaultProtocolClient('clippyai', process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient('clippyai');
+}
+
+// A URL that arrives before the windows exist (macOS open-url can fire before
+// ready; Windows/Linux pass it in argv) waits here until whenReady is done.
+let pendingActivateUrl: string | null = findActivateUrl(process.argv);
+let windowsReady = false;
+
+function queueActivateUrl(url: string): void {
+  if (windowsReady) void handleActivateUrl(url);
+  else pendingActivateUrl = url;
+}
+
+// macOS delivers protocol URLs here (must be registered before ready).
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  queueActivateUrl(url);
+});
+
+app.on('second-instance', (_event, argv) => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
   }
+  // Windows/Linux: the OS launched a second instance with the URL in argv.
+  const url = findActivateUrl(argv);
+  if (url) queueActivateUrl(url);
 });
+
+// A first-launch URL can arrive while the renderer is still loading; a send
+// before did-finish-load is silently dropped.
+function whenLoaded(win: BrowserWindow): Promise<void> {
+  if (!win.webContents.isLoading()) return Promise.resolve();
+  return new Promise((resolve) => win.webContents.once('did-finish-load', () => resolve()));
+}
+
+async function handleActivateUrl(url: string): Promise<void> {
+  // Never log the URL (it carries the token) — outcome + plan only.
+  const result = await activateFromUrl(url);
+  const onboarding = getOnboardingWindow();
+  if (onboarding) await whenLoaded(onboarding);
+  else if (mainWindow && !mainWindow.isDestroyed()) await whenLoaded(mainWindow);
+  if (!result.ok) {
+    log.warn('Activate.failed', { error: result.error });
+    onboarding?.webContents.send('activation-result', { ok: false, message: result.message });
+    onboarding?.focus();
+    return;
+  }
+  saveLicense(result.licenseKey, result.plan, getBuddyName() || 'Clippy', getTtsVoice());
+  log.info('Activate.ok', { plan: result.plan });
+  if (onboarding) {
+    // Onboarding advances itself (Meet Clippy) and persists name/voice on Next.
+    onboarding.webContents.send('activation-result', { ok: true, plan: result.plan, licenseKey: result.licenseKey });
+    onboarding.focus();
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    const text = `You're all set — ${planLabel(result.plan)} is active! 📎`;
+    log.info('Clippy.say', { text, animation: 'Congratulate', trigger: 'activation' });
+    mainWindow.webContents.send('clippy-speak', { text, animate: 'Congratulate' });
+  }
+}
 
 // Uncaught errors — log loudly, never crash. Previously called app.exit(1)
 // which killed the user's session mid-task on any non-EPIPE throw (e.g.
@@ -298,6 +361,12 @@ app.whenReady().then(async () => {
     bootLog('NO_LICENSE_ONBOARDING');
     log.info('No valid license — showing onboarding');
     launchWithOnboarding();
+  }
+  windowsReady = true;
+  if (pendingActivateUrl) {
+    const url = pendingActivateUrl;
+    pendingActivateUrl = null;
+    void handleActivateUrl(url);
   }
   bootLog('WHENREADY_COMPLETE');
 });

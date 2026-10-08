@@ -259,6 +259,18 @@ contextBridge.exposeInMainWorld('clippy', {
   restartApp: () => ipcRenderer.invoke('restart-app'),
   openOnboarding: () => ipcRenderer.send('open-onboarding'),
   onOnboardingComplete: () => ipcRenderer.invoke('onboarding-complete'),
+  // Onboarding v2 — clippyai://activate deep link redeemed by main. On ok the
+  // key rides along so the Meet Clippy save path is identical to a pasted key.
+  onActivationResult: (cb: (r: { ok: boolean; plan?: string; licenseKey?: string; message?: string }) => void) => {
+    ipcRenderer.on('activation-result', (_e, r) => cb(r));
+  },
+  // Onboarding v2 — "Try it" tutorial. Start shows the main window + wakes the
+  // brain without closing onboarding; finish runs the post-onboarding prompts.
+  startTutorial: () => ipcRenderer.invoke('onboarding-tutorial-start'),
+  finishOnboarding: () => ipcRenderer.invoke('onboarding-finish'),
+  onTutorialEvent: (cb: (ev: 'started' | 'answered') => void) => {
+    ipcRenderer.on('onboarding-tutorial', (_e, ev) => cb(ev));
+  },
 
   // v0.19.0 PR-6 — onboarding app picker + API-key state. Tokens never
   // leave main once written: setApiKey is write-only, getApiKeys returns

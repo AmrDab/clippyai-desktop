@@ -413,6 +413,11 @@ export function createOnboardingWindow(): BrowserWindow {
   return onboardingWindow;
 }
 
+/** Onboarding window if it is open (deep-link activation + tutorial signals). */
+export function getOnboardingWindow(): BrowserWindow | null {
+  return onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : null;
+}
+
 let logWindow: BrowserWindow | null = null;
 
 export function createLogWindow(): BrowserWindow {
