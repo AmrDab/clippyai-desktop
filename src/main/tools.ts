@@ -93,6 +93,16 @@ function sanitizeNumber(val: unknown): number {
   return Math.round(n);
 }
 
+// win32 — every PowerShell command that moves the mouse or captures the
+// screen must opt into DPI awareness first. powershell.exe is DPI-unaware,
+// so without SetProcessDPIAware() Cursor.Position / mouse_event /
+// PrimaryScreen.Bounds are virtualized (1707x1067 on a 3840x2400 @225%
+// display) while UIA bounds are physical — clicks landed at scale× the
+// intended point. This keeps the whole win32 path in PHYSICAL pixels, as
+// the coordinate-space contract above mouseClick documents.
+const PS_WIN32 =
+  `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo); [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -Name Win32 -Namespace API; ` +
+  '[void][API.Win32]::SetProcessDPIAware(); ';
 const log = createLogger('Tools');
 const execFileAsync = promisify(execFile);
 // exec removed — all commands use execFileAsync (safe) or shell.openExternal
@@ -280,6 +290,24 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
     return ocrReadScreen();
   }
 
+  // win32 — UIA accessibility tree via get-screen-context.ps1 (restored
+  // from v0.17.7; the v0.20.0 port fell through to osascript here).
+  if (process.platform === 'win32') {
+    const scriptPath = path.join(getScriptsDir(), 'get-screen-context.ps1');
+    try {
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath];
+      if (params.processId) args.push('-ProcessId', String(params.processId));
+      const { stdout } = await execFileAsync('powershell.exe', args, {
+        timeout: 10000,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      const filtered = stripOwnWindowFromScreen(stdout.trim());
+      return { text: filtered || '(empty screen context)' };
+    } catch (err) {
+      return { text: `(read_screen error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
+
   // Accessibility tree via System Events. AppleScript emits TSV (one window
   // per line, fields separated by \t) and we serialize to the same JSON shape
   // the Windows build produced so brain.ts's parsing stays unchanged. AppleScript
@@ -362,6 +390,23 @@ async function getActiveWindow(): Promise<ToolResult> {
     }
   }
 
+  // win32 — Win32 GetForegroundWindow + UIA title via get-foreground-window.ps1
+  // (restored from v0.17.7). One powershell.exe spawn per call (~1-2s with
+  // Add-Type compile); the only steady-state caller is the proactive tick in
+  // brain.ts (interval clamped to >= 5s in ipc.ts), so no bridge needed.
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        path.join(getScriptsDir(), 'get-foreground-window.ps1'),
+      ], { timeout: 5000 });
+      return { text: stdout.trim() || '(no active window)' };
+    } catch (err) {
+      log.warn('get_active_window failed', serializeErr(err));
+      return { text: '(could not get active window)' };
+    }
+  }
+
   // TSV: procName \t procPid \t windowTitle \t x \t y \t w \t h
   // Title and bounds may be empty for processes without a frontmost window.
   const script = `
@@ -427,6 +472,20 @@ async function getWindows(): Promise<ToolResult> {
     }
   }
 
+  // win32 — get-windows.ps1 (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        path.join(getScriptsDir(), 'get-windows.ps1'),
+      ], { timeout: 5000 });
+      return { text: stdout.trim() || '(no windows found)' };
+    } catch (err) {
+      log.warn('get_windows failed', serializeErr(err));
+      return { text: '(could not list windows)' };
+    }
+  }
+
   // Reuses the same accessibility-tree query as readScreen so the model
   // sees a consistent shape across both tools.
   return readScreen({ mode: 'accessibility' });
@@ -436,6 +495,46 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
   const { processName, processId, title } = params;
   if (!processName && !processId && !title) {
     return { text: '(focus_window needs processName, processId, or title)' };
+  }
+
+  // win32 — focus-window.ps1 (UIA SetFocus / SetForegroundWindow), restored
+  // from v0.17.7. processName is resolved to a PID first because e.g.
+  // "msedge" never appears in Edge's window title.
+  if (process.platform === 'win32') {
+    try {
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        path.join(getScriptsDir(), 'focus-window.ps1')];
+      if (title) {
+        args.push('-Title', String(title));
+      } else if (processName) {
+        try {
+          const { stdout: pidOut } = await execFileAsync('powershell.exe', [
+            '-NoProfile', '-Command',
+            `(Get-Process -Name '${sanitizeAppName(String(processName))}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id`,
+          ], { timeout: 3000 });
+          const pid = parseInt(pidOut.trim());
+          if (pid > 0) {
+            args.push('-ProcessId', String(pid));
+          } else {
+            args.push('-Title', String(processName));
+          }
+        } catch {
+          args.push('-Title', String(processName));
+        }
+      } else if (processId) {
+        args.push('-ProcessId', String(processId));
+      }
+      const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 5000 });
+      return { text: stdout.trim() || 'Focused' };
+    } catch (err) {
+      // Fallback: try alt+tab
+      try {
+        await keyPress({ key: 'alt+tab' });
+        return { text: 'Switched window via alt+tab' };
+      } catch {
+        return { text: `(focus_window error: ${err instanceof Error ? err.message : ''})` };
+      }
+    }
   }
 
   // Resolve to a process name. AppleScript's `activate` works by app name —
@@ -516,6 +615,31 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   const name = sanitizeAppName(String(params.name || ''));
   if (!name) return { text: '(no app name provided)' };
 
+  // win32 — Get-Process pre-check + Start-Process (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `$p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | ` +
+        `Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; ` +
+        `if ($p) { $p.Id } else { '' }`,
+      ], { timeout: 3000 });
+      const existing = parseInt(stdout.trim());
+      if (existing > 0) {
+        await focusWindow({ processName: name });
+        return { text: `Focused existing ${name} (pid ${existing})` };
+      }
+    } catch { /* no existing window — launch new */ }
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command', 'Start-Process', '-FilePath', name,
+      ], { timeout: 10000 });
+      return { text: `Launched ${name}` };
+    } catch (err) {
+      return { text: `(could not open ${name}: ${err instanceof Error ? err.message : ''})` };
+    }
+  }
+
   const existingPid = await getAppPidByName(name);
   if (existingPid > 0) {
     await focusWindow({ processName: name });
@@ -552,6 +676,29 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
       } else {
         return { text: `(type_text error: ${err instanceof Error ? err.message : String(err)})` };
       }
+    }
+  }
+
+  // win32 — clipboard paste via Set-Clipboard + SendKeys ^v (restored from
+  // v0.17.7). Text goes through a temp file so nothing model-supplied is
+  // interpolated into the PowerShell command line. v0.17.7 used
+  // `Set-Clipboard -Path`, which puts a FILE DROP on the clipboard (the
+  // paste lands nothing in a text field) — put the file's contents on it.
+  if (process.platform === 'win32') {
+    try {
+      const tmpFile = path.join(os.tmpdir(), `clippy-type-${Date.now()}.txt`);
+      fs.writeFileSync(tmpFile, text, 'utf-8');
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 -LiteralPath '${tmpFile.replace(/'/g, "''")}'); ` +
+        `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v'); ` +
+        `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
+      ], { timeout: 5000 });
+      try { fs.unlinkSync(tmpFile); } catch {} // cleanup fallback
+      const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+      return { text: `Typed ${text.length} chars: "${preview}"` };
+    } catch (err) {
+      return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
     }
   }
 
@@ -595,6 +742,47 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
       } else {
         return { text: `(key_press error: ${err instanceof Error ? err.message : String(err)})` };
       }
+    }
+  }
+
+  // win32 — System.Windows.Forms.SendKeys (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    const keyMap: Record<string, string> = {
+      'Return': '{ENTER}', 'Enter': '{ENTER}',
+      'Tab': '{TAB}', 'Escape': '{ESCAPE}', 'Backspace': '{BACKSPACE}',
+      'Delete': '{DELETE}', 'Up': '{UP}', 'Down': '{DOWN}',
+      'Left': '{LEFT}', 'Right': '{RIGHT}',
+      'Page_Down': '{PGDN}', 'Page_Up': '{PGUP}',
+      'Home': '{HOME}', 'End': '{END}',
+      'F1': '{F1}', 'F2': '{F2}', 'F3': '{F3}', 'F4': '{F4}', 'F5': '{F5}',
+    };
+    try {
+      let sendKeysStr = '';
+      if (rawKey.includes('+')) {
+        // Combo like ctrl+s, alt+tab
+        const parts = rawKey.toLowerCase().split('+');
+        let modifiers = '';
+        const mainKey = parts[parts.length - 1];
+        for (const p of parts.slice(0, -1)) {
+          if (p === 'ctrl' || p === 'control') modifiers += '^';
+          else if (p === 'alt') modifiers += '%';
+          else if (p === 'shift') modifiers += '+';
+          else if (p === 'win' || p === 'meta' || p === 'cmd') modifiers += '^{ESC}'; // approximate
+        }
+        sendKeysStr = `${modifiers}${keyMap[mainKey] || mainKey}`;
+      } else {
+        sendKeysStr = keyMap[rawKey] || rawKey;
+      }
+
+      const safeSendKeys = sanitizeForSendKeys(sendKeysStr);
+      if (!safeSendKeys) return { text: `(invalid key: ${rawKey})` };
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${safeSendKeys}')`,
+      ], { timeout: 5000 });
+      return { text: `Pressed: ${rawKey}` };
+    } catch (err) {
+      return { text: `(key_press error: ${err instanceof Error ? err.message : ''})` };
     }
   }
 
@@ -709,6 +897,14 @@ async function mouseClick(params: Record<string, unknown>): Promise<ToolResult> 
     }
   }
 
+  // win32 — raw mouse_event at physical pixels via clickPhysical (restored
+  // from v0.17.7). The v0.20 schema added button/count; route those to the
+  // matching win32 variants instead of silently left-clicking once.
+  if (process.platform === 'win32') {
+    if (button === 'right') return mouseRightClick({ x, y });
+    if (count >= 2) return mouseDoubleClick({ x, y });
+  }
+
   try {
     await clickPhysical(x, y);
     return { text: `Clicked at (${x},${y})` };
@@ -742,6 +938,22 @@ async function mouseDrag(params: Record<string, unknown>): Promise<ToolResult> {
       } else {
         return { text: `(mouse_drag error: ${err instanceof Error ? err.message : String(err)})` };
       }
+    }
+  }
+  // win32 — mouse_event LEFTDOWN → move → LEFTUP (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
+        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${sx},${sy}); Start-Sleep -Milliseconds 50; ` +
+        `[API.Win32]::mouse_event(2,0,0,0,0); Start-Sleep -Milliseconds 50; ` +
+        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${ex},${ey}); Start-Sleep -Milliseconds 50; ` +
+        `[API.Win32]::mouse_event(4,0,0,0,0)`,
+      ], { timeout: 5000 });
+      return { text: `Dragged from (${sx},${sy}) to (${ex},${ey})` };
+    } catch (err) {
+      return { text: `(mouse_drag error: ${err instanceof Error ? err.message : ''})` };
     }
   }
   // Cliclick-free drag using AppleScript System Events. `click at {x, y}`
@@ -808,6 +1020,22 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
       }
     }
   }
+  // win32 — real wheel event via mouse_event MOUSEEVENTF_WHEEL (restored
+  // from v0.17.7).
+  if (process.platform === 'win32') {
+    const delta = direction === 'up' ? 120 * amount : -120 * amount;
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
+        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+        `[API.Win32]::mouse_event(0x0800,0,0,${delta},0)`,
+      ], { timeout: 5000 });
+      return { text: `Scrolled ${direction} at (${x},${y})` };
+    } catch (err) {
+      return { text: `(mouse_scroll error: ${err instanceof Error ? err.message : ''})` };
+    }
+  }
   // AppleScript scroll wheel via `scroll wheel` isn't a System Events
   // primitive. Use `key code 125` (down arrow) / `126` (up) as a usable
   // approximation that scrolls the focused control. Real wheel events
@@ -871,7 +1099,7 @@ async function captureAndOcr(): Promise<{
     try {
       await execFileAbortable('powershell.exe', [
         '-NoProfile', '-Command',
-        `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
+        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
         `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
         `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
         `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
@@ -949,6 +1177,17 @@ async function captureAndOcr(): Promise<{
  * Lifted out of smart_click so the OCR fallback can reuse the same code path.
  */
 async function clickPhysical(x: number, y: number): Promise<void> {
+  // win32 — Cursor.Position + mouse_event LEFTDOWN/LEFTUP (restored from
+  // v0.17.7). Physical pixels, no screenScale.
+  if (process.platform === 'win32') {
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-Command',
+      `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
+      `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+      `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
+    ], { timeout: 5000 });
+    return;
+  }
   // System Events `click at {x, y}` requires Accessibility permission. The
   // OS prompts the user the first time and the call returns an error until
   // permission is granted; the brain surfaces that error to the user.
@@ -1305,6 +1544,59 @@ const TARGET_SCREENSHOT_WIDTH = 1024;
 const SCREENSHOT_DOWNSCALE_THRESHOLD = 1280;
 
 async function desktopScreenshot(): Promise<ToolResult> {
+  // win32 — GDI CopyFromScreen + in-PowerShell downscale (restored from
+  // v0.17.7). captureScreen()/screenshot-helper below is macOS-only and
+  // throws HelperError('missing') on Windows.
+  if (process.platform === 'win32') {
+    try {
+      // v0.11.26 abortable so sleep can kill an in-flight 10s capture.
+      const { stdout } = await execFileAbortable('powershell.exe', [
+        '-NoProfile', '-Command',
+        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
+        `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+        `$nw = $b.Width; $nh = $b.Height; ` +
+        `$bmp = New-Object System.Drawing.Bitmap($nw,$nh); ` +
+        `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
+        `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
+        `$g.Dispose(); ` +
+        `$tw = ${TARGET_SCREENSHOT_WIDTH}; $thr = ${SCREENSHOT_DOWNSCALE_THRESHOLD}; ` +
+        `if ($nw -gt $thr) { ` +
+        `  $sw = $tw; $sh = [int][Math]::Round($nh * ($tw / [double]$nw)); ` +
+        `  $small = New-Object System.Drawing.Bitmap($sw,$sh); ` +
+        `  $sg = [System.Drawing.Graphics]::FromImage($small); ` +
+        `  $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; ` +
+        `  $sg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality; ` +
+        `  $sg.DrawImage($bmp,0,0,$sw,$sh); ` +
+        `  $sg.Dispose(); $bmp.Dispose(); $bmp = $small; ` +
+        `} ` +
+        `$fw = $bmp.Width; $fh = $bmp.Height; ` +
+        `$ms = New-Object System.IO.MemoryStream; ` +
+        `$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); ` +
+        `$bmp.Dispose(); ` +
+        `Write-Output ("$nw $nh $fw $fh"); ` +
+        `Write-Output ([Convert]::ToBase64String($ms.ToArray()))`,
+      ], { timeout: 10000, maxBuffer: 20 * 1024 * 1024 });
+
+      const lines = stdout.trim().split(/\r?\n/);
+      const headerParts = (lines[0] || '').split(' ');
+      const nativeW = parseInt(headerParts[0] || '0', 10);
+      const nativeH = parseInt(headerParts[1] || '0', 10);
+      const finalW = parseInt(headerParts[2] || '0', 10);
+      const finalH = parseInt(headerParts[3] || '0', 10);
+      const base64 = (lines.slice(1).join('') || '').trim();
+      const downscaled = nativeW > 0 && finalW > 0 && finalW < nativeW;
+      const scale = downscaled ? nativeW / finalW : 1;
+      const text = downscaled
+        ? `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
+          `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
+          `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`
+        : `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+      return { text, image: { data: base64, mimeType: 'image/png' } };
+    } catch (err) {
+      return { text: `(screenshot error: ${err instanceof Error ? err.message : ''})` };
+    }
+  }
+
   // Capture a full-screen PNG, then read+downscale via Electron's
   // nativeImage (already a process dep) so we don't need sharp.
   //
@@ -1425,6 +1717,18 @@ async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
 // ── Clipboard ────────────────────────────────────────────────────
 
 async function readClipboard(): Promise<ToolResult> {
+  // win32 — Get-Clipboard (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command', '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw',
+      ], { timeout: 5000 });
+      const text = stdout.trim();
+      return { text: text ? `Clipboard: ${text.substring(0, 2000)}` : '(clipboard empty)' };
+    } catch (err) {
+      return { text: `(read_clipboard error: ${err instanceof Error ? err.message : ''})` };
+    }
+  }
   const r = await runCli('pbpaste', [], { timeoutMs: 3000 });
   if (!r.ok) return { text: `(read_clipboard error: ${r.error ?? r.stderr})` };
   const text = r.stdout.trim();
@@ -1442,6 +1746,21 @@ async function writeClipboard(params: Record<string, unknown>): Promise<ToolResu
     const previous = clipboard.readText() || null;
     (params as Record<string, unknown>)._previousClipboard = previous;
   } catch { /* non-fatal: if pre-capture fails, undo falls back to noop */ }
+  // win32 — Set-Clipboard via temp file (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      const tmpFile = path.join(os.tmpdir(), `clippy-clip-${Date.now()}.txt`);
+      fs.writeFileSync(tmpFile, text, 'utf-8');
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 -LiteralPath '${tmpFile.replace(/'/g, "''")}')`,
+      ], { timeout: 5000 });
+      try { fs.unlinkSync(tmpFile); } catch { /* cleanup fallback */ }
+      return { text: `Wrote ${text.length} chars to clipboard` };
+    } catch (err) {
+      return { text: `(write_clipboard error: ${err instanceof Error ? err.message : ''})` };
+    }
+  }
   const r = await runCli('pbcopy', [], { stdin: text, timeoutMs: 3000 });
   if (!r.ok) return { text: `(write_clipboard error: ${r.error ?? r.stderr})` };
   return { text: `Wrote ${text.length} chars to clipboard` };
@@ -1571,6 +1890,22 @@ async function mouseDoubleClick(params: Record<string, unknown>): Promise<ToolRe
       }
     }
   }
+  // win32 — two LEFTDOWN/LEFTUP pairs 50ms apart (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
+        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+        `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0); ` +
+        `Start-Sleep -Milliseconds 50; ` +
+        `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
+      ], { timeout: 5000 });
+      return { text: `Double-clicked at (${x},${y})` };
+    } catch (err) {
+      return { text: `(mouse_double_click error: ${err instanceof Error ? err.message : ''})` };
+    }
+  }
   const r = await runApplescript(
     `on run argv
        set x to (item 1 of argv) as integer
@@ -1610,6 +1945,21 @@ async function mouseRightClick(params: Record<string, unknown>): Promise<ToolRes
       } else {
         return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : String(err)})` };
       }
+    }
+  }
+  // win32 — mouse_event RIGHTDOWN (0x0008) / RIGHTUP (0x0010), restored
+  // from v0.17.7.
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
+        `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
+        `[API.Win32]::mouse_event(8,0,0,0,0); [API.Win32]::mouse_event(16,0,0,0,0)`,
+      ], { timeout: 5000 });
+      return { text: `Right-clicked at (${x},${y})` };
+    } catch (err) {
+      return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : ''})` };
     }
   }
   // AppleScript exposes `click at` and `right click` differs by app context.
@@ -1661,7 +2011,7 @@ async function mouseHover(params: Record<string, unknown>): Promise<ToolResult> 
   try {
     await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
-      `Add-Type -AssemblyName System.Windows.Forms; ` +
+      `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
       `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y})`,
     ], { timeout: 5000 });
     return { text: `Moved cursor to (${x},${y})` };
@@ -1693,6 +2043,27 @@ async function getFocusedElement(): Promise<ToolResult> {
       } else {
         return { text: `(get_focused_element error: ${err instanceof Error ? err.message : String(err)})` };
       }
+    }
+  }
+
+  // win32 — UIA AutomationElement.FocusedElement (restored from v0.17.7).
+  if (process.platform === 'win32') {
+    try {
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Add-Type -AssemblyName UIAutomationClient; ` +
+        `$el = [System.Windows.Automation.AutomationElement]::FocusedElement; ` +
+        `if ($el) { ` +
+          `$name = $el.Current.Name; ` +
+          `$type = $el.Current.LocalizedControlType; ` +
+          `$auto = $el.Current.AutomationId; ` +
+          `$b = $el.Current.BoundingRectangle; ` +
+          `"name=$name | type=$type | id=$auto | bounds=$($b.X),$($b.Y),$($b.Width),$($b.Height)" ` +
+        `} else { "(no focused element)" }`,
+      ], { timeout: 5000 });
+      return { text: stdout.trim() || '(no focused element)' };
+    } catch (err) {
+      return { text: `(get_focused_element error: ${err instanceof Error ? err.message : ''})` };
     }
   }
 
@@ -2718,6 +3089,7 @@ function splitAttachments(s: string): string[] {
 }
 
 async function sendViaAppleMail(args: MacMailArgs): Promise<MacMailResult> {
+  if (process.platform !== 'darwin') return { ok: false, message: '(error:PLATFORM_UNSUPPORTED) Apple Mail is macOS-only' };
   const toList = splitAddresses(args.to);
   const ccList = splitAddresses(args.cc);
   const attachments = splitAttachments(args.attachments);
@@ -2765,6 +3137,7 @@ async function sendViaAppleMail(args: MacMailArgs): Promise<MacMailResult> {
 }
 
 async function sendViaOutlookMac(args: MacMailArgs): Promise<MacMailResult> {
+  if (process.platform !== 'darwin') return { ok: false, message: '(error:PLATFORM_UNSUPPORTED) Outlook for Mac is macOS-only' };
   const toList = splitAddresses(args.to);
   const ccList = splitAddresses(args.cc);
   const attachments = splitAttachments(args.attachments);
