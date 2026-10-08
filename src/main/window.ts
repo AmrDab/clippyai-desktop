@@ -377,6 +377,18 @@ export function createOnboardingWindow(): BrowserWindow {
     return onboardingWindow;
   }
 
+  const width = 480;
+  const height = 700;
+  // Centered, but never over Clippy's bottom-right corner: during "Try it"
+  // the reply bubble (expanded window: 540×660, 10px inset) must stay
+  // visible beside the onboarding window, not underneath it. On 1366-wide
+  // screens that shifts the window ~120px left; wider screens stay centered.
+  const wa = screen.getPrimaryDisplay().workArea;
+  const centeredX = Math.round(wa.x + (wa.width - width) / 2);
+  const clearOfClippyX = wa.x + wa.width - BUBBLE_EXPANDED_WIDTH - 10 - width - 12;
+  const x = Math.max(wa.x, Math.min(centeredX, clearOfClippyX));
+  const y = Math.max(wa.y, Math.round(wa.y + (wa.height - height) / 2));
+
   onboardingWindow = new BrowserWindow({
     // The body is width/height:100vw/vh, so it always fills whatever size we
     // set here — no CSS pixel value to keep in sync. Height 700 (was 620):
@@ -385,8 +397,10 @@ export function createOnboardingWindow(): BrowserWindow {
     // a sliver and READ as cropped even though they scrolled. 700 gives the
     // moderate steps room to fit outright; the rest scroll with a visible
     // affordance. Fits comfortably on any display ≥768px tall.
-    width: 480,
-    height: 700,
+    width,
+    height,
+    x,
+    y,
     icon: path.join(__dirname, '../../build/icon.ico'),
     resizable: false,
     minimizable: false,
