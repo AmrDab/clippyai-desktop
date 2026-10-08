@@ -3,7 +3,10 @@ import { resolve } from 'path';
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // zod is a transitive dep (via @modelcontextprotocol/sdk) used by
+    // agent-tools.ts; externalize it so the main bundle shares the SDK's
+    // copy instead of inlining a second one.
+    plugins: [externalizeDepsPlugin({ include: ['zod'] })],
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

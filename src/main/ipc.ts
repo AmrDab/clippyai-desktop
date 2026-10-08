@@ -1254,6 +1254,34 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return approvalMod.resolveApproval(id, approved);
   });
 
+  // v0.21 — "Connect an agent" (Settings) + the bubble's answer to
+  // clippy_ask_user. Only the main window may answer an ask.
+  ipcMain.handle('agent:status', async () => {
+    const m = await import('./agent-connect');
+    return m.getAgentConnectStatus();
+  });
+  ipcMain.handle('agent:set-enabled', async (_event, enabled: unknown) => {
+    const m = await import('./agent-connect');
+    await m.setAgentEnabled(enabled === true);
+    return m.getAgentConnectStatus();
+  });
+  ipcMain.handle('agent:regenerate-token', async () => {
+    const m = await import('./agent-connect');
+    await m.regenerateAgentToken();
+    return m.getAgentConnectStatus();
+  });
+  ipcMain.handle('agent:reveal-skill', async () => {
+    const m = await import('./agent-connect');
+    m.revealSkillFile();
+    return true;
+  });
+  ipcMain.handle('agent:ask-response', async (event, id: unknown, choice: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return false;
+    if (typeof id !== 'string' || typeof choice !== 'string') return false;
+    const m = await import('./agent-tools');
+    return m.resolveAgentAsk(id, choice.slice(0, 40));
+  });
+
   // v0.17.8 — Guardrails: permission policy + action history IPC handlers.
   // These are the renderer-facing API for Settings → Guardrails.
   ipcMain.handle('guardrails:get-policy', async () => {

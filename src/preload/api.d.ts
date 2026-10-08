@@ -21,6 +21,26 @@
  *     in the preload is a two-file edit (preload + this).
  */
 
+/** v0.21 — mirrors src/main/agent-connect.ts AgentConnectStatus. */
+interface AgentConnectStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  clients: string[];
+  snippets: {
+    url: string;
+    claudeCode: string;
+    claudeDesktop: string;
+    claudeDesktopConfigPath: string;
+    codex: string;
+    generic: string;
+  };
+  bridgePath: string;
+  skillPath: string;
+  skillMarkdown: string;
+  configPath: string;
+}
+
 interface Window {
   clippy: {
     // ── Conversation
@@ -202,6 +222,13 @@ interface Window {
     /** v0.16.0 — play-tag mode toggle */
     onPlayTagStart?: (cb: () => void) => void;
     onPlayTagStop?: (cb: () => void) => void;
+    /** v0.21 — "Connect an agent": clippy_ask_user bubble + Settings panel. */
+    onAgentAsk?: (cb: (payload: { id: string; question: string; options: string[] }) => void) => void;
+    respondAgentAsk?: (id: string, choice: string) => Promise<boolean>;
+    agentStatus?: () => Promise<AgentConnectStatus>;
+    agentSetEnabled?: (enabled: boolean) => Promise<AgentConnectStatus>;
+    agentRegenerateToken?: () => Promise<AgentConnectStatus>;
+    agentRevealSkill?: () => Promise<boolean>;
     /** v0.19.0 — follow-me cursor mode */
     followMeActive?: () => Promise<boolean>;
     followMeStop?: (reason: string) => void;

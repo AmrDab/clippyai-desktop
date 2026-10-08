@@ -46,6 +46,7 @@ import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import { ToolLoopDetector } from './tool-loop-detection';
+import { isAgentBusy } from './agent-tools';
 import Store from 'electron-store';
 import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
 import { randomUUID } from 'crypto';
@@ -1090,6 +1091,15 @@ export class Brain {
         return "Give me a sec — still finishing that up.";
       }
     }
+    // v0.21 — an outside agent (Settings → Connect an agent) is mid-call:
+    // never run two drivers at once.
+    if (isAgentBusy()) {
+      const msg = "One sec — I'm helping your agent right now. Try again in a moment.";
+      log.info('User.message_deferred_agent_busy', { task_id });
+      this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+      setCurrentTaskId(undefined);
+      return msg;
+    }
     this.isExecuting = true;
     this.cancelRequested = false;
     this.cancelReason = null;
@@ -2130,6 +2140,7 @@ export class Brain {
       return;
     }
     if (this.isExecuting) { logGated('task_in_flight'); return; }
+    if (isAgentBusy()) { logGated('agent_in_flight'); return; }
     log.info('Proactive.tick', { gate: 'open' });
 
     // v0.19.0-rc.5 — POLICY: proactive ticks MUST stay text-only.

@@ -137,6 +137,16 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('play-animation', (_e, name) => cb(name));
   },
 
+  // v0.21 — "Connect an agent": clippy_ask_user bubble + Settings panel.
+  onAgentAsk: (cb: (payload: { id: string; question: string; options: string[] }) => void) => {
+    ipcRenderer.on('agent-ask', (_e, payload) => cb(payload));
+  },
+  respondAgentAsk: (id: string, choice: string) => ipcRenderer.invoke('agent:ask-response', id, choice),
+  agentStatus: () => ipcRenderer.invoke('agent:status'),
+  agentSetEnabled: (enabled: boolean) => ipcRenderer.invoke('agent:set-enabled', enabled),
+  agentRegenerateToken: () => ipcRenderer.invoke('agent:regenerate-token'),
+  agentRevealSkill: () => ipcRenderer.invoke('agent:reveal-skill'),
+
   // v0.17.0 — Voice input. Renderer encodes WAV in src/renderer/recorder.ts
   // and calls this to transcribe via bundled whisper.cpp in main.
   transcribeAudio: (wav: Uint8Array, initialPrompt?: string) =>
