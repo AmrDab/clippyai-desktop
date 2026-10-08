@@ -5,7 +5,7 @@ copyright: Copyright © 2026 Cloudana · ClippyAI
 # Becomes the exe's FileVersion (rcedit --set-file-version), so it must be
 # 4-part numeric. Convention for prereleases: 4th field = prerelease number
 # (0.20.0-alpha.24 → 0.20.0.24). For a stable X.Y.Z use X.Y.Z.0.
-buildVersion: 0.20.2.0
+buildVersion: 0.20.3.0
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
