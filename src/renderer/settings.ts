@@ -1274,6 +1274,21 @@ function outcomeBadge(outcome: string): string {
   return `<span title="${outcome}" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:${color};color:#fff;font-size:9px;font-weight:700;flex-shrink:0;">${label}</span>`;
 }
 
+/** v0.21 — receipt pill: did the action run, and was the effect verified? */
+function receiptBadge(receipt?: { status: string; executed: boolean | null; execution_path?: string; evidence: Record<string, unknown> }): string {
+  if (!receipt) return '';
+  const palette: Record<string, [string, string]> = {
+    verified: ['#d1fae5', '#065f46'], unverified: ['#fef3c7', '#92400e'],
+    blocked: ['#ede9fe', '#5b21b6'], error: ['#fee2e2', '#991b1b'], stale: ['#f3f4f6', '#6b7280'],
+  };
+  const [bg, fg] = palette[receipt.status] ?? palette.stale;
+  const ran = receipt.executed === true ? 'ran' : receipt.executed === false ? 'did not run' : 'outcome unknown';
+  const via = receipt.execution_path ? ` via ${receipt.execution_path}` : '';
+  const reason = typeof receipt.evidence?.reason === 'string' ? ` — ${receipt.evidence.reason}` : '';
+  const title = `${receipt.status}: ${ran}${via}${reason}`.replace(/[<>&"]/g, '');
+  return `<span title="${title}" style="margin-left:6px;background:${bg};color:${fg};border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;white-space:nowrap;cursor:help;">${receipt.status}</span>`;
+}
+
 async function refreshHistory(): Promise<void> {
   const root = document.getElementById('action-history-list');
   const empty = document.getElementById('action-history-empty');
@@ -1314,7 +1329,7 @@ async function refreshHistory(): Promise<void> {
       div.innerHTML = `
         ${outcomeBadge(r.outcome)}
         <div style="overflow:hidden;">
-          <div style="color:#1a1a1a;font-weight:600;font-size:11.5px;">${escTool}${escClass}</div>
+          <div style="color:#1a1a1a;font-weight:600;font-size:11.5px;">${escTool}${escClass}${receiptBadge(r.receipt)}</div>
           <div style="color:#555;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escDetail}">${escDetail}</div>
           <div style="color:#aaa;font-size:10px;margin-top:1px;">${fmtRelTime(r.ts)}</div>
         </div>

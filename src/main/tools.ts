@@ -70,6 +70,7 @@ import { captureScreen, HelperError } from './screenshot-helper';
 import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOOLS } from './mcp-chrome';
 import type { ToolResult } from './types/tool-result';
 import { GOVERNED_TOOLS, classifyRisk, type RiskVerdict } from './governor';
+import { makeReceipt, statusFromOutcome, verifyWrittenFile } from './receipt';
 import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersClause } from './mac-bridge';
 import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
@@ -1264,6 +1265,12 @@ function fuzzyMatchOcrElement(
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
   const target = String(params.target || '');
   if (!target) return { text: '(no target provided)' };
+  // v0.21 — every exit carries a receipt (receipt.ts). A click is never
+  // 'verified' here: we know it was dispatched, not what it did.
+  const clicked = (path: string, evidence: Record<string, unknown>): ToolResult['receipt'] =>
+    makeReceipt('smart_click', 'unverified', true, { target, ...evidence }, path);
+  const notRun = (reason: string, executed: false | null = false): ToolResult['receipt'] =>
+    makeReceipt('smart_click', 'error', executed, { target, reason });
 
   // v0.20.0 — darwin path uses the Swift bridge's two-stage pattern from
   // docs/v0.20.0-mac-bridge-architecture.md §3.1:
@@ -1284,7 +1291,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
         const m = ax.matches[0];
         try {
           await macBridge.a11yPress({ pid: m.pid, path: m.path });
-          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})` };
+          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})`, receipt: clicked('ax', { label: m.title || target, role: m.role }) };
         } catch (pressErr) {
           // AX-press failed (element gone, role doesn't expose AXPress, etc).
           // Fall through to OCR. Log so we see how often AX-find→AX-press
@@ -1312,20 +1319,21 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
         const cy = Math.round(match.element.y + match.element.height / 2);
         await macBridge.click({ x: cx, y: cy });
         const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}` };
+        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
       }
-      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"` };
+      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"`, receipt: notRun('not found via AX or OCR') };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
         if (err.kind === 'permission') {
           return { text: `(error: Accessibility permission denied — open System Settings → Privacy & Security → Accessibility)` };
         }
         if (err.kind !== 'missing' && err.kind !== 'platform') {
-          return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — bridge error: ${err.message}` };
+          return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — bridge error: ${err.message}`, receipt: notRun(err.message) };
         }
         // missing/platform → fall through to legacy path
       } else {
-        return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${err instanceof Error ? err.message : String(err)}` };
+        const msg = err instanceof Error ? err.message : String(err);
+        return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}`, receipt: notRun(msg, /timed? ?out/i.test(msg) ? null : false) };
       }
     }
   }
@@ -1379,7 +1387,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       const ey = Math.round(bounds.y + bounds.height / 2);
       await clickPhysical(ex, ey);
       const where = fgPid > 0 ? ` in foreground window` : '';
-      return { text: `Clicked "${target}" at (${ex},${ey})${where} via UIA` };
+      return { text: `Clicked "${target}" at (${ex},${ey})${where} via UIA`, receipt: clicked('uia', { coords: { x: ex, y: ey }, fgPid }) };
     }
 
     // Tier 2 — OCR fallback. The big win for WebViews and custom-rendered UIs.
@@ -1391,16 +1399,16 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     // free-text "not found via UIA or OCR" string, so the entire v0.12.0
     // clawdcursor fallback infrastructure was dead weight on the most common
     // failure mode (smart_click misses on Slack / Discord WebViews).
-    if (!ocr) return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — UIA miss, OCR unavailable. Try Tier-5 fallback or read_screen first.` };
+    if (!ocr) return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — UIA miss, OCR unavailable. Try Tier-5 fallback or read_screen first.`, receipt: notRun('UIA miss, OCR unavailable') };
     const match = fuzzyMatchOcrElement(target, ocr.elements, fgBounds);
     if (match) {
       const cx = Math.round(match.element.x + match.element.width / 2);
       const cy = Math.round(match.element.y + match.element.height / 2);
       await clickPhysical(cx, cy);
       const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}` };
+      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
     }
-    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"` };
+    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"`, receipt: notRun('not found via UIA or OCR') };
   } catch (err) {
     // v0.12.5 — classify timeouts as TIMEOUT (fallback-eligible) instead of
     // forcing them to UI_NOT_FOUND. A 15s execFileAsync rejection on the
@@ -1409,9 +1417,10 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     // genuinely isn't there." Per code audit finding #2.
     const msg = err instanceof Error ? err.message : String(err);
     if (/ETIMEDOUT|timed out|timeout/i.test(msg)) {
-      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}` };
+      // Timed out after dispatch — we can't tell whether the click landed.
+      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}`, receipt: notRun(msg, null) };
     }
-    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}` };
+    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}`, receipt: notRun(msg) };
   }
 }
 
@@ -2519,7 +2528,11 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
     } else {
       await fsp.appendFile(filePath, content, { encoding: 'utf8' });
     }
-    return { text: `File written: ${filePath} (${byteLen} bytes, mode=${mode})` };
+    // v0.21 — receipt: 'verified' only when the bytes on disk match.
+    const v = await verifyWrittenFile(filePath, content, mode);
+    const receipt = makeReceipt('write_file', statusFromOutcome(v.outcome), v.outcome === 'unknown' ? null : true, { outcome: v.outcome, ...v.evidence }, 'fs');
+    if (v.outcome !== 'satisfied') log.warn('write_file post-write verification', { path: filePath, outcome: v.outcome });
+    return { text: `File written: ${filePath} (${byteLen} bytes, mode=${mode})`, receipt };
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === 'EEXIST') return { text: `(error:ALREADY_EXISTS) file exists (use mode=overwrite or mode=append): ${filePath}` };
@@ -5126,6 +5139,9 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     if (fallbackResult.text.startsWith('(error:CLAWD_FAILED)')) {
       log.warn(`Tier 5 fallback also failed for ${tool}`, fallbackResult.text);
       return primaryResult;
+    }
+    if (tool === 'smart_click') {
+      fallbackResult.receipt = makeReceipt(tool, 'unverified', true, { target: String(params.target ?? ''), fallbackFrom: primaryResult.text.substring(0, 120) }, 'clawdcursor');
     }
     return fallbackResult;
   }

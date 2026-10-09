@@ -139,6 +139,13 @@ interface Window {
         undone?: boolean;
         /** v0.19.0 — ISO timestamp of when undo was applied. */
         undoneAt?: string;
+        /** v0.21 — action receipt (smart_click / write_file / blocked). */
+        receipt?: {
+          status: 'verified' | 'unverified' | 'blocked' | 'stale' | 'error';
+          executed: boolean | null;
+          execution_path?: string;
+          evidence: Record<string, unknown>;
+        };
       }>>;
       clearHistory: () => Promise<boolean>;
       /** v0.19.0 — undo a recorded action by id. Returns { ok, detail }. */

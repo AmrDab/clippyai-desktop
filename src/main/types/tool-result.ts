@@ -10,4 +10,7 @@
 export interface ToolResult {
   text: string;
   image?: { data: string; mimeType: string };
+  /** v0.21 — action receipt (smart_click, write_file). Stored on the
+   *  action-history entry; never part of what the model sees. */
+  receipt?: import('../receipt').Receipt;
 }

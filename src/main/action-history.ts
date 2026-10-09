@@ -14,6 +14,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import type { ActionClass } from './tool-meta';
+import type { Receipt } from './receipt';
 import { redactArgs } from './logger';
 
 /** All recognised inverse-action kinds. */
@@ -52,6 +53,8 @@ export interface ActionEntry {
   undone?: boolean;
   /** v0.19.0 — ISO timestamp of when undo was applied. */
   undoneAt?: string;
+  /** v0.21 — action receipt (executed / verified evidence). Absent on older entries. */
+  receipt?: Receipt;
 }
 
 const MAX_ENTRIES = 50;
@@ -102,6 +105,7 @@ export function record(opts: {
   detail: string;
   inverse?: InverseAction;
   taskId?: string;
+  receipt?: Receipt;
 }): ActionEntry {
   ensureLoaded();
 
@@ -128,6 +132,7 @@ export function record(opts: {
     detail: opts.detail,
     taskId: opts.taskId,
     inverse: opts.inverse,
+    ...(opts.receipt ? { receipt: opts.receipt } : {}),
   };
 
   _entries.unshift(entry);

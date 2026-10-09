@@ -76,6 +76,7 @@ import * as lumiereSeen from './proactive/seen-context';
 // Direct namespace usage at the call sites guarantees these stay bundled.
 import * as permissionPolicyMod from './permission-policy';
 import * as actionHistoryMod from './action-history';
+import { blockedReceipt } from './receipt';
 // Phase 3 guardrails — in-bubble Approve/Deny prompt for 'approve' decisions.
 import * as approvalMod from './approval';
 import * as toolUndoMod from './tool-undo';
@@ -1612,6 +1613,7 @@ export class Brain {
               args: call.args,
               outcome: 'blocked',
               detail: `Blocked by permission policy (class=${actionClass})`,
+              receipt: blockedReceipt(call.name, risk ? risk.reason : `policy blocks ${actionClass}`, { actionClass, decision }),
             });
             // Feed a synthetic "blocked" result back into the model so it
             // adapts rather than retrying forever.
@@ -1641,6 +1643,7 @@ export class Brain {
                 args: call.args,
                 outcome: 'approval_denied',
                 detail: `User did not approve (${verdict}): ${summary}`,
+                receipt: blockedReceipt(call.name, risk ? risk.reason : summary, { actionClass, verdict }),
               });
               responseParts.push({
                 functionResponse: {
@@ -1868,6 +1871,7 @@ export class Brain {
                 outcome,
                 detail: resultText.substring(0, 200),
                 inverse,
+                receipt: result.receipt,
               });
             } catch (err) {
               log.warn('audit log append failed (non-fatal)', { err: serializeErr(err) });
