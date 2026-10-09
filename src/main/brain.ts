@@ -1605,7 +1605,10 @@ export class Brain {
           const risk = await assessRisk(call.name, call.args);
           if (risk) log.info('Tool.escalated', { step: step + 1, tool: call.name, class: risk.class, reason: risk.reason });
           const actionClass = policy.classFor(call.name, call.args, risk?.class);
-          const decision = policy.decide(call.name, call.args, risk?.class);
+          let decision = policy.decide(call.name, call.args, risk?.class);
+          // A governor-escalated click/key always asks, even in trusted mode —
+          // trust covers Clippy's own tools, not a guessed "Send"/"Delete" button.
+          if (risk && decision === 'allow') decision = 'approve';
           if (decision === 'block') {
             log.warn('Tool.blocked_by_policy', { step: step + 1, tool: call.name, class: actionClass });
             history.record({
