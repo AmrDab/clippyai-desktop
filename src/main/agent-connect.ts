@@ -15,7 +15,7 @@ import {
 } from './agent-config';
 import { startAgentServer, type AgentServerHandle } from './agent-server';
 import type { AgentToolDeps } from './agent-tools';
-import { executeTool } from './tools';
+import { executeTool, assessRisk } from './tools';
 import { TOOL_META, isToolSupportedOnPlatform } from './tool-meta';
 import * as policy from './permission-policy';
 import * as approval from './approval';
@@ -83,6 +83,7 @@ function buildDeps(): AgentToolDeps {
       return { id: d.id, bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor, primary: d.id === screen.getPrimaryDisplay().id };
     },
     executeTool,
+    assessRisk,
     classFor: policy.classFor,
     decide: policy.decide,
     summarizeArgs: approval.summarizeArgs,

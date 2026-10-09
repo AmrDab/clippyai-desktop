@@ -18,7 +18,7 @@
  */
 
 import { BrowserWindow, net, app, powerMonitor } from 'electron';
-import { executeTool, abortAllInFlightTools, verifyIMessageSent } from './tools';
+import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk } from './tools';
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
 // v0.18.3 — static imports for local modules that brain.ts uses
@@ -1596,10 +1596,15 @@ export class Brain {
           //               must adapt.
           //   'approve' → Phase 3: ask in the bubble (approval.ts) and wait.
           //               Anything but an explicit Approve = denied.
+          //   v0.21 — governor.ts first: a desktop-input call that looks like
+          //   a purchase / send / delete is ESCALATED to that class before the
+          //   policy decides, so "click 'Place order'" asks like a real purchase.
           const policy = permissionPolicyMod;
           const history = actionHistoryMod;
-          const actionClass = policy.classFor(call.name, call.args);
-          const decision = policy.decide(call.name, call.args);
+          const risk = await assessRisk(call.name, call.args);
+          if (risk) log.info('Tool.escalated', { step: step + 1, tool: call.name, class: risk.class, reason: risk.reason });
+          const actionClass = policy.classFor(call.name, call.args, risk?.class);
+          const decision = policy.decide(call.name, call.args, risk?.class);
           if (decision === 'block') {
             log.warn('Tool.blocked_by_policy', { step: step + 1, tool: call.name, class: actionClass });
             history.record({
@@ -1619,7 +1624,8 @@ export class Brain {
             continue;
           }
           if (decision === 'approve') {
-            const summary = approvalMod.summarizeArgs(call.name, call.args);
+            const baseSummary = approvalMod.summarizeArgs(call.name, call.args);
+            const summary = risk ? `${risk.reason} — ${baseSummary}` : baseSummary;
             // The user is about to click Approve/Deny — that's not a takeover.
             try { userTakeover.pauseDetection(); } catch { /* non-fatal */ }
             let verdict: approvalMod.ApprovalResult;

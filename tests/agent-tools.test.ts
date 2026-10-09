@@ -244,6 +244,21 @@ describe('clippy_run_tool policy gate', () => {
     expect(deps.requestApproval).toHaveBeenCalled();
   });
 
+  it('a governor-escalated click prompts with the reason, using the escalated class', async () => {
+    const { deps } = makeDeps({
+      allowedTools: () => ['smart_click'],
+      classFor: (_n, _a, escalate) => escalate ?? 'desktop_input',
+      decide: (_n, _a, escalate) => (escalate ? 'approve' : 'allow'),
+      assessRisk: async (name) => (name === 'smart_click' ? { class: 'destructive_purchase', reason: "Looks like a purchase button: 'Place order'" } : null),
+    });
+    await createAgentToolHandlers(deps).runTool({ name: 'smart_click', args: { target: 'Place order' } });
+    expect(deps.requestApproval).toHaveBeenCalledWith({
+      tool: 'smart_click', actionClass: 'destructive_purchase',
+      summary: "Looks like a purchase button: 'Place order' — do smart_click",
+    });
+    expect(deps.executeTool).toHaveBeenCalled();
+  });
+
   it('blocked classes return policy_blocked', async () => {
     const { deps } = makeDeps({ decide: () => 'block' });
     const r = await createAgentToolHandlers(deps).runTool({ name: 'shell_exec', args: {} });

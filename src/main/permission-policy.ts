@@ -209,10 +209,14 @@ export function setPolicy(next: Partial<PermissionPolicy>): PermissionPolicy {
   return getPolicy();
 }
 
-/** Decide what to do with a given tool call. */
-export function decide(toolName: string, args?: Record<string, unknown>): ClassDecision {
+/**
+ * Decide what to do with a given tool call. `escalate` (v0.21, from
+ * governor.ts) replaces the tool's static class — an escalated click is
+ * judged exactly like a tool that is natively in that class.
+ */
+export function decide(toolName: string, args?: Record<string, unknown>, escalate?: ActionClass): ClassDecision {
   const policy = ensureLoaded();
-  const cls = classFor(toolName, args);
+  const cls = classFor(toolName, args, escalate);
   // Per-class override wins
   if (cls in policy.classOverrides) {
     return policy.classOverrides[cls]!;
@@ -228,8 +232,10 @@ const warnedUnclassed = new Set<string>();
  *   - windows_service_control with action 'status' → read_only
  *   - anything without a TOOL_META class → destructive_exec (prompts in
  *     standard mode), with a one-time warn so the gap gets fixed.
+ *   - `escalate` set (governor.ts judged the call risky) → that class.
  */
-export function classFor(toolName: string, args?: Record<string, unknown>): ActionClass {
+export function classFor(toolName: string, args?: Record<string, unknown>, escalate?: ActionClass): ActionClass {
+  if (escalate) return escalate;
   if (toolName.startsWith('skill__')) return 'destructive_exec';
   if (toolName === 'windows_service_control' && String(args?.action ?? 'status') === 'status') return 'read_only';
   const cls = TOOL_META[toolName]?.actionClass;

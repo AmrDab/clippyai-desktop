@@ -69,6 +69,7 @@ import * as approval from './approval';
 import { captureScreen, HelperError } from './screenshot-helper';
 import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOOLS } from './mcp-chrome';
 import type { ToolResult } from './types/tool-result';
+import { GOVERNED_TOOLS, classifyRisk, type RiskVerdict } from './governor';
 import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersClause } from './mac-bridge';
 import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
@@ -5130,6 +5131,50 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   }
 
   return primaryResult;
+}
+
+/**
+ * v0.21 — risky-action governor front door. Runs BEFORE the permission gate
+ * (brain.ts / agent-tools.ts) so a click that looks like "Place order" is
+ * judged as destructive_purchase instead of plain desktop_input.
+ *
+ * Context resolution is deliberately cheap and best-effort:
+ *   - args alone first (smart_click target, cdp selector/text, key chord) —
+ *     no I/O when that already decides.
+ *   - cdp_* tools: the attached tab's URL (cached on the client, free).
+ *   - coordinate clicks, Enter-type key_press, type_text ending in "
+":
+ *     the active window title (one get_active_window call; ~1-2s on win32,
+ *     fast on darwin). Skipped for ordinary key chords / text.
+ * Never throws — a failed lookup just means "no extra context".
+ */
+export async function assessRisk(tool: string, params: Record<string, unknown> = {}): Promise<RiskVerdict | null> {
+  if (!GOVERNED_TOOLS.has(tool)) return null;
+  const direct = classifyRisk({ tool, args: params });
+  if (direct) return direct;
+
+  let url: string | undefined;
+  let context: string | undefined;
+  try {
+    if (tool.startsWith('cdp_')) {
+      const client = getCdpClient();
+      if (client.isConnected()) url = await client.getUrl();
+    } else {
+      const key = String(params.key ?? '').toLowerCase();
+      const needsWindow =
+        tool === 'mouse_click' || tool === 'mouse_double_click' ||
+        (tool === 'key_press' && /(^|\+)(enter|return)$/.test(key)) ||
+        (tool === 'type_text' && /[\r\n]$/.test(String(params.text ?? '')));
+      if (needsWindow) {
+        const fg = await getActiveWindow();
+        const parsed = JSON.parse(fg.text) as { title?: string; windowTitle?: string; url?: string };
+        context = parsed.title ?? parsed.windowTitle;
+        if (parsed.url) url = parsed.url;
+      }
+    }
+  } catch { /* no context — judge on args alone (already null) */ }
+  if (!url && !context) return null;
+  return classifyRisk({ tool, args: params, url, context });
 }
 
 /**

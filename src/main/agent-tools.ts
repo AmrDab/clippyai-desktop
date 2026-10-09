@@ -56,8 +56,10 @@ export interface AgentToolDeps {
   displays: () => DisplayInfo[];
   displayNearest: (p: { x: number; y: number }) => DisplayInfo;
   executeTool: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
-  classFor: (name: string, args: Record<string, unknown>) => ActionClass;
-  decide: (name: string, args: Record<string, unknown>) => ClassDecision;
+  classFor: (name: string, args: Record<string, unknown>, escalate?: ActionClass) => ActionClass;
+  decide: (name: string, args: Record<string, unknown>, escalate?: ActionClass) => ClassDecision;
+  /** v0.21 — governor.ts: escalated class + reason for risky clicks/keys, else null. */
+  assessRisk?: (name: string, args: Record<string, unknown>) => Promise<{ class: ActionClass; reason: string } | null>;
   summarizeArgs: (name: string, args: Record<string, unknown>) => string;
   requestApproval: (req: { tool: string; summary: string; actionClass: ActionClass }) => Promise<ApprovalResult>;
   markApproved: (name: string, args: Record<string, unknown>) => void;
@@ -261,8 +263,9 @@ export function createAgentToolHandlers(deps: AgentToolDeps) {
       if (!deps.allowedTools().includes(a.name)) {
         return fail(`(error:unknown_tool) "${a.name}" is not an allowed Clippy tool on ${deps.platform}. See clippy_status.allowed_tools.`);
       }
-      const actionClass = deps.classFor(a.name, args);
-      let decision = deps.decide(a.name, args);
+      const risk = deps.assessRisk ? await deps.assessRisk(a.name, args) : null;
+      const actionClass = deps.classFor(a.name, args, risk?.class);
+      let decision = deps.decide(a.name, args, risk?.class);
       // An outside agent never inherits "trusted" for side-effecting classes:
       // anything that writes, sends, spends, executes or publishes asks the
       // user in Clippy's bubble, whatever the Guardrails mode says.
@@ -271,7 +274,8 @@ export function createAgentToolHandlers(deps: AgentToolDeps) {
         return fail(`(error:policy_blocked) The user's Guardrails forbid this action class (${actionClass}).`);
       }
       if (decision === 'approve') {
-        const summary = deps.summarizeArgs(a.name, args);
+        const base = deps.summarizeArgs(a.name, args);
+        const summary = risk ? `${risk.reason} — ${base}` : base;
         const verdict = await deps.requestApproval({ tool: a.name, summary, actionClass });
         if (verdict !== 'approved') {
           return fail(`(error:user_denied) The user did not approve "${summary}" (${verdict}). Do not retry; ask them what they want instead.`);
