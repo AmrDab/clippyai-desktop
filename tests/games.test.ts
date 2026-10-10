@@ -164,7 +164,9 @@ describe('ball physics', () => {
     expect(clampBall({ x: -50, y: 9999, vx: 0, vy: 0, r: 22 }, bounds)).toMatchObject({ x: 22, y: 578 });
   });
   it('flags a barely-thrown ball', () => {
-    expect(isWeakThrow(100, 300)).toBe(true);
+    expect(isWeakThrow(100, 150)).toBe(true);
+    // carried far, dropped after a pause (speed reads 0) → still fetched
+    expect(isWeakThrow(0, 300)).toBe(false);
     expect(isWeakThrow(800, 30)).toBe(true);
     expect(isWeakThrow(800, 300)).toBe(false);
   });

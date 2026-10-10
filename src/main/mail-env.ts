@@ -83,7 +83,7 @@ async function ps(snippet: string, timeoutMs = 5_000): Promise<string> {
 async function probeWin32(): Promise<MailEnvironment> {
   const [comReg, olkPkg, mailtoProgId] = await Promise.all([
     // 1. Classic Outlook COM ProgID — present iff classic Outlook is installed
-    ps(`if (Test-Path 'HKLM:\\SOFTWARE\\Classes\\Outlook.Application' -or (Test-Path 'HKCU:\\SOFTWARE\\Classes\\Outlook.Application')) { 'yes' } else { 'no' }`),
+    ps(`if ((Test-Path 'HKLM:\\SOFTWARE\\Classes\\Outlook.Application') -or (Test-Path 'HKCU:\\SOFTWARE\\Classes\\Outlook.Application')) { 'yes' } else { 'no' }`),
     // 2. New Outlook AppX package presence
     ps(`if ((Get-AppxPackage -Name 'Microsoft.OutlookForWindows' -ErrorAction SilentlyContinue)) { 'yes' } else { 'no' }`),
     // 3. Default mailto handler

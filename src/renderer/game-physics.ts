@@ -101,7 +101,11 @@ export function clampBall(b: Ball, bounds: Bounds): Ball {
   };
 }
 
-/** A throw that barely left the user's hand — Clippy teases instead of fetching. */
+/**
+ * A throw that barely left the user's hand — Clippy teases instead of fetching.
+ * Speed comes from the last 100 ms before release, so a ball carried far and
+ * dropped after a pause reads as speed 0; distance alone still earns a fetch.
+ */
 export function isWeakThrow(speed: number, distance: number): boolean {
-  return speed < 250 || distance < 80;
+  return distance < 80 || (speed < 250 && distance < 200);
 }
