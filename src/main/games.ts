@@ -188,6 +188,11 @@ function createOverlay(): void {
     _overlay.loadFile(path.join(__dirname, '../renderer/game-overlay.html'));
   }
   _overlay.on('closed', () => { _overlay = null; });
+  // v0.21 containment — the overlay covers the whole work area and the
+  // renderer toggles click-through. If that renderer dies while the ball is
+  // "grabbed" (ignore-mouse false) the overlay would swallow every click on
+  // the desktop with no way to recover but the tray. End the game instead.
+  _overlay.webContents.on('render-process-gone', () => stop('overlay_crashed'));
 }
 
 function destroyOverlay(): void {

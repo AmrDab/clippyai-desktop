@@ -46,6 +46,7 @@ import * as games from './games';
 // v0.21 — "Your own AI model" (static import, bundle-anchor rule).
 import * as byokMod from './byok';
 import { refreshTrayTooltip } from './tray';
+import { setLaunchOnStartup } from './startup';
 import { getUserProfile, saveUserProfile, isProfileSetUp } from './brain';
 import * as profileMod from './profile';
 // v0.20.0-alpha.12 — static import for window-follow (NOT lazy require)
@@ -1124,7 +1125,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
 
   ipcMain.handle('set-launch-on-startup', async (_event, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled });
+    // v0.21 — was a bare app.setLoginItemSettings that never updated the
+    // startup-settings store, so initStartup() re-enabled the login item
+    // on the next boot. Route through the store-backed setter.
+    setLaunchOnStartup(!!enabled);
     return true;
   });
 

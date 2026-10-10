@@ -3,6 +3,8 @@ import Store from 'electron-store';
 
 interface StartupSettings {
   launchOnStartup: boolean;
+  /** v0.21 — true once the default has been written to the OS. */
+  osSynced: boolean;
 }
 
 const store = new Store<StartupSettings>({
@@ -14,19 +16,24 @@ const store = new Store<StartupSettings>({
     // Onboarding step 3 surfaces the same toggle so first-run users see
     // the intent up front.
     launchOnStartup: true,
+    osSynced: false,
   },
 });
 
 export function initStartup(): void {
-  // Only sync if the persisted preference disagrees with the OS state.
-  // Calling setLoginItemSettings on every boot fires SMLoginItemSetEnabled
-  // which logs a "Failed to register the login item" error on unsigned
-  // builds (Apple requires Developer ID signing for login-item registration).
-  // Once the app is signed for distribution this becomes a no-op idempotency
-  // check; until then the early-return avoids a noisy boot.
+  // v0.21 containment — apply the stored preference to the OS ONCE (first
+  // run). It used to re-assert on every boot whenever the OS state
+  // disagreed, which silently re-added the login item after the user had
+  // removed it in Task Manager > Startup apps / System Settings. The OS
+  // entry is the user's; after the first sync only the Settings toggle
+  // (setLaunchOnStartup) touches it.
+  if (store.get('osSynced')) return;
   const desired = store.get('launchOnStartup');
-  const current = app.getLoginItemSettings().openAtLogin;
-  if (desired === current) return;
+  store.set('osSynced', true);
+  // Calling setLoginItemSettings fires SMLoginItemSetEnabled, which logs a
+  // "Failed to register the login item" error on unsigned macOS builds
+  // (Apple requires Developer ID signing); skip when already in agreement.
+  if (app.getLoginItemSettings().openAtLogin === desired) return;
   app.setLoginItemSettings({
     openAtLogin: desired,
     name: 'ClippyAI',
@@ -35,6 +42,7 @@ export function initStartup(): void {
 
 export function setLaunchOnStartup(enabled: boolean): void {
   store.set('launchOnStartup', enabled);
+  store.set('osSynced', true);
   app.setLoginItemSettings({
     openAtLogin: enabled,
     name: 'ClippyAI',
