@@ -152,6 +152,10 @@ interface Window {
       undoAction: (id: string) => Promise<{ ok: boolean; detail?: string }>;
     };
 
+    // ── v0.21 — bubble history panel (brain's persisted conversation)
+    getConversation?: () => Promise<Array<{ role: 'user' | 'model'; text: string }>>;
+    clearConversation?: () => Promise<boolean>;
+
     // ── Speech / TTS
     // v0.19.0 — ruleId present when a deterministic rule fired the tip
     onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string }) => void) => void;

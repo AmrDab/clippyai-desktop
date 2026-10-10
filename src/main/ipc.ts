@@ -1348,6 +1348,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
 
+  // v0.21 — bubble history panel: read / clear the persisted conversation
+  // (brain's conversation-history.json — user text + spoken replies only).
+  ipcMain.handle('conversation:get', async () => brain.getConversation());
+  ipcMain.handle('conversation:clear', async () => {
+    brain.clearConversation();
+    return true;
+  });
+
   // v0.19.0 — Undo: apply the inverse of a recorded action.
   // Returns { ok, detail } — the renderer shows this as a toast.
   // Trust budget: if we're unsure (entry not found, already undone, no

@@ -278,12 +278,18 @@ body.clippy-window {
   min-height: 70px;
 }
 .bubble[data-state="expanded"] {
-  width: 480px;
-  height: 600px;
+  /* v0.21 — fill the host window to a 5px inset (window.ts sizes it
+   * 500×620 → a 490×610 panel). Pre-fix the 480×600 panel sat in a 540×660
+   * window and the transparent top/left gutter swallowed desktop clicks. */
+  width: calc(100vw - 10px);
+  height: calc(100vh - 10px);
   /* Intentional: the expanded panel fills the window down to the corner and
    * Clippy peeks over its bottom-right (tail hidden) — see #clippy-container
    * note + `[data-state="expanded"] #bubble-tail { display:none }`. */
   bottom: 5px;
+  right: 5px;
+  /* The ambient 30px shadow would clip at the 5px inset; use a tight one. */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22), inset 0 1px 0 var(--bubble-inner-stroke);
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -570,32 +576,74 @@ body.clippy-window {
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
 }
-.bubble[data-state="expanded"] #bubble-history { display: block; }
+.bubble[data-state="expanded"] #bubble-history { display: flex; }
 #bubble-history::-webkit-scrollbar { width: 6px; }
 #bubble-history::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
 #bubble-history::-webkit-scrollbar-track { background: transparent; }
 
+/* v0.21 — chat rows are bubbles: user right in the brand yellow, Clippy
+   left on a soft slate wash. #bubble-history and the standard-state
+   .chat-history view are flex columns so align-self can pick the side. */
+#bubble-history, #bubble-text.chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#bubble-text.chat-history { display: flex; }
 .chat-msg {
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+  max-width: 86%;
+  padding: 7px 12px;
+  border-radius: 14px;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
-.chat-msg:last-child { border-bottom: none; }
-.chat-user   { color: #2563eb; }
-.chat-clippy { color: #1e293b; }
+.chat-user {
+  align-self: flex-end;
+  background: linear-gradient(180deg, #FFE14A 0%, #FFD400 100%);
+  color: #1c1917;
+  border-bottom-right-radius: 5px;
+  white-space: pre-wrap;
+}
+.chat-clippy {
+  align-self: flex-start;
+  background: rgba(15, 23, 42, 0.06);
+  color: #1e293b;
+  border-bottom-left-radius: 5px;
+}
+.chat-clippy.chat-thinking { color: var(--bubble-ink-soft); letter-spacing: 0.1em; }
+/* Role label is for screen readers; side + colour carry it visually. */
 .chat-label {
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  margin-right: 4px;
-  text-transform: uppercase;
-  opacity: 0.7;
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
-.chat-time {
-  float: right;
-  font-size: 10px;
-  color: rgba(15, 23, 42, 0.4);
-  margin-left: 6px;
-  font-variant-numeric: tabular-nums;
+.chat-clear-confirm {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--bubble-ink-soft);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 10px;
+}
+.chat-clear-confirm button {
+  padding: 3px 10px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--bubble-ink);
+  background: rgba(15, 23, 42, 0.06);
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.chat-clear-confirm button.is-danger {
+  color: var(--tint-error-text);
+  background: rgba(244, 63, 94, 0.12);
 }
 .chat-empty {
   color: rgba(15, 23, 42, 0.4);
@@ -707,17 +755,16 @@ body.clippy-window {
 }
 
 /* ── Input area ─────────────────────────────────────────────────── */
+/* v0.21 — composer: a single pill (.bubble-composer) holds the growing
+   textarea + mic + send. The ring on focus-within is the tint accent so it
+   still reads "busy"/"error" with the rest of the bubble. */
 #bubble-input-area {
-  display: flex;
-  gap: 6px;
+  display: block;
   margin-top: 10px;
-  border-top: 1px solid var(--bubble-hairline);
-  padding-top: 8px;
-  align-items: center;
 }
 .bubble[data-state="expanded"] #bubble-input-area {
   margin: 0;
-  padding: 12px 16px;
+  padding: 10px 14px 12px;
   border-top: 1px solid var(--bubble-hairline);
   background: rgba(255, 255, 255, 0.4);
   flex-shrink: 0;
@@ -729,33 +776,49 @@ body.clippy-window {
 /* (#bubble-attach styles removed — the attach button was removed pre-launch
    until the upload pipeline ships; see index.html.) */
 
-#bubble-input {
-  flex: 1;
-  min-width: 0;
+.bubble-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 4px 4px 4px 6px;
   border: 1px solid var(--bubble-hairline);
-  border-radius: 11px;
-  padding: 8px 13px;
-  font-size: 13px;
-  font-family: -apple-system, BlinkMacSystemFont, Inter, system-ui, sans-serif;
-  color: var(--bubble-ink);
+  /* 22px = half the one-line height (36 + 8 padding), so a single line is a
+     true pill and it squares off naturally as the textarea grows. */
+  border-radius: 22px;
   background: rgba(255, 255, 255, 0.92);
-  outline: none;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   -webkit-app-region: no-drag;
 }
-.bubble[data-state="expanded"] #bubble-input {
-  padding: 9px 14px;
-  font-size: 13.5px;
-  border-radius: 12px;
-}
-#bubble-input::placeholder { color: rgba(15, 23, 42, 0.38); }
-#bubble-input:focus {
+.bubble-composer:focus-within {
   border-color: var(--tint-accent, #FFD400);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--tint-accent, #FFD400) 22%, transparent);
 }
 
-/* ── Send button — paper-plane SVG in a circular pill ──────────── */
+#bubble-input {
+  flex: 1;
+  min-width: 0;
+  /* Auto-grow (bubble.ts syncComposer) relies on exactly these metrics:
+     chat-history.ts COMPOSER_LINE_PX = 20, COMPOSER_PAD_Y_PX = 16. */
+  height: 36px;
+  line-height: 20px;
+  padding: 8px 8px;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  resize: none;
+  overflow-y: hidden;
+  font-size: 13.5px;
+  font-family: -apple-system, BlinkMacSystemFont, Inter, system-ui, sans-serif;
+  color: var(--bubble-ink);
+  background: transparent;
+  outline: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+}
+#bubble-input::placeholder { color: rgba(15, 23, 42, 0.42); }
+
+/* ── Send button — paper-plane in the accent circle ─────────────── */
 #bubble-send {
   width: 32px; height: 32px;
   background: linear-gradient(180deg, #FFE14A 0%, #FFD400 100%);
@@ -770,25 +833,37 @@ body.clippy-window {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
+  transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease, opacity 0.15s ease;
   -webkit-app-region: no-drag;
 }
-#bubble-send:hover {
+#bubble-send:hover:not(:disabled) {
   background: linear-gradient(180deg, #FFEB7A 0%, #FFD831 100%);
   box-shadow:
     0 3px 8px rgba(0, 0, 0, 0.15),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
-#bubble-send:active { transform: translateY(0.5px); }
+#bubble-send:active:not(:disabled) { transform: translateY(0.5px); }
+#bubble-send:disabled {
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--bubble-ink-soft);
+  border-color: transparent;
+  box-shadow: none;
+  cursor: default;
+  opacity: 0.6;
+}
+#bubble-send:focus-visible, #bubble-mic:focus-visible {
+  outline: 2px solid var(--tint-accent, #FFD400);
+  outline-offset: 1px;
+}
 #bubble-send .send-icon { display: block; transform: translateX(0.5px); }
 
-/* ── Mic button — circular pill with retained level-pulse ──────── */
+/* ── Mic button — ghost icon with retained level-pulse ──────────── */
 #bubble-mic {
   position: relative;
   width: 32px; height: 32px;
-  background: rgba(255, 255, 255, 0.55);
-  color: #2C3E50;
-  border: 1px solid var(--bubble-hairline);
+  background: transparent;
+  color: var(--bubble-ink-soft);
+  border: 1px solid transparent;
   border-radius: 50%;
   cursor: pointer;
   font-size: 14px;
@@ -797,12 +872,16 @@ body.clippy-window {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: background 0.12s ease, transform 0.08s ease;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
-#bubble-mic:hover { background: rgba(255, 255, 255, 0.9); }
+#bubble-mic:hover { background: rgba(15, 23, 42, 0.06); color: var(--bubble-ink); }
 #bubble-mic:active { transform: translateY(0.5px); }
+@media (prefers-reduced-motion: reduce) {
+  .bubble-composer, #bubble-send, #bubble-mic { transition: none; }
+  #bubble-mic.recording { animation: none; }
+}
 #bubble-mic .mic-icon { position: relative; z-index: 2; }
 #bubble-mic .mic-level {
   position: absolute;
@@ -877,15 +956,17 @@ body.clippy-window {
     --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.5);
   }
   #bubble-tail, #bubble-tail::before { background: var(--bubble-bg); border-color: var(--bubble-hairline); }
-  .chat-clippy { color: #e2e8f0; }
-  .chat-user { color: #60a5fa; }
-  .chat-msg { border-bottom-color: rgba(255, 255, 255, 0.06); }
+  .chat-clippy { background: rgba(255, 255, 255, 0.08); color: #e2e8f0; }
   .chat-msg code { background: rgba(255, 255, 255, 0.08); color: #fda4af; }
+  .chat-user code { background: rgba(0, 0, 0, 0.10); color: #7f1d1d; }
   .chat-msg pre { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.08); }
-  #bubble-input { background: rgba(20, 20, 24, 0.85); color: #e2e8f0; }
-  #bubble-input::placeholder { color: rgba(226, 232, 240, 0.38); }
-  #bubble-mic { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
-  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); }
+  .chat-clear-confirm button { background: rgba(255, 255, 255, 0.08); }
+  .bubble[data-state="expanded"] #bubble-input-area { background: rgba(0, 0, 0, 0.18); }
+  .bubble-composer { background: rgba(20, 20, 24, 0.85); box-shadow: none; }
+  #bubble-input::placeholder { color: rgba(226, 232, 240, 0.42); }
+  #bubble-input { scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
+  #bubble-send:disabled { background: rgba(255, 255, 255, 0.08); }
+  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); color: #e2e8f0; }
   .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
   .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
   #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: var(--tint-text, #e2e8f0); }

@@ -28,8 +28,12 @@ const BUBBLE_COMPACT_WIDTH = 340;
 const BUBBLE_COMPACT_HEIGHT = 200;
 const BUBBLE_STANDARD_WIDTH = 380;
 const BUBBLE_STANDARD_HEIGHT = 420;
-const BUBBLE_EXPANDED_WIDTH = 540;
-const BUBBLE_EXPANDED_HEIGHT = 660;
+// v0.21 — expanded was 540×660 with the 480×600 panel pinned bottom-right,
+// leaving a ~55px transparent gutter on the top/left that swallowed desktop
+// clicks. The panel now fills the window minus a 5px shadow inset (style.css
+// `.bubble[data-state="expanded"]`), so the window is just panel + inset.
+const BUBBLE_EXPANDED_WIDTH = 500;
+const BUBBLE_EXPANDED_HEIGHT = 620;
 // Legacy aliases — kept so existing call sites that expect the old
 // "expanded" semantic (= standard in the new vocabulary) still work.
 const EXPANDED_WIDTH = BUBBLE_STANDARD_WIDTH;
@@ -229,15 +233,9 @@ export function createWindow(): BrowserWindow {
   ipcMain.on('expand-window', () => resizeTo('standard'));
   ipcMain.on('collapse-window', () => resizeTo('collapsed'));
 
-  // TODO(v0.20.x) — item #5: when expanded the host window (540×660) is
-  // larger than the bubble body (480×600 pinned bottom-right), so its
-  // transparent top-left margin swallows desktop clicks. The clean fix is
-  // region-based setIgnoreMouseEvents(true, { forward: true }) over just
-  // that transparent gutter, restored on collapse. Skipped for now: doing
-  // it precisely needs the bubble's exact window-space rect (owned by the
-  // renderer) pumped back to main, and a naive whole-window toggle breaks
-  // the draggable sprite + bubble buttons. Tracked separately rather than
-  // shipped half-done.
+  // (v0.21 — the old item #5 "expanded window's transparent top-left gutter
+  // swallows desktop clicks" is resolved by sizing: the expanded panel now
+  // fills the window to a 5px inset, see BUBBLE_EXPANDED_* above.)
 
   // Window drag movement — with bounds checking
   ipcMain.on('move-window', (_event, deltaX: number, deltaY: number) => {

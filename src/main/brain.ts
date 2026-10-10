@@ -2649,6 +2649,26 @@ export class Brain {
     this.saveHistory();
   }
 
+  /** v0.21 — the persisted conversation as text turns for the bubble's
+   *  history panel. History only ever holds user text + Clippy's final
+   *  spoken reply (tool calls live in the per-turn working `contents`), so
+   *  this is exactly what the user saw. */
+  getConversation(): Array<{ role: 'user' | 'model'; text: string }> {
+    const out: Array<{ role: 'user' | 'model'; text: string }> = [];
+    for (const c of this.history) {
+      const text = c.parts.map((p) => ('text' in p && typeof p.text === 'string' ? p.text : '')).join('').trim();
+      if (text) out.push({ role: c.role, text });
+    }
+    return out;
+  }
+
+  /** v0.21 — "Clear conversation" in the bubble. Forgets the model-facing
+   *  history too, so the next turn starts fresh. */
+  clearConversation(): void {
+    this.history = [];
+    this.saveHistory();
+  }
+
   /** Persist conversation history to userData so it survives restarts. Text
    *  only (history is already collapsed), stored locally on the user's machine.
    *  Fire-and-forget — a failed write never blocks a turn. */
