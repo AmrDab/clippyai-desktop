@@ -2103,7 +2103,8 @@ function layer1() {
     const onbTsImportsCatalog = /from\s+['"]\.\/app-catalog['"]/.test(onbTs);
     const onbTsSetsPlatform = /setAttribute\(['"]data-platform['"]/.test(onbTs);
     const onbTsStepOrder = /STEP_ORDER = IS_MAC \? \[1, 2, 3, 4\] : \[1, 2, 4\]/.test(onbTs) && /for \(const step of STEP_ORDER\)/.test(onbTs);
-    const onbTsHotkey = /IS_MAC \? '⌘⇧Space' : 'Ctrl\+Shift\+Space'/.test(onbTs);
+    // tryit hotkey derives from the shared accelerator (hotkey-defs.ts), per platform
+    const onbTsHotkey = /acceleratorLabel\(VOICE_ACCELERATOR_DEFAULT, IS_MAC \? 'mac' : 'win'\)/.test(onbTs);
     const onbTsRendersFirstWins = /function renderFirstWins/.test(onbTs) && /firstWinsForPlan\(validatedPlan\)/.test(onbTs);
     const onbTsFiresChip = /fireFirstWinChip/.test(onbTs);
     const onbTsTutorial = /startTutorial\(\)/.test(onbTs) && /finishOnboarding\(\)/.test(onbTs) && /onTutorialEvent\(/.test(onbTs);

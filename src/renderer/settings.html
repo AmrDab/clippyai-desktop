@@ -73,17 +73,19 @@
 
           <div class="s-row">
             <label class="s-row__label" id="summon-hotkey-label">Hotkey</label>
-            <!-- Read-only summon shortcut. Rendered as macOS glyphs; remapping
-                 is not wired yet so this is presented as a non-editable
-                 keycap row rather than a fake-editable text input. -->
-            <div class="s-keycap" role="group" aria-labelledby="summon-hotkey-label" aria-label="Summon hotkey: Command Shift C">
-              <kbd>&#8984;</kbd><kbd>&#8679;</kbd><kbd>C</kbd>
-            </div>
+            <!-- Read-only summon shortcut. Keycaps are rendered by settings.ts
+                 from the accelerator hotkey.ts registers (⌃⇧ glyphs on mac,
+                 Ctrl/Shift on Windows); remapping is not wired yet so this is
+                 a non-editable keycap row rather than a fake-editable input. -->
+            <div class="s-keycap" id="summon-hotkey-keycaps" role="group" aria-labelledby="summon-hotkey-label"></div>
             <p class="s-row__help">Press anywhere to summon Clippy. Remapping coming soon.</p>
           </div>
         </div>
 
-        <div class="s-card">
+        <!-- macOS TCC grants (Accessibility / Screen Recording / Automation).
+             Windows has no equivalent, so the card is hidden there via
+             body[data-platform] + [data-mac-only] (style.css). -->
+        <div class="s-card" data-mac-only>
           <div class="s-card__header">
             <h3 class="s-card__title">Permissions</h3>
             <p class="s-card__subtitle">What Clippy can access on this Mac. Grant these so Clippy can see and control your screen.</p>
@@ -186,12 +188,13 @@
               <option value="piper" disabled>Piper TTS (neural) — coming soon</option>
               <option value="elevenlabs" disabled>ElevenLabs (cloud) — coming soon</option>
             </select>
-            <p class="s-row__help">System voice runs entirely on your Mac. <strong>OpenAI sends the text Clippy speaks to OpenAI</strong> for higher-quality audio (~$0.015/min) and needs your own API key below. If OpenAI is unavailable, Clippy automatically falls back to the system voice. Vote on more voices at <a href="#" id="link-voices-feedback" class="s-link">clippyai.app/voices</a>.</p>
+            <p class="s-row__help">System voice runs entirely on <span data-mac>your Mac</span><span data-win>this PC</span>. <strong>OpenAI sends the text Clippy speaks to OpenAI</strong> for higher-quality audio (~$0.015/min) and needs your own API key below. If OpenAI is unavailable, Clippy automatically falls back to the system voice. Vote on more voices at <a href="#" id="link-voices-feedback" class="s-link">clippyai.app/voices</a>.</p>
           </div>
 
           <!-- v0.20.0 (voice v1) — user-provided OpenAI key. Write-only:
-               stored in macOS Keychain via main; never read back into the
-               UI. Powers both OpenAI TTS and (on macOS) OpenAI voice input. -->
+               stored via keytar in main (macOS Keychain / Windows Credential
+               Manager); never read back into the UI. Powers both OpenAI TTS
+               and (on macOS) OpenAI voice input. -->
           <div class="s-row" id="row-openai-key">
             <label class="s-row__label" for="setting-openai-key">OpenAI API key</label>
             <div class="s-row__control" style="display:flex; gap:8px; align-items:center;">
@@ -199,7 +202,7 @@
               <button id="btn-save-openai-key" type="button" class="s-button">Save</button>
               <button id="btn-clear-openai-key" type="button" class="s-button">Remove</button>
             </div>
-            <p class="s-row__help" id="openai-key-status">Stored securely in your macOS Keychain — it stays on this Mac and is sent only to OpenAI when you use OpenAI voice. Get a key at <a href="https://platform.openai.com/api-keys" class="s-link" id="link-openai-keys">platform.openai.com/api-keys</a>.</p>
+            <p class="s-row__help" id="openai-key-status">Stored securely in <span data-mac>your macOS Keychain — it stays on this Mac</span><span data-win>Windows Credential Manager — it stays on this PC</span> and is sent only to OpenAI when you use OpenAI voice. Get a key at <a href="https://platform.openai.com/api-keys" class="s-link" id="link-openai-keys">platform.openai.com/api-keys</a>.</p>
           </div>
         </div>
 
@@ -209,7 +212,7 @@
         <div class="s-card">
           <div class="s-card__header">
             <h3 class="s-card__title">Voice input</h3>
-            <p class="s-card__subtitle">Dictate by holding the mic in the bubble or pressing the push-to-talk hotkey. Audio stays on this Mac — powered by bundled whisper.cpp.</p>
+            <p class="s-card__subtitle">Dictate by holding the mic in the bubble or pressing the push-to-talk hotkey. Audio stays on <span data-mac>this Mac</span><span data-win>this PC</span> — powered by bundled whisper.cpp.</p>
           </div>
 
           <div class="s-row s-row--inline">
@@ -227,12 +230,10 @@
 
           <div class="s-row">
             <label class="s-row__label" id="ptt-hotkey-label">Push-to-talk hotkey</label>
-            <!-- Read-only keycap row. Was a fake-editable input showing the
-                 raw Electron accelerator "CommandOrControl+Shift+Space" — now
-                 proper macOS glyphs. No remap handler ships yet. -->
-            <div class="s-keycap" id="setting-voice-hotkey" role="group" aria-labelledby="ptt-hotkey-label" aria-label="Push-to-talk hotkey: Command Shift Space">
-              <kbd>&#8984;</kbd><kbd>&#8679;</kbd><kbd>Space</kbd>
-            </div>
+            <!-- Read-only keycap row, rendered by settings.ts from the
+                 default accelerator in hotkey-defs.ts (⌘⇧ on mac, Ctrl/Shift
+                 on Windows). No remap handler ships yet. -->
+            <div class="s-keycap" id="setting-voice-hotkey" role="group" aria-labelledby="ptt-hotkey-label"></div>
             <p class="s-row__help">Press once to start, again to stop. <kbd>Esc</kbd> cancels.</p>
           </div>
 
@@ -390,8 +391,10 @@
         <!-- v0.20.0-alpha.11 — Focused-window follow. Glides Clippy to the
              bottom-right corner of the newly-focused window at 1Hz so he
              doesn't seem stuck when the user switches monitors or apps.
-             Distinct from the Follow Mode card below (cursor follow). -->
-        <div class="s-card">
+             Distinct from the Follow Mode card below (cursor follow).
+             darwin-only: window-follow.ts samples the focused window via the
+             mac bridge and skips startup elsewhere. -->
+        <div class="s-card" data-mac-only>
           <div class="s-card__header">
             <h3 class="s-card__title">Follow focused window</h3>
             <p class="s-card__subtitle">When you switch apps or monitors, Clippy glides to the bottom-right corner of the new window so he never feels stuck. Pauses for 30s after you manually drag him.</p>
@@ -408,8 +411,10 @@
         </div>
 
         <!-- v0.20.0 (Beta) — Writing assistant. ⌥G proofreads the text in the
-             focused field via Accessibility + on-device grammar (Harper). -->
-        <div class="s-card">
+             focused field via Accessibility + on-device grammar (Harper).
+             darwin-only: writing-assist.ts / writing-watch.ts read the field
+             through the mac bridge; hotkey.ts doesn't register ⌥G elsewhere. -->
+        <div class="s-card" data-mac-only>
           <div class="s-card__header">
             <h3 class="s-card__title">Writing assistant <span class="s-badge">Beta</span></h3>
             <p class="s-card__subtitle">Press <strong>⌥G</strong> in any text field and Clippy proofreads what you're writing — grammar and clarity, checked on-device — then applies the fix with one click. Lets Clippy read the text you're editing.</p>
@@ -485,7 +490,7 @@
             <!-- v0.20.0-alpha.3 — populated from APP_CATALOG filtered to hasApi:true only. -->
           </div>
           <p class="s-help" style="margin-top:var(--s-space-3);">
-            Don't see your app? Clippy still works with anything else (Apple Mail, Notes, Safari, etc.) — he uses the regular UI path automatically.
+            Don't see your app? Clippy still works with anything else (<span data-mac>Apple Mail, Notes, Safari</span><span data-win>Mail, Notepad, Edge</span>, etc.) — he uses the regular UI path automatically.
           </p>
 
           <h3>API tokens</h3>
@@ -849,7 +854,7 @@
         <div class="s-card">
           <div class="s-card__header">
             <h3 class="s-card__title">Reset</h3>
-            <p class="s-card__subtitle">Erase everything stored on this Mac and start over from onboarding.</p>
+            <p class="s-card__subtitle">Erase everything stored on <span data-mac>this Mac</span><span data-win>this PC</span> and start over from onboarding.</p>
           </div>
           <div class="s-row s-row--inline">
             <div class="s-row__main">

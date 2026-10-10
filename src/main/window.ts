@@ -354,12 +354,18 @@ export function createSettingsWindow(): BrowserWindow {
     minimizable: false,
     maximizable: false,
     title: 'ClippyAI Settings',
+    // No app menu is ever set, so on Windows/Linux Electron's default
+    // "File Edit View Window Help" bar leaks into framed windows. Drop it
+    // here (mac draws its menu in the system bar, not the window). Ctrl+C/V/X
+    // in inputs are handled by Chromium itself off-mac — no menu needed.
+    autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  if (process.platform !== 'darwin') settingsWindow.removeMenu();
 
   if (process.env.ELECTRON_RENDERER_URL) {
     settingsWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/settings.html`);

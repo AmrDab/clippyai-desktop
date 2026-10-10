@@ -42,6 +42,7 @@ import * as openaiVoice from './openai-voice';
 // survival must NOT depend on another module's import edge. See brain.ts /
 // index.ts which import follow-me the same way.
 import * as followMeMod from './follow-me';
+import * as games from './games';
 // v0.21 — "Your own AI model" (static import, bundle-anchor rule).
 import * as byokMod from './byok';
 import { refreshTrayTooltip } from './tray';
@@ -1418,6 +1419,21 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           voiceMuted = !voiceMuted;
           mainWindow.webContents.send('tts-toggle', !voiceMuted);
         },
+      },
+      {
+        // v0.21 — same local mini-games as the tray "Play" submenu.
+        label: '🎮 Play',
+        submenu: [
+          { label: 'Catch', click: () => games.start('catch', 'context_menu') },
+          { label: 'Hide-and-seek', click: () => games.start('hide', 'context_menu') },
+          { label: 'Rock-paper-scissors', click: () => games.start('rps', 'context_menu') },
+          { type: 'separator' },
+          {
+            label: games.isActive() ? `Stop game (${games.GAME_LABELS[games.activeGame()!]})` : 'Stop game',
+            enabled: games.isActive(),
+            click: () => games.stop('context_menu'),
+          },
+        ],
       },
       { type: 'separator' },
       {

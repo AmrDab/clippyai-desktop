@@ -1,6 +1,7 @@
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 import { firstWinsForPlan } from './app-catalog';
 import { PermissionFlow, type PermSnapshot, type PermKind } from './permission-flow';
+import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
 
 // v0.19.0 PR-6 — Fluent Reveal effect. Any element marked with
 // [data-fluent-reveal] gets a CSS radial-gradient highlight whose center
@@ -134,7 +135,7 @@ populateVoices();
 
 async function startTryIt(): Promise<void> {
   const kbd = document.getElementById('tryit-hotkey');
-  if (kbd) kbd.textContent = IS_MAC ? '⌘⇧Space' : 'Ctrl+Shift+Space';
+  if (kbd) kbd.textContent = acceleratorLabel(VOICE_ACCELERATOR_DEFAULT, IS_MAC ? 'mac' : 'win');
   renderFirstWins();
   if (tutorialStarted) return;
   tutorialStarted = true;

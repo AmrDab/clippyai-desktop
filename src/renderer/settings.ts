@@ -1,10 +1,41 @@
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 export {};
 
-// Hotkeys are now rendered as static macOS glyphs in settings.html (the
-// .s-keycap rows) and the engine picker is hidden until real engine-
-// switching ships, so the old runtime platform-relabel pass is no longer
-// needed. macOS is the only supported platform for this build.
+import {
+  SUMMON_ACCELERATOR, VOICE_ACCELERATOR_DEFAULT, acceleratorKeycaps, acceleratorSpoken,
+} from '../main/hotkey-defs';
+
+// Set data-platform on the settings body — same bootstrap as onboarding.
+// style.css hides [data-mac-only] cards and swaps [data-mac]/[data-win]
+// copy off this attribute.
+const IS_MAC = (navigator.platform || '').toLowerCase().includes('mac');
+(function setPlatformForSettings(): void {
+  const p = (navigator.platform || '').toLowerCase();
+  if (p.includes('mac')) document.body.setAttribute('data-platform', 'mac');
+  else if (p.includes('win')) document.body.setAttribute('data-platform', 'win');
+  else document.body.setAttribute('data-platform', 'other');
+})();
+// Where keytar puts secrets on this platform (macOS Keychain / Windows
+// Credential Manager) — used in the key-status copy below.
+const SECRET_STORE = IS_MAC ? 'macOS Keychain' : 'Windows Credential Manager';
+const THIS_DEVICE = IS_MAC ? 'this Mac' : 'this PC';
+
+// Read-only hotkey rows. Keycaps derive from the accelerators hotkey.ts
+// registers, so the glyphs match the real binding on each platform.
+function renderKeycaps(id: string, accelerator: string, what: string): void {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const platform = IS_MAC ? 'mac' : 'win';
+  el.innerHTML = '';
+  for (const cap of acceleratorKeycaps(accelerator, platform)) {
+    const kbd = document.createElement('kbd');
+    kbd.textContent = cap.glyph;
+    el.appendChild(kbd);
+  }
+  el.setAttribute('aria-label', `${what}: ${acceleratorSpoken(accelerator, platform)}`);
+}
+renderKeycaps('summon-hotkey-keycaps', SUMMON_ACCELERATOR, 'Summon hotkey');
+renderKeycaps('setting-voice-hotkey', VOICE_ACCELERATOR_DEFAULT, 'Push-to-talk hotkey');
 
 // Nav switching
 const navItems = document.querySelectorAll<HTMLElement>('.settings-nav-item');
@@ -401,9 +432,9 @@ let openAiKeyPresent = false;
 function renderOpenAiKeyStatus(): void {
   if (!openaiKeyStatus) return;
   if (openAiKeyPresent) {
-    openaiKeyStatus.textContent = 'A key is saved in your macOS Keychain. It stays on this Mac and is sent only to OpenAI when you use OpenAI voice. Use Remove to delete it.';
+    openaiKeyStatus.textContent = `A key is saved in your ${SECRET_STORE}. It stays on ${THIS_DEVICE} and is sent only to OpenAI when you use OpenAI voice. Use Remove to delete it.`;
   } else {
-    openaiKeyStatus.textContent = 'No key saved. OpenAI voice needs your own key — stored securely in macOS Keychain, sent only to OpenAI. Get one at platform.openai.com/api-keys.';
+    openaiKeyStatus.textContent = `No key saved. OpenAI voice needs your own key — stored securely in ${SECRET_STORE}, sent only to OpenAI. Get one at platform.openai.com/api-keys.`;
   }
   // OpenAI selected but no key → make the missing-key state obvious.
   if (ttsEngineSelect && ttsEngineSelect.value === 'openai' && !openAiKeyPresent) {
@@ -951,16 +982,30 @@ async function renderMailEnv(): Promise<void> {
       return;
     }
     const lines: string[] = [];
-    lines.push(env.apple_mail_installed
-      ? '<span style="color:#16a34a;">✓</span> Apple Mail'
-      : '<span style="color:#999;">✗</span> Apple Mail — not installed');
-    if (env.outlook_mac_installed) {
-      const olkOk = env.default_is_outlook;
-      lines.push(olkOk
-        ? '<span style="color:#16a34a;">✓</span> Outlook for Mac — default mail handler'
-        : '<span style="color:#d97706;">⚠</span> Outlook for Mac — installed, but NOT default mailto');
+    if (IS_MAC) {
+      lines.push(env.apple_mail_installed
+        ? '<span style="color:#16a34a;">✓</span> Apple Mail'
+        : '<span style="color:#999;">✗</span> Apple Mail — not installed');
+      if (env.outlook_mac_installed) {
+        const olkOk = env.default_is_outlook;
+        lines.push(olkOk
+          ? '<span style="color:#16a34a;">✓</span> Outlook for Mac — default mail handler'
+          : '<span style="color:#d97706;">⚠</span> Outlook for Mac — installed, but NOT default mailto');
+      } else {
+        lines.push('<span style="color:#999;">✗</span> Outlook for Mac — not installed');
+      }
     } else {
-      lines.push('<span style="color:#999;">✗</span> Outlook for Mac — not installed');
+      // win32 — mail-env.ts probes classic Outlook (COM) + new Outlook (olk).
+      lines.push(env.classic_outlook_com
+        ? '<span style="color:#16a34a;">✓</span> Classic Outlook (COM)'
+        : '<span style="color:#999;">✗</span> Classic Outlook (COM) — not installed');
+      if (env.new_outlook_installed) {
+        lines.push(env.default_is_olk
+          ? '<span style="color:#16a34a;">✓</span> New Outlook (olk) — default mail handler'
+          : '<span style="color:#d97706;">⚠</span> New Outlook (olk) — installed, but NOT default mailto');
+      } else {
+        lines.push('<span style="color:#999;">✗</span> New Outlook (olk) — not installed');
+      }
     }
     if (env.default_mailto_handler) {
       lines.push(`<span style="color:#888;font-size:11px;">Default mailto: <code>${escapeHtml(env.default_mailto_handler)}</code></span>`);
@@ -1442,14 +1487,6 @@ type AppCatalogEntryLite = {
   apiInstructions?: string;
 };
 
-// Set data-platform on the settings body — same bootstrap as onboarding.
-(function setPlatformForSettings(): void {
-  const p = (navigator.platform || '').toLowerCase();
-  if (p.includes('mac')) document.body.setAttribute('data-platform', 'mac');
-  else if (p.includes('win')) document.body.setAttribute('data-platform', 'win');
-  else document.body.setAttribute('data-platform', 'other');
-})();
-
 const settingsSelectedApps = new Set<string>();
 const settingsApiKeyPresent = new Map<string, boolean>();
 const tokenWriteTimers = new Map<string, number>();
@@ -1599,7 +1636,7 @@ function makeSettingsKeyRow(app: AppCatalogEntryLite): HTMLElement {
   input.type = 'password';
   input.className = 'key-row-input';
   input.placeholder = settingsApiKeyPresent.get(app.id)
-    ? `••••••••  (stored in Keychain — paste here to replace)`
+    ? `••••••••  (stored in ${SECRET_STORE} — paste here to replace)`
     : `Paste your ${app.name} token`;
   input.autocomplete = 'off';
   input.spellcheck = false;
@@ -1622,7 +1659,7 @@ function makeSettingsKeyRow(app: AppCatalogEntryLite): HTMLElement {
           status.classList.add('set');
           status.textContent = '✓ Connected';
           input.value = '';
-          input.placeholder = `••••••••  (stored in Keychain — paste here to replace)`;
+          input.placeholder = `••••••••  (stored in ${SECRET_STORE} — paste here to replace)`;
           flashSaveStatus(`${app.name} connected`);
         } else {
           flashSaveStatus(`${app.name}: ${r?.error || 'save failed'}`);
@@ -1646,7 +1683,7 @@ function makeSettingsKeyRow(app: AppCatalogEntryLite): HTMLElement {
       // Confirm because this wipes the keychain entry — not destructive
       // (user can re-paste) but the action is opaque enough to warrant
       // a confirmation per HIG.
-      if (!confirm(`Remove ${app.name} token from Keychain?\n\nClippy will fall back to the UI path for ${app.name}.`)) return;
+      if (!confirm(`Remove ${app.name} token from ${SECRET_STORE}?\n\nClippy will fall back to the UI path for ${app.name}.`)) return;
       try {
         await window.clippy.clearApiKey?.(app.id);
         settingsApiKeyPresent.set(app.id, false);
@@ -1717,6 +1754,7 @@ document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
 // ═══════════════════════════════════════════════════════════════════════
 
 async function loadPermissions(): Promise<void> {
+  if (!IS_MAC) return; // macOS TCC only — the card is hidden via [data-mac-only]
   const p = await window.clippy.getPermissions?.();
   const set = (statId: string, openId: string, ok: boolean) => {
     const s = document.getElementById(statId);

@@ -209,6 +209,11 @@ interface Window {
     skillsUninstall?: (slug: string) => Promise<{ ok: boolean; error?: string }>;
     /** v0.14.1 — Brain → Mail Setup status panel */
     mailEnvStatus?: () => Promise<{
+      // win32 (mail-env.ts MailEnvironment)
+      classic_outlook_com: boolean;
+      new_outlook_installed: boolean;
+      default_is_olk: boolean;
+      // darwin
       apple_mail_installed: boolean;
       outlook_mac_installed: boolean;
       default_mailto_handler: string | null;

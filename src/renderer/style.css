@@ -2696,7 +2696,20 @@ body.settings-window {
   border-color: rgba(220, 38, 38, 0.22);
 }
 
-/* ── Read-only keycap row (hotkeys rendered as macOS glyphs) ───────── */
+/* ── Platform-scoped markup ─────────────────────────────────────────
+   body[data-platform] is set by settings.ts / onboarding.ts. [data-mac-only]
+   marks whole cards for darwin-only features (macOS TCC permissions, window
+   follow, writing assistant); [data-mac] / [data-win] swap inline copy
+   ("this Mac" vs "this PC"). Non-mac platforms get the win copy. */
+[data-platform="win"] [data-mac-only],
+[data-platform="other"] [data-mac-only],
+[data-platform="win"] [data-mac],
+[data-platform="other"] [data-mac],
+[data-platform="mac"] [data-win] {
+  display: none !important;
+}
+
+/* ── Read-only keycap row (hotkeys rendered per platform) ──────────── */
 .s-keycap {
   display: inline-flex;
   align-items: center;
