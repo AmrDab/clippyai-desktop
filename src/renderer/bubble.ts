@@ -438,7 +438,7 @@ export class BubbleController {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = a.label;
-      if (a.variant === 'primary') btn.style.background = 'var(--tint-accent)';
+      if (a.variant === 'primary') { btn.style.background = 'var(--tint-accent)'; btn.classList.add('is-primary'); }
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.pendingDismiss = null; // a button was chosen — not a dismissal

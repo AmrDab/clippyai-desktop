@@ -249,6 +249,12 @@ function startHide(): string {
     const spot = pickHideSpot(_wa, { width: w, height: h });
     _win.setBounds(spot);
     windowFollow.noteManualMove();
+    // 'Hide' ends with him fully tucked into the paper — reappear so the
+    // on-screen 30–55 % is actually him, peeking toward the middle.
+    send('play-animation', 'Show');
+    const wa = _wa;
+    const peek = spot.x < wa.x ? 'LookRight' : spot.x + w > wa.x + wa.width ? 'LookLeft' : 'LookUp';
+    after(1200, () => { if (_game === 'hide' && _hidePhase === 'hidden') send('play-animation', peek); });
     _hiddenAt = Date.now();
     _hidePhase = 'hidden';
     // macOS window-follow honours a 30 s manual-move cooldown; re-note so it

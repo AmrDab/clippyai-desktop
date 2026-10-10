@@ -889,6 +889,8 @@ body.clippy-window {
   .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
   .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
   #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: var(--tint-text, #e2e8f0); }
+  /* --tint-text is a dark ink meant for the accent fill; ghost buttons sit on the dark bubble. */
+  #bubble-actions button:not(.is-primary) { color: #e2e8f0; }
 }
 
 /* === Onboarding Window === */
@@ -1275,6 +1277,10 @@ body.settings-window {
 
 .toggle-switch {
   position: relative;
+  /* A <label> is inline: without this it ignores width/height and the
+     absolutely-positioned slider collapses to nothing. */
+  display: inline-block;
+  flex-shrink: 0;
   width: 40px;
   height: 22px;
 }
@@ -2400,6 +2406,13 @@ body.settings-window {
 }
 .s-row--inline .s-row__control {
   flex-shrink: 0;
+}
+/* Label + toggle rows written as <label> + .s-row__value sit inline too. */
+.s-row:has(> .s-row__value) {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-space-4);
 }
 
 .s-row__label {
