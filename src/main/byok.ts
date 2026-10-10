@@ -19,7 +19,7 @@ import { getLicenseKey } from './license';
 import { createLogger } from './logger';
 import { PROVIDER_PRESETS, getPreset, type ProviderPreset } from './byok/presets';
 import { buildKitUrl, loadKitCache, resolveKit, saveKitCache, type AgentKit, type KitCache } from './byok/kit';
-import { runByokTurn, testConnection, type ByokTarget, type EngineResult } from './byok/engine';
+import { runByokTurn, testConnection, TURN_TIMEOUT_MS, type ByokTarget, type EngineResult } from './byok/engine';
 import type { WireContent } from './byok/adapters';
 
 export type { WireContent };
@@ -180,7 +180,15 @@ export async function testByokConnection(): Promise<{ ok: boolean; message: stri
   if (!baseUrl || !model) return { ok: false, message: 'Enter a base URL and a model name first.' };
   if (preset.needsKey && !store.get('keyEnc')) return { ok: false, message: `${preset.label} needs an API key — paste and save it first.` };
   try {
-    return await testConnection({ target: target(), fetch: fetchImpl, log });
+    // A local model's first request loads GBs of weights into memory — on a
+    // CPU that alone can take longer than the 20 s cloud check (measured 17 s
+    // warm for qwen2.5:7b), so local hosts get the full turn timeout.
+    const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(baseUrl);
+    const r = await testConnection({ target: target(), fetch: fetchImpl, log, timeoutMs: local ? TURN_TIMEOUT_MS : undefined });
+    if (!r.ok && local && /no reply within/.test(r.message)) {
+      return { ok: false, message: `${r.message} — the first run loads the model into memory; try again, or pick a smaller model.` };
+    }
+    return r;
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
