@@ -443,6 +443,9 @@ function isSnoozed(version: string): boolean {
  */
 export function installOnUserQuit(): boolean {
   if (!updateDownloaded || isSnoozed(expectedVersion)) return false;
+  // Windows' install path hands the installer to Explorer — popping a window
+  // every time the user quits is exactly the intrusion we avoid. Tray item only.
+  if (process.platform === 'win32') return false;
   log.info('User quit with a downloaded update — installing on the way out', { version: expectedVersion });
   if (process.platform === 'darwin') autoUpdater.autoRunAppAfterInstall = false;
   void installUpdate();
