@@ -2273,6 +2273,18 @@ export class Brain {
       // (~500ms), which is sufficient for "is this screen interesting"
       // — the model gets the frontmost app + title + bundled per-app
       // guide hint, and decides whether to speak or stay quiet.
+      //
+      // v0.21 containment — on Windows that fast path is still a fresh
+      // powershell.exe + Add-Type compile (~1-2 s CPU) per tick. If the
+      // user hasn't touched mouse or keyboard since the last tick, the
+      // foreground window can't have changed on their account and there
+      // is nobody to talk to: skip the spawn entirely. An idle machine
+      // now costs zero process spawns.
+      const idleMs = powerMonitor.getSystemIdleTime() * 1000;
+      if (!force && idleMs >= settingsStore.get('proactiveInterval')) {
+        logGated('user_idle', { idle_s: Math.round(idleMs / 1000) });
+        return;
+      }
       const context = await this.captureScreenContext(3000, undefined, 'fast');
       if (!context || context.startsWith('<screen-context-')) {
         log.info('Proactive.skip', { reason: 'no_context', sentinel: context });
@@ -2868,8 +2880,12 @@ export class Brain {
       try {
         // Lazy import — keeps brain.ts startup decoupled from mail-env.
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getCachedMailEnvironment } = require('./mail-env') as typeof import('./mail-env');
+        const { getCachedMailEnvironment, probeMailEnvironment } = require('./mail-env') as typeof import('./mail-env');
         mail_env = getCachedMailEnvironment() || undefined;
+        // v0.21 containment — the probe no longer runs at boot. Kick it off
+        // on the first user turn (non-blocking: this turn goes without it,
+        // the next one has it; an email send probes on demand itself).
+        if (!mail_env) probeMailEnvironment().catch(() => { /* logged in mail-env */ });
       } catch { /* probe may not have run yet at first turn */ }
       // v0.14.0 — ClawHub skill registry. Send the list of installed skills
       // so the server can expose them as first-class tools to the model.

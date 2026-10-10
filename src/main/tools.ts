@@ -52,7 +52,7 @@ import { qrcodeFromText } from './skills/generate/qrcode-from-text';
 import { openUrl } from './skills/openurl';
 import { spotifyPlayUri } from './skills/spotify';
 import { githubCreateIssue, githubListIssues, githubGetPr } from './skills/github';
-import { callClawdTool, isClawdReady, getClawdHandle, isClawdInstalled, submitClawdTask, TIER5_FALLBACK_MAP } from './clawd-fallback';
+import { callClawdTool, ensureClawd, isClawdReady, getClawdHandle, isClawdInstalled, submitClawdTask, TIER5_FALLBACK_MAP } from './clawd-fallback';
 import { outlookWebSendEmail } from './skills/outlook-web-send';
 import { gmailWebSendEmail } from './skills/gmail-web-send';
 // v0.19.0 PR-6 — API-route gating. hasApiKey() is the sync presence
@@ -60,7 +60,7 @@ import { gmailWebSendEmail } from './skills/gmail-web-send';
 // (stubs in v0.19.0, real in v0.20+ as we wire each provider).
 import { hasApiKey } from './license';
 import { gmailApiSend } from './api-routes';
-import { getCachedMailEnvironment } from './mail-env';
+import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
@@ -3253,7 +3253,8 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   //  L4 clawd-cursor /task              (plain-English UI delegation)
   //  → hard error if all fail
 
-  const env = getCachedMailEnvironment();
+  // v0.21 containment — probe on demand (no longer runs at boot).
+  const env = getCachedMailEnvironment() ?? await probeMailEnvironment().catch(() => null);
   const tried: string[] = [];
 
   // ── win32 L1 tiers (restored in the v0.20 port — the mac fork dropped
@@ -3383,7 +3384,7 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
 
   // L4: last resort — delegate to clawd-cursor /task with a plain-English
   // instruction. Only fires if clawdcursor is installed + ready.
-  if (isClawdReady()) {
+  if (await ensureClawd()) {
     tried.push('clawd-task');
     log.info('outlook_send_email: all native paths failed → clawd /task');
     const task = `Send an email. To: ${to}. Subject: ${subject}. Body: ${body}. Use whichever mail client is available on the desktop. Confirm sent before returning.`;
@@ -4048,6 +4049,7 @@ async function clawdTaskTool(params: Record<string, unknown>): Promise<ToolResul
   if (!task.trim()) return { text: '(error:MISSING_TASK) task description is required' };
   const appHint = params.appHint ? String(params.appHint) : undefined;
   const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 120_000;
+  await ensureClawd();
   return submitClawdTask(task, { appHint, timeoutMs });
 }
 
@@ -4300,7 +4302,7 @@ async function weatherCurrent(params: Record<string, unknown>): Promise<ToolResu
  * the model has to know the exact combo per app.
  */
 async function shortcutsExecute(params: Record<string, unknown>): Promise<ToolResult> {
-  if (!isClawdReady()) {
+  if (!(await ensureClawd())) {
     return { text: '(error:CLAWD_FAILED) clawdcursor is not running. Install with: npm i -g clawdcursor && clawdcursor consent --accept' };
   }
   const intent = String(params.intent || params.action || '');
@@ -5170,7 +5172,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   // error, (b) this tool has a clawdcursor counterpart, (c) clawdcursor is
   // ready. Cheap regex check — single-digit microseconds when not eligible.
   const fallbackName = TIER5_FALLBACK_MAP[tool];
-  if (fallbackName && isFallbackEligible(primaryResult.text) && isClawdReady()) {
+  if (fallbackName && isFallbackEligible(primaryResult.text) && await ensureClawd()) {
     log.info(`Tier 5 fallback: ${tool} → clawdcursor.${fallbackName}`);
     const fallbackResult = await callClawdTool(fallbackName, params, 30_000);
     // If clawdcursor also failed, return the original — the in-process

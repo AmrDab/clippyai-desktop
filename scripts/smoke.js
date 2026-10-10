@@ -1233,7 +1233,8 @@ function layer1() {
   // shortcuts_execute proxies to clawdcursor (Tier-5)
   const shortcutsImpl = toolsSrcV124.match(/async function shortcutsExecute[\s\S]*?\n\}/);
   const shortcutsBody = shortcutsImpl ? shortcutsImpl[0] : '';
-  if (/callClawdTool\('shortcuts_execute'/.test(shortcutsBody) && /isClawdReady/.test(shortcutsBody)) {
+  // v0.21 — the readiness gate is ensureClawd() (lazy start) instead of isClawdReady().
+  if (/callClawdTool\('shortcuts_execute'/.test(shortcutsBody) && /ensureClawd|isClawdReady/.test(shortcutsBody)) {
     pass('v0.12.4: shortcuts_execute proxies to clawdcursor (Tier-5)');
   } else {
     fail('v0.12.4: shortcuts_execute', 'does not proxy via callClawdTool');

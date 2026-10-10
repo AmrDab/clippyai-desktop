@@ -324,19 +324,16 @@ app.whenReady().then(async () => {
     log.warn('Tools init failed — desktop automation may be limited', serializeErr(err));
   }
 
-  // Tier 5 fallback: clawdcursor is optional. Spawn in background; missing
-  // or broken clawdcursor must NEVER block clippy from starting.
-  import('./clawd-fallback').then((m) =>
-    m.startClawd().catch((err) => log.warn('clawdcursor fallback unavailable', err.message)),
-  );
-
-  // v0.13.0 — mail-environment probe (classic Outlook? olk? default mailto
-  // handler?). Cached + injected into system prompt context so the model
-  // picks the right send-email backend on the first call rather than
-  // trial-and-error through all 5 paths.
-  import('./mail-env').then((m) =>
-    m.probeMailEnvironment().catch((err) => log.warn('mail-env probe failed (non-fatal)', err.message)),
-  );
+  // v0.21 containment — two boot-time host probes moved to first use:
+  //  - clawdcursor (Tier 5 fallback) used to be spawned here at every boot
+  //    when found on PATH: a persistent child listening on 127.0.0.1:3847,
+  //    a token rotation + icacls in ~/.clawdcursor, and `--accept` passed on
+  //    the user's behalf — all before the user asked for anything. It is
+  //    now started lazily by ensureClawd() the first time a tool call
+  //    actually needs the fallback (see tools.ts).
+  //  - the mail-environment probe (3 hidden `powershell -ExecutionPolicy
+  //    Bypass` registry/AppX reads) now runs on the first user turn /
+  //    first email send instead (brain.ts, tools.ts).
 
   // v0.15.0 — mcp-chrome probe. Detects whether the user has the mcp-chrome
   // extension running on localhost:12306. When present, browser tools route

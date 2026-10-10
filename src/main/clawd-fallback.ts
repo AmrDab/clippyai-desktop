@@ -213,6 +213,26 @@ function showConsentNotice(): void {
   }
 }
 
+/**
+ * v0.21 containment — lazy start. clawdcursor used to be spawned at every
+ * boot (persistent child + listener on :3847 + token rotation, with
+ * `--accept` passed on the user's behalf) before the user asked for
+ * anything. Now the first tool call that needs the fallback starts it and
+ * waits for the ready signal (bounded by startClawd's 10 s ready timeout).
+ * Resolves true when the agent is usable. Cheap once resolved either way.
+ */
+let starting: Promise<void> | null = null;
+export async function ensureClawd(): Promise<boolean> {
+  if (handle) return true;
+  if (installed === false) return false;
+  if (!starting) {
+    starting = startClawd().catch((err) => log.warn('clawdcursor start failed', serializeErr(err)))
+      .finally(() => { starting = null; });
+  }
+  await starting;
+  return handle !== null;
+}
+
 export async function startClawd(): Promise<void> {
   if (handle || proc) return; // already running
   if (installed === false) return; // already known absent
@@ -243,6 +263,7 @@ export async function startClawd(): Promise<void> {
   let stdoutBuf = '';
   let stderrBuf = '';
   let readyTimer: NodeJS.Timeout | null = null;
+  let onFinalized: (() => void) | null = null;
 
   // v1.5.x: verb changed from `serve` to `agent`; REST removed, only MCP
   // JSON-RPC at POST /mcp. Fixed port avoids the --port 0 bug where stdout
@@ -268,6 +289,7 @@ export async function startClawd(): Promise<void> {
       try { child.kill('SIGKILL'); } catch { /* ignore */ }
       proc = null;
     }
+    onFinalized?.();
   };
 
   child.stdout?.on('data', (chunk: Buffer) => {
@@ -328,6 +350,10 @@ export async function startClawd(): Promise<void> {
   readyTimer = setTimeout(() => {
     finalize(false, 'ready timeout (10s)');
   }, 10_000);
+
+  // v0.21 — resolve once the agent is ready or has failed, so lazy callers
+  // (ensureClawd) can wait for it instead of racing the ready signal.
+  if (!resolved) await new Promise<void>((resolve) => { onFinalized = resolve; });
 }
 
 export async function stopClawd(): Promise<void> {
