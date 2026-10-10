@@ -686,9 +686,13 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
   // interpolated into the PowerShell command line. v0.17.7 used
   // `Set-Clipboard -Path`, which puts a FILE DROP on the clipboard (the
   // paste lands nothing in a text field) — put the file's contents on it.
+  // v0.21 containment — the paste trick overwrote whatever the user had on
+  // the clipboard. Snapshot it first and put it back after the paste.
+  const restoreClipboard = snapshotClipboardText();
+
   if (process.platform === 'win32') {
+    const tmpFile = path.join(os.tmpdir(), `clippy-type-${Date.now()}.txt`);
     try {
-      const tmpFile = path.join(os.tmpdir(), `clippy-type-${Date.now()}.txt`);
       fs.writeFileSync(tmpFile, text, 'utf-8');
       await execFileAsync('powershell.exe', [
         '-NoProfile', '-Command',
@@ -696,30 +700,62 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v'); ` +
         `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
       ], { timeout: 5000 });
-      try { fs.unlinkSync(tmpFile); } catch {} // cleanup fallback
       const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
       return { text: `Typed ${text.length} chars: "${preview}"` };
     } catch (err) {
       return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch { /* PowerShell already removed it */ }
+      await restoreClipboard();
     }
   }
 
   // Clipboard-paste path is byte-exact (preserves emoji, ZWJ sequences, RTL),
   // matches the Windows behaviour, and is faster than per-character keystroke.
   // Strategy: stash existing clipboard → write our text → cmd+v → restore.
-  // For M2 we skip the restore step to keep the surface simple; users almost
-  // always invoke typeText right after readClipboard or as a fresh action.
-  const cp = await runCli('pbcopy', [], { stdin: text, timeoutMs: 3000 });
-  if (!cp.ok) return { text: `(type_text error: pbcopy failed: ${cp.error ?? cp.stderr})` };
+  try {
+    const cp = await runCli('pbcopy', [], { stdin: text, timeoutMs: 3000 });
+    if (!cp.ok) return { text: `(type_text error: pbcopy failed: ${cp.error ?? cp.stderr})` };
 
-  const paste = await runApplescript(`tell application "System Events" to keystroke "v" using {command down}`, {
-    timeoutMs: 5000,
-  });
-  if (!paste.ok) return { text: `(type_text error: paste failed: ${paste.error ?? paste.stderr})` };
+    const paste = await runApplescript(`tell application "System Events" to keystroke "v" using {command down}`, {
+      timeoutMs: 5000,
+    });
+    if (!paste.ok) return { text: `(type_text error: paste failed: ${paste.error ?? paste.stderr})` };
 
-  const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-  return { text: `Typed ${text.length} chars: "${preview}"` };
+    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+    return { text: `Typed ${text.length} chars: "${preview}"` };
+  } finally {
+    await restoreClipboard();
+  }
 }
+
+/**
+ * v0.21 containment — best-effort clipboard preservation around the paste
+ * trick in typeText. Returns a restore function. Only plain text is put
+ * back: an image / file-drop clipboard can't be round-tripped through
+ * Electron's text API, so it is left as whatever the paste put there.
+ * The restore waits briefly so the target app has finished reading the
+ * pasted text before we swap the clipboard back.
+ */
+function snapshotClipboardText(): () => Promise<void> {
+  let previous: string | null = null;
+  try {
+    const { clipboard } = require('electron') as typeof import('electron');
+    const formats = clipboard.availableFormats();
+    const hasText = formats.some((f) => f === 'text/plain' || f === 'text/html');
+    const hasBinary = formats.some((f) => f.startsWith('image/') || /files|uri-list/i.test(f));
+    if (hasText && !hasBinary) previous = clipboard.readText();
+  } catch { /* clipboard unavailable — nothing to restore */ }
+  return async () => {
+    if (previous === null) return;
+    await new Promise((r) => setTimeout(r, CLIPBOARD_RESTORE_DELAY_MS));
+    try {
+      const { clipboard } = require('electron') as typeof import('electron');
+      clipboard.writeText(previous);
+    } catch { /* best effort */ }
+  };
+}
+const CLIPBOARD_RESTORE_DELAY_MS = 250;
 
 async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
   const rawKey = String(params.key || '');
@@ -1758,17 +1794,20 @@ async function writeClipboard(params: Record<string, unknown>): Promise<ToolResu
   } catch { /* non-fatal: if pre-capture fails, undo falls back to noop */ }
   // win32 — Set-Clipboard via temp file (restored from v0.17.7).
   if (process.platform === 'win32') {
+    const tmpFile = path.join(os.tmpdir(), `clippy-clip-${Date.now()}.txt`);
     try {
-      const tmpFile = path.join(os.tmpdir(), `clippy-clip-${Date.now()}.txt`);
       fs.writeFileSync(tmpFile, text, 'utf-8');
       await execFileAsync('powershell.exe', [
         '-NoProfile', '-Command',
         `Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 -LiteralPath '${tmpFile.replace(/'/g, "''")}')`,
       ], { timeout: 5000 });
-      try { fs.unlinkSync(tmpFile); } catch { /* cleanup fallback */ }
       return { text: `Wrote ${text.length} chars to clipboard` };
     } catch (err) {
       return { text: `(write_clipboard error: ${err instanceof Error ? err.message : ''})` };
+    } finally {
+      // v0.21 containment — was only unlinked on success; a timeout left
+      // the model's text sitting in %TEMP%.
+      try { fs.unlinkSync(tmpFile); } catch { /* already gone */ }
     }
   }
   const r = await runCli('pbcopy', [], { stdin: text, timeoutMs: 3000 });
