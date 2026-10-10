@@ -6,6 +6,7 @@ import { getBuddyName } from './license';
 import * as followMe from './follow-me';
 import * as games from './games';
 import { isByokActive, getBrainLabel } from './byok';
+import { getPendingUpdateVersion, installUpdate, installOnUserQuit, setOnUpdateStateChange } from './updater';
 
 let tray: Tray | null = null;
 // v0.21 — "Connect an agent": name of the MCP client currently driving
@@ -47,6 +48,7 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
   function updateMenu(): void {
     const isAwake = brain.getMode() === 'awake';
     const buddyName = getBuddyName();
+    const pendingUpdate = getPendingUpdateVersion();
 
     const menu = Menu.buildFromTemplate([
       { label: `ClippyAI \u2014 ${buddyName}`, enabled: false },
@@ -112,6 +114,12 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
         click: () => createSettingsWindow(),
       },
       { label: `About ClippyAI v${app.getVersion()}`, enabled: false },
+      // v0.21 — non-intrusive install path: the bubble offer can be snoozed,
+      // this item stays until the user wants it.
+      ...(pendingUpdate ? [{
+        label: `Restart to update to v${pendingUpdate}`,
+        click: () => { void installUpdate(); },
+      }] : []),
       { type: 'separator' },
       {
         label: 'Mute Voice',
@@ -138,6 +146,9 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       {
         label: 'Quit',
         click: () => {
+          // v0.21 — a downloaded update installs on the way out (unless
+          // the user said "Later"); the install path quits by itself.
+          if (installOnUserQuit()) return;
           win.destroy();
           app.quit();
         },
@@ -149,6 +160,7 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
 
   updateMenu();
   games.onStateChange(updateMenu);
+  setOnUpdateStateChange(updateMenu);
   rebuildMenu = updateMenu;
   setTrayAgentStatus(agentClient);
 

@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow, Menu, app, shell, dialog } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
-import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage } from './updater';
+import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage, snoozeUpdate, installOnUserQuit } from './updater';
 import { createLogger, serializeErr, ingestRendererLog } from './logger';
 
 const log = createLogger('IPC');
@@ -777,6 +777,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     openManualUpdatePage();
     return true;
   });
+  ipcMain.handle('snooze-update', async (_event, version: string) => {
+    snoozeUpdate(String(version || ''));
+    return true;
+  });
 
   // User profile
   ipcMain.handle('get-user-profile', async () => getUserProfile());
@@ -1456,6 +1460,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       {
         label: '❌ Quit ClippyAI',
         click: () => {
+          // v0.21 — see tray.ts Quit: a downloaded update installs on quit.
+          if (installOnUserQuit()) return;
           mainWindow.destroy();
           app.quit();
         },

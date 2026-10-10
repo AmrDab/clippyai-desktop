@@ -42,6 +42,15 @@ const skippedVersions: Set<string> = new Set();
 // scheduled tick. Idempotent guards below.
 let updaterInitialized = false;
 let periodicCheckScheduled = false;
+// v0.21 — update offers are explicit bubble buttons, never "click Clippy".
+// "Later" snoozes the offer for SNOOZE_MS (in-memory, so a relaunch clears
+// it). While snoozed the 24h periodic check stays quiet and a user-quit does
+// NOT run the install hand-off. Tray "Restart to update" ignores the snooze
+// because it is itself an explicit user action.
+const SNOOZE_MS = 24 * 60 * 60 * 1000;
+let snoozedUntil = 0;
+let snoozedVersion = '';
+let onStateChange: (() => void) | null = null;
 
 interface UpdaterState {
   lastAttemptedVersion: string;
@@ -277,6 +286,10 @@ export function initUpdater(win: BrowserWindow): void {
       });
       return;
     }
+    if (isSnoozed(info.version)) {
+      log.info('Update-available suppressed (snoozed by user)', { version: info.version });
+      return;
+    }
     sendToRenderer('update-available', info.version);
   });
 
@@ -315,6 +328,7 @@ export function initUpdater(win: BrowserWindow): void {
 
     updateDownloaded = true;
     expectedVersion = info.version;
+    onStateChange?.();
     sendToRenderer('update-ready', info.version);
   });
 
@@ -393,6 +407,46 @@ export function startPeriodicUpdateChecks(): void {
     log.debug('Periodic update check (24h)');
     checkForUpdates();
   }, UPDATE_CHECK_INTERVAL);
+}
+
+/** v0.21 — the tray rebuilds its menu when an update becomes ready. */
+export function setOnUpdateStateChange(cb: () => void): void {
+  onStateChange = cb;
+}
+
+/** Version of a fully downloaded, installable update — or null. */
+export function getPendingUpdateVersion(): string | null {
+  return updateDownloaded ? expectedVersion : null;
+}
+
+export function snoozeUpdate(version: string): void {
+  snoozedUntil = Date.now() + SNOOZE_MS;
+  snoozedVersion = version;
+  log.info('Update snoozed by user', { version, until: new Date(snoozedUntil).toISOString() });
+}
+
+function isSnoozed(version: string): boolean {
+  return snoozedVersion === version && Date.now() < snoozedUntil;
+}
+
+/**
+ * v0.21 — called from the user-initiated quit paths (tray Quit, context-menu
+ * Quit). If an update is downloaded and the user hasn't said "Later", hand
+ * off to the install path, which quits the app itself. Returns true when it
+ * took over the quit; the caller must then NOT call app.quit() itself.
+ *
+ * This is deliberately not `autoInstallOnAppQuit = true`: electron-updater's
+ * quit hook runs AFTER our will-quit cleanupTools, i.e. with PSBridge still
+ * holding file handles (the v0.9.9 lock bug). installUpdate() keeps the
+ * v0.10.9 ordering — cleanupTools first, then the installer hand-off — and
+ * on macOS it is told not to relaunch, because the user asked to quit.
+ */
+export function installOnUserQuit(): boolean {
+  if (!updateDownloaded || isSnoozed(expectedVersion)) return false;
+  log.info('User quit with a downloaded update — installing on the way out', { version: expectedVersion });
+  if (process.platform === 'darwin') autoUpdater.autoRunAppAfterInstall = false;
+  void installUpdate();
+  return true;
 }
 
 export function downloadUpdate(): void {
@@ -500,12 +554,18 @@ export async function installUpdate(): Promise<void> {
     // the quit quitAndInstall needs (app hangs, update never swaps). Flag a
     // real quit so the window is allowed to close. See quit-state.ts.
     quitState.setQuitting();
+    // v0.21 — installOnUserQuit() clears autoRunAppAfterInstall so a plain
+    // Quit swaps the bundle without relaunching; the explicit "Restart to
+    // update" button keeps the relaunch.
+    const relaunch = autoUpdater.autoRunAppAfterInstall;
     sendToRenderer('clippy-speak', {
-      text: `v${expectedVersion} is ready — installing now. I'll be right back on the new version! 📎`,
+      text: relaunch
+        ? `v${expectedVersion} is ready — installing now. I'll be right back on the new version! 📎`
+        : `Installing v${expectedVersion} on the way out. See you on the new version next time! 📎`,
       animate: 'GetAttention',
     });
     // Small delay so the message paints before the app quits to swap itself.
-    setTimeout(() => autoUpdater.quitAndInstall(false, true), 1200);
+    setTimeout(() => autoUpdater.quitAndInstall(false, relaunch), 1200);
     return;
   }
 

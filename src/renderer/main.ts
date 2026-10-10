@@ -1,6 +1,7 @@
 import { ClippyController, AgentData, HdSprite } from './clippy';
 import { BubbleController } from './bubble';
 import { TTS } from './tts';
+import { clickAction } from './click-action';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
@@ -503,26 +504,48 @@ async function init(): Promise<void> {
     })();
   });
 
-  // === Auto-update (state-based, NO canvas click hijacking) ===
-  // Previous bug: addEventListener('click') on canvas for updates would
-  // fire alongside normal click handling → clicking Clippy would quit the
-  // app to install an update the user didn't know about. Now we use a flag
-  // checked inside the single mouseup handler below.
-  let pendingUpdate: 'download' | 'install' | 'manual' | null = null;
-  let pendingUpdateVersion = '';
+  // === Auto-update (explicit bubble buttons, NO click hijacking) ===
+  // v0.21 — the previous "click me to download/restart" flag stayed armed
+  // long after the bubble auto-hid, so a later click meant to open the chat
+  // started a download or quit the app to install. Offers are now buttons;
+  // "Later" snoozes the offer in main (24h / until relaunch). A downloaded
+  // update is also reachable from the tray ("Restart to update") and
+  // installs when the user quits Clippy — never on a click.
+  const later = (version: string) => ({
+    label: 'Later',
+    variant: 'ghost' as const,
+    onClick: () => { void window.clippy.snoozeUpdate(version); bubbleCtrl.hide(); },
+  });
 
   window.clippy.onUpdateAvailable((version) => {
-    pendingUpdate = 'download';
-    pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`v${version} is available! Click me to download it. 📎`);
+    bubbleCtrl.speakWithActions(`v${version} is available! 📎`, [
+      {
+        label: 'Download',
+        variant: 'primary',
+        onClick: () => {
+          bubbleCtrl.speak('Downloading update...');
+          clippyCtrl.playNamed('Searching');
+          void window.clippy.downloadUpdate();
+        },
+      },
+      later(version),
+    ]);
   });
 
   window.clippy.onUpdateReady((version) => {
-    pendingUpdate = 'install';
-    pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`v${version} is ready! Click me to restart and update. 📎`);
+    bubbleCtrl.speakWithActions(`v${version} is ready! 📎`, [
+      {
+        label: 'Restart to update',
+        variant: 'primary',
+        onClick: () => {
+          bubbleCtrl.speak('Installing update, restarting...');
+          void window.clippy.installUpdate();
+        },
+      },
+      later(version),
+    ]);
     tts.speak('Update ready!');
   });
 
@@ -537,10 +560,18 @@ async function init(): Promise<void> {
     // updater.ts on('error') handler), but defense-in-depth: never
     // ship the phrase "vunknown" in a user-facing speech bubble.
     if (!version || version === 'unknown' || version === '0.0.0') return;
-    pendingUpdate = 'manual';
-    pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`Auto-update to v${version} isn't working on this machine. Click me to open the download page. 📎`);
+    bubbleCtrl.speakWithActions(`Auto-update to v${version} isn't working on this machine. 📎`, [
+      {
+        label: 'Open download page',
+        variant: 'primary',
+        onClick: () => {
+          bubbleCtrl.speak(`Opening the download page for v${version}...`);
+          void window.clippy.openManualUpdate();
+        },
+      },
+      later(version),
+    ]);
   });
 
   // === Drag + Click handling ===
@@ -654,26 +685,11 @@ async function init(): Promise<void> {
       const wasSpeaking = tts.isSpeaking();
       tts.stop();
 
-      if (activeGame === 'hide') {
+      const action = clickAction({ activeGame, wasSpeaking });
+      if (action === 'game-found') {
         // v0.21 — hide-and-seek: clicking him = found. Don't open the chat.
         void window.clippy.gameAction?.('found');
-      } else if (pendingUpdate === 'download') {
-        // User explicitly clicked after seeing "click me to download"
-        pendingUpdate = null;
-        bubbleCtrl.speak('Downloading update...');
-        clippyCtrl.playNamed('Searching');
-        window.clippy.downloadUpdate();
-      } else if (pendingUpdate === 'install') {
-        // User explicitly clicked after seeing "click me to restart"
-        pendingUpdate = null;
-        bubbleCtrl.speak('Installing update, restarting...');
-        window.clippy.installUpdate();
-      } else if (pendingUpdate === 'manual') {
-        // Auto-update gave up — open the R2 download page (download.clippyai.app) in the browser.
-        pendingUpdate = null;
-        bubbleCtrl.speak(`Opening the download page for v${pendingUpdateVersion}...`);
-        window.clippy.openManualUpdate();
-      } else if (wasSpeaking) {
+      } else if (action === 'engage') {
         // Interrupted mid-speech: yield to the user. Keep the reply text
         // visible and just open the input — don't talk over them with a
         // canned prompt.

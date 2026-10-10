@@ -347,6 +347,7 @@ contextBridge.exposeInMainWorld('clippy', {
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
   openManualUpdate: () => ipcRenderer.invoke('open-manual-update'),
+  snoozeUpdate: (version: string) => ipcRenderer.invoke('snooze-update', version),
   onUpdateAvailable: (cb: (version: string) => void) => {
     ipcRenderer.on('update-available', (_e, version) => cb(version));
   },

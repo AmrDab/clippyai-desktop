@@ -334,6 +334,8 @@ interface Window {
     downloadUpdate: () => Promise<boolean>;
     installUpdate: () => Promise<boolean>;
     openManualUpdate: () => Promise<boolean>;
+    /** v0.21 — "Later" on an update offer: quiet for 24h or until relaunch. */
+    snoozeUpdate: (version: string) => Promise<boolean>;
     onUpdateAvailable: (cb: (version: string) => void) => void;
     onUpdateNotAvailable: (cb: () => void) => void;
     onUpdateReady: (cb: (version: string) => void) => void;
