@@ -128,7 +128,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   desktop_screenshot: { tier: 2, cost: 'medium',    description: 'Capture a downscaled screenshot of the primary display', actionClass: 'read_only' },
   ocr_read_screen:    { tier: 2, cost: 'expensive', description: 'OCR the current screenshot to read text (Windows.Media.Ocr on Windows, Apple Vision on macOS)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   read_clipboard:     { tier: 2, cost: 'cheap',     description: 'Read the current clipboard text', narration: 'Checking the clipboard', actionClass: 'read_only' },
-  write_clipboard:    { tier: 2, cost: 'cheap',     description: 'Write text to the clipboard', actionClass: 'destructive_file', narration: 'Copying to clipboard' },
+  write_clipboard:    { tier: 2, cost: 'cheap',     description: 'Write text to the clipboard', actionClass: 'desktop_input', narration: 'Copying to clipboard' },
   read_file:          { tier: 2, cost: 'cheap',     description: 'Read a local file from disk', narration: 'Reading the file', actionClass: 'read_only' },
   write_file:         { tier: 2, cost: 'cheap',     description: 'Write a local file to disk', narration: 'Saving the file', actionClass: 'destructive_file' },
   // v0.19.0 — file management tools (delete uses move-to-trash for undoability)

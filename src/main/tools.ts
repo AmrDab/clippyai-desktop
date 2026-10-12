@@ -701,7 +701,9 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
         `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
       ], { timeout: 5000 });
       const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-      return { text: `Typed ${text.length} chars: "${preview}"` };
+      // The paste is fire-and-forget — the VM test showed a "Typed 313 chars"
+      // that never landed and Clippy told the user it was done. Say so.
+      return { text: `Pasted ${text.length} chars into the focused window: "${preview}" (NOT verified — check the screen before telling the user it's done)` };
     } catch (err) {
       return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
     } finally {
@@ -2556,7 +2558,17 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
       return { text: `(error:NOT_FOUND) parent path is not a directory: ${parent}` };
     }
   } catch {
-    return { text: `(error:NOT_FOUND) parent directory does not exist: ${parent}` };
+    // "make a folder X with a file Y" is one approved write: create the
+    // missing folders rather than sending the model off to shell_exec mkdir
+    // (which needs its own approval and broke on Windows quoting).
+    if (isProtectedPath(parent)) {
+      return { text: `(error:PROTECTED_PATH) write_file refuses to create folders under system path: ${parent}` };
+    }
+    try {
+      await fsp.mkdir(parent, { recursive: true });
+    } catch (err) {
+      return { text: `(error:NOT_FOUND) could not create parent directory ${parent}: ${err instanceof Error ? err.message : String(err)}` };
+    }
   }
   try {
     if (mode === 'create') {
@@ -3035,7 +3047,11 @@ async function shellExec(params: Record<string, unknown>): Promise<ToolResult> {
   // argument-array tokenization.
   const isWin = process.platform === 'win32';
   const shellBin = isWin ? (process.env.ComSpec || 'cmd.exe') : '/bin/zsh';
-  const shellArgs = isWin ? ['/d', '/s', '/c', command] : ['-c', command];
+  // win32: Node quotes a spaced argument and escapes inner quotes as \" —
+  // cmd.exe doesn't understand that, so `mkdir "C:\a b"` failed with "syntax
+  // is incorrect". Pass the line verbatim inside one outer pair of quotes,
+  // which `/s` strips (the documented cmd /s /c "..." form).
+  const shellArgs = isWin ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command];
 
   log.info('shell_exec', { cmd: command.substring(0, 200), cwd, timeoutMs });
 
@@ -3053,6 +3069,7 @@ async function shellExec(params: Record<string, unknown>): Promise<ToolResult> {
         // windowsHide stops a flash of a console window on win32 if Clippy
         // is launched detached from a terminal.
         windowsHide: true,
+        windowsVerbatimArguments: isWin,
       });
     } catch (err) {
       resolve({ text: `(error:SPAWN_FAILED) ${err instanceof Error ? err.message : String(err)}` });

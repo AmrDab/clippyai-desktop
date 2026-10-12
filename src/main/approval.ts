@@ -24,7 +24,7 @@ export interface ApprovalRequest {
   actionClass: ActionClass;
 }
 
-export const APPROVAL_TIMEOUT_MS = 25_000;
+export const APPROVAL_TIMEOUT_MS = 60_000;
 
 const pending = new Map<string, { resolve: (r: ApprovalResult) => void; timer: ReturnType<typeof setTimeout> }>();
 

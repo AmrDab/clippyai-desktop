@@ -107,13 +107,15 @@ try {
                     AttachThreadInput(foreThread, curThread, true);
                 }
 
-                // Simulate Alt key to bypass foreground lock
+                // Simulate an Alt tap to bypass the foreground lock. The key-up
+                // must land BEFORE the switch: a lone Alt release delivered to
+                // the new window opens its menu key-tips (Win11 Notepad, Office),
+                // which then swallow the next typed/pasted text.
                 keybd_event(0x12, 0, 0, 0);   // VK_MENU (Alt) down
+                keybd_event(0x12, 0, 2, 0);   // VK_MENU up (KEYEVENTF_KEYUP)
 
                 ShowWindow(hwnd, 9);           // SW_RESTORE
                 bool result = SetForegroundWindow(hwnd);
-
-                keybd_event(0x12, 0, 2, 0);   // VK_MENU up (KEYEVENTF_KEYUP)
 
                 if (foreThread != curThread) {
                     AttachThreadInput(foreThread, curThread, false);
