@@ -149,8 +149,6 @@ Returns `{ status: "ok", version: "0.1.0", serverDate: "..." }`. Use to confirm 
 
 **Format:** `CLIPPY-XXXX-XXXX-XXXX` (Crockford base32, no I/L/O/U to avoid visual ambiguity)
 
-**Test key:** `CLIPPY-TEST-AMRD-2026` (hardcoded bypass — always validates, never deducted from quota)
-
 **How keys work:**
 1. Customer pays on Stripe → webhook fires → Worker creates Supabase row + emails key
 2. Customer opens Clippy → enters key in Settings → app calls `POST /validate` → gets plan + token quota

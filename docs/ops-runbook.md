@@ -1,7 +1,7 @@
 # ClippyAI — Ops Runbook
 
 Everything you need to operate, monitor, and control ClippyAI as its owner.
-Last updated: 2026-05-02
+Last updated: 2026-10-12
 
 ---
 
@@ -26,7 +26,7 @@ Last updated: 2026-05-02
 | Layer | Service | URL / Location |
 |---|---|---|
 | Desktop app | Electron (Windows) | `C:\Users\amr_d\ClippyAI` |
-| API backend | Cloudflare Worker | `https://clippyai-api.amraldabbas19.workers.dev` |
+| API backend | Cloudflare Worker | `https://api.clippyai.app` (also `https://clippyai-api.amraldabbas19.workers.dev`) |
 | Database | Supabase (Postgres) | https://supabase.com → ClippyAI project |
 | Billing | Stripe | https://dashboard.stripe.com |
 | Email | Resend | https://resend.com |
@@ -34,7 +34,7 @@ Last updated: 2026-05-02
 | Auto-update source | GitHub Releases | https://github.com/AmrDab/clippyai-desktop/releases |
 | Landing page | Static site | `C:\Users\amr_d\clippyai-web` |
 
-**AI backend:** Kimi K2 (Moonshot) via `AI_PROVIDER=kimi` env var. Fallback: Gemini 2.5 Flash.
+**AI backend:** DeepSeek V4 — Free = `deepseek-v4-flash`, Power/Max = `deepseek-v4-pro` (screenshot turns go to `deepseek-flash`, since v4-pro has no vision). Set per plan in `PLAN_MODELS` (`clippyai-api/src/lib/license.ts`); clients cannot choose the model.
 
 ---
 
@@ -46,7 +46,7 @@ All admin endpoints live on the Worker. Auth header is the same for all:
 Authorization: Bearer <ADMIN_API_KEY>
 ```
 
-The `ADMIN_API_KEY` is stored as a Cloudflare Worker secret (write-only — not visible in the dashboard). The current value is known only at secret-set time. If lost, rotate it via the Cloudflare REST API (see §10).
+The `ADMIN_API_KEY` is stored as a Cloudflare Worker secret (write-only — not visible in the dashboard). Keep it in a password manager. If lost, set a new one (see §10). Never commit keys to this repo — it is public.
 
 ---
 
@@ -101,7 +101,7 @@ curl -X POST https://clippyai-api.amraldabbas19.workers.dev/admin/promo \
 | Field | Default | Notes |
 |---|---|---|
 | `email` | required | Recipient |
-| `plan` | `"power"` | `"basic"` / `"pro"` / `"power"` |
+| `plan` | `"power"` | `"free"` / `"power"` / `"max"` (unknown plans → 400) |
 | `months` | `12` | How long until `reset_date` (token quota resets) |
 
 **Response:** same shape as `/admin/provision`.
@@ -149,8 +149,6 @@ Returns `{ status: "ok", version: "0.1.0", serverDate: "..." }`. Use to confirm 
 
 **Format:** `CLIPPY-XXXX-XXXX-XXXX` (Crockford base32, no I/L/O/U to avoid visual ambiguity)
 
-**Test key:** `CLIPPY-TEST-AMRD-2026` (hardcoded bypass — always validates, never deducted from quota)
-
 **How keys work:**
 1. Customer pays on Stripe → webhook fires → Worker creates Supabase row + emails key
 2. Customer opens Clippy → enters key in Settings → app calls `POST /validate` → gets plan + token quota
@@ -158,7 +156,7 @@ Returns `{ status: "ok", version: "0.1.0", serverDate: "..." }`. Use to confirm 
 
 **To look up a key manually:** Supabase → Table Editor → `subscriptions` → filter `license_key = 'CLIPPY-...'`
 
-**To revoke a key:** Supabase → set `status = 'cancelled'` on that row. The app will get a `subscription_cancelled` error on next validate.
+**To revoke a key:** `POST /admin/revoke` with `{ "license_key": "CLIPPY-…" }` sets `status = 'cancelled'` — the key then falls back to the Free plan (ex-customers keep Free). For a leaked or abused key use `{ "license_key": "CLIPPY-…", "hard": true }`, which also renames the key so it stops working entirely.
 
 ---
 
@@ -380,63 +378,32 @@ Rate limited: 5 reports per IP per minute to prevent KV flooding.
 
 ## 9. Releasing a New Version
 
-Both steps are required. Skipping either means new users get the old installer OR existing users never auto-update.
-
-### Step 1 — Build
+Both channels must move together: GitHub Release (auto-update source) and R2 (website download).
 
 ```powershell
 cd C:\Users\amr_d\ClippyAI
-
-# Bump version in BOTH files (must match):
-# - package.json → "version": "X.Y.Z"
-# - electron-builder.yml → buildVersion: X.Y.Z
-
-npm run dist
-# Output in release/ :
-#   ClippyAI-Setup-X.Y.Z.exe
-#   ClippyAI-Setup-X.Y.Z.exe.blockmap
-#   latest.yml
+# 1. Bump the version: package.json + package-lock.json ("version") and electron-builder.yml (buildVersion X.Y.Z.0)
+# 2. Write release/RELEASE_NOTES.md
+npm run dist                      # signed build (Azure Artifact Signing) -> release/ClippyAI-Setup-X.Y.Z.exe + .blockmap + latest.yml
+git tag -a vX.Y.Z -m "ClippyAI vX.Y.Z" <commit>; git push origin <branch> vX.Y.Z
+& "C:\Program Files\Git\bin\bash.exe" scripts/publish-release.sh X.Y.Z   # GitHub release (--latest, NOT prerelease) + R2 upload
 ```
 
-### Step 2 — GitHub Release (auto-update source)
-
-All 3 files must be attached — missing any one silently breaks auto-update.
+If the script's R2 step fails with `EBUSY` from `npx`, upload with the wrangler installed in `clippyai-api`:
 
 ```powershell
-# Get stored GitHub PAT from Windows Credential Manager
-$token = ("protocol=https`nhost=github.com`n" | git credential-manager get | Select-String '^password=').Line.Substring(9)
-
-# Create release
-$release = Invoke-RestMethod -Uri "https://api.github.com/repos/AmrDab/clippyai-desktop/releases" `
-  -Method Post -Headers @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" } `
-  -Body (@{ tag_name = "vX.Y.Z"; name = "vX.Y.Z"; body = "Release notes here"; draft = $false; prerelease = $false } | ConvertTo-Json)
-
-# Upload each of the 3 assets to $release.upload_url
+cd C:\Users\amr_d\clippyai-api
+npx wrangler r2 object put "clippyai-downloads/ClippyAI-Setup-X.Y.Z.exe"  --file "C:\Users\amr_d\ClippyAI\release\ClippyAI-Setup-X.Y.Z.exe" --content-type "application/x-msdownload" --remote
+npx wrangler r2 object put "clippyai-downloads/ClippyAI-Setup-latest.exe" --file "C:\Users\amr_d\ClippyAI\release\ClippyAI-Setup-X.Y.Z.exe" --content-type "application/x-msdownload" --remote
 ```
 
-### Step 3 — R2 Upload (new user installer source)
-
-```powershell
-npx --yes wrangler@latest r2 object put clippyai-downloads/ClippyAI-Setup-latest.exe `
-  --file C:\Users\amr_d\ClippyAI\release\ClippyAI-Setup-X.Y.Z.exe `
-  --remote
-```
-
-### Step 4 — Verify
-
-```powershell
-# GitHub assets present
-curl -sL "https://api.github.com/repos/AmrDab/clippyai-desktop/releases/tags/vX.Y.Z"
-
-# R2 updated (check Content-Length and Last-Modified)
-curl -sI "https://download.clippyai.app/ClippyAI-Setup-latest.exe"
-```
+Verify: `curl -sI https://download.clippyai.app/ClippyAI-Setup-latest.exe` (Content-Length matches the new .exe) and the release's `latest.yml` shows the new version. electron-updater ignores prerelease-flagged releases.
 
 ### Deploy API changes
 
 ```powershell
 cd C:\Users\amr_d\clippyai-api
-npx wrangler@latest deploy
+npx wrangler deploy        # note the Version ID; roll back with: npx wrangler rollback <previous-version-id>
 ```
 
 ---
@@ -456,34 +423,25 @@ All secrets live as Cloudflare Worker secrets (write-only after setting — not 
 | `GEMINI_API_KEY` | Google Gemini fallback | Google AI Studio |
 | `KIMI_API_KEY` | Moonshot Kimi K2 (production AI) | https://platform.moonshot.cn |
 
-**To rotate any secret:**
-```powershell
-$headers = @{ "Authorization" = "Bearer <CF_API_TOKEN>"; "Content-Type" = "application/json" }
-$body = @{ name = "SECRET_NAME"; text = "new-value"; type = "secret_text" } | ConvertTo-Json
-Invoke-RestMethod `
-  -Uri "https://api.cloudflare.com/client/v4/accounts/001b9c277681a237d32b6a1413e101d4/workers/scripts/clippyai-api/secrets" `
-  -Method Put -Headers $headers -Body $body
+**To rotate any secret** (no trailing newline: a newline breaks timing-safe comparisons):
+```bash
+cd /c/Users/amr_d/clippyai-api
+printf '%s' "new-value" | npx wrangler secret put SECRET_NAME
 ```
+Or run `npx wrangler secret put SECRET_NAME` and paste the value at the prompt.
+
+Current AI secret: `DEEPSEEK_API_KEY` (Kimi/Gemini keys are legacy).
 
 ---
 
 ## 11. Plans & Token Budgets
 
-| Plan | Price | Token budget | Desktop actions | Cost (Kimi K2) | Margin |
-|---|---|---|---|---|---|
-| Basic | $4.99/mo | 500,000 | ❌ | ~$0.36 | ~93% |
-| Pro | $9.99/mo | 2,000,000 | ✅ | ~$1.43 | ~86% |
-| Power | $19.99/mo | 5,000,000 | ✅ + multi-monitor | ~$3.58 | ~82% |
+Source of truth: `clippyai-api/src/lib/license.ts` (`PLAN_TOKENS`, `PLAN_MODELS`, `PLAN_FEATURES`, `SELLABLE_PLANS`).
 
-Tokens reset monthly on the subscription's `reset_date`. The cron job (runs every 15 min) catches any missed webhooks and auto-provisions within 15 minutes of a new subscription.
+| Plan | Model | Notes |
+|---|---|---|
+| Free | deepseek-v4-flash | Chat only; 1 free Power task per day and 1 PC security check per week (Windows); first 3 onboarding turns unbilled |
+| Power | deepseek-v4-pro | Desktop tools, security check |
+| Max | deepseek-v4-pro | Same as Power with a larger monthly budget |
 
-**Feature gates by plan:**
-
-| Feature | Basic | Pro | Power |
-|---|---|---|---|
-| AI chat | ✅ | ✅ | ✅ |
-| Desktop automation | ❌ | ✅ | ✅ |
-| Browser control | ❌ | ✅ | ✅ |
-| Multi-monitor | ❌ | ❌ | ✅ |
-| Custom personas | ❌ | ❌ | ✅ |
-| Priority support | ❌ | ❌ | ✅ |
+Legacy `basic`/`pro` rows are grandfathered. Stripe price -> plan mapping lives in `PRICE_TO_PLAN` (license.ts); a cron reconciles Stripe <-> Supabase every 15 minutes (`RECONCILE_MODE=apply`).
