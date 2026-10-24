@@ -58,6 +58,7 @@ win:
   files:
     - out/**/*
     - assets/**/*
+    - "!assets/agents/**"
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**"
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
     - "!**/node_modules/onnxruntime-web/**"
