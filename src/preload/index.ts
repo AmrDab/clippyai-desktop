@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('clippy', {
   // v0.21 — bubble history panel: persisted conversation (user + Clippy turns).
   getConversation: () => ipcRenderer.invoke('conversation:get'),
   clearConversation: () => ipcRenderer.invoke('conversation:clear'),
+  stopTask: () => ipcRenderer.invoke('task:stop'),
 
   updateSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke('update-settings', settings),
@@ -306,7 +307,6 @@ contextBridge.exposeInMainWorld('clippy', {
 
   // License management
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
-  clearLicense: () => ipcRenderer.invoke('clear-license'),
   resetApp: () => ipcRenderer.invoke('reset-app'),
 
   // ── Permission walkthrough (onboarding)

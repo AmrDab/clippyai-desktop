@@ -280,8 +280,8 @@ async function init(): Promise<void> {
   // v0.16.0 — task-in-progress animation loop. Replaces the prior one-shot
   // 'Thinking' that froze Clippy during long tasks. Brain emits at handleUser
   // Message entry and finally{}.
-  window.clippy.onWorkingStart?.(() => clippyCtrl.startWorkingLoop());
-  window.clippy.onWorkingStop?.(() => clippyCtrl.stopWorkingLoop());
+  window.clippy.onWorkingStart?.(() => { clippyCtrl.startWorkingLoop(); bubbleCtrl.setWorking(true); });
+  window.clippy.onWorkingStop?.(() => { clippyCtrl.stopWorkingLoop(); bubbleCtrl.setWorking(false); });
 
   // v0.21 — an outside agent asked the user something (clippy_ask_user) or
   // wants an OK (clippy_say wait_for_dismiss). Buttons answer by id; hiding

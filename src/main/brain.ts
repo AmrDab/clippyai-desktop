@@ -746,6 +746,8 @@ export class Brain {
    *  so the user can say "continue" / "keep going" to RESUME it instead of
    *  getting a contextless "I'm not sure what to do". Freshness-gated (2 min). */
   private lastAbortedGoal: { text: string; at: number } | null = null;
+  /** v0.21 — set by stopTask() (the composer's Stop button). */
+  private stopRequested = false;
 
   // Onboarding v2 — while the "Try it" screen is up, user turns are sent
   // with `onboarding: true` so the server doesn't bill the first 3. Never
@@ -1145,6 +1147,7 @@ export class Brain {
     }
     this.isExecuting = true;
     this.cancelRequested = false;
+    this.stopRequested = false;
     this.cancelReason = null;
     // v0.21 — remember the request so the free Power pass can re-run it.
     this.lastUserRequest = text;
@@ -1326,6 +1329,12 @@ export class Brain {
           if (this.mode === 'sleep') {
             log.info('Task aborted — sleep');
             abortReason = 'sleep';
+          } else if (this.stopRequested) {
+            log.info('Task aborted — user pressed Stop');
+            finalSpoken = 'Stopped. Say "keep going" to pick it back up.';
+            this.emit('clippy-speak', { text: finalSpoken, animate: 'Wave' });
+            this.lastAbortedGoal = { text, at: Date.now() };
+            abortReason = 'user_stop';
           } else {
             log.info('Task aborted — user override');
             this.emit('clippy-speak', { text: 'Got it — switching gears.', animate: 'Wave' });
@@ -2660,6 +2669,21 @@ export class Brain {
       if (text) out.push({ role: c.role, text });
     }
     return out;
+  }
+
+  /** v0.21 — the composer's Stop button. Same teardown as a user override
+   *  (approvals, BYOK fetches, tool children), but no new task follows. */
+  stopTask(): boolean {
+    if (!this.isExecuting) return false;
+    log.info('User pressed Stop — cancelling in-flight task');
+    this.cancelRequested = true;
+    this.stopRequested = true;
+    approvalMod.cancelAllApprovals();
+    byokMod.abortByokRequests();
+    try { abortAllInFlightTools(); } catch (err) {
+      log.warn('abortAllInFlightTools threw on stop (non-fatal)', serializeErr(err));
+    }
+    return true;
   }
 
   /** v0.21 — "Clear conversation" in the bubble. Forgets the model-facing

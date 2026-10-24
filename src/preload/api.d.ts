@@ -72,7 +72,6 @@ interface Window {
      *  | 'offline' | …) the renderer maps to a friendly inline message. */
     freeSignup: (email: string) => Promise<{ emailed: true } | { error: string }>;
     saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
-    clearLicense: () => Promise<boolean>;
     /** Full local reset → relaunch into onboarding. Main shows a native
      *  confirm dialog first and resolves false if the user cancels; on
      *  confirm the app relaunches, so this never resolves true in practice. */
@@ -155,6 +154,7 @@ interface Window {
     // ── v0.21 — bubble history panel (brain's persisted conversation)
     getConversation?: () => Promise<Array<{ role: 'user' | 'model'; text: string }>>;
     clearConversation?: () => Promise<boolean>;
+    stopTask?: () => Promise<boolean>;
 
     // ── Speech / TTS
     // v0.19.0 — ruleId present when a deterministic rule fired the tip

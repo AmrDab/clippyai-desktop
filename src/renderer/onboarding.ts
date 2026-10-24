@@ -387,6 +387,14 @@ document.getElementById('btn-relaunch-later')?.addEventListener('click', async (
 
 // Auto-uppercase license input. (The free/paid sections stay visible —
 // they're distinct paths, not a fallback that hides when a key is typed.)
+// v0.21 — Enter in the key field validates, same as the footer Next button.
+licenseInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing && !btnNext.disabled) {
+    e.preventDefault();
+    btnNext.click();
+  }
+});
+
 licenseInput.addEventListener('input', () => {
   const pos = licenseInput.selectionStart;
   licenseInput.value = licenseInput.value.toUpperCase();

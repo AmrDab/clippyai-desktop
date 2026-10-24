@@ -680,8 +680,10 @@ btnTestConnection.addEventListener('click', testConnection);
 // Change license key
 const btnChangeLicense = document.getElementById('btn-change-license');
 if (btnChangeLicense) {
-  btnChangeLicense.addEventListener('click', async () => {
-    await window.clippy.clearLicense();
+  // v0.21 — don't clear the current key first: onboarding's save-license
+  // overwrites it once a new key validates, so closing onboarding midway
+  // leaves the user on their old (working) key instead of unlicensed.
+  btnChangeLicense.addEventListener('click', () => {
     window.clippy.openOnboarding();
     window.close();
   });

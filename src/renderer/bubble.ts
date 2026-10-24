@@ -1,5 +1,5 @@
 import { Recorder } from './recorder';
-import { type ChatMessage, visibleHistory, fromPersisted, composerHeight } from './chat-history';
+import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
 
 // v0.12.3 — auto-hide is now configurable via Settings.bubbleAutoHideMs.
 // 0 = "Manual" (never auto-hide). Default 30000 (was 20000 — 20s stole long
@@ -59,6 +59,10 @@ export class BubbleController {
   private input: HTMLTextAreaElement;
   private sendBtn: HTMLButtonElement;
   private clearBtn: HTMLButtonElement | null;
+  /** v0.21 — a task is running (main's working-start/stop). */
+  private working = false;
+  /** v0.21 — position in sent-message recall (↑/↓); null = not recalling. */
+  private recallIdx: number | null = null;
   private micBtn: HTMLButtonElement | null;
   private micLevel: HTMLElement | null;
   private expandHandle: HTMLButtonElement | null;
@@ -164,18 +168,47 @@ export class BubbleController {
 
     this.sendBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.submit();
+      if (this.showsStop()) this.stopTask();
+      else this.submit();
     });
     // v0.21 — Enter sends, Shift+Enter inserts a newline (the textarea grows
-    // to 4 lines, then scrolls — see syncComposer).
+    // to 4 lines, then scrolls — see syncComposer). Enter during IME
+    // composition (Chinese/Japanese/Korean) commits the candidate, never sends.
+    // Esc clears a draft, else stops a running task, else falls through to
+    // the document handlers (close expanded / cancel voice / stop follow-me).
+    // ↑/↓ recall previously sent messages.
     this.input.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.submit();
+      } else if (e.key === 'Escape') {
+        if (this.input.value !== '') {
+          e.preventDefault();
+          this.input.value = '';
+          this.recallIdx = null;
+          this.syncComposer();
+        } else if (this.working) {
+          e.preventDefault();
+          this.stopTask();
+        } else {
+          return; // let it propagate
+        }
+      } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && this.canRecall(e.key)) {
+        e.preventDefault();
+        const sent = this.chatHistory.filter((m) => m.role === 'user').map((m) => m.text);
+        const r = recallStep(sent, this.recallIdx, e.key === 'ArrowUp' ? 'up' : 'down');
+        this.recallIdx = r.idx;
+        this.input.value = r.text;
+        this.input.setSelectionRange(r.text.length, r.text.length);
+        this.syncComposer();
       }
       e.stopPropagation();
     });
-    this.input.addEventListener('input', () => this.syncComposer());
+    this.input.addEventListener('input', () => {
+      this.recallIdx = null;
+      this.syncComposer();
+    });
     this.syncComposer();
 
     // ── Standard → expanded via corner handle ───────────────────────
@@ -780,11 +813,43 @@ export class BubbleController {
   /** v0.21 — keep the composer in step with its text: send is disabled
    *  while empty; the textarea grows up to 4 lines, then scrolls. */
   private syncComposer(): void {
-    this.sendBtn.disabled = this.input.value.trim() === '';
+    const stop = this.showsStop();
+    this.sendBtn.disabled = !stop && this.input.value.trim() === '';
+    this.sendBtn.classList.toggle('is-stop', stop);
+    this.sendBtn.title = stop ? 'Stop (Esc)' : 'Send (Enter)';
+    this.sendBtn.setAttribute('aria-label', stop ? 'Stop' : 'Send');
     this.input.style.height = 'auto';
     const { height, scrolls } = composerHeight(this.input.scrollHeight);
     this.input.style.height = `${height}px`;
     this.input.style.overflowY = scrolls ? 'auto' : 'hidden';
+  }
+
+  /** v0.21 — main's working-start / working-stop. While a task runs and the
+   *  draft is empty, the send button becomes Stop. Typing a new message
+   *  turns it back into Send (sending overrides the task, as before). */
+  setWorking(working: boolean): void {
+    this.working = working;
+    this.syncComposer();
+  }
+
+  private showsStop(): boolean {
+    return this.working && this.input.value.trim() === '';
+  }
+
+  private stopTask(): void {
+    window.clippy.stopTask?.().catch(() => { /* non-fatal — task ends on its own */ });
+  }
+
+  /** ↑ recalls only from an empty draft or while already recalling, and only
+   *  with the caret on the first line (↓: last line) so multi-line edits
+   *  still move the caret normally. */
+  private canRecall(key: 'ArrowUp' | 'ArrowDown'): boolean {
+    if (this.input.value !== '' && this.recallIdx === null) return false;
+    const { value, selectionStart, selectionEnd } = this.input;
+    if (selectionStart !== selectionEnd) return false;
+    return key === 'ArrowUp'
+      ? !value.slice(0, selectionStart).includes('\n')
+      : !value.slice(selectionEnd).includes('\n');
   }
 
   private escapeHtml(text: string): string {
@@ -802,6 +867,7 @@ export class BubbleController {
     if (!text) return;
     this.chatHistory.push({ role: 'user', text, time: new Date() });
     this.input.value = '';
+    this.recallIdx = null;
     this.syncComposer();
     if (this.state === 'expanded') this.renderHistoryPanel();
     if (this.state !== 'expanded') this.hideInput();

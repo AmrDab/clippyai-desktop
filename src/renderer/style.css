@@ -764,7 +764,10 @@ body.clippy-window {
 }
 .bubble[data-state="expanded"] #bubble-input-area {
   margin: 0;
-  padding: 10px 14px 12px;
+  /* Right padding clears the sprite (#clippy-container, 124px at the
+   * window's bottom-right, z-index 20) — without it Clippy sat on top of
+   * the mic + send buttons and swallowed their clicks. */
+  padding: 10px 122px 12px 14px;
   border-top: 1px solid var(--bubble-hairline);
   background: rgba(255, 255, 255, 0.4);
   flex-shrink: 0;
@@ -856,6 +859,14 @@ body.clippy-window {
   outline-offset: 1px;
 }
 #bubble-send .send-icon { display: block; transform: translateX(0.5px); }
+#bubble-send .stop-icon { display: none; }
+#bubble-send.is-stop .send-icon { display: none; }
+#bubble-send.is-stop .stop-icon { display: block; }
+#bubble-send.is-stop {
+  background: rgba(15, 23, 42, 0.86);
+  color: #fff;
+}
+#bubble-send.is-stop:hover { background: rgba(15, 23, 42, 1); }
 
 /* ── Mic button — ghost icon with retained level-pulse ──────────── */
 #bubble-mic {
@@ -880,7 +891,7 @@ body.clippy-window {
 #bubble-mic:active { transform: translateY(0.5px); }
 @media (prefers-reduced-motion: reduce) {
   .bubble-composer, #bubble-send, #bubble-mic { transition: none; }
-  #bubble-mic.recording { animation: none; }
+  #bubble-mic.recording, #bubble-mic.encoding .mic-icon { animation: none; }
 }
 #bubble-mic .mic-icon { position: relative; z-index: 2; }
 #bubble-mic .mic-level {
@@ -902,10 +913,9 @@ body.clippy-window {
   background: rgba(255, 193, 7, 0.18);
   border-color: rgba(255, 193, 7, 0.55);
 }
-#bubble-mic.encoding .mic-icon::after {
-  content: '\2026';
-  margin-left: 4px;
-  animation: mic-dots 0.9s steps(4, end) infinite;
+/* Pseudo-elements don't render on <svg>, so pulse the icon itself. */
+#bubble-mic.encoding .mic-icon {
+  animation: mic-dots 0.9s ease-in-out infinite;
 }
 @keyframes mic-record-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.55); }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  fromPersisted, visibleHistory, composerHeight,
+  fromPersisted, visibleHistory, composerHeight, recallStep,
   COMPOSER_LINE_PX, COMPOSER_PAD_Y_PX, COMPOSER_MAX_LINES, HISTORY_LIMIT,
 } from '../src/renderer/chat-history';
 
@@ -39,6 +39,26 @@ describe('visibleHistory — which entries the panel shows', () => {
     expect(out[0].text).toBe('m30');
     expect(out[out.length - 1].text).toBe('m49');
     expect(visibleHistory(many, 3).map((m) => m.text)).toEqual(['m47', 'm48', 'm49']);
+  });
+});
+
+describe('recallStep — ↑/↓ sent-message recall', () => {
+  const sent = ['first', 'second', 'third'];
+  it('↑ from a fresh draft starts at the newest, then walks back and stops at the oldest', () => {
+    let r = recallStep(sent, null, 'up');
+    expect(r).toEqual({ idx: 2, text: 'third' });
+    r = recallStep(sent, r.idx, 'up');
+    expect(r).toEqual({ idx: 1, text: 'second' });
+    r = recallStep(sent, 0, 'up');
+    expect(r).toEqual({ idx: 0, text: 'first' });
+  });
+  it('↓ walks forward and past the newest returns to an empty draft', () => {
+    expect(recallStep(sent, 0, 'down')).toEqual({ idx: 1, text: 'second' });
+    expect(recallStep(sent, 2, 'down')).toEqual({ idx: null, text: '' });
+    expect(recallStep(sent, null, 'down')).toEqual({ idx: null, text: '' });
+  });
+  it('nothing sent yet → empty', () => {
+    expect(recallStep([], null, 'up')).toEqual({ idx: null, text: '' });
   });
 });
 

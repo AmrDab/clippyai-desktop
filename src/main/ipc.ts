@@ -13,7 +13,6 @@ const WORKER_API_BASE = 'https://api.clippyai.app';
 import {
   validateLicenseKey,
   saveLicense,
-  clearLicense,
   clearAllLocalData,
   getLicenseKey,
   getPlan,
@@ -566,19 +565,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       }
     } catch { /* invalid URL */ }
     return false;
-  });
-
-  // Clear license + ALL local state (Keychain tokens + on-disk profile) so a
-  // user who clears the app leaves nothing orphaned and re-onboards cleanly.
-  // "Change key" (Settings → License). License-ONLY clear: drops the stored
-  // key/plan so onboarding can capture a new one, but PRESERVES the user's
-  // profile, learned instincts, connected-app Keychain tokens, and history.
-  // (Before alpha.20 this called clearAllLocalData() and silently nuked the
-  // whole persona on a simple key swap — see reset-app below for the explicit
-  // full-wipe path.)
-  ipcMain.handle('clear-license', async () => {
-    clearLicense();
-    return true;
   });
 
   // "Reset ClippyAI" (Settings → License → Danger zone). The EXPLICIT
@@ -1355,6 +1341,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     brain.clearConversation();
     return true;
   });
+  // v0.21 — composer Stop button.
+  ipcMain.handle('task:stop', async () => brain.stopTask());
 
   // v0.19.0 — Undo: apply the inverse of a recorded action.
   // Returns { ok, detail } — the renderer shows this as a toast.

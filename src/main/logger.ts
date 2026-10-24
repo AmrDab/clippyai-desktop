@@ -43,8 +43,13 @@ const PII_PATTERNS: Array<[RegExp, string]> = [
   [new RegExp(`\\b${USERNAME}\\b`, 'gi'), '<user>'],
   // Email addresses
   [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '<email>'],
-  // License keys (format: CLIP-XXXX-XXXX-XXXX-XXXX)
-  [/CLIP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}/gi, 'CLIP-****-****-****-****'],
+  // License keys: current CLIPPY-XXXX-XXXX-XXXX (any group count) and the
+  // legacy CLIP-XXXX-XXXX-XXXX-XXXX.
+  [/\bCLIP(?:PY)?(?:-[A-Z0-9]{4}){3,4}\b/gi, 'CLIPPY-****'],
+  // Bearer tokens and provider API keys (BYOK: sk-…, sk-ant-…, AIza…).
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, 'Bearer [redacted]'],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, 'sk-[redacted]'],
+  [/\bAIza[0-9A-Za-z_-]{30,}/g, 'AIza[redacted]'],
 ];
 
 export function scrubPII(text: string): string {

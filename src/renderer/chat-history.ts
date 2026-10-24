@@ -38,6 +38,21 @@ export function visibleHistory(messages: ChatMessage[], limit = HISTORY_LIMIT): 
   return limit > 0 ? shown.slice(-limit) : shown;
 }
 
+/** Shell-style prompt recall for ↑/↓ in the composer. `idx` is the current
+ *  position in `sent` (null = not recalling). Up from null starts at the
+ *  newest; down past the newest returns to an empty draft (idx null). */
+export function recallStep(
+  sent: string[], idx: number | null, dir: 'up' | 'down',
+): { idx: number | null; text: string } {
+  if (sent.length === 0) return { idx: null, text: '' };
+  if (dir === 'up') {
+    const next = idx === null ? sent.length - 1 : Math.max(0, idx - 1);
+    return { idx: next, text: sent[next] };
+  }
+  if (idx === null || idx >= sent.length - 1) return { idx: null, text: '' };
+  return { idx: idx + 1, text: sent[idx + 1] };
+}
+
 // Composer auto-grow. The textarea's CSS sets line-height + vertical
 // padding; these constants must match style.css `#bubble-input`.
 export const COMPOSER_LINE_PX = 20;
