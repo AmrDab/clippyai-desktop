@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('clippy', {
     undoAction: (id: string) => ipcRenderer.invoke('action-undo', id),
   },
 
+  // v0.21 — bubble history panel: persisted conversation (user + Clippy turns).
+  getConversation: () => ipcRenderer.invoke('conversation:get'),
+  clearConversation: () => ipcRenderer.invoke('conversation:clear'),
+
   updateSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke('update-settings', settings),
 

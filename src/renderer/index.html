@@ -38,6 +38,11 @@
         <button id="bubble-pin" type="button" title="Pin bubble (stay open across messages)" aria-label="Pin" aria-pressed="false">
           <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M9.6 1.7a1 1 0 0 1 1.4 0l3.3 3.3a1 1 0 0 1 0 1.4l-.9.9a1 1 0 0 1-1 .25l-.4-.12-2.3 2.3.3 1.8a1 1 0 0 1-.28.88l-.5.5a.75.75 0 0 1-1.06 0L5.9 10.6l-3.36 3.37a.75.75 0 0 1-1.06-1.06L4.84 9.5 2.6 7.26a.75.75 0 0 1 0-1.06l.5-.5a1 1 0 0 1 .88-.28l1.8.3 2.3-2.3-.12-.4a1 1 0 0 1 .25-1l.9-.9Z"/></svg>
         </button>
+        <!-- v0.21 — clears the conversation panel + main's persisted history
+             (after an inline confirm rendered in #bubble-history). -->
+        <button id="bubble-clear" type="button" title="Clear conversation" aria-label="Clear conversation">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 4.5h10M6.5 2.5h3M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8M6.8 7v4M9.2 7v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+        </button>
         <button id="bubble-close" type="button" title="Close (Esc)" aria-label="Close">
           <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
@@ -61,31 +66,36 @@
     <div id="bubble-chips" class="hidden"></div>
 
     <div id="bubble-input-area" class="hidden">
-      <!-- File-attach button removed for the public launch: the upload
+      <!-- v0.21 — composer: one pill holding a growing textarea (Enter
+           sends, Shift+Enter newline, up to 4 lines then scrolls) with the
+           mic + send icon buttons inside it. Send is disabled while empty.
+           File-attach button removed for the public launch: the upload
            pipeline isn't built yet, so a visible-but-dead paperclip would
            mislead users. Re-add the <button id="bubble-attach"> here when
            attach is wired (bubble.ts attachBtn + an 'attach' IPC + handler). -->
-      <input id="bubble-input" type="text" placeholder="Type to Clippy..." />
-      <!-- v0.17.2 — click-to-toggle voice input. Click to start, click
-           again to stop & transcribe, Esc to cancel. (Pre-v0.17.2 was
-           hold-to-talk, which felt finicky for clips longer than a few
-           seconds.) Hidden when voiceEnabled is false. -->
-      <button id="bubble-mic" type="button" title="Click to speak (Ctrl+Shift+Space) · Esc cancels" aria-label="Voice input">
-        <!-- SVG mic (was the 🎤 emoji, which rendered in full color at a
-             size we couldn't control and clashed with every tint). -->
-        <svg class="mic-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-          <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Z"/>
-          <path fill="currentColor" d="M18.5 11a.9.9 0 0 0-1.8 0 4.7 4.7 0 0 1-9.4 0 .9.9 0 0 0-1.8 0 6.5 6.5 0 0 0 5.6 6.43V20H8.9a.9.9 0 1 0 0 1.8h6.2a.9.9 0 1 0 0-1.8h-2.2v-2.57A6.5 6.5 0 0 0 18.5 11Z"/>
-        </svg>
-        <span class="mic-level" aria-hidden="true"></span>
-      </button>
-      <!-- v0.19.0 — paper-plane SVG replaces the old "→" character.
-           Inline so we don't pull a sprite sheet for one icon. -->
-      <button id="bubble-send" type="button" title="Send (Enter)" aria-label="Send">
-        <svg class="send-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <path fill="currentColor" d="M2.5 11.3 21 3.1c.6-.3 1.2.3.9.9l-8.2 18.5c-.3.6-1.2.6-1.4-.1l-2.3-7-7-2.3c-.7-.2-.7-1.1-.1-1.4Zm9.4 1.6 5.5-5.5-7.6 3.4 2.1 2.1Zm.7.7 2.1 2.1 3.4-7.6-5.5 5.5Z"/>
-        </svg>
-      </button>
+      <div class="bubble-composer">
+        <textarea id="bubble-input" rows="1" placeholder="Ask Clippy anything…" aria-label="Message Clippy" enterkeyhint="send"></textarea>
+        <!-- v0.17.2 — click-to-toggle voice input. Click to start, click
+             again to stop & transcribe, Esc to cancel. (Pre-v0.17.2 was
+             hold-to-talk, which felt finicky for clips longer than a few
+             seconds.) Hidden when voiceEnabled is false. -->
+        <button id="bubble-mic" type="button" title="Click to speak (Ctrl+Shift+Space) · Esc cancels" aria-label="Voice input">
+          <!-- SVG mic (was the 🎤 emoji, which rendered in full color at a
+               size we couldn't control and clashed with every tint). -->
+          <svg class="mic-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Z"/>
+            <path fill="currentColor" d="M18.5 11a.9.9 0 0 0-1.8 0 4.7 4.7 0 0 1-9.4 0 .9.9 0 0 0-1.8 0 6.5 6.5 0 0 0 5.6 6.43V20H8.9a.9.9 0 1 0 0 1.8h6.2a.9.9 0 1 0 0-1.8h-2.2v-2.57A6.5 6.5 0 0 0 18.5 11Z"/>
+          </svg>
+          <span class="mic-level" aria-hidden="true"></span>
+        </button>
+        <!-- v0.19.0 — paper-plane SVG replaces the old "→" character.
+             Inline so we don't pull a sprite sheet for one icon. -->
+        <button id="bubble-send" type="button" title="Send (Enter)" aria-label="Send" disabled>
+          <svg class="send-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path fill="currentColor" d="M2.5 11.3 21 3.1c.6-.3 1.2.3.9.9l-8.2 18.5c-.3.6-1.2.6-1.4-.1l-2.3-7-7-2.3c-.7-.2-.7-1.1-.1-1.4Zm9.4 1.6 5.5-5.5-7.6 3.4 2.1 2.1Zm.7.7 2.1 2.1 3.4-7.6-5.5 5.5Z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Standard-only corner handle. Hover-revealed bottom-right grip;

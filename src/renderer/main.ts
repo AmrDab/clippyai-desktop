@@ -144,6 +144,12 @@ async function init(): Promise<void> {
     }
   });
 
+  // v0.21 — seed the chat panel with the persisted conversation (main's
+  // conversation-history.json) so "Keeps history" survives a restart.
+  window.clippy.getConversation?.()
+    .then((rows) => bubbleCtrl.loadHistory(rows))
+    .catch(() => { /* non-fatal — panel starts empty */ });
+
   // === IPC Event Listeners ===
   // v0.19.0 — track the rule_id of the currently-visible proactive tip so
   // "Don't suggest this again" in the context menu knows which rule to deny.
@@ -696,8 +702,8 @@ async function init(): Promise<void> {
         bubbleCtrl.engageForReply();
         clippyCtrl.wave();
       } else {
-        // Normal click — open chat bubble
-        bubbleCtrl.speak('What can I help you with?');
+        // Normal click — open the chat panel (recent conversation + composer).
+        bubbleCtrl.openChat();
         clippyCtrl.wave();
       }
     }
