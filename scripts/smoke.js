@@ -1451,13 +1451,14 @@ function layer1() {
     fail('v0.19.0 PR-2.5: build-native script', `value=${pkgJson.scripts && pkgJson.scripts['build-native']}`);
   }
 
-  // 5. dist script chains build-native BEFORE electron-builder
-  const distScript = (pkgJson.scripts && pkgJson.scripts.dist) || '';
-  const distOK = distScript.includes('build-native') && distScript.indexOf('build-native') < distScript.indexOf('electron-builder');
+  // 5. dist:mac chains build-native BEFORE electron-builder ("npm run " prefix
+  // so "rebuild-natives" can't satisfy it).
+  const distScript = (pkgJson.scripts && pkgJson.scripts['dist:mac']) || '';
+  const distOK = distScript.includes('npm run build-native') && distScript.indexOf('npm run build-native') < distScript.indexOf('electron-builder');
   if (!isDarwin) {
     skip('v0.19.0 PR-2.5: dist chain', MAC_ONLY);
   } else if (distOK) {
-    pass('v0.19.0 PR-2.5: dist script runs build-native before electron-builder');
+    pass('v0.19.0 PR-2.5: dist:mac script runs build-native before electron-builder');
   } else {
     fail('v0.19.0 PR-2.5: dist chain', `dist=${distScript}`);
   }
@@ -1472,7 +1473,7 @@ function layer1() {
   } else if (fs.existsSync(cursorVisionPath)) {
     const cursorVisionSrc = fs.readFileSync(cursorVisionPath, 'utf8');
     const importsHelper = /from\s+['"]\.\/screenshot-helper['"]/.test(cursorVisionSrc);
-    const callsHelper = /captureViaHelper\(/.test(cursorVisionSrc);
+    const callsHelper = /captureViaHelper\(|captureScreen\(/.test(cursorVisionSrc);
     const keepsFallback = /\/usr\/sbin\/screencapture/.test(cursorVisionSrc);
     if (importsHelper && callsHelper && keepsFallback) {
       pass('v0.19.0 PR-2.5: cursor-vision.ts imports + calls captureViaHelper, keeps /usr/sbin/screencapture fallback');
@@ -1486,10 +1487,10 @@ function layer1() {
   // 7. tools.ts imports + calls captureViaHelper from desktop_screenshot
   const toolsSrcPR25 = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
   const toolsImportsHelper = /from\s+['"]\.\/screenshot-helper['"]/.test(toolsSrcPR25);
-  const toolsCallsHelper = /captureViaHelper\(/.test(toolsSrcPR25);
+  const toolsCallsHelper = /captureViaHelper\(|captureScreen\(/.test(toolsSrcPR25);
   // Locate the desktopScreenshot function body and verify it contains the helper call.
   const dsBodyMatch = toolsSrcPR25.match(/async function desktopScreenshot\([^)]*\)[\s\S]*?\n\}\n/);
-  const desktopShotUsesHelper = dsBodyMatch && /captureViaHelper\(/.test(dsBodyMatch[0]);
+  const desktopShotUsesHelper = dsBodyMatch && /captureViaHelper\(|captureScreen\(/.test(dsBodyMatch[0]);
   if (!isDarwin) {
     skip('v0.19.0 PR-2.5: tools.ts wiring', MAC_ONLY);
   } else if (toolsImportsHelper && toolsCallsHelper && desktopShotUsesHelper) {
