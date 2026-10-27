@@ -62,3 +62,25 @@ export async function clearSecret(service: string, account: string): Promise<voi
     log.warn('clearSecret failed', { service, account, msg: err instanceof Error ? err.message : String(err) });
   }
 }
+
+/**
+ * Deletes EVERY credential stored under a service (all accounts). Used by the
+ * explicit "clear license / reset" path so no API tokens are left orphaned in
+ * the Keychain after a user clears the app. Best-effort — never throws.
+ */
+export async function clearAllSecrets(service: string): Promise<void> {
+  try {
+    const loaded = await loadKeytar();
+    if (!loaded) {
+      log.warn('keytar unavailable', { reason: keytarLoadError });
+      return;
+    }
+    const creds: Array<{ account: string }> = await keytar.findCredentials(service);
+    for (const { account } of creds) {
+      await keytar.deletePassword(service, account);
+    }
+    log.info('clearAllSecrets', { service, count: creds.length });
+  } catch (err) {
+    log.warn('clearAllSecrets failed', { service, msg: err instanceof Error ? err.message : String(err) });
+  }
+}

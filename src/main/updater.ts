@@ -2,46 +2,31 @@ import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow, shell } from 'electron';
 import { createLogger, serializeErr } from './logger';
 import { cleanupTools } from './tools';
+import * as quitState from './quit-state';
 import fs from 'fs';
 import path from 'path';
 
 const log = createLogger('Updater');
 
-const GITHUB_OWNER = 'AmrDab';
-const GITHUB_REPO = 'clippyai-desktop';
-
-// Where we send the user when auto-update silently fails and they need to
-// install manually. Used to point at `github.com/.../releases/latest`,
-// which had two problems:
-//   1. While clippyai-desktop was private (pre-2026-05-15), end users got
-//      a flat 404 (see support report 51420569 — "directed me to github").
-//   2. Even now that the repo is public, the GitHub Releases UI is heavy,
-//      generic, and asks the user to scroll a Releases list to find the
-//      installer they want. That's not a recovery experience.
+// v0.19.0 — was `https://github.com/AmrDab/clippyai-macos/releases/latest`.
+// The repo is private, so the page itself 404'd for unauthenticated users
+// even when the bubble appeared. Now points at the public marketing downloads
+// page on clippyai.app, which is the single source of truth users already
+// know. The electron-updater feed itself lives at download.clippyai.app/
+// latest-mac.yml (configured in electron-builder.yml publish block).
 //
-// /update-help on the marketing site does the recovery properly:
-// signed installer download buttons for all three platforms (Mac arm64,
-// Mac Intel, Windows), SmartScreen-bypass walkthrough, support contact.
-// All hosted on infrastructure we own (Cloudflare Pages + R2), so no
-// repo-visibility dependency.
-const RELEASE_PAGE = 'https://clippyai.app/update-help';
-const RELEASE_PAGE_LEGACY = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`; // kept for diagnostic logs only
+// Windows keeps the v0.17.7 value: AmrDab/clippyai-desktop is public, and its
+// releases page is where the NSIS installer + latest.yml actually live.
+const RELEASE_PAGE = process.platform === 'win32'
+  ? 'https://github.com/AmrDab/clippyai-desktop/releases/latest'
+  : 'https://clippyai.app/downloads.html';
 
-// A version is marked failed after this many silent-failure detections.
-//
-// v0.11.6 used `2` on the theory that the first failure might be transient
-// (AV scan still in progress, UAC fumble, etc.). In practice, NSIS silent
-// failures caused by unsigned-installer policy are DETERMINISTIC — Defender
-// doesn't change its mind on retry — so the "hedge" just made the user
-// watch the same failed update attempt twice before escaping to manual
-// install. Now: one silent failure is enough evidence, skip immediately.
-// If the user manually installs a newer version, skip state self-clears.
+// macOS DMG/ZIP updates don't have the NSIS silent-failure failure mode that
+// drove the failureCount/skippedVersions machinery on Windows. electron-updater
+// handles DMG mounting and ZIP-based in-place replacement natively. We keep the
+// state tracking infrastructure for now (cheap, useful for telemetry) but
+// MAX_FAILURES_BEFORE_SKIP can stay at 1 since any failure is a clear signal.
 const MAX_FAILURES_BEFORE_SKIP = 1;
-
-// How long after an install attempt we still treat a version-mismatch as
-// "install just failed" vs. "user downgraded by other means". 2h is long
-// enough to cover a slow NSIS run + antivirus scan, short enough that a
-// week-later relaunch doesn't trigger false positives.
 const SILENT_FAILURE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
@@ -57,6 +42,15 @@ const skippedVersions: Set<string> = new Set();
 // scheduled tick. Idempotent guards below.
 let updaterInitialized = false;
 let periodicCheckScheduled = false;
+// v0.21 — update offers are explicit bubble buttons, never "click Clippy".
+// "Later" snoozes the offer for SNOOZE_MS (in-memory, so a relaunch clears
+// it). While snoozed the 24h periodic check stays quiet and a user-quit does
+// NOT run the install hand-off. Tray "Restart to update" ignores the snooze
+// because it is itself an explicit user action.
+const SNOOZE_MS = 24 * 60 * 60 * 1000;
+let snoozedUntil = 0;
+let snoozedVersion = '';
+let onStateChange: (() => void) | null = null;
 
 interface UpdaterState {
   lastAttemptedVersion: string;
@@ -67,10 +61,17 @@ interface UpdaterState {
 
 function cacheDir(): string {
   // electron-updater's `updaterCacheDirName: clippyai-updater` (app-update.yml)
-  // resolves to %LOCALAPPDATA%\clippyai-updater on Windows.
-  const base = process.env.LOCALAPPDATA
-    || path.join(app.getPath('home'), 'AppData', 'Local');
-  return path.join(base, 'clippyai-updater');
+  // resolves to %LOCALAPPDATA%\clippyai-updater on Windows (v0.17.7 path —
+  // purgeCache/stale-installer cleanup depend on it) and to
+  // ~/Library/Caches/clippyai-updater on macOS. Electron 29's
+  // app.getPath() doesn't expose 'cache' as a key — build it from $HOME.
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA
+      || path.join(app.getPath('home'), 'AppData', 'Local');
+    return path.join(base, 'clippyai-updater');
+  }
+  const home = app.getPath('home');
+  return path.join(home, 'Library', 'Caches', 'clippyai-updater');
 }
 
 function stateFilePath(): string {
@@ -285,6 +286,10 @@ export function initUpdater(win: BrowserWindow): void {
       });
       return;
     }
+    if (isSnoozed(info.version)) {
+      log.info('Update-available suppressed (snoozed by user)', { version: info.version });
+      return;
+    }
     sendToRenderer('update-available', info.version);
   });
 
@@ -323,13 +328,53 @@ export function initUpdater(win: BrowserWindow): void {
 
     updateDownloaded = true;
     expectedVersion = info.version;
+    onStateChange?.();
     sendToRenderer('update-ready', info.version);
   });
 
   autoUpdater.on('error', (err) => {
+    // v0.19.0 — classify the error class first. electron-updater fires
+    // 'error' for three meaningfully different conditions: (a) installed
+    // version is newer than the published feed (we're on a dev/pre-release
+    // build that hasn't been published yet — NOT a failure), (b) check-
+    // stage transient errors (network, 404, DNS), and (c) post-download
+    // errors (signature mismatch, write fail). Treat them differently so
+    // the logs are honest and we don't fire user-facing bubbles for (a)/(b).
+    const msg = (err as Error)?.message || String(err);
+    const isDowngradeError = /latest version.*lower than current|no published version|cannot find latest/i.test(msg);
+
+    if (isDowngradeError) {
+      // The published GitHub release is older than our installed build.
+      // This is the canonical "I'm on rc.X, latest published is .Y < .X"
+      // state — Clippy is on the bleeding edge. Log as INFO so our
+      // production support sweeps don't flag it as a real error, and
+      // never fire a bubble.
+      log.info('Updater: installed version is newer than published feed (no upgrade available)', {
+        installed: app.getVersion(),
+        feedError: msg.substring(0, 200),
+      });
+      return;
+    }
+
     log.error('Auto-update error', serializeErr(err));
+
+    // v0.19.0 PR-2.2 — DO NOT surface a user-facing bubble for generic
+    // updater errors when we don't have a real version in hand.
+    // Generic errors (network blip, 404 on the release feed, DNS
+    // failure, signature mismatch on a transient byte) are not
+    // actionable for the user and produce embarrassing copy like
+    // "Auto-update to vunknown isn't working on this machine."
+    //
+    // The user-facing failure bubble only fires from the silent-
+    // install-failure path (line ~482) and the skipped-version path
+    // (lines 256, 291) where we have a real `info.version` to show.
+    // Generic errors retry silently on the next 24h tick.
+    if (!expectedVersion) {
+      log.debug('Auto-update error suppressed — no expectedVersion (transient/check-stage failure)');
+      return;
+    }
     sendToRenderer('update-failed', {
-      version: expectedVersion || 'unknown',
+      version: expectedVersion,
       reason: 'updater-error',
       manualUrl: RELEASE_PAGE,
     });
@@ -364,6 +409,49 @@ export function startPeriodicUpdateChecks(): void {
   }, UPDATE_CHECK_INTERVAL);
 }
 
+/** v0.21 — the tray rebuilds its menu when an update becomes ready. */
+export function setOnUpdateStateChange(cb: () => void): void {
+  onStateChange = cb;
+}
+
+/** Version of a fully downloaded, installable update — or null. */
+export function getPendingUpdateVersion(): string | null {
+  return updateDownloaded ? expectedVersion : null;
+}
+
+export function snoozeUpdate(version: string): void {
+  snoozedUntil = Date.now() + SNOOZE_MS;
+  snoozedVersion = version;
+  log.info('Update snoozed by user', { version, until: new Date(snoozedUntil).toISOString() });
+}
+
+function isSnoozed(version: string): boolean {
+  return snoozedVersion === version && Date.now() < snoozedUntil;
+}
+
+/**
+ * v0.21 — called from the user-initiated quit paths (tray Quit, context-menu
+ * Quit). If an update is downloaded and the user hasn't said "Later", hand
+ * off to the install path, which quits the app itself. Returns true when it
+ * took over the quit; the caller must then NOT call app.quit() itself.
+ *
+ * This is deliberately not `autoInstallOnAppQuit = true`: electron-updater's
+ * quit hook runs AFTER our will-quit cleanupTools, i.e. with PSBridge still
+ * holding file handles (the v0.9.9 lock bug). installUpdate() keeps the
+ * v0.10.9 ordering — cleanupTools first, then the installer hand-off — and
+ * on macOS it is told not to relaunch, because the user asked to quit.
+ */
+export function installOnUserQuit(): boolean {
+  if (!updateDownloaded || isSnoozed(expectedVersion)) return false;
+  // Windows' install path hands the installer to Explorer — popping a window
+  // every time the user quits is exactly the intrusion we avoid. Tray item only.
+  if (process.platform === 'win32') return false;
+  log.info('User quit with a downloaded update — installing on the way out', { version: expectedVersion });
+  if (process.platform === 'darwin') autoUpdater.autoRunAppAfterInstall = false;
+  void installUpdate();
+  return true;
+}
+
 export function downloadUpdate(): void {
   log.info('User accepted update — downloading');
   autoUpdater.downloadUpdate().catch((err) => {
@@ -386,14 +474,14 @@ export function openManualUpdatePage(): void {
     log.info('Opening cached installer (SmartScreen dialog will appear)', { cachedInstaller });
     shell.openPath(cachedInstaller).then((err) => {
       if (err) {
-        log.warn('shell.openPath failed, falling back to recovery page', err);
+        log.warn('shell.openPath failed, falling back to releases page', err);
         shell.openExternal(RELEASE_PAGE).catch(() => {});
       }
     });
   } else {
-    log.info('No cached installer — opening recovery page', { url: RELEASE_PAGE });
+    log.info('No cached installer — opening releases page', { url: RELEASE_PAGE });
     shell.openExternal(RELEASE_PAGE).catch((err) => {
-      log.warn('Failed to open recovery page', serializeErr(err));
+      log.warn('Failed to open release page', serializeErr(err));
     });
   }
 }
@@ -454,6 +542,34 @@ export async function installUpdate(): Promise<void> {
     cleanupTools();
   } catch (err) {
     log.warn('cleanupTools error (non-fatal)', serializeErr(err));
+  }
+
+  // macOS (Squirrel.Mac): electron-updater installs by unpacking the downloaded
+  // ZIP and swapping the .app bundle in place, then relaunching. EVERYTHING
+  // below this point — installer.exe lookup, PowerShell Unblock-File, Explorer
+  // hand-off — is Windows-NSIS-specific and never installs on macOS (it hunts
+  // for a .exe, shells powershell.exe, and shows Finder a file the user can't
+  // run). Hand straight to quitAndInstall. isSilent=false lets Squirrel do its
+  // normal swap; isForceRunAfter=true relaunches Clippy on the new version.
+  if (process.platform === 'darwin') {
+    log.info('Install.exec', { action: 'quitAndInstall', platform: 'darwin', installerPath });
+    // The main window's close handler hides-to-tray by default and would block
+    // the quit quitAndInstall needs (app hangs, update never swaps). Flag a
+    // real quit so the window is allowed to close. See quit-state.ts.
+    quitState.setQuitting();
+    // v0.21 — installOnUserQuit() clears autoRunAppAfterInstall so a plain
+    // Quit swaps the bundle without relaunching; the explicit "Restart to
+    // update" button keeps the relaunch.
+    const relaunch = autoUpdater.autoRunAppAfterInstall;
+    sendToRenderer('clippy-speak', {
+      text: relaunch
+        ? `v${expectedVersion} is ready — installing now. I'll be right back on the new version! 📎`
+        : `Installing v${expectedVersion} on the way out. See you on the new version next time! 📎`,
+      animate: 'GetAttention',
+    });
+    // Small delay so the message paints before the app quits to swap itself.
+    setTimeout(() => autoUpdater.quitAndInstall(false, relaunch), 1200);
+    return;
   }
 
   // Phase 2: Delete any stale installer.exe sitting in the cache root.
@@ -549,6 +665,9 @@ export async function installUpdate(): Promise<void> {
   // Quit after 4 seconds so file locks release and the user has time to
   // see the message. The user may take longer than 4s to actually click;
   // that's fine — once we quit, locks release and the install can run
-  // when they do.
+  // when they do. setQuitting() so the hide-to-tray close handler doesn't
+  // block the quit (which would keep file locks held → install can't replace
+  // the running exe).
+  quitState.setQuitting();
   setTimeout(() => app.quit(), 4000);
 }

@@ -1,5 +1,5 @@
 /**
- * proactive/interruption-cost.ts — v0.20.0 "Lumiere" PR-B (Windows port)
+ * proactive/interruption-cost.ts — v0.20.0 "Lumiere" PR-B
  *
  * Pure cost-of-interruption model (memo §4 item 3). Returns a multiplier that
  * SCALES the surfacing threshold: surface only when `p / interruptionCost >
@@ -16,29 +16,19 @@
  *   - Static named exports only (bundle-anchor rule).
  *   - Output clamped to [MIN_COST, MAX_COST] = [0.2, 1.5] (memo §4 item 3).
  *
- * ── WINDOWS ADAPTATION ──────────────────────────────────────────────────────
- * The macOS build matched HIGH_COST_APPS against macOS *app display names*
- * (e.g. "Keynote", "zoom.us"). On Windows, get_active_window
- * (get-foreground-window.ps1) returns `processName` — the EXE base name without
- * extension (e.g. "POWERPNT", "Zoom", "Teams", "msedge"). So the allowlist is
- * re-expressed against Windows process names. The matcher tries both the
- * passed app string (which the caller wires from processName) so it is robust.
- *
- * ── Signal provenance (Windows) ─────────────────────────────────────────────
- *   REAL today (caller populates from existing polls):
- *     - busy/full-screen/call app — matched from the active processName, which
- *       we already read via get_active_window. (Heuristic by process identity,
- *       not a true Win32 fullscreen query — see STUBBED below.)
+ * ── Signal provenance ──────────────────────────────────────────────────────
+ *   REAL today (caller can populate from existing polls):
+ *     - busy/full-screen/call app — matched from the active app NAME, which we
+ *       already read via get_active_window. (Heuristic by app identity, not by
+ *       a true NSWindow fullscreen query — see STUBBED below.)
  *     - recentTypingMs — derivable from idleSec (idleSec*1000 ≈ ms since last
- *       input).
- *     - idleSec — REAL (Electron powerMonitor.getSystemIdleTime(), cross-
- *       platform; the brain.ts hook reads it there).
+ *       input); a small idleSec means the user just typed/moved.
+ *     - idleSec — REAL (powerMonitor).
  *   STUBBED-for-later (fields accepted so the signature is stable, but the
  *   caller passes undefined in v0.20.0; memo §5 restraint list):
- *     - doNotDisturb — Windows Focus Assist / Quiet Hours state. Not wired yet.
- *     - trueFullscreen — actual Win32 fullscreen state (query foreground window
- *       rect vs monitor rect). Not wired; approximated via the process-name
- *       allowlist below.
+ *     - doNotDisturb — macOS Focus mode via `defaults read`. Not wired yet.
+ *     - trueFullscreen — actual NSWindow fullscreen state. Not wired; we
+ *       approximate with the app-name allowlist below.
  */
 
 export const MIN_COST = 0.2;
@@ -48,37 +38,26 @@ export const BASE_COST = 1.0;
 
 /**
  * Apps where an interruption is almost always expensive: presentations, video
- * calls, immersive/full-screen media. Matched against the active app string,
- * which the Windows caller wires from get_active_window's `processName`.
- *
- * Windows process names (EXE base, no extension), with a few display-name
- * fallbacks kept so the matcher also works if a caller passes a friendly name:
- *   PowerPoint slideshow → POWERPNT ; Zoom → Zoom ; Teams → Teams / ms-teams ;
- *   Webex → CiscoCollabHost/webexmta ; media players → wmplayer/vlc ;
- *   editors → Adobe Premiere Pro / Resolve.
+ * calls, immersive/full-screen media. Matched against the active app name.
+ * This is the REAL stand-in for a true fullscreen query until that's wired.
  */
 const HIGH_COST_APPS = [
-  /^POWERPNT$/i,            // Microsoft PowerPoint
+  /^Keynote$/i,
   /^Microsoft PowerPoint$/i,
-  /^Zoom$/i,                // Zoom client
   /^zoom\.us$/i,
-  /^Teams$/i,               // classic Teams
-  /^ms-teams$/i,            // new Teams
+  /^Zoom$/i,
   /^Microsoft Teams$/i,
-  /^CiscoCollabHost$/i,     // Webex
-  /^webexmta$/i,
+  /^Google Meet$/i,
   /^Webex/i,
-  /^wmplayer$/i,            // Windows Media Player
-  /^vlc$/i,                 // VLC
+  /^FaceTime$/i,
+  /^QuickTime Player$/i,
   /^VLC$/i,
-  /^mpc-hc(64)?$/i,         // MPC-HC
-  /^Adobe Premiere Pro$/i,
-  /^Resolve$/i,             // DaVinci Resolve
-  /^obs(64)?$/i,            // OBS (likely streaming/recording)
+  /^Final Cut Pro$/i,
+  /^DaVinci Resolve$/i,
 ];
 
 export interface InterruptionState {
-  /** Active app string — Windows caller wires this from get_active_window's processName (REAL). */
+  /** Active app name (REAL — get_active_window). */
   app: string;
   /** powerMonitor idleSec (REAL). */
   idleSec: number;
@@ -88,9 +67,9 @@ export interface InterruptionState {
    * (the cost fn will fall back to idleSec).
    */
   recentTypingMs?: number;
-  /** STUBBED — Windows Focus Assist / Quiet Hours. undefined in v0.20.0. */
+  /** STUBBED — macOS Focus / Do Not Disturb. undefined in v0.20.0. */
   doNotDisturb?: boolean;
-  /** STUBBED — true Win32 fullscreen state. undefined in v0.20.0. */
+  /** STUBBED — true NSWindow fullscreen state. undefined in v0.20.0. */
   trueFullscreen?: boolean;
 }
 
@@ -109,7 +88,7 @@ export function currentInterruptionCost(state: InterruptionState): number {
   let cost = BASE_COST;
 
   // ── Hard "leave them alone" signals ───────────────────────────────────────
-  // DND / Focus Assist is the strongest explicit signal a user can give.
+  // DND / Focus mode is the strongest explicit signal a user can give.
   if (state.doNotDisturb === true) cost *= 1.5;
 
   // Full-screen / presentation / call context.

@@ -59,24 +59,65 @@ export async function spawnCdpBrowser(opts: SpawnOptions = {}): Promise<{ ok: bo
   // flags), so this is safe to pass unconditionally when headless=true.
   const headlessArgs = headless ? ['--headless=new', '--disable-gpu'] : [];
 
-  const candidates: Array<{ exe: string; args: string[] }> = [
-    {
-      exe: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-      args: [
-        `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
-        `--user-data-dir=${path.join(os.tmpdir(), 'clippy-cdp-edge')}`,
-        ...headlessArgs,
-      ],
-    },
-    {
-      exe: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      args: [
-        `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
-        `--user-data-dir=${path.join(os.tmpdir(), 'clippy-cdp-chrome')}`,
-        ...headlessArgs,
-      ],
-    },
+  // Args are identical for every browser/platform; only the executable path
+  // and the profile-dir name differ. `--user-data-dir` MUST be a throwaway
+  // temp dir, not the user's real profile, or Chromium refuses to open a
+  // second instance ("profile in use") when their normal browser is running.
+  const mkArgs = (profile: string): string[] => [
+    `--remote-debugging-port=${DEFAULT_CDP_PORT}`,
+    `--user-data-dir=${path.join(os.tmpdir(), profile)}`,
+    ...headlessArgs,
   ];
+
+  // v0.20.0 — platform-aware browser discovery. PREVIOUS BUG: this list held
+  // ONLY Windows paths (`C:\Program Files\…`), so on macOS/Linux every
+  // `fs.existsSync` was false and cdp_connect ALWAYS reported "Neither Edge
+  // nor Chrome found" even with Chrome installed and focused. cdp_* tools are
+  // advertised on macOS, so the dispatch has to actually work there.
+  // Order: Chrome first on mac/Linux (the common default), Edge first on
+  // Windows. All candidates are existence-guarded below, so listing extras
+  // (Brave, Chromium, per-user installs) is free.
+  const home = os.homedir();
+  let candidates: Array<{ exe: string; args: string[] }> = [];
+
+  if (process.platform === 'darwin') {
+    const macApps: Array<{ rel: string; profile: string }> = [
+      { rel: 'Google Chrome.app/Contents/MacOS/Google Chrome', profile: 'clippy-cdp-chrome' },
+      { rel: 'Brave Browser.app/Contents/MacOS/Brave Browser', profile: 'clippy-cdp-brave' },
+      { rel: 'Microsoft Edge.app/Contents/MacOS/Microsoft Edge', profile: 'clippy-cdp-edge' },
+      { rel: 'Chromium.app/Contents/MacOS/Chromium', profile: 'clippy-cdp-chromium' },
+    ];
+    // macOS apps live under /Applications (system-wide) OR ~/Applications
+    // (per-user installs, common when an admin didn't approve a system move).
+    for (const b of macApps) {
+      for (const base of ['/Applications', path.join(home, 'Applications')]) {
+        candidates.push({ exe: path.join(base, b.rel), args: mkArgs(b.profile) });
+      }
+    }
+  } else if (process.platform === 'win32') {
+    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const localAppData = process.env['LOCALAPPDATA'] || path.join(home, 'AppData', 'Local');
+    candidates = [
+      { exe: path.join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), args: mkArgs('clippy-cdp-edge') },
+      { exe: path.join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), args: mkArgs('clippy-cdp-edge') },
+      { exe: path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'), args: mkArgs('clippy-cdp-chrome') },
+      { exe: path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'), args: mkArgs('clippy-cdp-chrome') },
+      // Per-user Chrome install (no admin) — very common, was missing before.
+      { exe: path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'), args: mkArgs('clippy-cdp-chrome') },
+    ];
+  } else {
+    // Linux — standard package binary locations.
+    candidates = [
+      { exe: '/usr/bin/google-chrome', args: mkArgs('clippy-cdp-chrome') },
+      { exe: '/usr/bin/google-chrome-stable', args: mkArgs('clippy-cdp-chrome') },
+      { exe: '/usr/bin/chromium', args: mkArgs('clippy-cdp-chromium') },
+      { exe: '/usr/bin/chromium-browser', args: mkArgs('clippy-cdp-chromium') },
+      { exe: '/usr/bin/brave-browser', args: mkArgs('clippy-cdp-brave') },
+      { exe: '/usr/bin/microsoft-edge', args: mkArgs('clippy-cdp-edge') },
+    ];
+  }
+
   for (const c of candidates) {
     if (!fs.existsSync(c.exe)) continue;
     try {
@@ -86,10 +127,14 @@ export async function spawnCdpBrowser(opts: SpawnOptions = {}): Promise<{ ok: bo
       // browser doesn't have a window-init shortcut. Give it ~2s when
       // headless, ~1.5s otherwise — both are conservative.
       await new Promise((r) => setTimeout(r, headless ? 2000 : 1500));
+      log.info('CDP browser spawned', { exe: c.exe, headless });
       return { ok: true };
     } catch (err) {
       log.warn('CDP browser spawn failed', serializeErr(err));
     }
   }
-  return { ok: false, error: 'Neither Edge nor Chrome was found in their default install paths.' };
+  return {
+    ok: false,
+    error: `No Chromium-based browser (Chrome/Edge/Brave/Chromium) found in the usual install locations for ${process.platform}.`,
+  };
 }

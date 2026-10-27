@@ -1,5 +1,5 @@
 /**
- * proactive/scorer.ts — v0.20.0 "Lumiere" PR-B (Windows port)
+ * proactive/scorer.ts — v0.20.0 "Lumiere" PR-B
  *
  * ProactiveProbabilityScorer — the decision-theoretic core the original
  * Lumiere shipped in research but Office 97 never did (memo §1). Replaces the
@@ -12,9 +12,6 @@
  * P0 bug." So the model leans toward SILENCE: weights are conservative, the
  * default threshold is high (0.55), and the interruption-cost gate can only
  * RAISE the effective bar in busy moments.
- *
- * This module is PURE TypeScript — no Electron, no platform-specific code — so
- * it ports verbatim from the macOS build.
  *
  * Design invariants:
  *   - `score(features) → p ∈ [0,1]` is PURE: features in, probability out.
@@ -60,11 +57,10 @@ export interface ScoreFeatures {
 
   /**
    * (e) RULE PRIOR — confidence of the best-matching contextual-suggestions
-   * rule, ∈ [0,1], or 0 if none matched. The macOS build sources this from its
-   * rule engine; the Windows build has no rule engine (its proactive path is
-   * model-driven), so the caller passes 0 today — see brain.ts shadow hook.
-   * The memo gives a flat +0.4 for "a rule matched"; we generalize to the
-   * rule's own confidence. Pass 0.4 to reproduce the memo's flat prior exactly.
+   * rule, ∈ [0,1], or 0 if none matched. REAL. The memo gives a flat +0.4 for
+   * "a rule matched"; we generalize to the rule's own confidence so a highly
+   * specific rule (mail-compose) counts more than a weak one (morning-standup).
+   * Pass 0.4 to reproduce the memo's flat prior exactly.
    */
   rulePrior: number;
 }

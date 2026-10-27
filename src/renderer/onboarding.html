@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body class="onboarding-window">
@@ -12,42 +12,61 @@
       <p class="tagline">Your AI desktop buddy is waiting</p>
     </div>
 
-    <!-- Step 1: Welcome -->
+    <!-- Step 1: Activate — free is the primary path; one-click email link
+         (clippyai://activate) or paste the key from the same email. -->
     <div class="onboarding-step active" data-step="1">
-      <h2>Welcome!</h2>
-      <p>ClippyAI is your personal AI desktop assistant. It watches your screen, helps proactively, and responds to your questions — all powered by the classic Clippy character you know and love.</p>
-      <p>Let's get you set up in just a moment.</p>
-    </div>
+      <h2>Get started — free forever</h2>
+      <p class="onboarding-subhead">No card needed — just an email and you're in.</p>
 
-    <!-- Step 2: License Key -->
-    <div class="onboarding-step" data-step="2">
-      <h2>Activate ClippyAI</h2>
-      <p>Paste the license key from your email below.</p>
-      <div>
-        <label for="license-key">License Key</label>
-        <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+      <!-- Primary: free signup -->
+      <div id="free-section">
+        <button class="btn-primary" id="btn-use-free" type="button">Use Clippy free</button>
+        <div id="free-email-row" style="display:none;">
+          <label for="free-email">Your email</label>
+          <input id="free-email" type="email" placeholder="you@example.com" spellcheck="false" autocomplete="email" inputmode="email" />
+          <button class="btn-primary" id="btn-free-confirm" type="button">Confirm</button>
+        </div>
+        <div class="onboarding-error" id="free-error"></div>
       </div>
-      <div class="onboarding-error" id="license-error"></div>
-      <div id="trial-section">
-        <div class="onboarding-divider"><span>don't have a key?</span></div>
-        <button class="btn-trial" id="btn-start-trial">Get a Free Trial Key</button>
-        <p class="trial-hint" id="trial-hint" style="display: none;">
-          Checkout opened in your browser. After signing up, check your email (and spam folder) for the license key, then paste it above.
+
+      <!-- Secondary: paid plans. No trial exists — Power/Max charge on checkout. -->
+      <div id="plans-section">
+        <div class="onboarding-divider"><span>or</span></div>
+        <p class="onboarding-subhead" style="margin-bottom:var(--s-space-2);">
+          Want Clippy to run your desktop? Power adds automation, browser control and multi-monitor.
+        </p>
+        <div class="plan-grid">
+          <div>
+            <button class="btn-trial" id="btn-get-power" type="button">Get Power</button>
+            <p class="trial-hint">$19.99/mo · cancel anytime</p>
+          </div>
+          <div>
+            <button class="btn-trial" id="btn-get-max" type="button">Get Max</button>
+            <p class="trial-hint">$39.99/mo · premium voice, 4× usage · cancel anytime</p>
+          </div>
+        </div>
+        <p class="trial-hint" id="plans-hint" style="display:none;">
+          Checkout opened in your browser. After paying, click the activation button in your email — or paste the key from that email below.
         </p>
       </div>
+
+      <!-- Tertiary: paste a key -->
+      <div id="license-section">
+        <div class="onboarding-divider"><span>already have a key?</span></div>
+        <label for="license-key">License key</label>
+        <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
+        <div class="onboarding-error" id="license-error"></div>
+      </div>
+
+      <p class="onboarding-hint" id="privacy-line">
+        Clippy reads your screen only to help with what you ask, or to offer a tip (tips can be turned off in Settings → Brain) — screenshots are never stored.
+      </p>
     </div>
 
-    <!-- Step 3: Personalize -->
-    <div class="onboarding-step" data-step="3">
-      <h2>Personalize Your Buddy</h2>
-      <!-- v0.17.7 — capture the user's OWN name here instead of relying on
-           a post-onboarding "Hey! What should I call you?" prompt that
-           could race against renderer init and silently miss. Atomic
-           saveUserProfile happens alongside the license save. -->
-      <div>
-        <label for="user-name">What should we call you?</label>
-        <input id="user-name" type="text" placeholder="Your name" maxlength="40" />
-      </div>
+    <!-- Step 2: Meet Clippy -->
+    <div class="onboarding-step" data-step="2">
+      <h2>Meet Clippy</h2>
+      <p class="onboarding-subhead">Name your buddy and pick how he sounds.</p>
       <div>
         <label for="buddy-name">Name your buddy</label>
         <input id="buddy-name" type="text" value="Clippy" maxlength="20" />
@@ -56,16 +75,70 @@
         <label for="voice-select">Choose a voice</label>
         <select id="voice-select"></select>
       </div>
+      <!-- v0.19.0 PR-6.3 — auto-launch on system start. Default ON because
+           Clippy is a "buddy that's just there." User can toggle off here OR
+           in Settings → General later. -->
+      <div class="onboarding-toggle">
+        <label class="onboarding-toggle-row" for="onboarding-launch-startup">
+          <input id="onboarding-launch-startup" type="checkbox" checked />
+          <span class="onboarding-toggle-label">
+            <span class="onboarding-toggle-title">Start Clippy when I log in</span>
+            <span class="onboarding-toggle-hint">Recommended — Clippy stays in the corner, ready when you need him.</span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Step 3 (macOS only): Permissions — guided grant flow. Windows needs
+         no per-app grants, so onboarding.ts drops this step from the order
+         there (and from the dots). The ids are read by the PermissionFlow
+         renderer; onboarding.ts toggles `perm-enter` / `perm-granted`. -->
+    <div class="onboarding-step" data-step="3" data-mac-only>
+      <h2>Let's give Clippy what he needs</h2>
+      <p class="onboarding-subhead">One quick permission at a time. I'll point you right to it.</p>
+      <div class="perm-card" id="perm-card">
+        <div class="perm-why" id="perm-why"></div>
+        <div class="perm-status" id="perm-status" role="status" aria-live="polite">Needed</div>
+        <button class="btn-primary" id="perm-open" type="button">Open Settings</button>
+        <button class="onboarding-skip-link" id="perm-skip" type="button">Skip for now</button>
+      </div>
+    </div>
+
+    <!-- Step 4: Try it — the "aha". Clippy is already on screen; the user
+         asks a real question with the voice hotkey (or the typed fallback). -->
+    <div class="onboarding-step" data-step="4">
+      <h2>Try it</h2>
+      <p class="onboarding-subhead">Clippy's in the corner of your screen now. Press
+        <kbd id="tryit-hotkey">Ctrl+Shift+Space</kbd> and ask:
+      </p>
+      <p class="tryit-prompt" id="tryit-prompt">"What's on my screen?"</p>
+      <button class="btn-secondary" id="btn-tryit-type" type="button">or type it</button>
+      <p class="onboarding-hint" id="tryit-status" role="status" aria-live="polite"></p>
+      <p class="onboarding-subhead" style="margin-top:var(--s-space-3);">Or try one of these:</p>
+      <div class="first-wins" id="first-wins-chips">
+        <!-- Populated from FIRST_WINS at runtime (plan-aware). -->
+      </div>
+
+      <!-- Shown only when Screen Recording was granted during setup: applying
+           it needs a process restart. The user can do it now or defer — SR
+           takes effect on Clippy's next launch either way. -->
+      <div class="relaunch-banner" id="relaunch-banner" hidden>
+        <p class="relaunch-banner-text">
+          One more thing — <strong>Screen Recording</strong> needs a quick restart to take effect.
+        </p>
+        <div class="relaunch-banner-actions">
+          <button class="btn-primary" id="btn-relaunch-now">Quit &amp; Reopen</button>
+          <button class="btn-secondary" id="btn-relaunch-later">Later</button>
+        </div>
+      </div>
     </div>
 
     <div class="onboarding-footer">
       <button class="btn-secondary" id="btn-back" style="visibility: hidden;">Back</button>
-      <div class="progress-dots">
-        <span class="dot active" data-dot="1"></span>
-        <span class="dot" data-dot="2"></span>
-        <span class="dot" data-dot="3"></span>
+      <div class="progress-dots" role="progressbar" aria-label="Onboarding progress">
+        <!-- One dot per step in this platform's order; built in onboarding.ts. -->
       </div>
-      <button class="btn-primary" id="btn-next">Get Started</button>
+      <button class="btn-primary" id="btn-next">Next</button>
     </div>
   </div>
 

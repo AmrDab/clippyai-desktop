@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <style>
+    :root {
+      --ink: #1c1c1e;
+      --ink-soft: #6b6b70;
+      --accent: #2f6fed;
+      --accent-ink: #ffffff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .card {
+      position: absolute;
+      inset: 6px;
+      display: flex;
+      flex-direction: column;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(252, 252, 253, 0.82);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      backdrop-filter: saturate(180%) blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.7);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      color: var(--ink);
+    }
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 10px;
+    }
+    .mark {
+      font-size: 22px;
+      line-height: 1;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.15));
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+    .subapp {
+      font-size: 11px;
+      color: var(--ink-soft);
+      margin-top: 1px;
+    }
+    .body {
+      flex: 1 1 auto;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+    }
+    .label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ink-soft);
+    }
+    .corrected {
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--ink);
+      background: rgba(47, 111, 237, 0.08);
+      border: 1px solid rgba(47, 111, 237, 0.18);
+      border-radius: 9px;
+      padding: 7px 9px;
+      max-height: 96px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .original {
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--ink-soft);
+      max-height: 34px;
+      overflow: hidden;
+      white-space: pre-wrap;
+      word-break: break-word;
+      opacity: 0.75;
+    }
+    .original del { text-decoration: line-through; opacity: 0.8; }
+    .actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    button {
+      flex: 1 1 0;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: transform 0.05s ease, filter 0.12s ease;
+    }
+    button:active { transform: translateY(1px); }
+    .apply {
+      background: var(--accent);
+      color: var(--accent-ink);
+      box-shadow: 0 2px 8px rgba(47, 111, 237, 0.35);
+    }
+    .apply:hover { filter: brightness(1.06); }
+    .apply:disabled { opacity: 0.6; cursor: default; }
+    .dismiss {
+      background: rgba(120, 120, 128, 0.12);
+      color: var(--ink);
+      border-color: rgba(0, 0, 0, 0.06);
+    }
+    .dismiss:hover { background: rgba(120, 120, 128, 0.2); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <div class="mark">📎</div>
+      <div>
+        <div class="title" id="title">Suggested edit</div>
+        <div class="subapp" id="subapp"></div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="label">Corrected</div>
+      <div class="corrected" id="corrected"></div>
+      <div class="label">Original</div>
+      <div class="original" id="original"></div>
+    </div>
+    <div class="actions">
+      <button class="dismiss" id="dismiss" type="button">Dismiss</button>
+      <button class="apply" id="apply" type="button">Apply</button>
+    </div>
+  </div>
+  <script type="module" src="./writing-card.ts"></script>
+</body>
+</html>

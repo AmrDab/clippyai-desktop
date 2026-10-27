@@ -183,8 +183,7 @@ header('Lumiere — interruption-cost suppression');
 
   // Same strong state, but the user is in a video call typing: expensive →
   // the SAME p must be suppressed. This is the "stay quiet when busy" P0 guard.
-  // Windows process name (get-foreground-window.ps1 emits the EXE base name).
-  const busy = currentInterruptionCost({ app: 'Zoom', idleSec: 0, recentTypingMs: 1000 });
+  const busy = currentInterruptionCost({ app: 'zoom.us', idleSec: 0, recentTypingMs: 1000 });
   assert(busy > cheap, 'video-call+typing cost exceeds idle cost', `busy=${busy} cheap=${cheap}`);
   const busyVerdict = s.decide(strong, busy, 0.55);
   assert(busyVerdict.effectiveThreshold > 0.55, 'high cost raises effective threshold');
@@ -194,11 +193,10 @@ header('Lumiere — interruption-cost suppression');
   const mid = { ...noSignal(), errorState: true, novelContext: true, rulePrior: 0.4 }; // p≈0.62
   const pMid = s.score(mid);
   const cheapMid = s.decide(mid, 1.0, 0.55);
-  // POWERPNT = PowerPoint slideshow (Windows process name).
-  const dndCost = currentInterruptionCost({ app: 'POWERPNT', idleSec: 0, doNotDisturb: true });
+  const dndCost = currentInterruptionCost({ app: 'Keynote', idleSec: 0, doNotDisturb: true });
   const expensiveMid = s.decide(mid, dndCost, 0.55);
   assert(cheapMid.wouldFire === true, `mid-p (${pMid.toFixed(2)}) fires at cost 1.0`);
-  assert(expensiveMid.wouldFire === false, 'same mid-p SUPPRESSED under DND+PowerPoint cost (P0 guard)');
+  assert(expensiveMid.wouldFire === false, 'same mid-p SUPPRESSED under DND+Keynote cost (P0 guard)');
 
   // Cost stays clamped.
   assert(dndCost <= MAX_COST + 1e-9 && cheap >= MIN_COST - 1e-9, 'cost clamped to [0.2,1.5]', `dnd=${dndCost} cheap=${cheap}`);

@@ -15,11 +15,33 @@
  * recognised in L1." This module is the L1 recognition.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { listInstalledSkills, runSkill, type SkillManifest } from './clawhub';
 import { createLogger, serializeErr } from './logger';
 import type { ToolResult } from './types/tool-result';
 
 const log = createLogger('SkillRegistry');
+
+/**
+ * A skill is runnable on the current platform only if it has an entry point
+ * runSkill (clawhub.ts) can actually execute here. On non-Windows, a skill
+ * whose ONLY entry point is `run.ps1` cannot run (no PowerShell), so we must
+ * not advertise it to the model. run.sh / run.js / run.mjs / docs-only
+ * (SKILL.md) all run on macOS.
+ */
+function isSkillRunnableOnThisPlatform(m: SkillManifest): boolean {
+  if (process.platform === 'win32') return true;
+  try {
+    const dir = m.installPath;
+    const hasPs1 = fs.existsSync(path.join(dir, 'run.ps1'));
+    if (!hasPs1) return true; // sh/js/mjs/docs-only — all fine on macOS
+    // PowerShell entry present: only keep it if a non-ps1 entry also exists.
+    return ['run.sh', 'run.js', 'run.mjs'].some((f) => fs.existsSync(path.join(dir, f)));
+  } catch {
+    return true; // never let a stat error hide an otherwise-valid skill
+  }
+}
 
 /** slug → manifest. Source of truth for installed skills at runtime. */
 let registry = new Map<string, SkillManifest>();
@@ -74,7 +96,7 @@ export function getInstalledSkillsForPrompt(): Array<{
   version: string;
   required_env: string[];
 }> {
-  return [...registry.values()].map((m) => {
+  return [...registry.values()].filter(isSkillRunnableOnThisPlatform).map((m) => {
     // v0.17.6 — beef up the description the model sees. The previous
     // version emitted "[skill] (no description in SKILL.md) (installed
     // from ClawHub: twitter-post v0.0.0)" when the downloaded skill had

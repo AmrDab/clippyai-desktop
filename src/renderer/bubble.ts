@@ -1,4 +1,5 @@
 import { Recorder } from './recorder';
+import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
 
 // v0.12.3 — auto-hide is now configurable via Settings.bubbleAutoHideMs.
 // 0 = "Manual" (never auto-hide). Default 30000 (was 20000 — 20s stole long
@@ -10,69 +11,127 @@ const DEFAULT_AUTO_HIDE_MS = 30000;
 const TYPE_INTERVAL_FAST_MS = 10;  // for replies > 80 chars
 const TYPE_INTERVAL_NORMAL_MS = 18; // for short replies (still feels alive)
 
-interface ChatMessage {
-  role: 'user' | 'clippy' | 'system';
-  text: string;
-  time: Date;
+// v0.19.0 PR-2 — state machine + tint system. Compact = ambient one-liner
+// (auto-fades, no input). Standard = the v0.12 behavior; default for any
+// reply or any text > 80 chars. Expanded = full chat panel with history,
+// chips, and a larger input row.
+export type BubbleState = 'compact' | 'standard' | 'expanded';
+export type BubbleTint  = 'default' | 'info' | 'warning' | 'busy' | 'error' | 'success';
+export type DefaultBubbleState = 'compact' | 'standard';
+
+// Short ambient tips render in compact unless the caller forces standard.
+// Threshold matches the 80-char split used for typewriter speed elsewhere.
+const COMPACT_TEXT_THRESHOLD = 80;
+
+// Smart-avoidance — slide ~120px in the opposite direction when the cursor
+// closes to within this distance. Re-checked on every cursor pump; the
+// state is debounced via requestAnimationFrame so we don't thrash transforms.
+const AVOIDANCE_RADIUS_PX = 90;
+const AVOIDANCE_RELEASE_PX = 220; // hysteresis — cursor must leave further than entry
+
+const INPUT_PLACEHOLDER = 'Ask Clippy anything…';
+
+export interface SuggestionChip {
+  label: string;
+  /** Free-form action string passed back through onSend. PR-3 will route
+   *  this through a contextual-suggestion engine; PR-2 ships the render
+   *  contract only, so the action is just user text. */
+  action: string;
+}
+
+interface BubbleActionButton {
+  label: string;
+  /** Optional handler. If omitted, clicking the button sends `label` as
+   *  user text — same pattern as a chip but rendered inline with the tip. */
+  onClick?: () => void;
+  /** Optional style hint — "primary" gets the accent fill, anything else
+   *  is a quieter outline. */
+  variant?: 'primary' | 'ghost';
 }
 
 export class BubbleController {
   private bubble: HTMLElement;
   private bubbleText: HTMLElement;
+  private actionsArea: HTMLElement;
+  private history: HTMLElement;
+  private chips: HTMLElement;
   private inputArea: HTMLElement;
-  private input: HTMLInputElement;
+  private input: HTMLTextAreaElement;
   private sendBtn: HTMLButtonElement;
+  private clearBtn: HTMLButtonElement | null;
+  /** v0.21 — a task is running (main's working-start/stop). */
+  private working = false;
+  /** v0.21 — position in sent-message recall (↑/↓); null = not recalling. */
+  private recallIdx: number | null = null;
   private micBtn: HTMLButtonElement | null;
   private micLevel: HTMLElement | null;
+  private expandHandle: HTMLButtonElement | null;
+  private header: HTMLElement;
+  private minimizeBtn: HTMLButtonElement | null;
+  private pinBtn: HTMLButtonElement | null;
+  private closeBtn: HTMLButtonElement | null;
   private onSend: (text: string) => void;
   private typeTimer: number | null = null;
   private hideTimer: number | null = null;
+  private hintTimer: number | null = null;
+  // Phase 3 — fires once if a speakWithActions prompt is replaced or hidden
+  // before the user picked a button (approval prompt → treat as "no").
+  private pendingDismiss: (() => void) | null = null;
   private chatHistory: ChatMessage[] = [];
   private showingHistory: boolean = false;
-  // v0.12.3 — runtime-configurable auto-hide. Set via setAutoHideMs() from
-  // settings IPC. 0 = manual / never auto-hide.
+  // v0.12.3 — runtime-configurable auto-hide. 0 = manual / never auto-hide.
   private autoHideMs: number = DEFAULT_AUTO_HIDE_MS;
-  // v0.17.0 — voice input. Recorder lives here so the same instance
-  // handles both the mic button (hold-to-talk) and global hotkey paths.
-  // Created lazily on first voice attempt to avoid asking for mic
-  // permission until the user actually wants voice.
+  // v0.17.0 — voice input.
   private recorder: Recorder | null = null;
   private voiceEnabled: boolean = true;
-  // Renderer-local hook for the Hearing_1 / Idle1_1 animations while
-  // recording. Set via setAnimCallback() from main.ts where the
-  // ClippyController lives. CustomEvent would work too but a direct
-  // callback is one less indirection and easier to type.
   private animCb: ((name: string) => void) | null = null;
+  // v0.19.0 — state machine + UX prefs.
+  private state: BubbleState = 'standard';
+  private tint: BubbleTint = 'default';
+  private defaultState: DefaultBubbleState = 'standard';
+  private pinned: boolean = false;
+  // Cached bubble bounds + avoidance state. Recomputed on each state change;
+  // not per-tick — getBoundingClientRect is cheap but doing it inside the
+  // cursor pump (~60Hz) is still wasted work.
+  private bubbleRect: DOMRect | null = null;
+  private avoiding: '' | 'left' | 'right' | 'up' | 'down' = '';
 
   constructor(onSend: (text: string) => void) {
     this.bubble = document.getElementById('bubble')!;
     this.bubbleText = document.getElementById('bubble-text')!;
+    this.actionsArea = document.getElementById('bubble-actions')!;
+    this.history = document.getElementById('bubble-history')!;
+    this.chips = document.getElementById('bubble-chips')!;
     this.inputArea = document.getElementById('bubble-input-area')!;
-    this.input = document.getElementById('bubble-input') as HTMLInputElement;
+    this.input = document.getElementById('bubble-input') as HTMLTextAreaElement;
     this.sendBtn = document.getElementById('bubble-send') as HTMLButtonElement;
+    this.clearBtn = document.getElementById('bubble-clear') as HTMLButtonElement | null;
     this.micBtn = document.getElementById('bubble-mic') as HTMLButtonElement | null;
     this.micLevel = this.micBtn ? this.micBtn.querySelector('.mic-level') : null;
+    this.expandHandle = document.getElementById('bubble-expand-handle') as HTMLButtonElement | null;
+    this.header = document.getElementById('bubble-header')!;
+    this.minimizeBtn = document.getElementById('bubble-minimize') as HTMLButtonElement | null;
+    this.pinBtn = document.getElementById('bubble-pin') as HTMLButtonElement | null;
+    this.closeBtn = document.getElementById('bubble-close') as HTMLButtonElement | null;
     this.onSend = onSend;
 
-    // Wire mic button — v0.17.2 changed from hold-to-talk to click-toggle
-    // semantics per user feedback. Click once → start recording. Click
-    // again → stop + transcribe. ESC → cancel without transcribing.
-    // The previous mousedown/mouseup-on-document approach felt finicky
-    // (mouseup outside the button window was inconsistent) and required
-    // the user to keep a button pressed for what's often a 5-15s clip.
+    // Initial state — keep the standard-state default so legacy callers
+    // (e.g. update prompts) keep getting the multi-line layout.
+    this.setState('standard');
+    this.setTint('default', { hint: false });
+
+    // ── Mic button (unchanged from v0.17.2) ────────────────────────
     if (this.micBtn) {
       this.micBtn.addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();
         if (this.isRecording()) {
           void this.stopVoice();
         } else if (this.recorder?.getState() === 'encoding') {
-          // mid-transcription — no-op, button is in busy state anyway
           return;
         } else {
           void this.startVoice();
         }
       });
-      // ESC while recording → cancel (different from "stop": doesn't transcribe)
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && this.isRecording()) {
           e.preventDefault();
@@ -81,116 +140,556 @@ export class BubbleController {
       });
     }
 
-    // Click bubble text → toggle between history and input
-    this.bubbleText.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (this.showingHistory) {
-        this.toggleInput();
-      } else {
-        this.showChatHistory();
+    // v0.19.0 — ESC while not recording → stop follow-me if active.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !this.isRecording()) {
+        window.clippy.followMeActive?.().then((active: boolean) => {
+          if (active) { window.clippy.followMeStop?.('esc'); }
+        }).catch(() => { /* non-fatal */ });
       }
+    });
+
+    // ── Compact click → standard. Standard text-click → history. ───
+    // We split the click handler by state so behavior stays predictable
+    // even after a tint-driven re-render.
+    this.bubble.addEventListener('click', (e) => {
+      if (this.state === 'compact') {
+        e.stopPropagation();
+        this.setState('standard');
+      }
+    });
+    this.bubbleText.addEventListener('click', (e) => {
+      if (this.state === 'compact') return; // handled by bubble-level click
+      e.stopPropagation();
+      if (this.state === 'expanded') return; // history is always visible
+      if (this.showingHistory) this.toggleInput();
+      else this.showChatHistory();
     });
 
     this.sendBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.submit();
+      if (this.showsStop()) this.stopTask();
+      else this.submit();
     });
-
+    // v0.21 — Enter sends, Shift+Enter inserts a newline (the textarea grows
+    // to 4 lines, then scrolls — see syncComposer). Enter during IME
+    // composition (Chinese/Japanese/Korean) commits the candidate, never sends.
+    // Esc clears a draft, else stops a running task, else falls through to
+    // the document handlers (close expanded / cancel voice / stop follow-me).
+    // ↑/↓ recall previously sent messages.
     this.input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.submit();
+      if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.submit();
+      } else if (e.key === 'Escape') {
+        if (this.input.value !== '') {
+          e.preventDefault();
+          this.input.value = '';
+          this.recallIdx = null;
+          this.syncComposer();
+        } else if (this.working) {
+          e.preventDefault();
+          this.stopTask();
+        } else {
+          return; // let it propagate
+        }
+      } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && this.canRecall(e.key)) {
+        e.preventDefault();
+        const sent = this.chatHistory.filter((m) => m.role === 'user').map((m) => m.text);
+        const r = recallStep(sent, this.recallIdx, e.key === 'ArrowUp' ? 'up' : 'down');
+        this.recallIdx = r.idx;
+        this.input.value = r.text;
+        this.input.setSelectionRange(r.text.length, r.text.length);
+        this.syncComposer();
+      }
       e.stopPropagation();
     });
+    this.input.addEventListener('input', () => {
+      this.recallIdx = null;
+      this.syncComposer();
+    });
+    this.syncComposer();
 
-    // Right-click bubble → show context menu
+    // ── Standard → expanded via corner handle ───────────────────────
+    if (this.expandHandle) {
+      this.expandHandle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setState('expanded');
+      });
+    }
+    // ── Expanded header controls ────────────────────────────────────
+    if (this.minimizeBtn) {
+      this.minimizeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setState('compact');
+      });
+    }
+    if (this.pinBtn) {
+      this.pinBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.pinned = !this.pinned;
+        this.pinBtn!.setAttribute('aria-pressed', String(this.pinned));
+        // Persist so the pin survives a restart — main reads cfg.bubblePinned
+        // at boot (main.ts) but nothing wrote it back, so it was silently
+        // session-only despite setPinned's "persisted via settings" contract.
+        window.clippy.updateSettings?.({ bubblePinned: this.pinned });
+      });
+    }
+    if (this.closeBtn) {
+      this.closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.hide();
+      });
+    }
+    if (this.clearBtn) {
+      this.clearBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.askClearConversation();
+      });
+    }
+    // ESC at top level closes the expanded panel.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.state === 'expanded' && !this.isRecording()) {
+        e.preventDefault();
+        this.setState('standard');
+      }
+    });
+
+    // Type-to-reply: a printable keystroke while the bubble is visible
+    // routes into the input even when focus drifted elsewhere (and from
+    // compact, it first expands to standard — typing IS the intent to
+    // reply). Live-test 2026-06-11: keystrokes aimed at the bubble were
+    // silently discarded because nothing held focus. The char is inserted
+    // manually so the very first keypress is never lost to focus timing.
+    document.addEventListener('keydown', (e) => {
+      if (this.bubble.classList.contains('hidden')) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key.length !== 1) return; // printable characters only
+      if (document.activeElement === this.input) return; // normal path
+      if (this.state === 'compact') this.setState('standard');
+      // focus() on a hidden element is silently ignored in Chromium — keystrokes
+      // would go into an invisible value buffer and Enter would never reach the
+      // input's handler (because document.activeElement stays off the input).
+      // Ensure the inputArea is visible before attempting to focus it.
+      else if (this.inputArea.classList.contains('hidden')) this.inputArea.classList.remove('hidden');
+      e.preventDefault();
+      this.input.focus();
+      this.input.value += e.key;
+      // Keep the caret at the end so continued typing flows naturally.
+      this.input.setSelectionRange(this.input.value.length, this.input.value.length);
+      this.syncComposer();
+    });
+
+    // Right-click bubble → context menu (unchanged)
     this.bubble.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
       window.clippy.showContextMenu();
     });
+
+    // ── Smart positioning / avoidance ──────────────────────────────
+    // The preload bridge already pumps cursor positions for cursor-look;
+    // we hook the same stream rather than asking main for a new channel.
+    window.clippy.onCursorPos?.((pos) => this.onCursorTick(pos));
   }
 
-  /** Main (window.ts) decides whether the bubble body grows above or below
-   *  Clippy based on which screen edge he's near, and pushes the chosen side
-   *  here so the tail flips to keep pointing at him. 'above' = Clippy below
-   *  the bubble (default); 'below' = Clippy above it. */
-  setSide(side: 'above' | 'below'): void {
-    this.bubble.classList.toggle('bubble--below', side === 'below');
-  }
+  // ───────────────────────────────────────────────────────────────────
+  // v0.19.0 — public state + tint API
+  // ───────────────────────────────────────────────────────────────────
 
-  speak(text: string): void {
-    this.chatHistory.push({ role: 'clippy', text, time: new Date() });
-    this.showingHistory = false;
-    this.show();
-    this.bubbleText.textContent = '';
-    this.bubbleText.className = '';
-    this.clearTypeTimer();
+  /**
+   * Switch to a new visual state. Manages keyboard focus when entering
+   * the input area (expanded), and clears the auto-hide timer for
+   * expanded since the user has explicitly opened it.
+   */
+  setState(state: BubbleState): void {
+    this.state = state;
+    this.bubble.setAttribute('data-state', state);
 
-    // v0.12.3 — adaptive typewriter speed. Long replies (>80 chars) type
-    // ~2.5x faster so the bubble finishes around the same time TTS does
-    // (TTS speaks at ~150 wpm ≈ 12 chars/s; old 25ms/char = 40 chars/s
-    // started fast then fell behind the spoken voice).
-    const interval = text.length > 80 ? TYPE_INTERVAL_FAST_MS : TYPE_INTERVAL_NORMAL_MS;
-    let i = 0;
-    this.typeTimer = window.setInterval(() => {
-      this.bubbleText.textContent += text[i];
-      i++;
-      if (i >= text.length) this.clearTypeTimer();
-    }, interval);
+    // v0.19.0 PR-2.1 — signal main so the host window resizes to fit
+    // the new bubble dimensions. Without this, the renderer's bubble
+    // CSS expands but the underlying Electron window stays at its
+    // old (smaller) size, so the bubble's left edge gets visually
+    // clipped where it overflows the window bounds.
+    //
+    // The bubble-window-size channel is idempotent in main, so
+    // repeated calls with the same state are safe.
+    try {
+      const setBubbleSize = (window.clippy as unknown as { setBubbleWindowSize?: (s: string) => void }).setBubbleWindowSize;
+      if (typeof setBubbleSize === 'function') {
+        setBubbleSize(state);
+      } else {
+        // Older preload — fall back to legacy expandWindow when entering
+        // any visible state, collapseWindow on hide(). This keeps the
+        // bubble usable on stale preload bundles during a rolling update.
+        window.clippy.expandWindow();
+      }
+    } catch { /* preload not ready yet — first-paint of onboarding */ }
 
-    this.resetAutoHide();
+
+    // Visibility of conditional regions is mostly driven by CSS via
+    // [data-state], but the input area uses an .hidden class that
+    // predates this PR. Reconcile.
+    // v0.20.0-alpha.14 — position is now owned by the CSS (.bubble pins to
+    // the host window's bottom-right gutter; .bubble--below flips it to the
+    // top edge when main grows the window downward). We no longer push inline
+    // bottom/right here — the old magic `bottom: 100px` decoupled the bubble
+    // from the anchor-aware window and is what let Clippy "walk".
+    if (state === 'expanded') {
+      this.inputArea.classList.remove('hidden');
+      this.input.focus();
+      this.clearAutoHide();
+    } else if (state === 'standard') {
+      // Live-test 2026-06-11: this branch didn't exist, so compact→standard
+      // left the input area .hidden and never focused it — the bubble said
+      // "What can I help you with?" with no way to answer (six messages in
+      // a row silently went nowhere). Standard ALWAYS shows the input,
+      // focused, ready to type.
+      this.inputArea.classList.remove('hidden');
+      this.input.focus();
+    } else if (state === 'compact') {
+      // Compact has no input. Hide the input area but keep the value
+      // so re-expansion preserves a half-typed message.
+      this.inputArea.classList.add('hidden');
+    }
+
+    // Recompute cached rect for avoidance calculations.
+    requestAnimationFrame(() => { this.bubbleRect = this.bubble.getBoundingClientRect(); });
   }
 
   /**
-   * v0.12.5 — visually distinct error reply with optional retry. Per polish
-   * audit: error responses ("Hmm, that didn't work — try again!") used to
-   * render identically to normal tips, leaving the user to retype manually.
-   * The bubble now gets a `.bubble-error` class (red left-border tint) and
-   * shows a "Try again" pill if the caller provides a retry handler.
+   * Switch the contextual tint. Plays the one-shot hint animation
+   * (glow / blink / pulse / shimmer / shake / check) unless suppressed
+   * via `opts.hint = false` — useful during the constructor where we
+   * set an initial tint without the visual cue.
    */
-  speakError(text: string, onRetry?: () => void): void {
-    this.chatHistory.push({ role: 'clippy', text, time: new Date() });
-    this.showingHistory = false;
-    this.show();
-    this.bubbleText.textContent = text;
-    this.bubbleText.className = 'bubble-error';
-    this.clearTypeTimer();
+  setTint(tint: BubbleTint, opts: { hint?: boolean } = {}): void {
+    this.tint = tint;
+    this.bubble.setAttribute('data-tint', tint);
+    if (opts.hint === false) return;
+    // Re-add the hint class so the keyframes restart even if the user
+    // re-triggered the same tint. forced reflow via void offsetWidth is
+    // the standard CSS-restart trick.
+    this.bubble.classList.remove('bubble--tint-hint');
+    void this.bubble.offsetWidth;
+    this.bubble.classList.add('bubble--tint-hint');
+    if (this.hintTimer !== null) clearTimeout(this.hintTimer);
+    // Strip the class after the longest hint animation finishes (1.6s
+    // info-blink). Past that, idle visuals take over.
+    this.hintTimer = window.setTimeout(() => {
+      this.bubble.classList.remove('bubble--tint-hint');
+      this.hintTimer = null;
+    }, 1800);
+  }
 
-    if (onRetry) {
+  /**
+   * Populate suggestion chips. No-op unless the bubble is expanded —
+   * chips are an expanded-only affordance. The render contract here
+   * matches what PR-3's contextual-suggestion engine will emit; for
+   * now any caller can pass static chips.
+   */
+  setSuggestionChips(suggestions: SuggestionChip[]): void {
+    this.chips.innerHTML = '';
+    if (!suggestions || suggestions.length === 0) {
+      this.chips.classList.add('hidden');
+      return;
+    }
+    if (this.state !== 'expanded') return; // contract: silent no-op
+    this.chips.classList.remove('hidden');
+    suggestions.forEach((chip, i) => {
       const btn = document.createElement('button');
-      btn.className = 'bubble-retry-btn';
-      btn.textContent = 'Try again';
+      btn.type = 'button';
+      btn.className = 'bubble-chip';
+      btn.textContent = chip.label;
+      btn.style.setProperty('--i', String(i)); // drives stagger-fade
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        btn.disabled = true;
-        btn.textContent = 'Retrying…';
-        try { onRetry(); } catch { /* swallow — caller logs */ }
+        // Existing IPC: chips fan through onSend, matching how typed
+        // messages go upstream. main.ts then calls the brain.
+        this.onSend(chip.action);
       });
-      this.bubbleText.appendChild(document.createElement('br'));
-      this.bubbleText.appendChild(btn);
+      this.chips.appendChild(btn);
+    });
+  }
+
+  /**
+   * Minimal markdown renderer — bold, inline code, code fences, bullet
+   * lists. Intentionally small (~40 lines) so we don't pull `marked`
+   * for what's mostly a tip-rendering feature. The output is safe HTML
+   * because every non-markdown character is escaped first; markdown
+   * tokens are then re-injected as element tags.
+   */
+  renderMarkdown(text: string): string {
+    if (!text) return '';
+    // 1. extract code fences first so their contents aren't touched.
+    const fences: string[] = [];
+    let escaped = text.replace(/```([\s\S]*?)```/g, (_m, body) => {
+      const idx = fences.length;
+      fences.push(String(body).replace(/^\n/, ''));
+      return ` FENCE${idx} `;
+    });
+    // 2. escape the rest.
+    escaped = escaped.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // 3. inline code (single backticks).
+    escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code>${code}</code>`);
+    // 4. bold (**x**).
+    escaped = escaped.replace(/\*\*([^*\n]+)\*\*/g, (_m, b) => `<strong>${b}</strong>`);
+    // 5. bullet lists (lines starting with "- " or "* ").
+    const lines = escaped.split('\n');
+    const out: string[] = [];
+    let inList = false;
+    for (const ln of lines) {
+      const m = ln.match(/^[ \t]*[-*][ \t]+(.*)$/);
+      if (m) {
+        if (!inList) { out.push('<ul>'); inList = true; }
+        out.push(`<li>${m[1]}</li>`);
+      } else {
+        if (inList) { out.push('</ul>'); inList = false; }
+        out.push(ln);
+      }
+    }
+    if (inList) out.push('</ul>');
+    let html = out.join('\n').replace(/\n/g, '<br>');
+    // 6. re-inject fenced code as <pre><code>.
+    html = html.replace(/ FENCE(\d+) /g, (_m, i) => {
+      const body = fences[Number(i)] || '';
+      const esc = body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<pre><code>${esc}</code></pre>`;
+    });
+    return html;
+  }
+
+  /**
+   * v0.17.7 — render text + a row of inline action buttons. Used for
+   * update prompts, confirmation flows, anything that wants explicit
+   * clickable choices instead of a hidden "click Clippy" semantics.
+   *
+   * Backward-compat note: pre-PR-2 there was no `speakWithActions`
+   * implementation, only a placeholder in index.html. Callers either
+   * built their own buttons or relied on click-Clippy semantics. Now
+   * they have a real entry point with the warning tint baked in.
+   */
+  speakWithActions(text: string, actions: BubbleActionButton[], opts: { sticky?: boolean; onDismiss?: () => void } = {}): void {
+    this.speak(text, { autoState: 'standard', tint: 'warning', sticky: opts.sticky });
+    if (opts.sticky && this.state !== 'expanded') {
+      // Prompt the user is waiting on: show it whole (bold rendered), no typewriter.
+      this.clearTypeTimer();
+      this.bubbleText.innerHTML = this.renderMarkdown(text);
+    }
+    this.pendingDismiss = opts.onDismiss ?? null;
+    this.actionsArea.innerHTML = '';
+    this.actionsArea.classList.remove('hidden');
+    for (const a of actions) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = a.label;
+      if (a.variant === 'primary') { btn.style.background = 'var(--tint-accent)'; btn.classList.add('is-primary'); }
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.pendingDismiss = null; // a button was chosen — not a dismissal
+        if (a.onClick) {
+          try { a.onClick(); } catch { /* caller logs */ }
+        } else {
+          this.onSend(a.label);
+        }
+      });
+      this.actionsArea.appendChild(btn);
+    }
+  }
+
+  /** Backward-compat alias. Some callers used `showError` historically;
+   *  it's now sugar over speakError. */
+  showError(text: string, onRetry?: () => void): void {
+    this.speakError(text, onRetry);
+  }
+
+  /** v0.19.0 — defaults the bubble's resting state. Compact-by-default
+   *  is opt-in via Settings; standard remains the safe default for any
+   *  caller that doesn't care. */
+  setDefaultState(state: DefaultBubbleState): void {
+    this.defaultState = state;
+  }
+
+  /** v0.20.0-alpha.14 — main (window.ts) decides whether the bubble body
+   *  grows above or below Clippy based on which screen edge he's near, and
+   *  pushes the chosen side here so the tail flips to keep pointing at him.
+   *  'above' = Clippy below the bubble (default); 'below' = Clippy above it. */
+  setSide(side: 'above' | 'below'): void {
+    this.bubble.classList.toggle('bubble--below', side === 'below');
+    requestAnimationFrame(() => { this.bubbleRect = this.bubble.getBoundingClientRect(); });
+  }
+
+  /** v0.21 — "open the chat" (plain click on Clippy): the expanded panel
+   *  with the recent conversation above the composer, instead of a fresh
+   *  "What can I help you with?" line that hid everything said before. */
+  openChat(): void {
+    this.fireDismiss();
+    this.showingHistory = false;
+    this.actionsArea.classList.add('hidden');
+    this.actionsArea.innerHTML = '';
+    this.setState('expanded');
+    this.setTint('default', { hint: false });
+    this.show();
+    this.renderHistoryPanel();
+  }
+
+  /** v0.21 — seed the panel with main's persisted conversation (brain's
+   *  conversation-history.json) at startup. Prepended, so anything Clippy
+   *  already said this session stays after it. */
+  loadHistory(rows: unknown): void {
+    const restored = fromPersisted(rows);
+    if (restored.length === 0) return;
+    this.chatHistory = [...restored, ...this.chatHistory];
+    if (this.state === 'expanded') this.renderHistoryPanel();
+  }
+
+  /** v0.19.0 — pin toggle persisted via settings. When pinned, the
+   *  bubble stays in its current expanded/standard state across
+   *  successive speak() calls (auto-hide is also suppressed). */
+  setPinned(pinned: boolean): void {
+    this.pinned = pinned;
+    if (this.pinBtn) this.pinBtn.setAttribute('aria-pressed', String(pinned));
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // Existing public API — kept backward compatible
+  // ───────────────────────────────────────────────────────────────────
+
+  speak(text: string, opts: { autoState?: BubbleState; tint?: BubbleTint; sticky?: boolean } = {}): void {
+    this.fireDismiss();
+    this.chatHistory.push({ role: 'clippy', text, time: new Date() });
+    this.showingHistory = false;
+    // Pick a sane state if the caller didn't ask for one. Short tips →
+    // compact (when the user has opted into it as the default); long
+    // replies or anything with markdown → standard.
+    const targetState: BubbleState = opts.autoState ?? this.chooseStateFor(text);
+    if (!this.pinned || this.state === 'compact') {
+      this.setState(targetState);
+    } else if (this.state === 'standard') {
+      // Pinned standard: don't resize the window, but re-show the input
+      // that submit() hid while Clippy was thinking.
+      this.inputArea.classList.remove('hidden');
+      this.input.focus();
+    }
+    // Tint defaults to neutral "default" for proactive tips. Callers
+    // can override via opts.tint.
+    if (opts.tint) this.setTint(opts.tint);
+    else this.setTint('default', { hint: this.state !== 'expanded' });
+
+    this.show();
+    this.actionsArea.classList.add('hidden');
+    this.actionsArea.innerHTML = '';
+
+    if (this.state === 'expanded') {
+      // Expanded panel uses the history view for replies. Re-render
+      // history including this new message.
+      this.renderHistoryPanel();
+    } else {
+      this.bubbleText.textContent = '';
+      this.bubbleText.className = '';
+      this.clearTypeTimer();
+      const interval = text.length > 80 ? TYPE_INTERVAL_FAST_MS : TYPE_INTERVAL_NORMAL_MS;
+      let i = 0;
+      this.typeTimer = window.setInterval(() => {
+        this.bubbleText.textContent += text[i];
+        i++;
+        if (i >= text.length) this.clearTypeTimer();
+      }, interval);
+    }
+    // sticky = wait for the user (approval prompt); never auto-hide.
+    if (opts.sticky) this.clearAutoHide();
+    else this.resetAutoHide();
+  }
+
+  private fireDismiss(): void {
+    const cb = this.pendingDismiss;
+    this.pendingDismiss = null;
+    if (cb) { try { cb(); } catch { /* caller logs */ } }
+  }
+
+  /**
+   * v0.12.5 — visually distinct error reply with optional retry. Now
+   * also flips the bubble's data-tint to "error", which both colors
+   * the wash and plays the shake animation once.
+   */
+  speakError(text: string, onRetry?: () => void): void {
+    this.fireDismiss();
+    this.chatHistory.push({ role: 'clippy', text, time: new Date() });
+    this.showingHistory = false;
+    // Errors stay in whatever state we were in (don't escalate compact
+    // → standard mid-error), but force the legacy class so older CSS
+    // selectors keep matching.
+    if (this.state === 'compact') this.setState('standard');
+    this.setTint('error');
+    this.show();
+    this.actionsArea.classList.add('hidden');
+
+    if (this.state === 'expanded') {
+      this.renderHistoryPanel();
+    } else {
+      this.bubbleText.textContent = text;
+      this.bubbleText.className = 'bubble-error';
+      this.clearTypeTimer();
+
+      if (onRetry) {
+        const btn = document.createElement('button');
+        btn.className = 'bubble-retry-btn';
+        btn.textContent = 'Try again';
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          btn.textContent = 'Retrying…';
+          try { onRetry(); } catch { /* swallow */ }
+        });
+        this.bubbleText.appendChild(document.createElement('br'));
+        this.bubbleText.appendChild(btn);
+      }
     }
     this.resetAutoHide();
   }
 
-  /**
-   * v0.12.3 — runtime override for the auto-hide timeout. Called from
-   * settings IPC when the user changes the "Bubble dismiss" setting.
-   * 0 = manual (never auto-hide); positive value = ms.
-   */
   setAutoHideMs(ms: number): void {
     this.autoHideMs = Math.max(0, ms | 0);
-    // If a timer is currently armed, restart it with the new value.
     if (this.hideTimer !== null) this.resetAutoHide();
   }
 
   showThinking(): void {
+    this.fireDismiss();
     this.showingHistory = false;
+    if (this.state === 'compact') this.setState('standard');
+    this.setTint('busy');
     this.show();
-    this.bubbleText.textContent = '...';
+    this.bubbleText.textContent = '…';
     this.bubbleText.className = '';
+    if (this.state === 'expanded' && !this.history.querySelector('.chat-thinking')) {
+      // #bubble-text is hidden in expanded — show the ellipsis as a Clippy row.
+      const row = document.createElement('div');
+      row.className = 'chat-msg chat-clippy chat-thinking';
+      row.setAttribute('aria-label', 'Clippy is thinking');
+      row.textContent = '…';
+      this.history.appendChild(row);
+      this.history.scrollTop = this.history.scrollHeight;
+    }
     this.clearAutoHide();
   }
 
+  /**
+   * Update the bubble's text inline with a step label during task execution.
+   * Called per tool-call by the task:step IPC event. No typewriter, no TTS,
+   * no state transition — just a live status ticker while Clippy is working.
+   * Silently no-ops when the bubble is hidden (task was backgrounded).
+   */
+  showStep(label: string): void {
+    if (this.bubble.classList.contains('hidden')) return;
+    if (this.state === 'compact') this.setState('standard');
+    this.clearTypeTimer();
+    this.bubbleText.textContent = label;
+    this.bubbleText.className = 'bubble-step';
+  }
+
   hide(): void {
+    this.fireDismiss();
     this.bubble.classList.add('hidden');
     this.hideInput();
     this.showingHistory = false;
@@ -199,46 +698,8 @@ export class BubbleController {
     window.clippy.collapseWindow();
   }
 
-  private show(): void {
-    this.bubble.classList.remove('hidden');
-    window.clippy.expandWindow();
-  }
-
-  private showChatHistory(): void {
-    this.showingHistory = true;
-    this.clearAutoHide();
-    this.bubbleText.className = 'chat-history';
-
-    if (this.chatHistory.length === 0) {
-      this.bubbleText.innerHTML = '<div class="chat-empty">No messages yet. Click to chat!</div>';
-      this.toggleInput();
-      return;
-    }
-
-    // Show last 8 messages
-    const recent = this.chatHistory.slice(-8);
-    this.bubbleText.innerHTML = recent.map((msg) => {
-      const timeStr = msg.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      if (msg.role === 'user') {
-        return `<div class="chat-msg chat-user"><span class="chat-label">You</span> ${this.escapeHtml(msg.text)}<span class="chat-time">${timeStr}</span></div>`;
-      } else {
-        return `<div class="chat-msg chat-clippy"><span class="chat-label">📎</span> ${this.escapeHtml(msg.text)}<span class="chat-time">${timeStr}</span></div>`;
-      }
-    }).join('');
-
-    // Scroll to bottom
-    this.bubbleText.scrollTop = this.bubbleText.scrollHeight;
-
-    // Show input
-    this.inputArea.classList.remove('hidden');
-    this.input.focus();
-  }
-
-  private escapeHtml(text: string): string {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  private toggleInput(): void {
+  // Public so smoke tests + main.ts can call it directly.
+  toggleInput(): void {
     const hidden = this.inputArea.classList.contains('hidden');
     if (hidden) {
       this.inputArea.classList.remove('hidden');
@@ -249,9 +710,156 @@ export class BubbleController {
     }
   }
 
+  /** Barge-in engage: the user clicked Clippy mid-speech (report 2026-06-15).
+   *  Keep whatever text is already shown — don't overwrite their reply with a
+   *  canned prompt — but make sure we're visible with the input open + focused
+   *  and cancel auto-hide so the bubble waits for them. The TTS audio is
+   *  stopped by the caller. */
+  engageForReply(): void {
+    this.show();
+    if (this.state === 'compact') this.setState('standard');
+    if (this.inputArea.classList.contains('hidden')) {
+      this.inputArea.classList.remove('hidden');
+    }
+    this.input.focus();
+    this.clearAutoHide();
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // Private helpers
+  // ───────────────────────────────────────────────────────────────────
+
+  private chooseStateFor(text: string): BubbleState {
+    // If user pinned to expanded, stay there.
+    if (this.pinned && this.state === 'expanded') return 'expanded';
+    if (this.pinned && this.state === 'standard') return 'standard';
+    // Short tips honor the user's default-state preference.
+    if (this.defaultState === 'compact' && text.length <= COMPACT_TEXT_THRESHOLD) {
+      return 'compact';
+    }
+    return 'standard';
+  }
+
+  private show(): void {
+    this.bubble.classList.remove('hidden');
+    window.clippy.expandWindow();
+    // Force a rect refresh after the show transition.
+    requestAnimationFrame(() => { this.bubbleRect = this.bubble.getBoundingClientRect(); });
+  }
+
+  private showChatHistory(): void {
+    this.showingHistory = true;
+    this.clearAutoHide();
+    this.bubbleText.className = 'chat-history';
+    if (this.chatHistory.length === 0) {
+      this.bubbleText.innerHTML = '<div class="chat-empty">No messages yet. Click to chat!</div>';
+      this.toggleInput();
+      return;
+    }
+    this.bubbleText.innerHTML = this.renderRows(visibleHistory(this.chatHistory, 8));
+    this.bubbleText.scrollTop = this.bubbleText.scrollHeight;
+    this.inputArea.classList.remove('hidden');
+    this.input.focus();
+  }
+
+  /** Expanded-state history panel: last 20 user + Clippy turns, newest at
+   *  the bottom, auto-scrolled. */
+  private renderHistoryPanel(): void {
+    const recent = visibleHistory(this.chatHistory);
+    if (recent.length === 0) {
+      this.history.innerHTML = '<div class="chat-empty">No messages yet. Say hello!</div>';
+      return;
+    }
+    this.history.innerHTML = this.renderRows(recent);
+    this.history.scrollTop = this.history.scrollHeight;
+  }
+
+  /** Chat rows: user turns right/accent as plain text (no HTML injection
+   *  risk); Clippy turns left, markdown-rendered. The role label is
+   *  visually hidden — side + colour carry it for sighted users. */
+  private renderRows(msgs: ChatMessage[]): string {
+    return msgs.map((msg) => msg.role === 'user'
+      ? `<div class="chat-msg chat-user"><span class="chat-label">You</span>${this.escapeHtml(msg.text)}</div>`
+      : `<div class="chat-msg chat-clippy"><span class="chat-label">Clippy</span>${this.renderMarkdown(msg.text)}</div>`,
+    ).join('');
+  }
+
+  /** v0.21 — inline confirm for the header's trash button; lives in the
+   *  history panel so nothing pops a native dialog over the bubble. */
+  private askClearConversation(): void {
+    if (this.history.querySelector('.chat-clear-confirm')) return;
+    const row = document.createElement('div');
+    row.className = 'chat-clear-confirm';
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', 'Clear conversation?');
+    row.innerHTML = '<span>Clear this conversation?</span>'
+      + '<button type="button" class="is-danger">Clear</button>'
+      + '<button type="button">Keep</button>';
+    const [yes, no] = Array.from(row.querySelectorAll('button'));
+    yes.addEventListener('click', (e) => { e.stopPropagation(); this.clearConversation(); });
+    no.addEventListener('click', (e) => { e.stopPropagation(); row.remove(); this.input.focus(); });
+    this.history.appendChild(row);
+    this.history.scrollTop = this.history.scrollHeight;
+    yes.focus();
+  }
+
+  private clearConversation(): void {
+    this.chatHistory = [];
+    this.renderHistoryPanel();
+    this.input.focus();
+    window.clippy.clearConversation?.().catch(() => { /* non-fatal — panel is already clear */ });
+  }
+
+  /** v0.21 — keep the composer in step with its text: send is disabled
+   *  while empty; the textarea grows up to 4 lines, then scrolls. */
+  private syncComposer(): void {
+    const stop = this.showsStop();
+    this.sendBtn.disabled = !stop && this.input.value.trim() === '';
+    this.sendBtn.classList.toggle('is-stop', stop);
+    this.sendBtn.title = stop ? 'Stop (Esc)' : 'Send (Enter)';
+    this.sendBtn.setAttribute('aria-label', stop ? 'Stop' : 'Send');
+    this.input.style.height = 'auto';
+    const { height, scrolls } = composerHeight(this.input.scrollHeight);
+    this.input.style.height = `${height}px`;
+    this.input.style.overflowY = scrolls ? 'auto' : 'hidden';
+  }
+
+  /** v0.21 — main's working-start / working-stop. While a task runs and the
+   *  draft is empty, the send button becomes Stop. Typing a new message
+   *  turns it back into Send (sending overrides the task, as before). */
+  setWorking(working: boolean): void {
+    this.working = working;
+    this.syncComposer();
+  }
+
+  private showsStop(): boolean {
+    return this.working && this.input.value.trim() === '';
+  }
+
+  private stopTask(): void {
+    window.clippy.stopTask?.().catch(() => { /* non-fatal — task ends on its own */ });
+  }
+
+  /** ↑ recalls only from an empty draft or while already recalling, and only
+   *  with the caret on the first line (↓: last line) so multi-line edits
+   *  still move the caret normally. */
+  private canRecall(key: 'ArrowUp' | 'ArrowDown'): boolean {
+    if (this.input.value !== '' && this.recallIdx === null) return false;
+    const { value, selectionStart, selectionEnd } = this.input;
+    if (selectionStart !== selectionEnd) return false;
+    return key === 'ArrowUp'
+      ? !value.slice(0, selectionStart).includes('\n')
+      : !value.slice(selectionEnd).includes('\n');
+  }
+
+  private escapeHtml(text: string): string {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   private hideInput(): void {
     this.inputArea.classList.add('hidden');
     this.input.value = '';
+    this.syncComposer();
   }
 
   private submit(): void {
@@ -259,14 +867,18 @@ export class BubbleController {
     if (!text) return;
     this.chatHistory.push({ role: 'user', text, time: new Date() });
     this.input.value = '';
-    this.hideInput();
+    this.recallIdx = null;
+    this.syncComposer();
+    if (this.state === 'expanded') this.renderHistoryPanel();
+    if (this.state !== 'expanded') this.hideInput();
     this.showThinking();
     this.onSend(text);
   }
 
   private resetAutoHide(): void {
     this.clearAutoHide();
-    // v0.12.3 — autoHideMs===0 means "Manual" (user disabled auto-hide).
+    if (this.pinned) return; // pinned = never auto-hide
+    if (this.state === 'expanded') return; // explicit user open
     if (this.autoHideMs <= 0) return;
     this.hideTimer = window.setTimeout(() => {
       if (!this.showingHistory) this.hide();
@@ -287,9 +899,48 @@ export class BubbleController {
     }
   }
 
-  // ── v0.17.0 — Voice input (push-to-talk) ─────────────────────────
+  // ── Smart-avoidance cursor pump ──────────────────────────────────
+  private onCursorTick(pos: { cx: number; cy: number; mx: number; my: number }): void {
+    // Skip if the bubble is hidden — no point thrashing transforms.
+    if (this.bubble.classList.contains('hidden')) return;
+    if (!this.bubbleRect) this.bubbleRect = this.bubble.getBoundingClientRect();
+    const r = this.bubbleRect;
+    if (!r) return;
+    // Translate global mouse coords (mx/my) into client-space relative
+    // to the window. We don't have window origin from here — preload
+    // already publishes both global (mx) and clippy-relative (cx) coords;
+    // cx is what we want for hit-testing against client geometry.
+    const px = pos.cx;
+    const py = pos.cy;
+    // Closest distance from cursor to the bubble's edge (0 if inside).
+    const dx = Math.max(r.left - px, 0, px - r.right);
+    const dy = Math.max(r.top - py, 0, py - r.bottom);
+    const dist = Math.hypot(dx, dy);
 
-  /** Public so the global hotkey can call it from main.ts. */
+    const releaseThresh = this.avoiding ? AVOIDANCE_RELEASE_PX : AVOIDANCE_RADIUS_PX;
+    if (dist < AVOIDANCE_RADIUS_PX && !this.avoiding) {
+      // Direction from bubble center to cursor — slide opposite.
+      const cx = (r.left + r.right) / 2;
+      const cy = (r.top + r.bottom) / 2;
+      const vx = px - cx;
+      const vy = py - cy;
+      // Pick dominant axis. Horizontal usually wins because the bubble
+      // sits in a vertical strip on the right; left-slide is the most
+      // common avoidance direction.
+      if (Math.abs(vx) >= Math.abs(vy)) {
+        this.avoiding = vx > 0 ? 'left' : 'right';
+      } else {
+        this.avoiding = vy > 0 ? 'up' : 'down';
+      }
+      this.bubble.setAttribute('data-avoid', this.avoiding);
+    } else if (dist > releaseThresh && this.avoiding) {
+      this.avoiding = '';
+      this.bubble.removeAttribute('data-avoid');
+    }
+  }
+
+  // ── v0.17.0 — Voice input (unchanged from previous patch) ───────
+
   isRecording(): boolean {
     return this.recorder?.getState() === 'recording' || this.recorder?.getState() === 'requesting';
   }
@@ -300,8 +951,6 @@ export class BubbleController {
     if (!enabled && this.recorder) this.recorder.cancel();
   }
 
-  /** main.ts (renderer) calls this to register a hook that drives the
-   *  Clippy sprite animation while recording. */
   setAnimCallback(cb: (name: string) => void): void {
     this.animCb = cb;
   }
@@ -310,21 +959,17 @@ export class BubbleController {
     if (this.animCb) this.animCb(name);
   }
 
-  /** Begin recording from the mic. Idempotent — calling while already
-   *  recording is a no-op (avoids double-fire on hotkey+button overlap). */
   async startVoice(): Promise<void> {
     if (!this.voiceEnabled) return;
     if (this.isRecording()) return;
-    // Make sure the bubble + input area are visible so the user can see
-    // the level meter + the transcribed text when it lands.
     this.show();
+    if (this.state === 'compact') this.setState('standard');
     if (this.inputArea.classList.contains('hidden')) this.toggleInput();
 
     if (!this.recorder) {
       this.recorder = new Recorder({
         onLevel: (level) => {
           if (this.micLevel) {
-            // Scale 0..1 → CSS variable; transform: scale uses it.
             this.micLevel.style.setProperty('--lvl', String(0.4 + level * 1.4));
           }
         },
@@ -333,18 +978,16 @@ export class BubbleController {
             this.micBtn.classList.toggle('recording', s === 'recording');
             this.micBtn.classList.toggle('encoding', s === 'encoding');
           }
-          // Tell the agent's animation: play Hearing_1 while recording.
           if (s === 'recording') this.requestAnim('Hearing_1');
           else if (s === 'idle') this.requestAnim('Idle1_1');
         },
         onResult: (wav, durationMs) => {
-          // Show "transcribing..." placeholder while whisper-cli runs
           this.input.placeholder = 'Transcribing...';
           this.input.disabled = true;
           void window.clippy.transcribeAudio?.(wav)
             .then((res) => {
               this.input.disabled = false;
-              this.input.placeholder = 'Type to Clippy...';
+              this.input.placeholder = INPUT_PLACEHOLDER;
               if (!res || !res.ok) {
                 this.speakError(`Voice failed: ${(res && res.error) || 'unknown error'}`);
                 return;
@@ -354,22 +997,16 @@ export class BubbleController {
                 this.speakError("I didn't catch that.");
                 return;
               }
-              // Drop transcript into the input field. User reviews +
-              // presses Enter / clicks send to confirm. This mirrors
-              // Siri/Whisper dictation patterns and prevents accidental
-              // actions from mid-transcript noise.
               this.input.value = text;
+              this.syncComposer();
               this.input.focus();
-              // Auto-submit if recording was clearly intentional (>= 600ms
-              // and result looks like a real phrase, not a fragment).
               if (durationMs >= 600 && text.length >= 4 && /\s/.test(text)) {
-                // Tiny delay so the user sees the transcript flash before submit
                 setTimeout(() => this.submit(), 350);
               }
             })
             .catch((err) => {
               this.input.disabled = false;
-              this.input.placeholder = 'Type to Clippy...';
+              this.input.placeholder = INPUT_PLACEHOLDER;
               this.speakError(`Voice failed: ${err instanceof Error ? err.message : String(err)}`);
             });
         },
@@ -382,7 +1019,7 @@ export class BubbleController {
     try {
       await this.recorder.start();
     } catch {
-      // Recorder already emitted onError; nothing more to do
+      // Recorder already emitted onError
     }
   }
 
@@ -396,7 +1033,7 @@ export class BubbleController {
   cancelVoice(): void {
     if (!this.recorder) return;
     this.recorder.cancel();
-    this.input.placeholder = 'Type to Clippy...';
+    this.input.placeholder = INPUT_PLACEHOLDER;
     this.input.disabled = false;
     if (this.micBtn) {
       this.micBtn.classList.remove('recording', 'encoding');

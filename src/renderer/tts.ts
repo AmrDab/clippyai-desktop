@@ -5,10 +5,10 @@ export class TTS {
   private voice: SpeechSynthesisVoice | null = null;
   private preferredVoiceName: string = '';
 
-  // voice parity — engine selection. 'system' = browser SpeechSynthesis
-  // (the existing Windows/SAPI voice: free, offline, the DEFAULT + fallback).
-  // 'openai' = gpt-4o-mini-tts via the main-process proxy (premium, opt-in,
-  // needs a key). When 'openai' fails for ANY reason (no key, offline, HTTP
+  // v0.20.0 (voice v1) — engine selection. 'system' = browser
+  // SpeechSynthesis (free, offline, the DEFAULT + fallback). 'openai' =
+  // gpt-4o-mini-tts via the main-process proxy (premium, opt-in, needs a
+  // key). When 'openai' fails for ANY reason (no key, offline, HTTP
   // error) we fall back to the system path so Clippy never goes mute.
   private engine: 'system' | 'openai' = 'system';
   // OpenAI playback handle so a new speak() can interrupt the previous one
@@ -25,9 +25,9 @@ export class TTS {
     this.selectVoice();
   }
 
-  /** voice parity — switch TTS engine. Called on launch from config and
-   *  live on settings change. Switching to a new engine stops any in-flight
-   *  speech on the old one. */
+  /** v0.20.0 (voice v1) — switch TTS engine. Called on launch from
+   *  config and live on settings change. Switching to a new engine stops
+   *  any in-flight speech on the old one. */
   setEngine(engine: 'system' | 'openai'): void {
     if (engine === this.engine) return;
     this.engine = engine === 'openai' ? 'openai' : 'system';
@@ -59,7 +59,7 @@ export class TTS {
   /**
    * v0.11.29 — strip emoji + pictographs before passing to the speech engine.
    * Without this, the SAPI voice reads "📎" aloud as the literal word
-   * "paperclip" at the end of every reply (per support report 573d7579).
+   * "paperclip" at the end of every reply (per user report 573d7579).
    * Bubble display keeps the emoji — only the audio stream is cleaned.
    */
   private stripEmoji(text: string): string {
@@ -88,15 +88,14 @@ export class TTS {
     this.stopAll();
     if (this.engine === 'openai') {
       // Fire-and-forget; on ANY failure we fall back to the system voice
-      // inside speakViaOpenAi so Clippy never goes silent.
+      // inside speakViaOpenAI so Clippy never goes silent.
       void this.speakViaOpenAi(clean, seq);
       return;
     }
     this.speakViaSystem(clean);
   }
 
-  /** Local SpeechSynthesis path — the free, offline default + fallback.
-   *  This is the existing Windows/SAPI voice, unchanged. */
+  /** Local SpeechSynthesis path — the free, offline default + fallback. */
   private speakViaSystem(clean: string): void {
     this.synth.cancel();
     const utt = new SpeechSynthesisUtterance(clean);
@@ -107,10 +106,10 @@ export class TTS {
     this.synth.speak(utt);
   }
 
-  /** OpenAI gpt-4o-mini-tts path via the main-process proxy. The API key is
-   *  read in main and NEVER reaches the renderer — we only receive audio
-   *  bytes. Any failure (no key, offline, HTTP error, or a newer speak()
-   *  superseding this one) cleanly falls back to the system voice. */
+  /** OpenAI gpt-4o-mini-tts path via the main-process proxy. The API key
+   *  is read in main and NEVER reaches the renderer — we only receive
+   *  audio bytes. Any failure (no key, offline, HTTP error, or a newer
+   *  speak() superseding this one) cleanly falls back to the system voice. */
   private async speakViaOpenAi(clean: string, seq: number): Promise<void> {
     const synth = window.clippy?.synthesizeSpeech;
     if (!synth) { this.speakViaSystem(clean); return; }
@@ -170,6 +169,20 @@ export class TTS {
       URL.revokeObjectURL(this.currentAudioUrl);
       this.currentAudioUrl = null;
     }
+  }
+
+  /** Public barge-in: interrupt whatever Clippy is currently saying. Safe to
+   *  call when nothing is playing. Per report 2026-06-15 ("clippy kept talking
+   *  even though i wanted him to stop") a click on Clippy calls this. */
+  stop(): void {
+    this.stopAll();
+  }
+
+  /** True while audio is actively playing on either engine. Lets a click be
+   *  treated as "interrupt + yield" vs the normal "open chat" affordance. */
+  isSpeaking(): boolean {
+    if (this.synth.speaking || this.synth.pending) return true;
+    return this.currentAudio !== null && !this.currentAudio.paused && !this.currentAudio.ended;
   }
 
   setRate(rate: number): void {

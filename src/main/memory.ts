@@ -9,8 +9,9 @@
  *   2. (deferred to v0.12+) Free-form preferences captured via a `remember`
  *      tool. Stub left in place; not yet wired through the brain.
  *
- * Storage: %APPDATA%\ClippyAI\clippy-memory.json (electron-store, atomic
- * writes). Schema-versioned; old shapes are silently dropped on upgrade.
+ * Storage: ~/Library/Application Support/ClippyAI/clippy-memory.json
+ * (electron-store, atomic writes; path resolved by electron userData on
+ * macOS). Schema-versioned; old shapes are silently dropped on upgrade.
  *
  * Privacy: enabled by default. Memory never leaves the machine *except*
  * when injected into the same prompt that already goes to api.clippyai.app
@@ -202,10 +203,16 @@ function describeAction(a: { name: string; args: Record<string, unknown> }): str
     case 'navigate_browser': return `Navigate to URL`;
     case 'cdp_click':      return `Click ${a.args.selector || a.args.text}`;
     case 'cdp_type':       return `Type into ${a.args.selector || 'field'}`;
+    // macOS-native app integrations (this is the macOS port).
+    case 'apple_mail_send_email':      return `Send Apple Mail email to ${a.args.to || ''}`.trim();
+    case 'apple_calendar_create_event': return `Create Calendar event "${a.args.title || ''}"`;
+    case 'replace_focused_text':       return `Replace text in focused field`;
+    case 'create_reminder': return `Create reminder`;
+    // Legacy Windows COM tools — retained so any workflow recorded on the
+    // Windows build still renders a readable label after a profile import.
     case 'outlook_send_email': return `Send Outlook email`;
     case 'excel_write':    return `Write to Excel`;
     case 'excel_read':     return `Read Excel cells`;
-    case 'create_reminder': return `Create reminder`;
     default:               return `${a.name}`;
   }
 }

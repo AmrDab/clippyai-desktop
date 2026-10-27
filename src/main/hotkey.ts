@@ -1,6 +1,9 @@
 import { globalShortcut, BrowserWindow } from 'electron';
 import { Brain, brainSettingsStore as settingsStore } from './brain';
 import { createLogger } from './logger';
+import { triggerWritingAssist } from './writing-assist';
+import { getOnboardingWindow } from './window';
+import { SUMMON_ACCELERATOR, VOICE_ACCELERATOR_DEFAULT, WRITING_ASSIST_ACCELERATOR } from './hotkey-defs';
 
 const log = createLogger('Hotkey');
 
@@ -12,7 +15,7 @@ let voiceRecording = false;
 
 export function registerHotkey(win: BrowserWindow, brain: Brain): void {
   // Sleep/wake toggle (existing, since v0.1)
-  globalShortcut.register('Ctrl+Shift+C', () => {
+  globalShortcut.register(SUMMON_ACCELERATOR, () => {
     const newMode = brain.getMode() === 'awake' ? 'sleep' : 'awake';
     brain.setMode(newMode);
 
@@ -32,7 +35,7 @@ export function registerHotkey(win: BrowserWindow, brain: Brain): void {
   // Failed registration usually means another app holds the shortcut;
   // log a warning rather than crashing because Settings has a fallback
   // mic button.
-  const voiceShortcut = (settingsStore.get('voiceHotkey') as string) || 'CommandOrControl+Shift+Space';
+  const voiceShortcut = (settingsStore.get('voiceHotkey') as string) || VOICE_ACCELERATOR_DEFAULT;
   const ok = globalShortcut.register(voiceShortcut, () => {
     if (brain.getMode() !== 'awake') {
       // No voice while sleeping — wake first.
@@ -44,11 +47,33 @@ export function registerHotkey(win: BrowserWindow, brain: Brain): void {
     if (!win.isDestroyed()) {
       win.webContents.send(voiceRecording ? 'voice-start' : 'voice-stop');
     }
+    // Onboarding v2 — the "Try it" screen flips to "Clippy's listening" as
+    // soon as the taught hotkey is pressed (no-op when the wizard is closed).
+    if (voiceRecording) getOnboardingWindow()?.webContents.send('onboarding-tutorial', 'started');
   });
   if (!ok) {
     log.warn('Voice hotkey registration failed — another app may hold it', { shortcut: voiceShortcut });
   } else {
     log.info('Voice hotkey registered', { shortcut: voiceShortcut });
+  }
+
+  // v1 — writing assistant. ⌥G reads the focused field, lints it with the
+  // on-device Harper engine, and pops a correction card near the field.
+  // darwin-only: triggerWritingAssist reads the focused field through the
+  // Swift bridge, which throws BridgeError('platform') elsewhere — so on
+  // Windows the shortcut would only steal Alt+G from other apps.
+  if (process.platform !== 'darwin') return;
+  const writingOk = globalShortcut.register(WRITING_ASSIST_ACCELERATOR, () => {
+    if (win.isDestroyed()) return;
+    // (Beta) gate — respect the live Settings toggle. Default true; checked at
+    // press time so toggling in Settings takes effect immediately.
+    if (settingsStore.get('writingAssistEnabled') === false) return;
+    void triggerWritingAssist(win);
+  });
+  if (!writingOk) {
+    log.warn('Writing-assist hotkey registration failed — another app may hold it', { shortcut: WRITING_ASSIST_ACCELERATOR });
+  } else {
+    log.info('Writing-assist hotkey registered', { shortcut: WRITING_ASSIST_ACCELERATOR });
   }
 }
 

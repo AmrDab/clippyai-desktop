@@ -193,18 +193,26 @@ export async function installSkill(slug: string, version?: string): Promise<Skil
   const stream = await httpGetStream(downloadUrl, 30_000);
   await pipeline(stream, fs.createWriteStream(zipPath));
 
-  // Extract via PowerShell's Expand-Archive (zero deps; works on any
-  // Windows 10+ machine). Cleaner than bundling a Node zip library.
+  // Extract the ZIP using a platform-native, zero-dep CLI:
+  //   - darwin → `ditto -x -k` (the macOS-blessed archive tool, ships in
+  //     the base OS and handles AppleDouble/resource forks cleanly).
+  //   - win32  → PowerShell's Expand-Archive (works on any Windows 10+).
+  // This is the macOS port; the skill tools are win32-gated today, but
+  // runSkill/installSkill must still behave correctly if a skill lands on
+  // disk so we never blindly shell out to a missing powershell.exe.
   if (fs.existsSync(destDir)) {
     await fs.promises.rm(destDir, { recursive: true, force: true });
   }
   await fs.promises.mkdir(destDir, { recursive: true });
   await new Promise<void>((resolve, reject) => {
     const { execFile } = require('child_process');
+    const [cmd, args]: [string, string[]] = process.platform === 'win32'
+      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-Command', `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`]]
+      : ['ditto', ['-x', '-k', zipPath, destDir]];
     execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-Command', `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`],
+      cmd,
+      args,
       { timeout: 30_000, windowsHide: true },
       (err: Error | null) => err ? reject(err) : resolve(),
     );
@@ -316,10 +324,14 @@ export async function listInstalledSkills(): Promise<SkillManifest[]> {
 /**
  * Run an installed skill with the given parameters. The skill's entry
  * point convention is the first executable file the manifest references.
- * For v1 we keep this simple: if the skill folder has `run.ps1`, run it
- * via PowerShell with the params as `-key value` args. If it has
- * `run.sh`, refuse (not on Windows). If it only has SKILL.md (docs-only
- * skill), return the doc content as text — the model can read it.
+ * Entry-point resolution is platform-aware:
+ *   - win32  → `run.ps1` via PowerShell (`-key value` args).
+ *   - darwin → `run.sh` via /bin/sh (`--key value` args).
+ *   - any    → `run.js` / `run.mjs` via the bundled Electron binary in
+ *              Node mode (process.execPath + ELECTRON_RUN_AS_NODE=1), since
+ *              a packaged app has no `node` on PATH.
+ * If it only has SKILL.md (docs-only skill), return the doc content as
+ * text — the model can read it.
  *
  * Stdout is captured and returned to the model. Errors return a
  * structured `(error:...)` string so the existing fallback eligibility
@@ -332,6 +344,7 @@ export async function runSkill(slug: string, params: Record<string, unknown>): P
   }
 
   const runPs1 = path.join(skillDir, 'run.ps1');
+  const runSh = path.join(skillDir, 'run.sh');
   const runJs = path.join(skillDir, 'run.js');
   const runMjs = path.join(skillDir, 'run.mjs');
 
@@ -352,25 +365,33 @@ export async function runSkill(slug: string, params: Record<string, unknown>): P
 
   return new Promise<string>((resolve) => {
     const { execFile } = require('child_process');
+    // Run JS via the bundled Electron binary in pure-Node mode — a packaged
+    // app has no `node` on PATH, so process.execPath + ELECTRON_RUN_AS_NODE
+    // is the only entry point we can rely on.
+    const nodeCmd = process.execPath;
+    const childEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
     let cmd: string;
     let cmdArgs: string[];
-    if (fs.existsSync(runPs1)) {
+    if (process.platform === 'win32' && fs.existsSync(runPs1)) {
       cmd = 'powershell.exe';
       cmdArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', runPs1, ...flatArgs('ps')];
+    } else if (process.platform !== 'win32' && fs.existsSync(runSh)) {
+      cmd = '/bin/sh';
+      cmdArgs = [runSh, ...flatArgs('node')];
     } else if (fs.existsSync(runJs)) {
-      cmd = 'node';
+      cmd = nodeCmd;
       cmdArgs = [runJs, ...flatArgs('node')];
     } else if (fs.existsSync(runMjs)) {
-      cmd = 'node';
+      cmd = nodeCmd;
       cmdArgs = [runMjs, ...flatArgs('node')];
     } else {
       // Docs-only skill — return SKILL.md content as the result.
       try {
         const md = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-        resolve(`Skill "${slug}" is documentation-only (no run.ps1/run.js).\n\n${md.slice(0, 4000)}`);
+        resolve(`Skill "${slug}" is documentation-only (no run.ps1/run.sh/run.js).\n\n${md.slice(0, 4000)}`);
         return;
       } catch (err) {
-        resolve(`(error:SKILL_NO_ENTRY) ${slug} has no run.ps1, run.js, run.mjs, or readable SKILL.md.`);
+        resolve(`(error:SKILL_NO_ENTRY) ${slug} has no run.ps1, run.sh, run.js, run.mjs, or readable SKILL.md.`);
         return;
       }
     }
@@ -378,7 +399,7 @@ export async function runSkill(slug: string, params: Record<string, unknown>): P
     execFile(
       cmd,
       cmdArgs,
-      { cwd: skillDir, timeout: 60_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      { cwd: skillDir, timeout: 60_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, env: childEnv },
       (err: Error & { stdout?: string; stderr?: string } | null, stdout: string, stderr: string) => {
         if (err) {
           const out = (err.stdout || stdout || '').toString().trim();

@@ -1,6 +1,7 @@
-import { ClippyController, AgentData } from './clippy';
+import { ClippyController, AgentData, HdSprite } from './clippy';
 import { BubbleController } from './bubble';
 import { TTS } from './tts';
+import { clickAction } from './click-action';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
@@ -29,41 +30,40 @@ function installRendererLogBridge(component: string): void {
   });
 }
 
-// v0.19.0 PR-6 — set data-platform on <body> so the onboarding + future
-// settings/logs windows pick up the platform-native visual variant in
-// style.css. The Clippy sprite window itself doesn't have a Mica/Glass
-// chrome (it's a transparent always-on-top overlay), but children that
-// scope on [data-platform="win"] still inherit the attribute. Coordinated
-// with A3 (mac variant): A3 may rewrite this helper to also broadcast the
-// chosen platform via IPC; keep this single-line shape to make the merge
-// trivial. If A3 has already written this, both branches converge to the
-// same setAttribute and no diff conflict arises.
-function applyPlatformAttribute(): void {
-  const ua = navigator.userAgent.toLowerCase();
-  const platform =
-    ua.includes('windows') ? 'win' :
-    (ua.includes('mac os') || ua.includes('macintosh')) ? 'mac' :
-    'linux';
-  document.body.setAttribute('data-platform', platform);
-}
-
 async function init(): Promise<void> {
   installRendererLogBridge('Renderer.main');
-  applyPlatformAttribute();
   console.log('[Main] Initializing ClippyAI renderer...');
+
+  // v0.19.0 PR-6 — set data-platform so the Liquid Glass theme picks up
+  // wherever it's referenced. On the main window this is mostly a no-op
+  // visually since the bubble has its own treatment, but the first-win
+  // overlay (created below at runtime) keys off it. We also set it on
+  // documentElement so deeply-nested CSS variables resolve cleanly.
+  (function setPlatform(): void {
+    const p = (navigator.platform || '').toLowerCase();
+    let plat = 'other';
+    if (p.includes('mac')) plat = 'mac';
+    else if (p.includes('win')) plat = 'win';
+    document.body.setAttribute('data-platform', plat);
+    document.documentElement.setAttribute('data-platform', plat);
+  })();
 
   let agentData: AgentData;
   let spriteDataUri: string;
+  let hdSprite: HdSprite | undefined;
 
   try {
-    const [agentModule, mapModule] = await Promise.all([
+    const [agentModule, mapModule, hdModule] = await Promise.all([
       import('../../assets/agents/clippy/agent.mjs'),
       import('../../assets/agents/clippy/map.mjs'),
+      // v0.20.2 — xBRZ 3x sheet; optional, the 1x sheet remains the fallback.
+      import('../../assets/agents/clippy/map@3x.mjs').catch(() => null),
     ]);
     // Wildcard `*.mjs` declarations type the default export as `unknown` to
     // avoid lying about an asset we don't validate. Cast at the boundary.
     agentData = agentModule.default as AgentData;
     spriteDataUri = mapModule.default as string;
+    hdSprite = (hdModule?.default as HdSprite | undefined) ?? undefined;
     console.log('[Main] Assets loaded. Animations:', Object.keys(agentData.animations).length);
   } catch (err) {
     console.error('[Main] Failed to load assets:', err);
@@ -75,7 +75,7 @@ async function init(): Promise<void> {
   }
 
   const canvas = document.getElementById('clippy-canvas') as HTMLCanvasElement;
-  const clippyCtrl = new ClippyController(canvas, spriteDataUri, agentData);
+  const clippyCtrl = new ClippyController(canvas, spriteDataUri, agentData, hdSprite);
   const tts = new TTS();
 
   try {
@@ -83,9 +83,12 @@ async function init(): Promise<void> {
     if (config.ttsVoice) tts.setPreferredVoice(config.ttsVoice as string);
     if (config.speechRate) tts.setRate(config.speechRate as number);
     if (config.ttsEnabled === false) tts.setEnabled(false);
-    // voice parity — adopt the saved engine pick (system default / OpenAI).
+    // v0.20.0 (voice v1) — apply persisted TTS engine (System default /
+    // OpenAI premium). If OpenAI fails at speak-time, tts.ts falls back.
     if (config.ttsEngine === 'openai') tts.setEngine('openai');
   } catch {}
+  // Live engine switch from Settings → Voice.
+  window.clippy.onTtsEngine?.((engine) => tts.setEngine(engine));
 
   // v0.16.1 — Interaction-frequency mood tracker. Every user-initiated
   // interaction (click on Clippy, sent message, drag) appends a timestamp
@@ -141,68 +144,90 @@ async function init(): Promise<void> {
     }
   });
 
+  // v0.21 — seed the chat panel with the persisted conversation (main's
+  // conversation-history.json) so "Keeps history" survives a restart.
+  window.clippy.getConversation?.()
+    .then((rows) => bubbleCtrl.loadHistory(rows))
+    .catch(() => { /* non-fatal — panel starts empty */ });
+
   // === IPC Event Listeners ===
-  window.clippy.onSpeak(({ text, animate }) => {
+  // v0.19.0 — track the rule_id of the currently-visible proactive tip so
+  // "Don't suggest this again" in the context menu knows which rule to deny.
+  let currentRuleId: string | undefined;
+
+  window.clippy.onSpeak(({ text, animate, ruleId }) => {
     const safeText = text || '';
     if (safeText) {
-      // A real reply from the model — clear any pending narration crumbs so
-      // the bubble doesn't bounce back to "Reading inbox" after Clippy speaks.
-      narration.flush();
       bubbleCtrl.speak(safeText);
       tts.speak(safeText);
     }
     if (animate) clippyCtrl.playNamed(animate);
+    // Track rule source for context-menu "Don't suggest this again".
+    currentRuleId = ruleId;
   });
 
-  // v0.17.8 — narration crumbs: short, present-progressive updates that keep
-  // the bubble synced to whatever tool is running RIGHT NOW. Closes the
-  // "Clippy went silent for 20s mid-task" support-report pattern (5/12
-  // substantive reports).
-  //
-  // Design notes:
-  // - Each crumb gets a 900ms minimum visible duration so back-to-back fast
-  //   tools (e.g. 3× list_files in 600ms) don't flicker. The next crumb
-  //   queues and renders after the minimum.
-  // - tts.speak intentionally NOT called for crumbs — they'd be too noisy
-  //   ("reading inbox", "reading inbox", "reading inbox"). The visible
-  //   bubble is the only modality.
-  // - A real Clippy.say message (above) flushes the queue so a model reply
-  //   wins over the last-running crumb without a stale-text flash.
-  const narration = {
-    queue: [] as { text: string; tool: string; step: number }[],
-    rendering: false,
-    lastRenderedAt: 0,
-    MIN_VISIBLE_MS: 900,
-    push(payload: { text: string; tool: string; step: number }) {
-      // Coalesce: if the queue's tail already says the same thing, skip.
-      const tail = this.queue[this.queue.length - 1];
-      if (tail && tail.text === payload.text) return;
-      this.queue.push(payload);
-      this.drain();
-    },
-    drain() {
-      if (this.rendering) return;
-      if (this.queue.length === 0) return;
-      this.rendering = true;
-      const next = this.queue.shift()!;
-      const remaining = Math.max(0, this.MIN_VISIBLE_MS - (Date.now() - this.lastRenderedAt));
-      const fire = () => {
-        bubbleCtrl.speak(next.text);
-        this.lastRenderedAt = Date.now();
-        setTimeout(() => {
-          this.rendering = false;
-          this.drain();
-        }, this.MIN_VISIBLE_MS);
-      };
-      if (remaining > 0) setTimeout(fire, remaining);
-      else fire();
-    },
-    flush() {
-      this.queue.length = 0;
-      this.rendering = false;
-    },
-  };
-  window.clippy.onClippyCrumb((payload) => narration.push(payload));
+  // feat/pricing-free-tier — a /v1/turn response carrying upgrade_cta:'power'
+  // (free user hit the monthly token cap, or asked for automation that needs
+  // Power). Show the worker's warm Clippy line WITH a "Get Power" button that
+  // opens the Power checkout. Speak it too so it reads naturally; the button
+  // is the affordance. Don't nag: the buttons show at most once per 24 h per
+  // session — later hits still show Clippy's line, just without them.
+  const STRIPE_POWER_URL = 'https://buy.stripe.com/8x2bJ06jXfC65XDe2Oe3e03'; // $19.99/mo
+  const UPGRADE_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  let lastUpgradePromptAt = 0;
+  const upgradeAction = { label: 'Get Power', variant: 'primary' as const, onClick: () => { void window.clippy.openExternalUrl(STRIPE_POWER_URL); } };
+  window.clippy.onUpgrade?.(({ text, power_pass_available, power_pass_used }) => {
+    const safeText = text || "I'm tapped out on free tokens this month.";
+    // A power_pass_used reply ("comes back tomorrow — want Power all the
+    // time?") always shows the CTA: the user just spent today's pass.
+    const cooledDown = Date.now() - lastUpgradePromptAt < UPGRADE_PROMPT_COOLDOWN_MS && !power_pass_used;
+    if (power_pass_available === true) {
+      // v0.21 — free daily Power pass. Offered whenever the server says it's
+      // still unused today (not subject to the 24 h upsell cooldown — it's a
+      // perk, not a nag). Clicking re-runs the last request with
+      // power_pass:true on every turn of that task (brain.ts).
+      bubbleCtrl.speakWithActions(safeText, [
+        { label: "⚡ Use today's free Power request", variant: 'primary', onClick: () => {
+          bubbleCtrl.showThinking();
+          clippyCtrl.think();
+          void window.clippy.usePowerPass?.();
+        } },
+        { ...upgradeAction, variant: 'ghost' },
+      ]);
+    } else if (cooledDown) {
+      bubbleCtrl.speak(safeText);
+    } else {
+      lastUpgradePromptAt = Date.now();
+      bubbleCtrl.speakWithActions(safeText, [
+        upgradeAction,
+        // No-op onClick so "Maybe later" dismisses without sending stray text.
+        { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
+      ]);
+    }
+    tts.speak(safeText);
+    clippyCtrl.playNamed('Alert');
+  });
+  // v0.21 — "⚡ Power" pill while a pass task runs; main clears it at task end.
+  const powerPill = document.getElementById('power-pass-pill');
+  window.clippy.onPowerPass?.((active) => powerPill?.classList.toggle('hidden', !active));
+
+  // Phase 3 guardrails — "Can I …?" before a gated tool runs. Approve/Deny
+  // answer by id; replacing or hiding the bubble while pending counts as
+  // Deny. TTS says only the generic line — never the args.
+  window.clippy.onApprovalRequest?.(({ id, summary }) => {
+    let answered = false;
+    const answer = (approved: boolean) => {
+      if (answered) return;
+      answered = true;
+      void window.clippy.respondApproval(id, approved);
+    };
+    bubbleCtrl.speakWithActions(`Can I **${summary}**?`, [
+      { label: 'Approve', variant: 'primary', onClick: () => { answer(true); bubbleCtrl.showThinking(); } },
+      { label: 'Deny', variant: 'ghost', onClick: () => { answer(false); bubbleCtrl.hide(); } },
+    ], { sticky: true, onDismiss: () => answer(false) });
+    tts.speak('Can I go ahead?');
+    clippyCtrl.playNamed('GetAttention');
+  });
 
   window.clippy.onModeChange((mode) => {
     if (mode === 'sleep') {
@@ -228,18 +253,26 @@ async function init(): Promise<void> {
   } catch { /* defaults applied */ }
   window.clippy.onSpeechPitch?.((p) => tts.setPitch(p));
   window.clippy.onSpeechVolume?.((v) => tts.setVolume(v));
-  // voice parity — live engine switch from Settings (system ↔ OpenAI).
-  window.clippy.onTtsEngine?.((engine) => tts.setEngine(engine));
+  window.clippy.onSpeechVoice?.((v) => tts.setPreferredVoice(v));
   // v0.12.3 — apply persisted bubble auto-hide on startup + on change.
+  // v0.19.0 PR-2 — also apply bubbleDefaultState + bubblePinned. Same
+  // config call, so we fold both into the existing try/catch.
   try {
     const cfg = await window.clippy.getConfig();
     const ms = Number(cfg.bubbleAutoHideMs);
     if (Number.isFinite(ms) && ms >= 0) bubbleCtrl.setAutoHideMs(ms);
-  } catch { /* config not available; keep default */ }
+    const defState = cfg.bubbleDefaultState;
+    if (defState === 'compact' || defState === 'standard') {
+      bubbleCtrl.setDefaultState(defState);
+    }
+    if (cfg.bubblePinned === true) bubbleCtrl.setPinned(true);
+  } catch { /* config not available; keep defaults */ }
   window.clippy.onBubbleAutoHide?.((ms) => bubbleCtrl.setAutoHideMs(ms));
-
-  // Anchor-aware bubble side — main flips the tail when Clippy is near the
-  // top edge and the bubble has to grow downward instead of up.
+  window.clippy.onBubbleDefaultState?.((s) => bubbleCtrl.setDefaultState(s));
+  window.clippy.onBubblePinned?.((p) => bubbleCtrl.setPinned(p));
+  // v0.20.0-alpha.14 — main flips the bubble side (above/below Clippy) when
+  // he's near a screen edge; renderer toggles the tail to keep it pointing
+  // at him.
   window.clippy.onBubbleSide?.((side) => bubbleCtrl.setSide(side));
 
   window.clippy.onPlayAnimation((name) => clippyCtrl.playNamed(name));
@@ -247,8 +280,31 @@ async function init(): Promise<void> {
   // v0.16.0 — task-in-progress animation loop. Replaces the prior one-shot
   // 'Thinking' that froze Clippy during long tasks. Brain emits at handleUser
   // Message entry and finally{}.
-  window.clippy.onWorkingStart?.(() => clippyCtrl.startWorkingLoop());
-  window.clippy.onWorkingStop?.(() => clippyCtrl.stopWorkingLoop());
+  window.clippy.onWorkingStart?.(() => { clippyCtrl.startWorkingLoop(); bubbleCtrl.setWorking(true); });
+  window.clippy.onWorkingStop?.(() => { clippyCtrl.stopWorkingLoop(); bubbleCtrl.setWorking(false); });
+
+  // v0.21 — an outside agent asked the user something (clippy_ask_user) or
+  // wants an OK (clippy_say wait_for_dismiss). Buttons answer by id; hiding
+  // or replacing the bubble counts as "dismissed".
+  window.clippy.onAgentAsk?.(({ id, question, options }) => {
+    let answered = false;
+    const answer = (choice: string) => {
+      if (answered) return;
+      answered = true;
+      void window.clippy.respondAgentAsk?.(id, choice);
+    };
+    bubbleCtrl.speakWithActions(question, options.map((label, i) => ({
+      label,
+      variant: i === 0 ? 'primary' as const : 'ghost' as const,
+      onClick: () => { answer(label); bubbleCtrl.hide(); },
+    })), { sticky: true, onDismiss: () => answer('dismissed') });
+    tts.speak(question);
+    clippyCtrl.playNamed('GetAttention');
+  });
+
+  // Step ticker: update bubble text with a brief label while each tool runs
+  // so the user sees "Clicking…" / "Reading screen…" instead of static "…".
+  window.clippy.onTaskStep?.(({ label }) => bubbleCtrl.showStep(label));
 
   // v0.17.0 — voice input wiring. Bubble owns the Recorder; main wires
   // the sprite animation hook (so Hearing_1 plays while we record) and
@@ -354,64 +410,174 @@ async function init(): Promise<void> {
     handleTagCursor(pos);
   });
 
-  // === Auto-update (state-based, NO canvas click hijacking) ===
-  // Previous bug: addEventListener('click') on canvas for updates would
-  // fire alongside normal click handling → clicking Clippy would quit the
-  // app to install an update the user didn't know about. Now we use a flag
-  // checked inside the single mouseup handler below.
-  let pendingUpdate: 'download' | 'install' | 'manual' | null = null;
-  let pendingUpdateVersion = '';
+  // v0.21 — local mini-games (main/games.ts drives them; this side only
+  // renders bubble lines / buttons and reports clicks + Esc).
+  let activeGame: 'catch' | 'hide' | 'rps' | null = null;
+  window.clippy.onGameState?.(({ game }) => {
+    activeGame = game;
+    if (game) playTagActive = false;
+  });
+  window.clippy.onGameSay?.(({ text, animate, hideBubble }) => {
+    if (hideBubble) bubbleCtrl.hide();
+    if (text) bubbleCtrl.speak(text);
+    if (animate) clippyCtrl.playNamed(animate);
+  });
+  window.clippy.onGamePrompt?.(({ text, actions, animate }) => {
+    bubbleCtrl.speakWithActions(text, actions.map((a) => ({
+      label: a.label,
+      variant: a.value.startsWith('rps:') || a.value.startsWith('start:') || a.value === 'again' ? 'primary' : 'ghost',
+      onClick: () => { void window.clippy.gameAction?.(a.value); },
+    })), { sticky: true });
+    if (animate) clippyCtrl.playNamed(animate);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeGame) void window.clippy.gameAction?.('stop:esc');
+  });
 
-  // v0.17.7 — the "click Clippy to confirm an update" prompt now AUTO-EXPIRES
-  // after 20 seconds. Users naturally click Clippy to start a chat; an update
-  // notification that scrolled past minutes (or hours) ago should not still
-  // be consenting to a restart-and-install on the next innocent click.
-  // Clearing pendingUpdate just restores normal click semantics — the bubble
-  // text may still be on screen but the click no longer triggers anything.
-  // User can retry via Settings → About → Check for updates whenever they
-  // genuinely want to update.
-  let updateConsentTimer: number | null = null;
-  function armConsentTimeout(): void {
-    if (updateConsentTimer !== null) clearTimeout(updateConsentTimer);
-    updateConsentTimer = window.setTimeout(() => {
-      if (pendingUpdate !== null) {
-        console.log('[Main] Update click-consent expired (20s) — restoring normal click');
-        pendingUpdate = null;
-        pendingUpdateVersion = '';
-      }
-      updateConsentTimer = null;
-    }, 20_000);
+  // === v0.19.0 PR-6 — first-5-wins overlay (post-onboarding) ==========
+  // Main process emits 'first-win-overlay' 3s after the user reaches
+  // onboarding step 6 ("you're ready"). We surface a non-modal pop-up
+  // above Clippy's bubble with the same 5 chips as step 6. Click any
+  // chip and the overlay fires the prompt as a normal user message via
+  // 'first-win-chip', then closes itself.
+  //
+  // The chip list is the same FIRST_WINS catalog the onboarding window
+  // renders, imported lazily to avoid pulling the whole catalog module
+  // unless we actually need it.
+  let firstWinOverlayEl: HTMLElement | null = null;
+  async function showFirstWinOverlay(): Promise<void> {
+    if (firstWinOverlayEl) return; // already showing — re-trigger is no-op
+    const { firstWinsForPlan } = await import('./app-catalog');
+    let plan = '';
+    try { plan = String((await window.clippy.getConfig()).plan || ''); } catch { /* free-safe chips */ }
+    firstWinOverlayEl = document.createElement('div');
+    firstWinOverlayEl.id = 'first-win-overlay';
+    const header = document.createElement('div');
+    header.id = 'first-win-overlay-header';
+    const headerLabel = document.createElement('span');
+    headerLabel.textContent = 'Want to try one of these?';
+    header.appendChild(headerLabel);
+    const closeBtn = document.createElement('button');
+    closeBtn.id = 'first-win-overlay-close';
+    closeBtn.type = 'button';
+    closeBtn.textContent = '×';
+    closeBtn.setAttribute('aria-label', 'Dismiss');
+    closeBtn.addEventListener('click', dismissFirstWinOverlay);
+    header.appendChild(closeBtn);
+    firstWinOverlayEl.appendChild(header);
+    for (const chip of firstWinsForPlan(plan)) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'first-win-chip';
+      btn.textContent = chip.label;
+      btn.addEventListener('click', async () => {
+        // Disable the whole row so a fast-double-click doesn't fire two
+        // first-turn messages. The overlay tears down immediately on a
+        // successful pump.
+        firstWinOverlayEl!.querySelectorAll('button').forEach((b) => (b as HTMLButtonElement).disabled = true);
+        try {
+          await window.clippy.fireFirstWinChip?.(chip.prompt);
+        } catch { /* main logs */ }
+        dismissFirstWinOverlay();
+      });
+      firstWinOverlayEl.appendChild(btn);
+    }
+    document.body.appendChild(firstWinOverlayEl);
+    clippyCtrl.playNamed('GetAttention');
+    bubbleCtrl.speak('Want to try one of these?');
   }
+  function dismissFirstWinOverlay(): void {
+    if (!firstWinOverlayEl) return;
+    firstWinOverlayEl.remove();
+    firstWinOverlayEl = null;
+  }
+  window.clippy.onFirstWinOverlay?.(() => { void showFirstWinOverlay(); });
+
+  // When a chip fires (from either the onboarding step-6 OR the overlay
+  // here), main.ts pumps that string back to the renderer via
+  // 'first-win-chip'. We route it through the same path as a typed
+  // message — bubble speak, animate, fire IPC sendMessage. This way the
+  // brain treats it as the user's first ask, contextual suggestions can
+  // tune off it, and chat history is populated correctly.
+  window.clippy.onFirstWinChip?.((text) => {
+    if (!text) return;
+    dismissFirstWinOverlay();
+    bubbleCtrl.speak(text);
+    clippyCtrl.think();
+    void (async () => {
+      try { await window.clippy.sendMessage(text); }
+      catch { bubbleCtrl.speakError("Sorry, I couldn't connect right now."); clippyCtrl.alert(); }
+    })();
+  });
+
+  // === Auto-update (explicit bubble buttons, NO click hijacking) ===
+  // v0.21 — the previous "click me to download/restart" flag stayed armed
+  // long after the bubble auto-hid, so a later click meant to open the chat
+  // started a download or quit the app to install. Offers are now buttons;
+  // "Later" snoozes the offer in main (24h / until relaunch). A downloaded
+  // update is also reachable from the tray ("Restart to update") and
+  // installs when the user quits Clippy — never on a click.
+  const later = (version: string) => ({
+    label: 'Later',
+    variant: 'ghost' as const,
+    onClick: () => { void window.clippy.snoozeUpdate(version); bubbleCtrl.hide(); },
+  });
 
   window.clippy.onUpdateAvailable((version) => {
-    pendingUpdate = 'download';
-    pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`v${version} is available! Click me within 20s to download. 📎`);
-    armConsentTimeout();
+    bubbleCtrl.speakWithActions(`v${version} is available! 📎`, [
+      {
+        label: 'Download',
+        variant: 'primary',
+        onClick: () => {
+          bubbleCtrl.speak('Downloading update...');
+          clippyCtrl.playNamed('Searching');
+          void window.clippy.downloadUpdate();
+        },
+      },
+      later(version),
+    ]);
   });
 
   window.clippy.onUpdateReady((version) => {
-    pendingUpdate = 'install';
-    pendingUpdateVersion = version;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`v${version} is ready! Click me within 20s to restart & update. 📎`);
+    bubbleCtrl.speakWithActions(`v${version} is ready! 📎`, [
+      {
+        label: 'Restart to update',
+        variant: 'primary',
+        onClick: () => {
+          bubbleCtrl.speak('Installing update, restarting...');
+          void window.clippy.installUpdate();
+        },
+      },
+      later(version),
+    ]);
     tts.speak('Update ready!');
-    armConsentTimeout();
   });
 
-  // Auto-update silent-failure fallback: after one failed quitAndInstall
-  // attempt for a version (usually AV/SmartScreen intercepting the silent
-  // NSIS install) we stop retrying and send the user to the dedicated
-  // recovery page at clippyai.app/update-help. Breaks the update loop AND
-  // gives them direct signed-installer download buttons — no GitHub auth,
-  // no repo visibility dependency, no 404. See updater.ts:RELEASE_PAGE.
+  // Auto-update silent-failure fallback: after two failed quitAndInstall
+  // attempts for the same version (e.g. Gatekeeper blocking the installer),
+  // we stop retrying and send the user to the download page on R2
+  // (download.clippyai.app, never GitHub) to install manually. Breaks the
+  // update loop.
   window.clippy.onUpdateFailed(({ version }) => {
-    pendingUpdate = 'manual';
-    pendingUpdateVersion = version;
+    // v0.19.0 PR-2.2 — guard against empty/unknown version. Main is
+    // supposed to suppress the bubble entirely in that case (see
+    // updater.ts on('error') handler), but defense-in-depth: never
+    // ship the phrase "vunknown" in a user-facing speech bubble.
+    if (!version || version === 'unknown' || version === '0.0.0') return;
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(`Auto-update to v${version} isn't working. Click me within 20s to open the download page. 📎`);
-    armConsentTimeout();
+    bubbleCtrl.speakWithActions(`Auto-update to v${version} isn't working on this machine. 📎`, [
+      {
+        label: 'Open download page',
+        variant: 'primary',
+        onClick: () => {
+          bubbleCtrl.speak(`Opening the download page for v${version}...`);
+          void window.clippy.openManualUpdate();
+        },
+      },
+      later(version),
+    ]);
   });
 
   // === Drag + Click handling ===
@@ -519,26 +685,25 @@ async function init(): Promise<void> {
       console.log('[Main] Clippy clicked!');
       noteUserInteraction(); // v0.16.1 — click counts as engagement
 
-      if (pendingUpdate === 'download') {
-        // User explicitly clicked after seeing "click me to download"
-        pendingUpdate = null;
-        bubbleCtrl.speak('Downloading update...');
-        clippyCtrl.playNamed('Searching');
-        window.clippy.downloadUpdate();
-      } else if (pendingUpdate === 'install') {
-        // User explicitly clicked after seeing "click me to restart"
-        pendingUpdate = null;
-        bubbleCtrl.speak('Installing update, restarting...');
-        window.clippy.installUpdate();
-      } else if (pendingUpdate === 'manual') {
-        // Auto-update gave up — open the clippyai.app/update-help recovery
-        // page in the browser.
-        pendingUpdate = null;
-        bubbleCtrl.speak(`Opening the download page for v${pendingUpdateVersion}...`);
-        window.clippy.openManualUpdate();
+      // Barge-in (report 2026-06-15: "clippy kept talking… when a user clicks
+      // on him he should stop talking and engage"). A click ALWAYS interrupts
+      // whatever Clippy is currently saying, on either TTS engine.
+      const wasSpeaking = tts.isSpeaking();
+      tts.stop();
+
+      const action = clickAction({ activeGame, wasSpeaking });
+      if (action === 'game-found') {
+        // v0.21 — hide-and-seek: clicking him = found. Don't open the chat.
+        void window.clippy.gameAction?.('found');
+      } else if (action === 'engage') {
+        // Interrupted mid-speech: yield to the user. Keep the reply text
+        // visible and just open the input — don't talk over them with a
+        // canned prompt.
+        bubbleCtrl.engageForReply();
+        clippyCtrl.wave();
       } else {
-        // Normal click — open chat bubble
-        bubbleCtrl.speak('What can I help you with?');
+        // Normal click — open the chat panel (recent conversation + composer).
+        bubbleCtrl.openChat();
         clippyCtrl.wave();
       }
     }
@@ -549,7 +714,9 @@ async function init(): Promise<void> {
   canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    window.clippy.showContextMenu();
+    // v0.19.0 — pass the current rule_id (if any) so the context menu can
+    // show "Don't suggest this again" for rule-fired tips.
+    window.clippy.showContextMenu(currentRuleId);
   });
 
   console.log('[Main] ClippyAI renderer initialized successfully');
