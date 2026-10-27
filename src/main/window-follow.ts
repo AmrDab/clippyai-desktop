@@ -44,6 +44,7 @@ import { BrowserWindow, screen, systemPreferences } from 'electron';
 import { createLogger } from './logger';
 import * as macBridge from './mac-bridge-native';
 import * as takeover from './user-takeover';
+import * as spatial from './spatial-presence';
 import type { Brain } from './brain';
 
 const log = createLogger('WindowFollow');
@@ -92,6 +93,8 @@ interface FollowState {
   pollInterval: NodeJS.Timeout | null;
   win: BrowserWindow | null;
   brain: Brain | null;
+  /** Spatial presence — rate-limits the app-flavored arrival flourishes. */
+  ambientThrottle: spatial.AmbientThrottle;
 }
 
 const state: FollowState = {
@@ -103,6 +106,7 @@ const state: FollowState = {
   pollInterval: null,
   win: null,
   brain: null,
+  ambientThrottle: new spatial.AmbientThrottle(),
 };
 
 interface ActiveWindowSample {
@@ -352,6 +356,9 @@ async function tick(): Promise<void> {
   // and 'awake' otherwise; see brain.ts:688.
   if (state.brain && state.brain.getMode() === 'sleep') {
     state.dwellKey = ''; // re-settle fresh on the next wake
+    // Spatial presence: forget flourish history while asleep so the first
+    // settle after waking gets its acknowledgment.
+    state.ambientThrottle.reset();
     return;
   }
 
@@ -449,6 +456,36 @@ async function tick(): Promise<void> {
   // Honour "Reduce motion": vestibular-sensitive users get an instant snap
   // instead of a glide across the screen (WCAG 2.3.3).
   win.setBounds(rect, !prefersReducedMotion());
+
+  // ── Spatial presence — body language on arrival ─────────────────────────
+  // A genuine glide to a new window just happened (sleep/own-app/dwell/dedup
+  // gates all passed above). Make the arrival READ: glance toward where we
+  // came from / where the window sits (gaze), and — rarely, throttled — an
+  // app-flavored flourish (editor → GetTechy, browser → Searching …).
+  // Never during a task: the tool loop owns the sprite then (Thinking /
+  // animationForTool already play per step), and dueling animations look
+  // glitchy. Animation only — no text, no sound, nothing to dismiss.
+  if (!(state.brain && state.brain.isBusy())) {
+    const clippyRect: spatial.Rect = { x: curX, y: curY, width: winW, height: winH };
+    const gaze = spatial.gazeToward(clippyRect, b);
+    // Only a flavored app may consume the throttle window.
+    const flavor = spatial.ambientAnimationForApp(sample.app);
+    const flourish = flavor && state.ambientThrottle.allow(sample.app, Date.now()) ? flavor : null;
+    const animation = flourish ?? gaze;
+    if (animation) {
+      // Land the animation as the glide settles (~250ms ease-out) so the
+      // glance happens ON arrival, not mid-flight. Channel: the renderer's
+      // existing 'play-animation' listener (preload/index.ts).
+      setTimeout(() => {
+        try {
+          if (state.win && !state.win.isDestroyed()) {
+            state.win.webContents.send('play-animation', animation);
+          }
+        } catch { /* renderer mid-reload — body language is best-effort */ }
+      }, prefersReducedMotion() ? 0 : 300);
+      diag('presence_animation', { app: sample.app, animation, kind: flourish ? 'flourish' : 'gaze' });
+    }
+  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
