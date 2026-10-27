@@ -59,7 +59,21 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "clippy-mac-bridge",
-            path: "Sources/clippy-mac-bridge"
+            path: "Sources/clippy-mac-bridge",
+            // Embed Info.plist into the binary (__TEXT,__info_plist). TCC
+            // SIGABRTs any process that calls a usage-gated API (Speech
+            // Recognition, for `transcribe`) without a usage description —
+            // and unbundled CLIs have no Info.plist unless one is embedded.
+            // Path is relative to the PACKAGE ROOT (swift build's cwd).
+            exclude: ["Info.plist"],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Sources/clippy-mac-bridge/Info.plist",
+                ])
+            ]
         )
     ]
 )

@@ -113,6 +113,11 @@ mac:
     NSAccessibilityUsageDescription: "ClippyAI uses Accessibility APIs to find buttons, type text, and click items in other apps for you."
     NSScreenCaptureUsageDescription: "ClippyAI captures the screen to read what you're working on (used for OCR + screen context). Captures stay on your Mac."
     NSAppleEventsUsageDescription: "ClippyAI uses AppleScript to control Mail, Safari, and Chrome on your behalf when you ask it to."
+    # Without the mic string getUserMedia hard-fails on a signed hardened-
+    # runtime build (no TCC dialog at all). The packaged app is the TCC
+    # responsible process for the spawned bridge's `transcribe` too.
+    NSMicrophoneUsageDescription: "ClippyAI uses the microphone so you can talk to Clippy (push-to-talk). Audio is transcribed on this Mac by default."
+    NSSpeechRecognitionUsageDescription: "ClippyAI transcribes your voice commands on-device using Apple's speech recognition. Audio stays on your Mac."
   # Harper reads its WASM via fs.readFile(file://…) and onnxruntime-node's
   # .node addon must load from disk — both need real files outside app.asar.
   asarUnpack:

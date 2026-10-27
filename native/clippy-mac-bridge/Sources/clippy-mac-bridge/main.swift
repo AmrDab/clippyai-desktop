@@ -93,6 +93,9 @@ case "clipboard-write": runClipboardWrite()
 case "permissions": runPermissions()
 case "request-screen-recording": runRequestScreenRecording()
 
+// Speech
+case "transcribe":      runTranscribe()
+
 // Help
 case "-h", "--help", "help":
     emit([
@@ -103,7 +106,8 @@ case "-h", "--help", "help":
             "a11y": ["a11y-tree", "a11y-find", "a11y-focused", "a11y-click", "a11y-set-value", "a11y-focused-set-value", "a11y-selected-text", "a11y-press"],
             "windows": ["windows", "active-window", "focus-window", "minimize-window", "maximize-window", "hide-app", "minimize-all", "show-desktop"],
             "input": ["type", "keypress", "click", "hover", "drag", "scroll"],
-            "sys": ["active-app", "running-apps", "browser-url", "clipboard-read", "clipboard-write", "permissions", "request-screen-recording"]
+            "sys": ["active-app", "running-apps", "browser-url", "clipboard-read", "clipboard-write", "permissions", "request-screen-recording"],
+            "speech": ["transcribe"]
         ]
     ])
 

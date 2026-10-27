@@ -32,6 +32,10 @@ interface LicenseStore {
   // an async keychain hit. ttsEngine picks System (free, default) vs OpenAI.
   openaiKeyPresent: boolean;
   ttsEngine: 'system' | 'openai';
+  // Voice INPUT engine. 'apple' = on-device Speech framework via the Swift
+  // bridge (free, offline, default); 'openai' = cloud gpt-4o-transcribe
+  // (needs the user's key; audio leaves the machine — opt-in only).
+  sttEngine: 'apple' | 'openai';
   // feat/pricing-free-tier — last usage snapshot from a /turn response. Lets
   // Settings render a monthly usage meter (tokensUsed / tokensAllowed) without
   // a dedicated usage endpoint. Additive + best-effort: zero means "unknown".
@@ -54,6 +58,7 @@ const store = new Store<LicenseStore>({
     // path stays the default. Opt-in only.
     openaiKeyPresent: false,
     ttsEngine: 'system',
+    sttEngine: 'apple',
     tokensUsed: 0,
     tokensAllowed: 0,
   },
@@ -99,6 +104,14 @@ export function getBuddyName(): string {
 
 export function getTtsVoice(): string {
   return store.get('ttsVoice');
+}
+
+export function getSttEngine(): 'apple' | 'openai' {
+  return store.get('sttEngine');
+}
+
+export function setSttEngine(engine: 'apple' | 'openai'): void {
+  store.set('sttEngine', engine);
 }
 
 export function getMachineId(): string {

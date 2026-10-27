@@ -28,6 +28,8 @@ import {
   setOpenAiKeyPresence,
   getTtsEngine,
   setTtsEngine,
+  getSttEngine,
+  setSttEngine,
   getUsage,
   store as licenseStore,
 } from './license';
@@ -341,6 +343,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       speechVolume: licenseStore.get('speechVolume', 0.9),
       // v0.17.0 — voice input (offline whisper.cpp)
       voiceEnabled: licenseStore.get('voiceEnabled', true),
+      // Voice INPUT engine: 'apple' = on-device Speech via the Swift bridge
+      // (free/offline, default); 'openai' = cloud transcribe (key, opt-in).
+      sttEngine: getSttEngine(),
       // v0.17.2 — wake-word preference (UI works now, runtime stub until
       // we ship the on-device wake-word model)
       wakeWordEnabled: licenseStore.get('wakeWordEnabled', false),
@@ -432,6 +437,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const engine = String(settings.ttsEngine) === 'openai' ? 'openai' : 'system';
       setTtsEngine(engine);
       mainWindow.webContents.send('tts-engine', engine);
+    }
+    // Voice INPUT engine: 'apple' (on-device Speech bridge, free/offline,
+    // default) vs 'openai' (cloud transcribe, key required). Read live by
+    // stt.ts on every transcription — no broadcast needed.
+    if (settings.sttEngine !== undefined) {
+      setSttEngine(String(settings.sttEngine) === 'openai' ? 'openai' : 'apple');
     }
     if (settings.speechRate !== undefined) {
       const rate = Math.max(0.5, Math.min(2.0, Number(settings.speechRate) || 1.1));
