@@ -1375,6 +1375,11 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       }
     }
   }
+  // darwin without the bridge must not fall through to powershell.exe.
+  // UI_NOT_FOUND keeps the Tier-5 clawdcursor fallback eligible.
+  if (process.platform !== 'win32') {
+    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — clippy-mac-bridge is not available`, receipt: notRun('clippy-mac-bridge unavailable') };
+  }
 
   // Two-tier resolution (v0.11.22):
   //   Tier 1 — UIA accessibility tree (fast, exact, structured). Constrained
@@ -1529,6 +1534,7 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
  * heuristic in navigateBrowser.
  */
 async function getDefaultBrowserProcessName(): Promise<string> {
+  if (process.platform !== 'win32') return ''; // registry lookup is Windows-only
   try {
     const { stdout } = await execFileAsync('powershell.exe', [
       '-NoProfile', '-Command',
@@ -2053,6 +2059,9 @@ async function mouseHover(params: Record<string, unknown>): Promise<ToolResult> 
       return { text: `(mouse_hover error: ${err instanceof Error ? err.message : String(err)})` };
     }
   }
+  if (process.platform !== 'win32') {
+    return { text: '(error:BRIDGE_UNAVAILABLE) mouse_hover needs the clippy-mac-bridge helper, which is not available' };
+  }
   // Windows path: move the cursor with no click via the standard
   // System.Windows.Forms.Cursor recipe — mirrors clippyai-desktop's
   // mouse_hover and the execFileAsync('powershell.exe', …) pattern already
@@ -2278,6 +2287,9 @@ async function runComScriptStructured(
   args: string[],
   timeoutMs = 20000,
 ): Promise<ComResult> {
+  if (process.platform !== 'win32') {
+    return { ok: false, errorCode: 'UNKNOWN', message: `(error:PLATFORM_UNSUPPORTED) ${scriptName} is Windows-only.` };
+  }
   const scriptPath = path.join(getScriptsDir(), scriptName);
   if (!fs.existsSync(scriptPath)) {
     return {
@@ -4461,6 +4473,10 @@ async function minimizeAllWindows(): Promise<ToolResult> {
     }
   }
 
+  // darwin without the bridge must not fall through to powershell.exe.
+  if (process.platform !== 'win32') {
+    return { text: '(error:BRIDGE_UNAVAILABLE) minimize_all_windows needs the clippy-mac-bridge helper, which is not available' };
+  }
   // Shell.Application's MinimizeAll() is the canonical Win+D equivalent.
   // We tried key_press("win+d") first — nut.js doesn't reliably send the
   // Windows key, so the model claimed success without anything happening.
@@ -4494,6 +4510,10 @@ async function showDesktop(): Promise<ToolResult> {
     }
   }
 
+  // darwin without the bridge must not fall through to powershell.exe.
+  if (process.platform !== 'win32') {
+    return { text: '(error:BRIDGE_UNAVAILABLE) show_desktop needs the clippy-mac-bridge helper, which is not available' };
+  }
   // Shell.Application.ToggleDesktop() is the true Win+D — toggles between
   // showing the desktop and restoring all windows.
   try {
@@ -4534,6 +4554,10 @@ async function minimizeWindow(params: Record<string, unknown>): Promise<ToolResu
         return { text: `(minimize_window error: ${err instanceof Error ? err.message : String(err)})` };
       }
     }
+  }
+  // darwin without the bridge must not fall through to powershell.exe.
+  if (process.platform !== 'win32') {
+    return { text: '(error:BRIDGE_UNAVAILABLE) minimize_window needs the clippy-mac-bridge helper, which is not available' };
   }
   // Use Win32 ShowWindow via P/Invoke. SW_MINIMIZE = 6.
   const ps = `
