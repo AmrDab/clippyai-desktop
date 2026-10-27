@@ -1165,16 +1165,21 @@ function layer1() {
     fail('v0.15.0: Web tab', `html=${hasWebTab}, ipc=${hasWebIpc}, preload=${hasWebPreload}`);
   }
 
-  // submitClawdTask delegates via the MCP submit_task tool (clawdcursor
-  // v1.5.x removed POST /task; returnPartial went with it)
+  // clawdcursor v1.5 MCP contract (clippyai-macos#22): submitClawdTask
+  // submits over POST /mcp (tools/call submit_task, fire-and-accept) and polls
+  // agent_status; the dead v0.x REST routes (/task, /execute/<name>) must not
+  // come back — v1.x serves them as silent 404s while /mcp still answers.
   const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
   const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);
   const callsMcpEndpoint = /path:\s*['"]\/mcp['"]/.test(clawdSrc);
-  const usesSubmitTaskTool = /name:\s*['"]submit_task['"]/.test(clawdSrc);
-  if (hasSubmitTask && callsMcpEndpoint && usesSubmitTaskTool) {
-    pass('v0.13.0: submitClawdTask calls MCP submit_task via POST /mcp');
+  const usesSubmitTaskTool = /'submit_task'/.test(clawdSrc);
+  const pollsStatus = /'agent_status'/.test(clawdSrc);
+  const honoursIsError = /isError/.test(clawdSrc);
+  const deadRoute = /path:\s*['"`]\/(task|execute\/)/.test(clawdSrc);
+  if (hasSubmitTask && callsMcpEndpoint && usesSubmitTaskTool && pollsStatus && honoursIsError && !deadRoute) {
+    pass('clawd v1.5: submit_task + agent_status over POST /mcp, isError honoured, dead REST routes absent');
   } else {
-    fail('v0.13.0: clawd submit_task wrapper', `submit=${hasSubmitTask}, mcp=${callsMcpEndpoint}, tool=${usesSubmitTaskTool}`);
+    fail('clawd v1.5: MCP contract', `submit=${hasSubmitTask}, mcp=${callsMcpEndpoint}, tool=${usesSubmitTaskTool}, poll=${pollsStatus}, isError=${honoursIsError}, deadRoute=${deadRoute}`);
   }
 
   // proactiveCooldownMs is a setting (not hardcoded 600_000)
