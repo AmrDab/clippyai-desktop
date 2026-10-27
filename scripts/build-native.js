@@ -46,6 +46,10 @@ const ROOT = path.resolve(__dirname, '..');
 const PKGS = [
   { name: 'screenshot-helper', dir: path.join(ROOT, 'native', 'screenshot-helper') },
   { name: 'clippy-mac-bridge', dir: path.join(ROOT, 'native', 'clippy-mac-bridge') },
+  // Long-running listen-only keyboard monitor (opt-in typing awareness).
+  // Separate executable because it holds a CGEventTap + CFRunLoop, unlike
+  // the spawn-per-call bridge. src/main/input-monitor.ts spawns + controls it.
+  { name: 'clippy-input-monitor', dir: path.join(ROOT, 'native', 'clippy-input-monitor') },
 ];
 
 const force = process.argv.includes('--force');

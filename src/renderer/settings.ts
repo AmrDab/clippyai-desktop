@@ -245,6 +245,15 @@ async function loadConfig(): Promise<void> {
     });
   }
 
+  // Typing awareness (macOS) — opt-in, default OFF.
+  const iaEl = document.getElementById('setting-input-awareness') as HTMLInputElement | null;
+  if (iaEl) {
+    iaEl.checked = config.inputAwarenessEnabled === true;
+    iaEl.addEventListener('change', () => {
+      window.clippy.updateSettings({ inputAwarenessEnabled: iaEl.checked });
+    });
+  }
+
   // Launch on startup
   const launchEl = document.getElementById('setting-launch-startup') as HTMLInputElement;
   if (launchEl) launchEl.checked = Boolean(config.launchOnStartup);

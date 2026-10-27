@@ -138,6 +138,10 @@ mac:
       to: screenshot-helper
     - from: native/clippy-mac-bridge/.build/release/clippy-mac-bridge
       to: clippy-mac-bridge
+    # Listen-only keyboard monitor for opt-in typing awareness (Input
+    # Monitoring TCC). Only spawned once the user enables it in Settings.
+    - from: native/clippy-input-monitor/.build/release/clippy-input-monitor
+      to: clippy-input-monitor
   # CRITICAL: installed Macs update from the R2 feed (latest-mac.yml on
   # download.clippyai.app). Without this override the top-level GitHub
   # publish config is baked into app-update.yml and mac users stop updating.

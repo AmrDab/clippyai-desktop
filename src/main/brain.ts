@@ -42,6 +42,10 @@ import * as cursorVision from './cursor-vision';
 import * as userTakeover from './user-takeover';
 import { getLicenseKey, recordUsage } from './license';
 import { getGuidePrompt } from './guides';
+// Input awareness (clippyai-macos#21) — static imports per the bundle-anchor
+// rule (a lazy require would be tree-shaken out of the production bundle).
+import { InputMonitor } from './input-monitor';
+import { summarizeTyping } from './input-summarizer';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
@@ -584,6 +588,11 @@ interface BrainSettings {
    *  focused field (reads it via Accessibility, suggests an edit, one-click
    *  apply). Gated so users can turn the beta feature off. */
   writingAssistEnabled: boolean;
+  /** Typing awareness (macOS, opt-in): a listen-only keyboard monitor
+   *  (Input Monitoring permission) feeds a redacted summary of what the user
+   *  is typing into turn context. OFF by default — the helper isn't even
+   *  spawned until the user turns this on in Settings. */
+  inputAwarenessEnabled: boolean;
   /**
    * v0.20.0 "Lumiere" — user-tunable surfacing threshold for the probabilistic
    * proactive scorer (memo §4 item 3). Slider 0.3–0.8, default 0.55. 0 is the
@@ -625,6 +634,7 @@ const settingsStore = new Store<BrainSettings>({
     // open / mid-task guards make this safe to default-on for everyone.
     windowFollowEnabled: true,
     writingAssistEnabled: true, // (Beta) ⌥G writing assistant — on by default, toggleable in Settings
+    inputAwarenessEnabled: false, // opt-in only (keyboard monitor)
     // v0.20.0 "Lumiere" — conservative, silence-biased default (memo §7).
     // Read in SHADOW MODE only this milestone.
     proactiveConfidenceThreshold: 0.55,
@@ -814,8 +824,36 @@ export class Brain {
    *  toggle as ⌥G). */
   private readonly writingWatcher: WritingWatcher;
 
+  /** Input awareness — typing sense. Opt-in; see setInputAwareness(). */
+  private readonly inputMonitor: InputMonitor;
+  private inputPermWarned = false;
+
   constructor(win: BrowserWindow) {
     this.win = win;
+    // Input awareness. Constructing spawns nothing: the helper starts on the
+    // first enable(), which only happens while awake AND the user has opted
+    // in. Sleep disables the tap and wipes the buffer; the helper exits on
+    // stdin EOF, so app quit needs no extra teardown.
+    this.inputMonitor = new InputMonitor({
+      onSummon: () => {
+        // Typed wake-phrase ("hello clippy") while awake → acknowledge.
+        log.info('InputAwareness.summon', { via: 'typed-phrase' });
+        this.emit('clippy-speak', {
+          text: 'You typed my name — here I am! What can I do?',
+          animate: 'Greeting',
+        });
+      },
+      onSecureChange: (on) => {
+        // Secure input (password field): macOS already blanks the tap; also
+        // wipe recent context so nothing typed just before it lingers.
+        if (on) this.inputMonitor.clearContext();
+      },
+      onPermissionMissing: () => {
+        if (this.inputPermWarned) return;
+        this.inputPermWarned = true;
+        log.warn('Input Monitoring permission missing — typing sense disabled until granted');
+      },
+    });
     // v0.20.0-alpha.24 — restore conversation memory across restarts. Loading
     // here (before the first turn) means a relaunch no longer wipes context.
     this.historyPath = path.join(app.getPath('userData'), 'conversation-history.json');
@@ -828,6 +866,27 @@ export class Brain {
       win,
       () => settingsStore.get('writingAssistEnabled') !== false,
     );
+  }
+
+  /** Settings toggle for typing awareness — persists and live-applies. */
+  setInputAwareness(enabled: boolean): void {
+    settingsStore.set('inputAwarenessEnabled', enabled);
+    this.applyInputAwareness();
+  }
+
+  /** Capture only on darwin, while awake, with the opt-in on; otherwise
+   *  turn the tap off and terminate the helper. */
+  private applyInputAwareness(): void {
+    try {
+      if (process.platform === 'darwin' && this.mode === 'awake' && settingsStore.get('inputAwarenessEnabled') === true) {
+        this.inputMonitor.enable();
+      } else {
+        this.inputMonitor.disable();
+        this.inputMonitor.stop();
+      }
+    } catch (err) {
+      log.warn('input-monitor toggle failed (non-fatal)', serializeErr(err));
+    }
   }
 
   setMode(mode: 'awake' | 'sleep'): void {
@@ -849,6 +908,8 @@ export class Brain {
       // lack rearmAfterMs are eligible again after the user sleeps + wakes.
       this.firedSuggestionIds.clear();
       this.startLoop();
+      // Input awareness: awake = perceives, but only if the user opted in.
+      this.applyInputAwareness();
       // v0.20.0-alpha.3 — resume the cursor-position pump on wake. It was
       // started once at app boot and never stopped on sleep, so we got
       // 3600 IPC sends per hour to the renderer even while Clippy napped.
@@ -880,6 +941,10 @@ export class Brain {
       byokMod.abortByokRequests();
       try { abortAllInFlightTools(); } catch (err) {
         log.warn('abortAllInFlightTools threw on sleep (non-fatal)', serializeErr(err));
+      }
+      // Input awareness: sleep = verifiably blind (tap off + buffer wiped).
+      try { this.inputMonitor.disable(); } catch (err) {
+        log.warn('input-monitor disable failed (non-fatal)', serializeErr(err));
       }
       // v0.19.0 — stop follow-me polling so no orphan interval survives sleep.
       try {
@@ -2536,6 +2601,7 @@ export class Brain {
         // model the right shortcut (e.g. Cmd+Enter for Outlook send) so
         // it skips coordinate-clicking entirely.
         let extras = '';
+        let activeProc: string | undefined;
         try {
           // v0.20.0-alpha.5 — the macOS Swift bridge returns `{app, pid}`
           // while the AppleScript fallback returns `{processName}`. Accept
@@ -2544,6 +2610,7 @@ export class Brain {
           const parsedActive = JSON.parse(activeText) as { processName?: string; app?: string };
           const proc = parsedActive.processName || parsedActive.app;
           if (proc) {
+            activeProc = proc;
             const guide = getGuidePrompt(proc);
             if (guide) extras += guide;
             if (userText && memoryEnabled()) {
@@ -2554,6 +2621,20 @@ export class Brain {
         } catch {
           // activeText not JSON (e.g. "(no active window)") — skip extras
         }
+
+        // Input awareness — append the redacted typing summary so "fix my
+        // grammar" knows what the user is writing. recentContext() is ''
+        // unless the monitor is enabled (opted in + awake). Raw keystrokes
+        // never reach this string: the snapshot is secret-redacted and the
+        // distiller quotes only a short tail (input-summarizer.ts).
+        try {
+          const recent = this.inputMonitor.recentContext();
+          if (recent) {
+            const typingLine = summarizeTyping({ app: activeProc, recent });
+            if (typingLine) extras += `
+${typingLine}`;
+          }
+        } catch { /* typing sense is best-effort — never block context capture */ }
 
         // v0.18.0 — screenText cap 2000 → 800. Trims the first-turn
         // context bloat from 5-10KB to ~3KB. Active window + 800 chars

@@ -56,7 +56,7 @@ describe('settings.html — Windows build has no baked-in macOS leftovers', () =
   it('exactly the darwin-only cards are marked data-mac-only', () => {
     const cards = html.match(/<div class="s-card" data-mac-only>[\s\S]*?<h3 class="s-card__title">([^<]+)/g) ?? [];
     const titles = cards.map((c) => c.match(/s-card__title">([^<]+)/)![1].trim());
-    expect(titles).toEqual(['Permissions', 'Follow focused window', 'Writing assistant']);
+    expect(titles).toEqual(['Permissions', 'Follow focused window', 'Writing assistant', 'Typing awareness']);
   });
 
   it('every "Mac" mention outside mac-only cards is wrapped in [data-mac] with a [data-win] twin', () => {

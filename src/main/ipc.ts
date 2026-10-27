@@ -357,6 +357,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       followEasing: brainSettingsStore.get('followEasing'),
       // v0.20.0-alpha.11 — focused-window follow toggle
       windowFollowEnabled: brainSettingsStore.get('windowFollowEnabled'),
+      inputAwarenessEnabled: brainSettingsStore.get('inputAwarenessEnabled') === true,
       // v0.20.0 (Beta) — ⌥G writing-assistant toggle
       writingAssistEnabled: brainSettingsStore.get('writingAssistEnabled'),
       // feat/pricing-free-tier — last usage snapshot for the Settings meter.
@@ -504,6 +505,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // v0.20.0-alpha.11 — focused-window follow toggle. Live-applies: when
     // turned off we stop the poll interval immediately; when re-enabled we
     // restart with the existing brain/window references.
+    // Typing awareness (macOS, opt-in) — persists + live-applies in Brain.
+    if (settings.inputAwarenessEnabled !== undefined) {
+      brain.setInputAwareness(Boolean(settings.inputAwarenessEnabled));
+    }
     if (settings.windowFollowEnabled !== undefined) {
       const enabled = Boolean(settings.windowFollowEnabled);
       brainSettingsStore.set('windowFollowEnabled', enabled);

@@ -440,6 +440,25 @@
           </div>
         </div>
 
+        <!-- Typing awareness (clippyai-macos#21). Opt-in, default OFF.
+             darwin-only: input-monitor.ts drives the clippy-input-monitor
+             helper (listen-only CGEventTap); Brain never enables it elsewhere. -->
+        <div class="s-card" data-mac-only>
+          <div class="s-card__header">
+            <h3 class="s-card__title">Typing awareness <span class="s-badge">Beta</span></h3>
+            <p class="s-card__subtitle">While Clippy is awake he notices what you type, so "fix my grammar" or "help with this paragraph" already knows the text, and typing "hello clippy" summons him. A short, redacted summary of recent typing is included with your requests; passwords are never seen and nothing is captured while he sleeps. Needs the Input Monitoring permission.</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-input-awareness">Enable typing awareness</label>
+            <div class="s-row__value">
+              <label class="toggle-switch" for="setting-input-awareness">
+                <input type="checkbox" id="setting-input-awareness" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
         <!-- v0.19.0 — Follow Mode. Controls how Clippy glides toward the cursor
              when follow-me is active (voice: "follow me", tray menu, or tool). -->
         <div class="s-card">
