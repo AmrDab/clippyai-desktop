@@ -9,6 +9,12 @@
  * tests, docs, maps, and platform-irrelevant native deps.
  */
 
+// macOS: different strategy (local install copy, else guides-only bundle).
+if (process.platform === 'darwin') {
+  require('./vendor-clawdcursor-mac.js');
+  return;
+}
+
 const fs = require('fs');
 const path = require('path');
 

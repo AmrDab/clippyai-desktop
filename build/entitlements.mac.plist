@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Hardened runtime exceptions required by Electron itself:
+      - JIT: V8 generates code at runtime.
+      - unsigned-executable-memory: V8 also writes-then-executes pages.
+      - allow-dyld-environment-variables: Electron's framework loader uses them.
+      - disable-library-validation: required so we can load whisper-cli and
+        its bundled .dylib helpers that aren't signed with our team ID.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- whisper.cpp STT: microphone capture -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Screen capture (desktopCapturer) for OCR / screen context -->
+  <!-- macOS prompts the user via System Settings → Privacy → Screen Recording -->
+
+  <!-- AppleScript / osascript control of other apps (Mail, Outlook for Mac,
+       System Events for window enumeration) -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

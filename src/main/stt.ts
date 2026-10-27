@@ -9,7 +9,9 @@ import { createLogger, serializeErr } from './logger';
 // feedback-clippy-bundle-anchors). Used for the macOS STT path where the
 // bundled Windows whisper-cli cannot run.
 import * as openaiVoice from './openai-voice';
-import { isOpenAiKeyPresent } from './license';
+import { isOpenAiKeyPresent, getSttEngine } from './license';
+// Static import (bundle-anchor rule) — the on-device Apple Speech engine.
+import * as macBridge from './mac-bridge-native';
 
 const log = createLogger('STT');
 
@@ -85,17 +87,35 @@ function modelPath(): string {
  *  use if the bundle didn't install correctly. */
 export function isSttReady(): { ready: boolean; reason?: string } {
   if (!WHISPER_NATIVE) {
-    // v0.20.0 (voice v1) — macOS/Linux. The bundled whisper-cli is a
-    // Windows-only binary, so we NEVER probe/spawn it here. Voice input
-    // is available only if the user has configured an OpenAI key (cloud
-    // gpt-4o-transcribe). No key → cleanly "not available" so the UI can
-    // tell the user what to do instead of failing on first use.
+    // macOS — two engines, free local one first:
+    //   'apple' (default): on-device Speech framework via the Swift bridge.
+    //     No key, no network, audio never leaves the Mac.
+    //   'openai' (opt-in): cloud gpt-4o-transcribe; needs the user's key.
+    // The bundled whisper-cli stays Windows-only — never probed here.
+    if (process.platform === 'darwin') {
+      const engine = getSttEngine();
+      const cloudReady = isOpenAiKeyPresent() || !!(process.env.OPENAI_API_KEY || '').trim();
+      if (engine === 'openai') {
+        if (cloudReady) return { ready: true };
+        return {
+          ready: false,
+          reason: 'Voice engine is set to OpenAI but no key is configured — add one in Settings → Voice, or switch the engine back to Apple (on-device).',
+        };
+      }
+      if (macBridge.isBridgeAvailable()) return { ready: true };
+      if (cloudReady) return { ready: true }; // bridge missing → cloud still works
+      return {
+        ready: false,
+        reason: 'Voice input unavailable — the clippy-mac-bridge helper is missing and no OpenAI key is configured.',
+      };
+    }
+    // linux — no local engine bundled; cloud key or nothing.
     if (isOpenAiKeyPresent() || (process.env.OPENAI_API_KEY || '').trim()) {
       return { ready: true };
     }
     return {
       ready: false,
-      reason: 'Voice input needs an OpenAI key on macOS — add one in Settings → Voice (audio is sent to OpenAI; opt-in).',
+      reason: 'Voice input needs an OpenAI key on this platform — add one in Settings → Voice (audio is sent to OpenAI; opt-in).',
     };
   }
   const cli = path.join(whisperDir(), 'whisper-cli');
@@ -118,11 +138,44 @@ export async function transcribeWav(
   const ready = isSttReady();
   if (!ready.ready) return { ok: false, error: ready.reason };
 
-  // v0.20.0 (voice v1) — macOS/Linux path. We never spawn the Windows
-  // whisper-cli here; isSttReady() above already guaranteed an OpenAI key
-  // exists, so route through the main-process OpenAI proxy. The key stays
-  // in main; only the transcript text comes back.
+  // macOS/Linux path — never spawn the Windows whisper-cli here.
   if (!WHISPER_NATIVE) {
+    // darwin + engine 'apple' (default): on-device Speech framework via the
+    // Swift bridge. $0, offline, no key. Falls back to the cloud path below
+    // ONLY when the bridge itself is unusable (missing binary), never on a
+    // permission denial — silently uploading audio after the user declined
+    // the on-device permission would invert the privacy contract.
+    if (process.platform === 'darwin' && getSttEngine() === 'apple' && macBridge.isBridgeAvailable()) {
+      const start = Date.now();
+      const tmpFile = path.join(os.tmpdir(), `clippy-stt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
+      try {
+        fs.writeFileSync(tmpFile, wavBuffer);
+        const r = await macBridge.transcribe({
+          audioPath: tmpFile,
+          // initialPrompt arrives as a sentence ("ClippyAI Outlook Excel");
+          // the Speech framework wants discrete vocabulary terms.
+          contextualStrings: opts.initialPrompt?.split(/\s+/).filter(Boolean),
+        });
+        return { ok: true, text: r.text, elapsedMs: Date.now() - start };
+      } catch (err) {
+        const elapsedMs = Date.now() - start;
+        let msg = err instanceof Error ? err.message : String(err);
+        // TCC SIGABRT (exit 134, no JSON): the RESPONSIBLE app's Info.plist
+        // lacks NSSpeechRecognitionUsageDescription. The packaged ClippyAI
+        // ships the key (electron-builder extendInfo); Electron's dev shell
+        // does not — so this fires in `npm run dev` only. Translate the
+        // cryptic parse error into an actionable one.
+        if (/not JSON \(exit (134|null|undefined)/.test(msg)) {
+          msg = 'On-device speech is unavailable in this dev shell (Electron lacks the Speech Recognition usage key). It works in the packaged app — or switch Settings → Voice input engine to OpenAI for dev testing.';
+        }
+        log.warn('STT.apple transcribe failed', { error: msg, elapsedMs });
+        return { ok: false, error: msg, elapsedMs };
+      } finally {
+        try { fs.unlinkSync(tmpFile); } catch { /* best-effort temp cleanup */ }
+      }
+    }
+    // Cloud path: engine 'openai', linux, or bridge missing (isSttReady
+    // already verified a key exists for these cases).
     const r = await openaiVoice.transcribeWithOpenAi(wavBuffer, {
       initialPrompt: opts.initialPrompt,
       timeoutMs: opts.timeoutMs ?? 30_000,

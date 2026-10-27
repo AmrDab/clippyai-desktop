@@ -464,7 +464,7 @@ export async function callClawdTool(
           }
           try {
             const parsed = JSON.parse(raw) as {
-              result?: { content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }> };
+              result?: { content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean };
               error?: { code?: number; message?: string };
             };
             if (parsed.error) {
@@ -474,6 +474,12 @@ export async function callClawdTool(
             const content = parsed.result?.content ?? [];
             const textPart = content.find((c) => c.type === 'text');
             const imagePart = content.find((c) => c.type === 'image' && c.data);
+            // Tool-level failures ("Agent is busy", no LLM attached, ...) come
+            // back as a normal result with isError — tag them so callers see it.
+            if (parsed.result?.isError) {
+              resolve({ text: `(error:CLAWD_FAILED) ${(textPart?.text ?? raw).slice(0, 300)}` });
+              return;
+            }
             resolve({
               text: textPart?.text ?? raw,
               ...(imagePart ? { image: { data: imagePart.data!, mimeType: imagePart.mimeType ?? 'image/png' } } : {}),
@@ -497,11 +503,10 @@ export async function callClawdTool(
 }
 
 /**
- * v0.13.0 — submit a plain-English task to clawd-cursor's `/task` endpoint.
- * Per the OpenClaw integration recommendations: this is L4 — only used when
- * L1 (native), L2 (browser-direct), and L3 (downloaded skill) all fail or
- * don't fit. clawd-cursor's agent runs the task internally; we poll for
- * completion via `/task-status` or rely on returnPartial mode.
+ * Submit a plain-English task to clawdcursor's autonomous agent (v1.x MCP
+ * submit_task → poll agent_status). Per the OpenClaw integration
+ * recommendations: this is L4 — only used when L1 (native), L2
+ * (browser-direct), and L3 (downloaded skill) all fail or don't fit.
  *
  * Args:
  *   task — short imperative sentence ("Open Notepad and write Hello")
@@ -519,74 +524,45 @@ export async function submitClawdTask(
   if (!task || task.trim().length === 0) return { text: '(error:MISSING_TASK) task description is required' };
   const timeoutMs = opts.timeoutMs ?? 120_000;
 
-  // v1.5.x: POST /task removed. Delegate via MCP `submit_task` tool.
-  // Note: submit_task requires the clawdcursor agent to be started WITH an
-  // LLM backend. When started with --no-llm (tools-only mode), the agent
-  // will reject submit_task with an error — that error is surfaced back
-  // to the caller rather than failing silently.
-  return new Promise<ToolResult>((resolve) => {
-    const reqBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: ++rpcId,
-      method: 'tools/call',
-      params: {
-        name: 'submit_task',
-        arguments: {
-          task: task.trim(),
-          timeout: Math.floor(timeoutMs / 1000),
-          ...(opts.appHint ? { app: opts.appHint } : {}),
-        },
-      },
-    });
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port: h.port,
-        path: '/mcp',
-        method: 'POST',
-        timeout: timeoutMs,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(reqBody),
-          'Accept': 'application/json, text/event-stream',
-          Authorization: `Bearer ${h.token}`,
-        },
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (c: Buffer) => chunks.push(c));
-        res.on('end', () => {
-          const raw = Buffer.concat(chunks).toString('utf8');
-          if (res.statusCode !== undefined && res.statusCode >= 400) {
-            resolve({ text: `(error:CLAWD_TASK_FAILED) HTTP ${res.statusCode}: ${raw.slice(0, 300)}` });
-            return;
-          }
-          try {
-            const parsed = JSON.parse(raw) as {
-              result?: { content?: Array<{ type: string; text?: string }> };
-              error?: { code?: number; message?: string };
-            };
-            if (parsed.error) {
-              resolve({ text: `(error:CLAWD_TASK_FAILED) ${parsed.error.message || JSON.stringify(parsed.error)}` });
-              return;
-            }
-            const content = parsed.result?.content ?? [];
-            const textPart = content.find((c) => c.type === 'text');
-            resolve({ text: textPart?.text ?? raw.slice(0, 1500) });
-          } catch {
-            resolve({ text: raw.slice(0, 1500) });
-          }
-        });
-      },
-    );
-    req.on('error', (err) => {
-      resolve({ text: `(error:CLAWD_TASK_FAILED) ${err.message}` });
-    });
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ text: `(error:CLAWD_TASK_FAILED) request timed out after ${timeoutMs}ms` });
-    });
-    req.write(reqBody);
-    req.end();
-  });
+  const deadline = Date.now() + timeoutMs;
+
+  // v1.5.x: POST /task removed; delegate via the MCP `submit_task` tool
+  // (ported from clippyai-macos#22). submit_task takes only {task} (max 2000
+  // chars) and is fire-and-accept — it returns {accepted:true} at once and the
+  // agent runs async, so poll agent_status until idle. appHint rides inside
+  // the sentence. With `agent --no-llm` it fails as isError ("no autonomous
+  // agent"), which callClawdTool tags and we surface.
+  const sentence = (opts.appHint ? `In the app "${opts.appHint}": ${task.trim()}` : task.trim()).slice(0, 2000);
+  const submit = await callClawdTool('submit_task', { task: sentence }, 15_000);
+  if (submit.text.startsWith('(error:')) {
+    return { text: submit.text.replace(/^\(error:CLAWD_FAILED\)/, '(error:CLAWD_TASK_FAILED)') };
+  }
+
+  let last: {
+    status?: string;
+    currentStep?: string;
+    lastResult?: { success?: boolean; steps?: Array<{ description?: string }> };
+  } = {};
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const st = await callClawdTool('agent_status', {}, 10_000);
+    try { last = JSON.parse(st.text) as typeof last; } catch { continue; } // transient poll failure
+    if (last.status === 'idle') {
+      const steps = last.lastResult?.steps ?? [];
+      const final = steps.length ? ` ${String(steps[steps.length - 1].description ?? '').slice(0, 300)}` : '';
+      if (last.lastResult?.success === false) {
+        return { text: `(error:CLAWD_TASK_FAILED) clawdcursor reported the task failed.${final}` };
+      }
+      return { text: `clawd_task finished (${steps.length} steps).${final} Verify the on-screen outcome with read_screen before claiming success.` };
+    }
+    if (last.status === 'no_agent') {
+      return { text: '(error:CLAWD_TASK_FAILED) clawdcursor is running without an autonomous agent (no_agent).' };
+    }
+  }
+
+  // Timed out — wind the agent down so it doesn't keep driving the desktop.
+  void callClawdTool('abort_task', {}, 5_000);
+  return {
+    text: `(error:CLAWD_TASK_FAILED) timed out after ${timeoutMs}ms (last status=${last.status || 'unknown'}, step=${last.currentStep || '?'}). Sent abort_task.`,
+  };
 }

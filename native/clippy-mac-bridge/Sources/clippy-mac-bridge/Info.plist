@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Embedded into the clippy-mac-bridge binary via -sectcreate __TEXT __info_plist
+  (see Package.swift linkerSettings). Unbundled executables have no Info.plist
+  on disk, and TCC ABORTS (SIGABRT, "attempted to access privacy-sensitive
+  data without a usage description") any process that calls a usage-gated API
+  — SFSpeechRecognizer.requestAuthorization here — without one. Embedding the
+  plist makes the `transcribe` subcommand safe in EVERY context: bundled in
+  ClippyAI.app, `npm run dev` (Electron's dev shell), or a bare terminal.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>app.clippyai.mac-bridge</string>
+  <key>CFBundleName</key>
+  <string>clippy-mac-bridge</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>ClippyAI transcribes your voice commands on-device using Apple's speech recognition. Audio stays on your Mac.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>ClippyAI uses the microphone so you can talk to Clippy (push-to-talk). Audio is transcribed on this Mac by default.</string>
+</dict>
+</plist>

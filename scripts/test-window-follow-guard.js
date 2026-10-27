@@ -80,7 +80,15 @@ try {
   // eslint-disable-next-line no-eval
   const factory = eval(wrapped);
   const moduleObj = { exports: {} };
-  const shimRequire = (req) => (REAL_BUILTINS.has(req) ? require(req) : inert());
+  // spatial-presence is pure (zero imports) and is `new`ed at module load —
+  // an inert stub can't survive esbuild's __toESM copy, so load the real one.
+  const loadPure = (rel) => {
+    const code = esbuild.transformSync(fs.readFileSync(path.join(ROOT, 'src', 'main', `${rel}.ts`), 'utf8'), { loader: 'ts', format: 'cjs', target: 'node18' }).code;
+    const m = { exports: {} };
+    new Function('module', 'exports', 'require', code)(m, m.exports, require);
+    return m.exports;
+  };
+  const shimRequire = (req) => (REAL_BUILTINS.has(req) ? require(req) : req === './spatial-presence' ? loadPure('spatial-presence') : inert());
   Object.assign(shimRequire, require);
   factory(moduleObj, moduleObj.exports, shimRequire);
   mod = moduleObj.exports;

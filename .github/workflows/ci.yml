@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24  # match the dev box (npm 11); npm 10 rejects this lockfile
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+      - run: npm test
+      - run: npm run smoke:1
+      # Swift helpers (clippy-mac-bridge, screenshot-helper, clippy-input-monitor),
+      # universal arm64+x86_64. Build only — no signing / notarization in CI.
+      - if: runner.os == 'macOS'
+        run: npm run build-native

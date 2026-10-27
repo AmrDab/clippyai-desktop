@@ -206,13 +206,14 @@
           </div>
         </div>
 
-        <!-- v0.17.0 — Voice input (speech-to-text). Bundled whisper.cpp +
-             quantized base.en model, ~60 MB, runs locally. No audio
-             leaves the machine. Wake-word is stubbed coming-soon. -->
+        <!-- Voice input (speech-to-text). macOS: on-device Apple Speech via
+             the clippy-mac-bridge (free, offline, default) with optional
+             cloud OpenAI engine. Windows: bundled whisper.cpp (~60 MB,
+             local). Wake-word is stubbed coming-soon. -->
         <div class="s-card">
           <div class="s-card__header">
             <h3 class="s-card__title">Voice input</h3>
-            <p class="s-card__subtitle">Dictate by holding the mic in the bubble or pressing the push-to-talk hotkey. Audio stays on <span data-mac>this Mac</span><span data-win>this PC</span> — powered by bundled whisper.cpp.</p>
+            <p class="s-card__subtitle">Dictate by holding the mic in the bubble or pressing the push-to-talk hotkey. Audio stays on <span data-mac>this Mac — transcribed on-device by Apple speech recognition.</span><span data-win>this PC — powered by bundled whisper.cpp.</span></p>
           </div>
 
           <div class="s-row s-row--inline">
@@ -226,6 +227,15 @@
                 <span class="toggle-slider"></span>
               </label>
             </div>
+          </div>
+
+          <div class="s-row" data-mac-only>
+            <label class="s-row__label" for="setting-stt-engine">Transcription engine</label>
+            <select id="setting-stt-engine">
+              <option value="apple">Apple on-device — free, offline (default)</option>
+              <option value="openai">OpenAI cloud — needs your key; audio is uploaded</option>
+            </select>
+            <p class="s-row__help" id="stt-engine-help">On-device transcription never uploads audio. The cloud engine is opt-in and requires an OpenAI key (Voice card above).</p>
           </div>
 
           <div class="s-row">
@@ -424,6 +434,25 @@
             <div class="s-row__value">
               <label class="toggle-switch" for="setting-writing-assist">
                 <input type="checkbox" id="setting-writing-assist" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Typing awareness (clippyai-macos#21). Opt-in, default OFF.
+             darwin-only: input-monitor.ts drives the clippy-input-monitor
+             helper (listen-only CGEventTap); Brain never enables it elsewhere. -->
+        <div class="s-card" data-mac-only>
+          <div class="s-card__header">
+            <h3 class="s-card__title">Typing awareness <span class="s-badge">Beta</span></h3>
+            <p class="s-card__subtitle">While Clippy is awake he notices what you type, so "fix my grammar" or "help with this paragraph" already knows the text, and typing "hello clippy" summons him. A short, redacted summary of recent typing is included with your requests; passwords are never seen and nothing is captured while he sleeps. Needs the Input Monitoring permission.</p>
+          </div>
+          <div class="s-row">
+            <label class="s-row__label" for="setting-input-awareness">Enable typing awareness</label>
+            <div class="s-row__value">
+              <label class="toggle-switch" for="setting-input-awareness">
+                <input type="checkbox" id="setting-input-awareness" />
                 <span class="toggle-slider"></span>
               </label>
             </div>

@@ -5,6 +5,8 @@ copyright: Copyright © 2026 Cloudana · ClippyAI
 # Becomes the exe's FileVersion (rcedit --set-file-version), so it must be
 # 4-part numeric. Convention for prereleases: 4th field = prerelease number
 # (0.20.0-alpha.24 → 0.20.0.24). For a stable X.Y.Z use X.Y.Z.0.
+# macOS ignores this: CFBundleVersion comes from mac.bundleVersion, which
+# `npm run dist:mac` sets to package.json's X.Y.Z (max 3 parts on macOS).
 buildVersion: 0.21.0.0
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
@@ -63,6 +65,105 @@ win:
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
     - "!**/node_modules/onnxruntime-web/**"
     - "!**/node_modules/harper.js/dist/{binaryInlined.js,slimBinaryInlined.js,slimBinary.js,harper_wasm_slim_bg.wasm}"
+  # Windows-only resources (merged with the top-level extraResources).
+  extraResources:
+    - from: assets/scripts
+      to: scripts
+      filter:
+        - "*.ps1"
+    # v0.17.0 — whisper.cpp + quantized base.en model for offline STT.
+    # Total ~60 MB (~57 MB model, ~2.3 MB binaries). Used by src/main/stt.ts
+    # which spawns whisper-cli.exe with the bundled model and a WAV file
+    # recorded in the renderer via Web Audio API. Lives at runtime under
+    # process.resourcesPath/whisper/.
+    - from: vendor/whisper/bin
+      to: whisper
+      filter:
+        - "*.exe"
+        - "*.dll"
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    # ZIP target is required by electron-updater on macOS — the auto-update
+    # flow downloads and unpacks the ZIP in place rather than re-mounting a
+    # DMG.
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  hardenedRuntime: true
+  gatekeeperAssess: false       # we run our own assess after stapling
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # codesign identity auto-matched against any "Developer ID Application: …"
+  # cert in Keychain. CSC_NAME or CSC_LINK env vars override in CI.
+  notarize: false               # we drive notarytool ourselves in afterSign
+  artifactName: ClippyAI-${version}-${arch}.${ext}
+  # TCC usage-description strings injected into the .app's Info.plist.
+  # macOS shows these in the consent dialogs when Clippy first calls AX /
+  # Screen Recording / AppleEvents. Without them the prompts show generic
+  # text and users deny.
+  extendInfo:
+    NSAccessibilityUsageDescription: "ClippyAI uses Accessibility APIs to find buttons, type text, and click items in other apps for you."
+    NSScreenCaptureUsageDescription: "ClippyAI captures the screen to read what you're working on (used for OCR + screen context). Captures stay on your Mac."
+    NSAppleEventsUsageDescription: "ClippyAI uses AppleScript to control Mail, Safari, and Chrome on your behalf when you ask it to."
+    # Without the mic string getUserMedia hard-fails on a signed hardened-
+    # runtime build (no TCC dialog at all). The packaged app is the TCC
+    # responsible process for the spawned bridge's `transcribe` too.
+    NSMicrophoneUsageDescription: "ClippyAI uses the microphone so you can talk to Clippy (push-to-talk). Audio is transcribed on this Mac by default."
+    NSSpeechRecognitionUsageDescription: "ClippyAI transcribes your voice commands on-device using Apple's speech recognition. Audio stays on your Mac."
+  # Harper reads its WASM via fs.readFile(file://…) and onnxruntime-node's
+  # .node addon must load from disk — both need real files outside app.asar.
+  asarUnpack:
+    - "**/node_modules/harper.js/**"
+    - "**/node_modules/onnxruntime-node/**"
+  # macOS-only resources (merged with the top-level extraResources).
+  extraResources:
+    # whisper.cpp universal binary built by scripts/vendor-whisper.js.
+    - from: vendor/whisper/macos
+      to: whisper
+      filter:
+        - "whisper-cli"
+        - "*.dylib"
+    # Swift helpers built by `npm run build-native` (universal arm64+x86_64).
+    # Resolved via process.resourcesPath in src/main/screenshot-helper.ts and
+    # src/main/mac-bridge-native.ts; signed with the parent .app.
+    - from: native/screenshot-helper/.build/release/screenshot-helper
+      to: screenshot-helper
+    - from: native/clippy-mac-bridge/.build/release/clippy-mac-bridge
+      to: clippy-mac-bridge
+    # Listen-only keyboard monitor for opt-in typing awareness (Input
+    # Monitoring TCC). Only spawned once the user enables it in Settings.
+    - from: native/clippy-input-monitor/.build/release/clippy-input-monitor
+      to: clippy-input-monitor
+  # CRITICAL: installed Macs update from the R2 feed (latest-mac.yml on
+  # download.clippyai.app). Without this override the top-level GitHub
+  # publish config is baked into app-update.yml and mac users stop updating.
+  publish:
+    provider: generic
+    url: https://download.clippyai.app
+    channel: latest
+
+dmg:
+  title: ClippyAI ${version}
+  icon: build/icon.icns
+  contents:
+    - x: 130
+      y: 220
+      type: file
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+  window:
+    width: 540
+    height: 380
 
 nsis:
   # oneClick MUST be true for reliable auto-updates. The update loop bug:
@@ -94,10 +195,8 @@ files:
   - "!**/node_modules/**/*.map"
 
 extraResources:
-  - from: assets/scripts
-    to: scripts
-    filter:
-      - "*.ps1"
+  # (Windows-only *.ps1 scripts + whisper.exe binaries live under win:,
+  # macOS whisper + Swift helpers under mac:.)
   # v0.11.22 — Bundle ClawdCursor's app-specific guide JSONs (Outlook,
   # Excel, Slack, Edge, Discord, Spotify, etc.). Read at runtime by
   # src/main/guides.ts and injected into the model's screen-context
@@ -109,16 +208,7 @@ extraResources:
     to: clawdcursor-guides
     filter:
       - "*.json"
-  # v0.17.0 — whisper.cpp + quantized base.en model for offline STT.
-  # Total ~60 MB (~57 MB model, ~2.3 MB binaries). Used by src/main/stt.ts
-  # which spawns whisper-cli.exe with the bundled model and a WAV file
-  # recorded in the renderer via Web Audio API. Lives at runtime under
-  # process.resourcesPath/whisper/.
-  - from: vendor/whisper/bin
-    to: whisper
-    filter:
-      - "*.exe"
-      - "*.dll"
+  # Quantized base.en whisper model (~57 MB), shared by both platforms.
   - from: vendor/whisper/models
     to: whisper/models
     filter:
@@ -153,6 +243,8 @@ extraResources:
 # install failures were NSIS integrity / antivirus / browser cache issues
 # unrelated to rcedit.
 afterPack: scripts/after-pack.js
+# Apple notarization + stapling (no-op on non-darwin and without APPLE_* env).
+afterSign: build/signing/notarize.js
 
 directories:
   output: release

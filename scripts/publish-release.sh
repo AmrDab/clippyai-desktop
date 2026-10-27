@@ -14,8 +14,8 @@
 #
 # REQUIREMENTS:
 #   - release/ contains ClippyAI-${VERSION}-{arm64,x64}.{dmg,zip} + blockmaps + latest-mac.yml
-#     (produced by `npm run dist`, which calls electron-builder --mac)
-#   - gh CLI authenticated for AmrDab/clippyai-macos
+#     (produced by `npm run dist:mac`, which calls electron-builder --mac)
+#   - gh CLI authenticated for AmrDab/clippyai-desktop
 #   - .env contains R2_API_TOKEN (with bucket-write scope on clippyai-downloads)
 #     OR wrangler is logged in (we use wrangler for the actual upload)
 #   - Working tree is on a release-worthy commit (we verify HEAD matches origin/main or origin/feat/v0.19.0-* before tagging)
@@ -93,6 +93,9 @@ case "$(uname -s)" in
       for f in "$EXE" "$EXE.blockmap" "latest.yml"; do
         gh release upload "v${VERSION}" "$RELEASE_DIR/$f" --repo "$REPO" --clobber || true
       done
+      # The mac flow creates releases with --latest=false; once the Windows
+      # assets are on it, it must become "latest" for Windows updaters.
+      gh release edit "v${VERSION}" --repo "$REPO" --latest
     else
       gh release create "v${VERSION}" --repo "$REPO" \
         --title "ClippyAI v${VERSION}" \
@@ -127,7 +130,10 @@ case "$(uname -s)" in
     ;;
 esac
 
-REPO="AmrDab/clippyai-macos"
+# macOS shares the clippyai-desktop repo with Windows. Installed Macs update
+# from R2 (latest-mac.yml, mac.publish in electron-builder.yml) — the GitHub
+# Release only archives the mac assets.
+REPO="AmrDab/clippyai-desktop"
 R2_BUCKET="clippyai-downloads"
 RELEASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/release"
 
@@ -188,10 +194,12 @@ if gh release view "v${VERSION}" --repo "$REPO" >/dev/null 2>&1; then
     gh release upload "v${VERSION}" "$RELEASE_DIR/$f" --repo "$REPO" --clobber || true
   done
 else
+  # --latest=false: Windows electron-updater resolves /releases/latest and
+  # needs latest.yml there; a mac-only release must never become "latest".
   gh release create "v${VERSION}" --repo "$REPO" \
-    --title "ClippyAI for Mac v${VERSION}" \
+    --title "ClippyAI v${VERSION}" \
     --notes-file "$RELEASE_DIR/RELEASE_NOTES.md" \
-    --latest \
+    --latest=false \
     "$RELEASE_DIR"/ClippyAI-${VERSION}-*.{dmg,zip} \
     "$RELEASE_DIR"/ClippyAI-${VERSION}-*.{dmg.blockmap,zip.blockmap} \
     "$RELEASE_DIR/latest-mac.yml"
@@ -234,9 +242,8 @@ npx wrangler r2 object put "$R2_BUCKET/ClippyAI-latest-arm64.dmg" --file "$RELEA
 echo "    R2 PUT: ClippyAI-latest-x64.dmg (alias → ${VERSION})"
 npx wrangler r2 object put "$R2_BUCKET/ClippyAI-latest-x64.dmg" --file "$RELEASE_DIR/ClippyAI-${VERSION}-x64.dmg" --content-type application/x-apple-diskimage --remote
 
-# electron-updater feed file — uploaded for completeness even though we currently
-# use the GitHub releases provider. If we switch to a generic provider hitting R2,
-# this is already in place.
+# electron-updater feed file — installed Macs poll this (generic provider).
+# Uploaded LAST so the feed never points at binaries that aren't there yet.
 echo "    R2 PUT: latest-mac.yml"
 npx wrangler r2 object put "$R2_BUCKET/latest-mac.yml" --file "$RELEASE_DIR/latest-mac.yml" --content-type text/yaml --remote
 
@@ -247,6 +254,7 @@ echo "==> Verifying live download URLs"
 for url in \
   "https://download.clippyai.app/ClippyAI-latest-arm64.dmg" \
   "https://download.clippyai.app/ClippyAI-latest-x64.dmg" \
+  "https://download.clippyai.app/latest-mac.yml" \
   "https://github.com/${REPO}/releases/download/v${VERSION}/ClippyAI-${VERSION}-arm64.dmg" \
   "https://github.com/${REPO}/releases/download/v${VERSION}/latest-mac.yml" ; do
   code="$(curl -s -o /dev/null -w '%{http_code}' -I -L "$url" || echo 000)"
