@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24  # match the dev box (npm 11); npm 10 rejects this lockfile
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
