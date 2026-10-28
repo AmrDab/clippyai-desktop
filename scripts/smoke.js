@@ -1310,15 +1310,15 @@ function layer1() {
   }
 
   // 3. Six tint CSS custom properties defined. Each tint declares
-  //    --tint-{name}-wash, --tint-{name}-accent, --tint-{name}-text.
+  //    --tint-{name}-accent, --tint-{name}-text (v0.21.1: the full-bubble
+  //    wash became a 3px status strip in the accent colour).
   const tints = ['default', 'info', 'warning', 'busy', 'error', 'success'];
   const tintMissing = tints.filter((t) =>
-    !new RegExp(`--tint-${t}-wash\\s*:`).test(styleCss)
-    || !new RegExp(`--tint-${t}-accent\\s*:`).test(styleCss)
+    !new RegExp(`--tint-${t}-accent\\s*:`).test(styleCss)
     || !new RegExp(`--tint-${t}-text\\s*:`).test(styleCss)
   );
   if (tintMissing.length === 0) {
-    pass('v0.19.0: bubble v2 — six tint variants defined as CSS custom properties (wash + accent + text)');
+    pass('v0.19.0: bubble v2 — six tint variants defined as CSS custom properties (accent + text)');
   } else {
     fail('v0.19.0: bubble v2 tint vars', `incomplete tints: ${tintMissing.join(', ')}`);
   }

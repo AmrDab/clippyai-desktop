@@ -94,14 +94,13 @@ body.clippy-window {
    ════════════════════════════════════════════════════════════════════ */
 
 /* Tint palette — CSS custom properties so JS only flips data-tint and
-   CSS picks up the right wash, accent, and shadow. ~10–15% wash over a
-   frosted backdrop (any heavier and contrast on the body text drops). */
+   CSS picks up the right accent (a 3px status strip + button borders). */
 :root {
   --bubble-radius: 16px;
-  /* v0.20.2 — bg 0.78→0.92 and soft ink 0.55→0.70: over a busy/bright
-   * wallpaper the secondary text fell to ~3.7:1; now ≥5.9:1 on any
-   * backdrop while the blur still reads as frosted glass. */
-  --bubble-bg:        rgba(252, 252, 254, 0.92);
+  /* v0.21.1 — near-opaque paper. The Windows build runs with hardware
+   * acceleration off, so backdrop-filter is dropped and a 0.92 bg let the
+   * window behind read straight through the bubble. */
+  --bubble-bg:        rgba(255, 253, 247, 0.98);
   --bubble-ink:       rgba(15, 23, 42, 0.92);
   --bubble-ink-soft:  rgba(15, 23, 42, 0.70);
   /* v0.19.0 RC-6 — harmonized with Settings v2 hairline (0.08) so the
@@ -113,32 +112,26 @@ body.clippy-window {
   --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.18);
 
   /* default — Clippy brand yellow inner glow */
-  --tint-default-wash:   rgba(255, 212, 0, 0.12);
   --tint-default-accent: #FFD400;
   --tint-default-text:   #1c1917;
 
   /* info — neutral white-frost; user can reply */
-  --tint-info-wash:   rgba(255, 255, 255, 0.30);
   --tint-info-accent: #94a3b8;
   --tint-info-text:   #0f172a;
 
   /* warning — warm amber; approval needed */
-  --tint-warning-wash:   rgba(245, 158, 11, 0.14);
   --tint-warning-accent: #f59e0b;
   --tint-warning-text:   #78350f;
 
   /* busy — cool blue; acting / working */
-  --tint-busy-wash:   rgba(59, 130, 246, 0.12);
   --tint-busy-accent: #3b82f6;
   --tint-busy-text:   #1e3a8a;
 
   /* error — rose-red; blocked or failed */
-  --tint-error-wash:   rgba(244, 63, 94, 0.13);
   --tint-error-accent: #f43f5e;
   --tint-error-text:   #881337;
 
   /* success — mint; recent completion */
-  --tint-success-wash:   rgba(16, 185, 129, 0.13);
   --tint-success-accent: #10b981;
   --tint-success-text:   #064e3b;
 }
@@ -195,54 +188,53 @@ body.clippy-window {
   -webkit-app-region: no-drag;
   cursor: default;
   z-index: 10;
-  /* The tint wash sits between the frosted bg and the content. Drawn
-     via ::before so we can fade it in independently of the base bg. */
+  /* The status strip (::before) sits under the content. */
   isolation: isolate;
   overflow: hidden;
 }
 
-/* Tint wash layer — paints over the frosted backdrop, under content. */
+/* v0.21.1 — status strip: a 3px band on the top edge in the tint's accent
+   (warning / busy / error / success). The paper itself stays one colour;
+   recolouring the whole bubble per state turned dark mode khaki/maroon. */
 .bubble::before {
   content: '';
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: var(--tint-wash, transparent);
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--tint-strip, transparent);
   pointer-events: none;
   z-index: -1;
   transition: background 0.25s ease;
 }
 
 /* Per-tint custom-property forwarding. Each tint binds the generic
-   --tint-wash / --tint-accent / --tint-text vars so the bubble doesn't
+   --tint-strip / --tint-accent / --tint-text vars so the bubble doesn't
    have to know which tint it's in. */
 .bubble[data-tint="default"] {
-  --tint-wash:   var(--tint-default-wash);
   --tint-accent: var(--tint-default-accent);
   --tint-text:   var(--tint-default-text);
 }
 .bubble[data-tint="info"] {
-  --tint-wash:   var(--tint-info-wash);
   --tint-accent: var(--tint-info-accent);
   --tint-text:   var(--tint-info-text);
 }
 .bubble[data-tint="warning"] {
-  --tint-wash:   var(--tint-warning-wash);
+  --tint-strip:  var(--tint-warning-accent);
   --tint-accent: var(--tint-warning-accent);
   --tint-text:   var(--tint-warning-text);
 }
 .bubble[data-tint="busy"] {
-  --tint-wash:   var(--tint-busy-wash);
+  --tint-strip:  var(--tint-busy-accent);
   --tint-accent: var(--tint-busy-accent);
   --tint-text:   var(--tint-busy-text);
 }
 .bubble[data-tint="error"] {
-  --tint-wash:   var(--tint-error-wash);
+  --tint-strip:  var(--tint-error-accent);
   --tint-accent: var(--tint-error-accent);
   --tint-text:   var(--tint-error-text);
 }
 .bubble[data-tint="success"] {
-  --tint-wash:   var(--tint-success-wash);
+  --tint-strip:  var(--tint-success-accent);
   --tint-accent: var(--tint-success-accent);
   --tint-text:   var(--tint-success-text);
 }
@@ -477,10 +469,18 @@ body.clippy-window {
 }
 .bubble[data-state="expanded"] #bubble-header { display: flex; }
 
-.bubble-header-title {
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+.bubble-header-title { color: var(--bubble-ink); font-size: 13px; }
+.bubble-header-status { font-weight: 500; color: var(--bubble-ink-soft); margin-left: 6px; }
+.bubble-header-status::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: #22c55e;
 }
+.bubble-header-status[data-busy="true"]::before { background: #3b82f6; }
 .bubble-header-controls { display: flex; gap: 4px; }
 .bubble-header-controls button {
   width: 22px; height: 22px;
@@ -502,8 +502,8 @@ body.clippy-window {
   color: var(--bubble-ink);
 }
 #bubble-pin[aria-pressed="true"] {
-  background: var(--tint-default-wash);
-  color: var(--tint-default-text);
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--bubble-ink);
 }
 
 /* ── Primary text region ─────────────────────────────────────────── */
@@ -794,8 +794,8 @@ body.clippy-window {
   -webkit-app-region: no-drag;
 }
 .bubble-composer:focus-within {
-  border-color: var(--tint-accent, #FFD400);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tint-accent, #FFD400) 22%, transparent);
+  border-color: var(--bubble-ink-soft);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
 }
 
 #bubble-input {
@@ -855,7 +855,7 @@ body.clippy-window {
   opacity: 0.6;
 }
 #bubble-send:focus-visible, #bubble-mic:focus-visible {
-  outline: 2px solid var(--tint-accent, #FFD400);
+  outline: 2px solid var(--bubble-ink-soft);
   outline-offset: 1px;
 }
 #bubble-send .send-icon { display: block; transform: translateX(0.5px); }
@@ -958,7 +958,7 @@ body.clippy-window {
 /* ── Dark mode — keeps brand warmth ─────────────────────────────── */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bubble-bg:        rgba(28, 28, 32, 0.92);
+    --bubble-bg:        rgba(32, 33, 39, 0.98);
     --bubble-ink:       #e2e8f0;
     --bubble-ink-soft:  rgba(226, 232, 240, 0.7);
     --bubble-hairline:  rgba(255, 255, 255, 0.10);
@@ -979,9 +979,12 @@ body.clippy-window {
   #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); color: #e2e8f0; }
   .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
   .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
-  #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: var(--tint-text, #e2e8f0); }
-  /* --tint-text is a dark ink meant for the accent fill; ghost buttons sit on the dark bubble. */
-  #bubble-actions button:not(.is-primary) { color: #e2e8f0; }
+  /* --tint-text is a dark ink for light fills; on the dark bubble every action reads light. */
+  #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
+  /* Primary sits on the bright accent fill (inline background) — dark ink. */
+  #bubble-actions button.is-primary { color: #1c1917; }
+  #bubble-pin[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); }
+  .bubble-composer:focus-within { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.10); }
 }
 
 /* === Onboarding Window === */
