@@ -583,9 +583,11 @@ body.clippy-window {
 
 /* v0.21 — chat rows are bubbles: user right in the brand yellow, Clippy
    left on a soft slate wash. #bubble-history and the standard-state
-   .chat-history view are flex columns so align-self can pick the side. */
+   .chat-history view are flex columns so align-self can pick the side.
+   No `display` here: #bubble-history is shown only in expanded (above) —
+   setting it here kept the panel visible after minimize, overflowing and
+   clipping the compact bubble. */
 #bubble-history, #bubble-text.chat-history {
-  display: flex;
   flex-direction: column;
   gap: 6px;
 }
