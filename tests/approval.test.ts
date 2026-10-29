@@ -119,5 +119,8 @@ describe('summarizeArgs', () => {
     // The fallback used to cut at 120 chars with no marker, hiding later args.
     const out = summarizeArgs('some_tool', { a: 'x'.repeat(80), b: 'y'.repeat(80), c: 'z'.repeat(80), dest: 'C:\\Windows' });
     expect(out).toContain('more chars)');
+    // The PID is what gets killed when both are given, not the name.
+    expect(summarizeArgs('kill_process', { name: 'notepad.exe', procPid: 4242 })).toBe('Kill process with PID 4242');
+    expect(summarizeArgs('install_skill', { slug: 'foo', version: '0.0.1-evil' })).toBe('Install skill foo version 0.0.1-evil');
   });
 });

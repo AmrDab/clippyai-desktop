@@ -93,7 +93,11 @@ const shownArgs = (args: Record<string, unknown>): string => s(JSON.stringify(re
 
 export function summarizeArgs(tool: string, args: Record<string, unknown> = {}): string {
   switch (tool) {
-    case 'kill_process': return `Kill ${s(args.name ?? args.procPid)}`;
+    case 'kill_process': {
+      // com-kill-process.ps1 kills by PID when one is given and ignores the name.
+      const pid = Number(args.procPid) || 0;
+      return pid > 0 ? `Kill process with PID ${pid}` : `Kill ${s(args.name)}`;
+    }
     case 'http_request': {
       let target = s(args.url, 80);
       let dataLen = String(args.body ?? '').length;
@@ -113,7 +117,7 @@ export function summarizeArgs(tool: string, args: Record<string, unknown> = {}):
     case 'cdp_evaluate': return `Run JavaScript in the browser page: ${s(args.javascript, 240)}`;
     case 'github_create_issue': return `Create GitHub issue in ${s(args.owner)}/${s(args.repo)}: ${s(args.title)}`;
     case 'clawd_task': return `Hand off desktop task: ${s(args.task)}`;
-    case 'install_skill': return `Install skill ${s(args.slug)}`;
+    case 'install_skill': return `Install skill ${s(args.slug)}${args.version ? ` version ${s(args.version)}` : ''}`;
     case 'windows_service_control': return `${s(args.action ?? 'status')} service ${s(args.name)}`;
   }
   if (/_send_email$/.test(tool)) return `Email to ${s(args.to)}, subject ${s(args.subject)}`;
