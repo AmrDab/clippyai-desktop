@@ -2,6 +2,7 @@ import { ClippyController, AgentData, HdSprite } from './clippy';
 import { BubbleController } from './bubble';
 import { TTS } from './tts';
 import { clickAction } from './click-action';
+import { powerOffer, resetLine } from './upgrade-card';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
@@ -155,10 +156,10 @@ async function init(): Promise<void> {
   // "Don't suggest this again" in the context menu knows which rule to deny.
   let currentRuleId: string | undefined;
 
-  window.clippy.onSpeak(({ text, animate, ruleId }) => {
+  window.clippy.onSpeak(({ text, animate, ruleId, tint }) => {
     const safeText = text || '';
     if (safeText) {
-      bubbleCtrl.speak(safeText);
+      bubbleCtrl.speak(safeText, tint ? { tint } : {});
       tts.speak(safeText);
     }
     if (animate) clippyCtrl.playNamed(animate);
@@ -172,12 +173,15 @@ async function init(): Promise<void> {
   // opens the Power checkout. Speak it too so it reads naturally; the button
   // is the affordance. Don't nag: the buttons show at most once per 24 h per
   // session — later hits still show Clippy's line, just without them.
-  const STRIPE_POWER_URL = 'https://buy.stripe.com/8x2bJ06jXfC65XDe2Oe3e03'; // $19.99/mo
+  // v0.22 — the card also says when free tokens come back, and the button
+  // carries the $1-first-month offer while it runs (upgrade-card.ts).
   const UPGRADE_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
   let lastUpgradePromptAt = 0;
-  const upgradeAction = { label: 'Get Power', variant: 'primary' as const, onClick: () => { void window.clippy.openExternalUrl(STRIPE_POWER_URL); } };
-  window.clippy.onUpgrade?.(({ text, power_pass_available, power_pass_used }) => {
-    const safeText = text || "I'm tapped out on free tokens this month.";
+  window.clippy.onUpgrade?.(({ text, power_pass_available, power_pass_used, reset_date }) => {
+    const offer = powerOffer(Date.now());
+    const upgradeAction = { label: offer.label, variant: 'primary' as const, onClick: () => { void window.clippy.openExternalUrl(offer.url); } };
+    const reset = resetLine(reset_date, Date.now());
+    const safeText = `${text || "I'm tapped out on free tokens this month."}${reset ? ` ${reset}` : ''}`;
     // A power_pass_used reply ("comes back tomorrow — want Power all the
     // time?") always shows the CTA: the user just spent today's pass.
     const cooledDown = Date.now() - lastUpgradePromptAt < UPGRADE_PROMPT_COOLDOWN_MS && !power_pass_used;
@@ -281,7 +285,7 @@ async function init(): Promise<void> {
   // 'Thinking' that froze Clippy during long tasks. Brain emits at handleUser
   // Message entry and finally{}.
   window.clippy.onWorkingStart?.(() => { clippyCtrl.startWorkingLoop(); bubbleCtrl.setWorking(true); });
-  window.clippy.onWorkingStop?.(() => { clippyCtrl.stopWorkingLoop(); bubbleCtrl.setWorking(false); });
+  window.clippy.onWorkingStop?.((p) => { clippyCtrl.stopWorkingLoop(); bubbleCtrl.setWorking(false, p?.outcome); });
 
   // v0.21 — an outside agent asked the user something (clippy_ask_user) or
   // wants an OK (clippy_say wait_for_dismiss). Buttons answer by id; hiding
@@ -522,6 +526,30 @@ async function init(): Promise<void> {
     variant: 'ghost' as const,
     onClick: () => { void window.clippy.snoozeUpdate(version); bubbleCtrl.hide(); },
   });
+
+  // v0.22 — one-shot notices, pulled now that the listeners are up: a crash
+  // recovery (window.ts) wins over what's new (whats-new.ts).
+  const showWhatsNew = ({ version, notes }: { version: string; notes: string[] }) => {
+    clippyCtrl.playNamed('GetAttention');
+    bubbleCtrl.speakWithActions(`I just updated to **v${version}**! What's new:\n${notes.map((n) => `- ${n}`).join('\n')}`, [
+      { label: 'Nice!', variant: 'primary', onClick: () => { bubbleCtrl.hide(); } },
+      { label: 'Full changelog', variant: 'ghost', onClick: () => { void window.clippy.openExternalUrl('https://clippyai.app/changelog'); } },
+    ], { sticky: true });
+  };
+  const showRecovered = () => {
+    clippyCtrl.playNamed('Alert');
+    bubbleCtrl.speakWithActions("Whoa, I tripped over my own paperclip there. I'm back! Want to tell the team what happened?", [
+      { label: 'Send a report', variant: 'primary', onClick: () => { void window.clippy.openReport?.(); bubbleCtrl.hide(); } },
+      { label: 'Not now', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
+    ], { sticky: true });
+  };
+  void (async () => {
+    try {
+      if (await window.clippy.takeRecovered?.()) { showRecovered(); return; }
+      const news = await window.clippy.takeWhatsNew?.();
+      if (news) showWhatsNew(news);
+    } catch { /* non-fatal — no notice */ }
+  })();
 
   window.clippy.onUpdateAvailable((version) => {
     clippyCtrl.playNamed('GetAttention');

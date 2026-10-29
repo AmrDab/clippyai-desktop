@@ -21,6 +21,7 @@ import { BrowserWindow, net, app, powerMonitor } from 'electron';
 import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk } from './tools';
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
+import { taskOutcomeFor, type TaskOutcome } from './task-outcome';
 // v0.18.3 — static imports for local modules that brain.ts uses
 // lazily via require() elsewhere. Rollup's tree-shaker doesn't follow
 // dynamic require() calls reliably for ALL targets — empirically mail-
@@ -406,12 +407,15 @@ type TurnSuccess = {
   power_pass_used?: boolean;
   /** v0.21 — 'active' on turns served on the pass. */
   power_pass?: string;
+  /** v0.22 — on the free-cap reply: when the monthly tokens reset (ISO). */
+  reset_date?: string;
 };
 
 // v0.14.1 — last model identifier seen in a successful Turn.ok. Updated on
 // every successful /v1/turn response. Settings displays it in the About tab.
 let lastSeenModel: string | null = null;
 export function getLastSeenModel(): string | null { return lastSeenModel; }
+
 
 type TurnError = { error: string; detail?: string; message?: string };
 type TurnResponse = TurnSuccess | TurnError;
@@ -763,6 +767,9 @@ export class Brain {
   // done / error / cancel all end it. `lastUserRequest` is the text we re-run.
   private powerPassActive = false;
   private lastUserRequest: string | null = null;
+  // v0.22 — how the current task ended; sent with 'working-stop' so the
+  // bubble shows Done / Stopped / Stuck / Step limit instead of one look.
+  private taskOutcome: TaskOutcome = 'done';
   async retryLastWithPowerPass(): Promise<string> {
     const text = this.lastUserRequest;
     if (!text) return "I don't have a request to retry — just ask me again! 📎";
@@ -1179,6 +1186,7 @@ export class Brain {
       // we emit 'working-stop' in the finally block. Replaces the prior
       // one-shot 'Thinking' which left Clippy frozen during long tasks.
       this.emit('working-start');
+      this.taskOutcome = 'done';
 
       // Build initial user message — add screen context if we can grab it
       // fast. Pass userText so memory.lookupWorkflow can match learned
@@ -1312,6 +1320,7 @@ export class Brain {
       // D5/D8: track step count and abort reason accurately.
       let lastStep = 0;
       let abortReason: string | null = null;
+      let unconfirmed = false; // hallucination guard overrode a success claim
       // Stuck-loop detection: if read_screen returns the same text twice in a
       // row, the model is staring at the same page without learning anything.
       // Inject a hint to break the pattern before the 3-call runaway guard fires.
@@ -1332,7 +1341,7 @@ export class Brain {
           } else if (this.stopRequested) {
             log.info('Task aborted — user pressed Stop');
             finalSpoken = 'Stopped. Say "keep going" to pick it back up.';
-            this.emit('clippy-speak', { text: finalSpoken, animate: 'Wave' });
+            this.emit('clippy-speak', { text: finalSpoken, animate: 'Wave', tint: 'info' });
             this.lastAbortedGoal = { text, at: Date.now() };
             abortReason = 'user_stop';
           } else {
@@ -1430,6 +1439,7 @@ export class Brain {
             cta: 'power',
             power_pass_available: okResp.power_pass_available === true,
             power_pass_used: okResp.power_pass_used === true,
+            reset_date: okResp.reset_date,
           });
           finalSpoken = capLine;
           break;
@@ -1501,7 +1511,7 @@ export class Brain {
             log.info('Clippy.say.suppressed', { text: honest, reason: 'duplicate_after_reply', trigger: 'task_failed', step: step + 1 });
           } else {
             log.info('Clippy.say', { text: honest, animation: 'Alert', trigger: 'task_failed', step: step + 1, failureReason: reason });
-            this.emit('clippy-speak', { text: honest, animate: 'Alert' });
+            this.emit('clippy-speak', { text: honest, animate: 'Alert', tint: 'warning' });
             finalSpoken = honest;
           }
           // Don't set taskCompleted=true — this is the explicit "no, it
@@ -1550,7 +1560,7 @@ export class Brain {
             log.warn('Runaway guard', { tool: call.name, repeats: repeatCount });
             const msg = `I'm stuck repeating ${call.name} — stopping. Try rephrasing or a different approach.`;
             log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'runaway_guard' });
-            this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+            this.emit('clippy-speak', { text: msg, animate: 'Alert', tint: 'warning' });
             finalSpoken = msg;
             // D5: the task DID NOT complete — it was aborted. We previously
             // set taskCompleted=true here, which lied to success-rate metrics.
@@ -1686,7 +1696,7 @@ export class Brain {
               if (verdict.level === 'critical') {
                 log.warn('Loop detector abort', { ...(verdict.detail || {}), reason: verdict.reason, task_id });
                 const msg = "I'm stuck — I keep repeating the same step without making progress, so I'm stopping. Try rephrasing or a different approach.";
-                this.emit('clippy-speak', { text: msg, animate: 'Alert' });
+                this.emit('clippy-speak', { text: msg, animate: 'Alert', tint: 'warning' });
                 finalSpoken = msg;
                 abortReason = 'loop_detector';
                 break;
@@ -1914,7 +1924,7 @@ export class Brain {
           // the task succeeded. Alert is honest.
           const capMsg = "That's a long task — stopping here. Tell me what to focus on next.";
           log.warn('Clippy.say', { text: capMsg, animation: 'Alert', trigger: 'max_steps', steps_used: MAX_STEPS });
-          this.emit('clippy-speak', { text: capMsg, animate: 'Alert' });
+          this.emit('clippy-speak', { text: capMsg, animate: 'Alert', tint: 'warning' });
           finalSpoken = capMsg;
           abortReason = 'max_steps';
         }
@@ -1984,8 +1994,9 @@ export class Brain {
           } else {
             honest = "I did the steps, but couldn't confirm it actually went through. Want me to try a different approach, or check it yourself?";
           }
-          this.emit('clippy-speak', { text: honest, animate: 'Alert' });
+          this.emit('clippy-speak', { text: honest, animate: 'Alert', tint: 'warning' });
           finalSpoken = honest;
+          unconfirmed = true;
         }
       }
 
@@ -2001,6 +2012,7 @@ export class Brain {
         destructiveAttempts: destructiveAttempts.length,
         destructiveSucceeded: destructiveAttempts.filter((a) => a.succeeded).length,
       });
+      this.taskOutcome = taskOutcomeFor(abortReason, unconfirmed);
 
       // v0.11.22 — record the action sequence as a learned workflow scoped
       // to the active app at task start. Only for clean successes (no
@@ -2033,13 +2045,14 @@ export class Brain {
       const e = err as Error & { code?: string | number };
       let bubble = "Hmm, that didn't work. Try again!";
       if (e?.code === 'MODULE_NOT_FOUND' || /Cannot find module/i.test(e?.message || '')) {
-        bubble = "I hit a bug deep in my code. Try restarting me — if it keeps happening, send a report from Settings → Logs.";
+        bubble = "I hit a bug deep in my code. Try restarting me — if it keeps happening, right-click me → Report a problem.";
       } else if (/permission denied|not permitted|AXError|kAXError/i.test(e?.message || '')) {
         bubble = "I don't have permission for that. Open System Settings → Privacy & Security and grant Accessibility / Screen Recording to ClippyAI.";
       } else if (/timeout|ETIMEDOUT|ECONNREFUSED|network|fetch failed/i.test(e?.message || '')) {
         bubble = "My brain is slow right now — give me a sec and try again.";
       }
-      this.emit('clippy-speak', { text: bubble, animate: 'Alert' });
+      this.emit('clippy-speak', { text: bubble, animate: 'Alert', tint: 'error' });
+      this.taskOutcome = 'failed';
       return bubble;
     } finally {
       this.isExecuting = false;
@@ -2056,7 +2069,7 @@ export class Brain {
       // don't carry a stale id from a finished task.
       setCurrentTaskId(undefined);
       // v0.16.0 — stop the renderer's working-animation loop.
-      this.emit('working-stop');
+      this.emit('working-stop', { outcome: this.taskOutcome });
 
       // v0.18.1 — stop the takeover monitor and, if user activity drove
       // this cancellation, speak a context-appropriate message so the

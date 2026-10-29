@@ -19,6 +19,13 @@ export type BubbleState = 'compact' | 'standard' | 'expanded';
 export type BubbleTint  = 'default' | 'info' | 'warning' | 'busy' | 'error' | 'success';
 export type DefaultBubbleState = 'compact' | 'standard';
 
+// v0.22 — header status after a task ends (main's TaskOutcome values).
+const OUTCOME_LABELS: Record<string, string> = {
+  done: 'Done', stopped: 'Stopped', stuck: 'Stuck', step_limit: 'Step limit',
+  failed: "Didn't work", unconfirmed: 'Not confirmed',
+};
+const OUTCOME_SHOW_MS = 6000;
+
 // Short ambient tips render in compact unless the caller forces standard.
 // Threshold matches the 80-char split used for typewriter speed elsewhere.
 const COMPACT_TEXT_THRESHOLD = 80;
@@ -830,13 +837,22 @@ export class BubbleController {
   /** v0.21 — main's working-start / working-stop. While a task runs and the
    *  draft is empty, the send button becomes Stop. Typing a new message
    *  turns it back into Send (sending overrides the task, as before). */
-  setWorking(working: boolean): void {
+  setWorking(working: boolean, outcome?: string): void {
     this.working = working;
     this.syncComposer();
     if (this.workingTimer) { clearInterval(this.workingTimer); this.workingTimer = null; }
     if (!this.statusEl) return;
     this.statusEl.dataset.busy = String(working);
-    if (!working) { this.statusEl.textContent = 'Ready'; return; }
+    delete this.statusEl.dataset.outcome;
+    if (!working) {
+      // v0.22 — say how the task ended for a few seconds, then back to Ready.
+      const label = outcome ? OUTCOME_LABELS[outcome] : undefined;
+      if (!label) { this.statusEl.textContent = 'Ready'; return; }
+      this.statusEl.textContent = label;
+      this.statusEl.dataset.outcome = outcome;
+      this.workingTimer = setInterval(() => this.setWorking(false), OUTCOME_SHOW_MS);
+      return;
+    }
     const started = Date.now();
     const tick = () => { this.statusEl!.textContent = `Working · ${Math.round((Date.now() - started) / 1000)} s`; };
     tick();

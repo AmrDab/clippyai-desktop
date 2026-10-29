@@ -40,13 +40,13 @@ contextBridge.exposeInMainWorld('clippy', {
   updateSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke('update-settings', settings),
 
-  onSpeak: (cb: (payload: { text: string; animate: string }) => void) => {
+  onSpeak: (cb: (payload: { text: string; animate: string; tint?: 'info' | 'warning' | 'error' }) => void) => {
     ipcRenderer.on('clippy-speak', (_e, payload) => cb(payload));
   },
 
   // feat/pricing-free-tier — capped free user hit the token cap. Carries the
   // worker's warm Clippy line; renderer shows it with an Upgrade affordance.
-  onUpgrade: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean }) => void) => {
+  onUpgrade: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean; reset_date?: string }) => void) => {
     ipcRenderer.on('clippy-upgrade', (_e, payload) => cb(payload));
   },
 
@@ -195,8 +195,9 @@ contextBridge.exposeInMainWorld('clippy', {
   onWorkingStart: (cb: () => void) => {
     ipcRenderer.on('working-start', () => cb());
   },
-  onWorkingStop: (cb: () => void) => {
-    ipcRenderer.on('working-stop', () => cb());
+  // v0.22 — carries how the task ended (done / stopped / stuck / …).
+  onWorkingStop: (cb: (payload?: { outcome?: string }) => void) => {
+    ipcRenderer.on('working-stop', (_e, payload) => cb(payload));
   },
   // Step ticker: emitted before each tool call so the bubble shows what
   // Clippy is doing right now without triggering TTS.
@@ -352,6 +353,11 @@ contextBridge.exposeInMainWorld('clippy', {
   installUpdate: () => ipcRenderer.invoke('install-update'),
   openManualUpdate: () => ipcRenderer.invoke('open-manual-update'),
   snoozeUpdate: (version: string) => ipcRenderer.invoke('snooze-update', version),
+  // v0.22 — first launch after a minor update (main/whats-new.ts).
+  takeWhatsNew: () => ipcRenderer.invoke('take-whats-new'),
+  // v0.22 — main reloaded a crashed / frozen renderer (window.ts).
+  takeRecovered: () => ipcRenderer.invoke('take-recovered'),
+  openReport: () => ipcRenderer.invoke('open-report'),
   onUpdateAvailable: (cb: (version: string) => void) => {
     ipcRenderer.on('update-available', (_e, version) => cb(version));
   },

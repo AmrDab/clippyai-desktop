@@ -9,6 +9,16 @@ import * as quitState from './quit-state';
 
 const log = createLogger('Window');
 
+// v0.22 — set when the main renderer was reloaded after a crash/freeze; the
+// fresh renderer takes it once it's ready (its listeners register only after
+// the sprite loads, so a message pushed at did-finish-load would be lost).
+let recoveredPending = false;
+export function takeRecovered(): boolean {
+  const r = recoveredPending;
+  recoveredPending = false;
+  return r;
+}
+
 let settingsWindow: BrowserWindow | null = null;
 let onboardingWindow: BrowserWindow | null = null;
 
@@ -135,6 +145,40 @@ export function createWindow(): BrowserWindow {
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
+
+  // v0.22 — crash/freeze recovery. The renderer IS Clippy (sprite, bubble,
+  // composer): if it dies or hangs, the user is left with a blank or frozen
+  // window. Reload it — at most 3 times a minute, so a crash loop can't spin
+  // — and flag it for the fresh renderer, so Clippy says so and offers a report.
+  const recoveries: number[] = [];
+  let hangTimer: ReturnType<typeof setTimeout> | null = null;
+  const recover = (why: string) => {
+    const now = Date.now();
+    while (recoveries.length && now - recoveries[0] > 60_000) recoveries.shift();
+    if (recoveries.length >= 3) { log.error('Renderer recovery gave up', { why }); return; }
+    recoveries.push(now);
+    log.warn('Renderer recovery: reloading', { why, attempt: recoveries.length });
+    recoveredPending = true;
+    win.webContents.reload();
+  };
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log.error('Renderer gone', { reason: details.reason, exitCode: details.exitCode });
+    if (details.reason !== 'clean-exit' && !win.isDestroyed()) recover(details.reason);
+  });
+  // A hung renderer gets 15 s to come back, then is killed — which lands in
+  // render-process-gone above and reloads.
+  win.on('unresponsive', () => {
+    log.warn('Renderer unresponsive');
+    if (!hangTimer) {
+      hangTimer = setTimeout(() => {
+        hangTimer = null;
+        if (!win.isDestroyed()) win.webContents.forcefullyCrashRenderer();
+      }, 15_000);
+    }
+  });
+  win.on('responsive', () => {
+    if (hangTimer) { clearTimeout(hangTimer); hangTimer = null; log.info('Renderer responsive again'); }
+  });
 
   win.webContents.on('did-finish-load', () => {
     log.debug('Renderer loaded');
@@ -438,9 +482,11 @@ export function getOnboardingWindow(): BrowserWindow | null {
 
 let logWindow: BrowserWindow | null = null;
 
-export function createLogWindow(): BrowserWindow {
+/** `openReport` — v0.22 "Report a problem…": open straight into the report dialog. */
+export function createLogWindow(openReport = false): BrowserWindow {
   if (logWindow && !logWindow.isDestroyed()) {
     logWindow.focus();
+    if (openReport) void logWindow.webContents.executeJavaScript('openReport()').catch(() => { /* page still loading */ });
     return logWindow;
   }
 
@@ -458,9 +504,9 @@ export function createLogWindow(): BrowserWindow {
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    logWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/logs.html`);
+    logWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/logs.html${openReport ? '#report' : ''}`);
   } else {
-    logWindow.loadFile(path.join(__dirname, '../renderer/logs.html'));
+    logWindow.loadFile(path.join(__dirname, '../renderer/logs.html'), openReport ? { hash: 'report' } : {});
   }
 
   logWindow.on('closed', () => { logWindow = null; });

@@ -1,7 +1,7 @@
 import { Tray, Menu, nativeImage, BrowserWindow, app } from 'electron';
 import path from 'path';
 import { Brain, brainSettingsStore } from './brain';
-import { createSettingsWindow } from './window';
+import { createSettingsWindow, createLogWindow } from './window';
 import { getBuddyName } from './license';
 import * as followMe from './follow-me';
 import * as games from './games';
@@ -112,6 +112,10 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       {
         label: 'Settings...',
         click: () => createSettingsWindow(),
+      },
+      {
+        label: 'Report a problem...',
+        click: () => createLogWindow(true),
       },
       { label: `About ClippyAI v${app.getVersion()}`, enabled: false },
       // v0.21 — non-intrusive install path: the bubble offer can be snoozed,

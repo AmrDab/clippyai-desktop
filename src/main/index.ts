@@ -101,6 +101,7 @@ import { initTools, cleanupTools } from './tools';
 import { createLogger, cleanOldLogs, serializeErr } from './logger';
 import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater';
 import { startScheduler, stopScheduler } from './scheduler';
+import { checkWhatsNew } from './whats-new';
 // v0.20.0-alpha.12 — STATIC import (NOT dynamic import()/require()) so
 // Rollup keeps this module in the bundle. The alpha.11 attempt used
 // `import('./window-follow').then(...)` and `require('./window-follow')`
@@ -538,6 +539,9 @@ function launchMainApp(): void {
   // wrap-up tip). Setinterval-based, gated on brain.getMode() === 'awake'
   // and once-per-day for daily events. See src/main/scheduler.ts.
   startScheduler(mainWindow, brain);
+
+  // v0.22 — once after a minor update: what's new (whats-new.ts).
+  checkWhatsNew(isProfileSetUp());
 
   if (!isProfileSetUp()) {
     setTimeout(() => {
