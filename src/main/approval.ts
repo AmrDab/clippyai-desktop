@@ -89,6 +89,7 @@ const s = (v: unknown, max = 60): string => {
   const str = String(v ?? '');
   return str.length > max ? `${str.substring(0, max)}… (+${str.length - max} more chars)` : str;
 };
+const shownArgs = (args: Record<string, unknown>): string => s(JSON.stringify(redactArgs(args)), 240);
 
 export function summarizeArgs(tool: string, args: Record<string, unknown> = {}): string {
   switch (tool) {
@@ -109,12 +110,15 @@ export function summarizeArgs(tool: string, args: Record<string, unknown> = {}):
     case 'rename_file': return `Rename ${s(args.from)} to ${s(args.to)}`;
     case 'move_file': return `Move ${s(args.from)} to ${s(args.to)}`;
     case 'shell_exec': return `Run \`${s(args.command, 240)}\``;
-    case 'cdp_evaluate': return 'Run JavaScript in the browser page';
+    case 'cdp_evaluate': return `Run JavaScript in the browser page: ${s(args.javascript, 240)}`;
+    case 'github_create_issue': return `Create GitHub issue in ${s(args.owner)}/${s(args.repo)}: ${s(args.title)}`;
     case 'clawd_task': return `Hand off desktop task: ${s(args.task)}`;
     case 'install_skill': return `Install skill ${s(args.slug)}`;
     case 'windows_service_control': return `${s(args.action ?? 'status')} service ${s(args.name)}`;
   }
   if (/_send_email$/.test(tool)) return `Email to ${s(args.to)}, subject ${s(args.subject)}`;
-  if (tool.startsWith('skill__')) return `Run skill ${tool.slice('skill__'.length)}`;
-  return `${tool} ${JSON.stringify(redactArgs(args))}`.substring(0, 120);
+  if (tool.startsWith('skill__')) {
+    return `Run skill ${tool.slice('skill__'.length)}${Object.keys(args).length ? ` ${shownArgs(args)}` : ''}`;
+  }
+  return `${tool} ${shownArgs(args)}`;
 }
