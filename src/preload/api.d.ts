@@ -158,9 +158,9 @@ interface Window {
 
     // ── Speech / TTS
     // v0.19.0 — ruleId present when a deterministic rule fired the tip
-    onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string }) => void) => void;
+    onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string; tint?: 'info' | 'warning' | 'error' }) => void) => void;
     /** feat/pricing-free-tier — token-cap upsell for capped free users. */
-    onUpgrade?: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean }) => void) => void;
+    onUpgrade?: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean; reset_date?: string }) => void) => void;
     /** v0.21 — free daily Power pass: re-run the last request with power_pass:true. */
     usePowerPass?: () => Promise<string>;
     onPowerPass?: (cb: (active: boolean) => void) => void;
@@ -228,7 +228,7 @@ interface Window {
     activeModel?: () => Promise<string | null>;
     /** v0.16.0 — task-in-progress animation loop signals */
     onWorkingStart?: (cb: () => void) => void;
-    onWorkingStop?: (cb: () => void) => void;
+    onWorkingStop?: (cb: (payload?: { outcome?: string }) => void) => void;
     /** Step ticker: called before each tool so the bubble can show what Clippy is doing. */
     onTaskStep?: (cb: (step: { label: string; tool: string }) => void) => void;
     /** v0.17.0 — Voice input (offline whisper.cpp transcription) */
@@ -340,6 +340,9 @@ interface Window {
     openManualUpdate: () => Promise<boolean>;
     /** v0.21 — "Later" on an update offer: quiet for 24h or until relaunch. */
     snoozeUpdate: (version: string) => Promise<boolean>;
+    takeWhatsNew?: () => Promise<{ version: string; notes: string[] } | null>;
+    takeRecovered?: () => Promise<boolean>;
+    openReport?: () => Promise<void>;
     onUpdateAvailable: (cb: (version: string) => void) => void;
     onUpdateNotAvailable: (cb: () => void) => void;
     onUpdateReady: (cb: (version: string) => void) => void;

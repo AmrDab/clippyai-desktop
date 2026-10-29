@@ -1,0 +1,42 @@
+name: Bug report
+description: Clippy did something wrong, crashed, or wouldn't do something.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping fix Clippy! The fastest route is **right-click Clippy → Report a problem…**, which attaches your (scrubbed) logs. Then paste the time you sent it below.
+        Please don't include license keys, passwords, or personal info.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you asked Clippy to do, and what it did instead.
+      placeholder: Asked Clippy to turn report.docx into a PDF. It opened Word and then said it was stuck.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: input
+    id: version
+    attributes:
+      label: ClippyAI version
+      description: Right-click Clippy → Settings → About.
+      placeholder: v0.22.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, macOS, Other]
+    validations:
+      required: true
+  - type: input
+    id: report
+    attributes:
+      label: Sent an in-app report? When?
+      description: Lets us match your logs.
+      placeholder: Yes, Oct 28 around 3pm

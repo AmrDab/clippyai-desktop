@@ -1,0 +1,16 @@
+name: Feature idea
+description: Something you'd love Clippy to learn.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What should Clippy be able to do?
+      placeholder: I'd love Clippy to tidy my Downloads folder every Friday.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help you?
+      description: What you do today instead, and how often.

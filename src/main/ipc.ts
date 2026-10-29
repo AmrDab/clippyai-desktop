@@ -51,7 +51,8 @@ import * as profileMod from './profile';
 // v0.20.0-alpha.12 — static import for window-follow (NOT lazy require)
 // to keep Rollup from tree-shaking it. See memory: feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
-import { setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge } from './window';
+import { setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
+import { takeWhatsNew } from './whats-new';
 // Badge click reuses the ⌥G correction flow.
 import { triggerWritingAssist } from './writing-assist';
 // updater imports moved to top of file
@@ -1088,22 +1089,34 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       const { logs, manifest } = buildBundle(content);
       const fullDescription = `${description || ''}\n\n[manifest] ${JSON.stringify(manifest)}`.substring(0, 4000);
 
-      const req = net.request({ url: 'https://api.clippyai.app/report', method: 'POST' });
-      req.setHeader('Content-Type', 'application/json');
-      req.write(JSON.stringify({
-        key: licenseKey,
-        logs,
-        description: fullDescription,
-        version: app.getVersion(),
-      }));
-      req.end();
-      log.info('Report.upload', { manifest });
-      return true;
+      // v0.22 — wait for the server's answer (was fire-and-forget, so the
+      // Logs window said "Report sent!" even when the upload was rejected).
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = net.request({ url: 'https://api.clippyai.app/report', method: 'POST' });
+        req.setHeader('Content-Type', 'application/json');
+        req.on('response', (res) => { res.on('data', () => { /* drain */ }); resolve(res.statusCode); });
+        req.on('error', reject);
+        req.write(JSON.stringify({
+          key: licenseKey,
+          logs,
+          description: fullDescription,
+          version: app.getVersion(),
+        }));
+        req.end();
+      });
+      log.info('Report.upload', { manifest, status });
+      return status >= 200 && status < 300;
     } catch (err) {
       log.error('Report.upload failed', serializeErr(err));
       return false;
     }
   });
+
+  // v0.22 — the crash notice's "Send a report" button.
+  ipcMain.handle('open-report', () => { createLogWindow(true); });
+  // v0.22 — one-shot notices the renderer pulls once it's ready.
+  ipcMain.handle('take-recovered', () => takeRecovered());
+  ipcMain.handle('take-whats-new', () => takeWhatsNew());
 
   // Launch on startup (uses Electron's native login item API)
   ipcMain.handle('get-launch-on-startup', async () => {
@@ -1443,6 +1456,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       {
         label: '📋 View Logs',
         click: () => createLogWindow(),
+      },
+      {
+        label: '🐞 Report a problem…',
+        click: () => createLogWindow(true),
       },
       {
         // v0.12.5 — rescue when Clippy is dragged off-screen.

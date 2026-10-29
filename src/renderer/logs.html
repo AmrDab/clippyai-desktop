@@ -155,6 +155,7 @@
         placeholder="Example: Asked Clippy to open Paint and draw a square. Paint opened but nothing was drawn. Happened around 2pm."
         maxlength="4000"></textarea>
       <div class="report-counter"><span id="report-chars">0</span> / 4000</div>
+      <p id="report-error" style="color:#ef9a9a;margin:6px 0 0;display:none"></p>
       <div class="report-actions">
         <button id="btn-report-cancel">Cancel</button>
         <button id="btn-report-send" class="primary">Send Report</button>
@@ -185,6 +186,8 @@
       return true;
     }
 
+    let holdStatusUntil = 0;
+
     async function loadLogs() {
       try {
         const content = await window.clippy.readLogFile();
@@ -205,7 +208,8 @@
           container.appendChild(div);
           shown++;
         }
-        status.textContent = `${shown} lines`;
+        // v0.22 — don't wipe a report result before it can be read.
+        if (Date.now() > holdStatusUntil) status.textContent = `${shown} lines`;
         if (autoScroll) window.scrollTo(0, document.body.scrollHeight);
       } catch (err) {
         container.textContent = `Error reading logs: ${err}`;
@@ -226,8 +230,10 @@
     const btnReport = document.getElementById('btn-report');
     const btnReportSend = document.getElementById('btn-report-send');
     const btnReportCancel = document.getElementById('btn-report-cancel');
+    const reportError = document.getElementById('report-error');
 
     function openReport() {
+      reportError.style.display = 'none';
       reportDescription.value = '';
       reportChars.textContent = '0';
       reportOverlay.classList.add('visible');
@@ -271,11 +277,17 @@
       try {
         const content = await window.clippy.readLogFile();
         if (content) {
-          await window.clippy.reportLogs(content, description);
-          status.textContent = description
-            ? 'Report sent with your description! Our team will review it.'
-            : 'Report sent! Our team will review it.';
-          closeReport();
+          const ok = await window.clippy.reportLogs(content, description);
+          if (ok) {
+            status.textContent = description
+              ? 'Report sent with your description! Our team will review it.'
+              : 'Report sent! Our team will review it.';
+            holdStatusUntil = Date.now() + 10000;
+            closeReport();
+          } else {
+            reportError.textContent = "Couldn't send the report. Check your internet and try again.";
+            reportError.style.display = 'block';
+          }
         } else {
           status.textContent = 'No logs to report.';
         }
@@ -286,6 +298,10 @@
       btnReportSend.disabled = false;
       btnReportCancel.disabled = false;
     });
+
+    // v0.22 — "Report a problem…" (right-click menu / tray / crash notice)
+    // opens this window at #report, straight into the dialog.
+    if (location.hash === '#report') openReport();
 
     // Auto-refresh every 3 seconds
     loadLogs();
