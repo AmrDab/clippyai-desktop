@@ -323,3 +323,25 @@ describe('hook helpers', () => {
     expect(t.countDumpsSince(d, Date.now() + 60_000)).toBe(0);
   });
 });
+
+describe('free text never leaves as-is (security review)', () => {
+  it('messageShape drops quoted content and long numbers, keeps codes', async () => {
+    const t = await import('../src/main/telemetry');
+    const s = t.messageShape(`ENOENT: no such file 'Tax Return 2026 final' and "my secret reply" id 123456`);
+    expect(s).toContain('ENOENT');
+    expect(s).not.toMatch(/Tax Return|secret reply|123456/);
+    expect(s.length).toBeLessThanOrEqual(120);
+  });
+  it('scrubStack keeps frames only — not the message line', async () => {
+    const t = await import('../src/main/telemetry');
+    const out = t.scrubStack('TypeError: user wrote hello world\n    at foo (C:/Users/x/app/out/main/index.js:1:2)');
+    expect(out).not.toContain('hello world');
+    expect(out).toMatch(/^\s*at foo/);
+  });
+  it('errorCode maps text to a code or other', async () => {
+    const t = await import('../src/main/telemetry');
+    expect(t.errorCode('getaddrinfo ENOTFOUND github.com')).toBe('ENOTFOUND');
+    expect(t.errorCode('HttpError: 404 status 404 Not Found')).toBe('HTTP 404');
+    expect(t.errorCode('something with the user name Bob')).toBe('other');
+  });
+});

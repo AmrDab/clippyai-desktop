@@ -361,7 +361,7 @@ export function initUpdater(win: BrowserWindow): void {
     }
 
     log.error('Auto-update error', serializeErr(err));
-    telemetry.track('update_failed', { to: expectedVersion || undefined, reason: expectedVersion ? 'updater_error' : 'check_error', error: msg });
+    telemetry.track('update_failed', { to: expectedVersion || undefined, reason: expectedVersion ? 'updater_error' : 'check_error', error: telemetry.errorCode(msg) });
 
     // v0.19.0 PR-2.2 — DO NOT surface a user-facing bubble for generic
     // updater errors when we don't have a real version in hand.
@@ -462,7 +462,7 @@ export function downloadUpdate(): void {
   log.info('User accepted update — downloading');
   autoUpdater.downloadUpdate().catch((err) => {
     log.error('Download failed', serializeErr(err));
-    telemetry.track('update_failed', { reason: 'download_failed', error: (err as Error)?.message });
+    telemetry.track('update_failed', { reason: 'download_failed', error: telemetry.errorCode((err as Error)?.message) });
   });
 }
 

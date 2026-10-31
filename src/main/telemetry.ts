@@ -124,8 +124,30 @@ function decodeURIComponentSafe(s: string): string {
 }
 
 export function scrubStack(stack: unknown): string {
-  const lines = String(stack ?? '').split('\n').slice(0, MAX_STACK_LINES);
-  return scrubText(lines.join('\n'), MAX_STACK_CHARS);
+  // Frames only: the first line repeats the free-text message ("TypeError: …").
+  const frames = String(stack ?? '').split('\n').filter((l) => /^\s*at\s/.test(l)).slice(0, MAX_STACK_LINES);
+  return scrubText(frames.join('\n'), MAX_STACK_CHARS);
+}
+
+/**
+ * An exception message reduced to its shape. Pattern scrubbing can't catch
+ * every piece of user content an error may quote (a file name, a snippet of a
+ * reply), so quoted text and long numbers are dropped outright; error codes
+ * and the wording around them survive.
+ */
+export function messageShape(message: unknown): string {
+  return scrubText(message)
+    .replace(/'[^'\n]*'|"[^"\n]*"|`[^`\n]*`/g, '<str>')
+    .replace(/\d{3,}/g, '<n>')
+    .slice(0, 120);
+}
+
+/** Free-text error → a code only (ENOTFOUND, ERR_…, HTTP 404), else 'other'. */
+export function errorCode(text: unknown): string {
+  const s = String(text ?? '');
+  const m = s.match(/\b(E[A-Z]{3,}|ERR_[A-Z0-9_]+)\b/) || s.match(/\b(?:HTTP|status)\s*(\d{3})\b/i);
+  if (!m) return 'other';
+  return /^\d+$/.test(m[1]) ? `HTTP ${m[1]}` : m[1];
 }
 
 /** Tool name only — known built-ins by name, skills/MCP/anything else bucketed. */
@@ -335,7 +357,7 @@ export function trackException(err: unknown, props?: Props): void {
   try {
     const e = err instanceof Error ? err : new Error(typeof err === 'string' ? err : 'non-error rejection');
     const typeName = String(e.name || 'Error').replace(/[^\w.]/g, '').slice(0, 60) || 'Error';
-    const message = scrubText(e.message);
+    const message = messageShape(e.message);
     const sig = `${typeName}:${message.slice(0, 80)}`;
     const seen = exceptionCounts.get(sig) || 0;
     if (seen >= MAX_SAME_EXCEPTION_PER_SESSION) return;
