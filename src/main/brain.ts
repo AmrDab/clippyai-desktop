@@ -1668,8 +1668,10 @@ export class Brain {
                 tool: call.name,
                 args: call.args,
                 outcome: 'approval_denied',
-                detail: `User did not approve (${verdict}): ${summary}`,
-                receipt: blockedReceipt(call.name, risk ? risk.reason : summary, { actionClass, verdict }),
+                // Not the bubble summary: it carries raw args (the shell command,
+                // the script) that history.record() redacts everywhere else.
+                detail: `User did not approve (${verdict})`,
+                receipt: blockedReceipt(call.name, risk ? risk.reason : `${actionClass} action`, { actionClass, verdict }),
               });
               responseParts.push({
                 functionResponse: {
@@ -1680,7 +1682,9 @@ export class Brain {
               continue;
             }
             log.info('Tool.approved', { step: step + 1, tool: call.name, class: actionClass });
-            approvalMod.markApproved(call.name, call.args);
+            // Only install_skill consumes the mark; marking other tools would just
+            // leave one-shot approvals lying around.
+            if (call.name === 'install_skill') approvalMod.markApproved(call.name, call.args);
           }
 
           try {
