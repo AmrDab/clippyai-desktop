@@ -48,6 +48,7 @@ import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import { ToolLoopDetector } from './tool-loop-detection';
 import { isAgentBusy } from './agent-tools';
+import * as telemetry from './telemetry';
 import Store from 'electron-store';
 import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
 import { randomUUID } from 'crypto';
@@ -1153,6 +1154,7 @@ export class Brain {
       return msg;
     }
     this.isExecuting = true;
+    telemetry.taskBegin();
     this.cancelRequested = false;
     this.stopRequested = false;
     this.cancelReason = null;
@@ -1382,6 +1384,7 @@ export class Brain {
           // loop handle it instead of showing a "can't reach my brain" error.
           if (this.cancelRequested) continue;
           log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
+          telemetry.taskTurnError(resp.error);
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
           log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'error', error: resp.error });
           this.emit('clippy-speak', { text: msg, animate: 'Alert' });
@@ -1658,6 +1661,7 @@ export class Brain {
             } finally {
               try { userTakeover.resumeDetection(); } catch { /* non-fatal */ }
             }
+            telemetry.track('approval', { class: actionClass, outcome: verdict });
             if (verdict !== 'approved') {
               log.info('Tool.approval_denied', { step: step + 1, tool: call.name, class: actionClass, verdict });
               history.record({
@@ -1848,6 +1852,7 @@ export class Brain {
             // Filter out clearly-failed results so we don't memorize a no-op
             // sequence as a "successful" workflow.
             const looksLikeError = resultText.startsWith('(') || resultText.toLowerCase().startsWith('error:');
+            if (looksLikeError) telemetry.taskToolFailed(call.name, resultText);
             if (!looksLikeError) {
               successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });
             }
@@ -1902,6 +1907,7 @@ export class Brain {
             const msg = err instanceof Error ? err.message : String(err);
             const toolElapsed = Date.now() - toolStart;
             log.error('Tool.error', { step: step + 1, tool: call.name, elapsed_ms: toolElapsed, error: msg });
+            telemetry.taskToolFailed(call.name, msg);
             responseParts.push({
               functionResponse: {
                 name: call.name,
@@ -2013,6 +2019,7 @@ export class Brain {
         destructiveSucceeded: destructiveAttempts.filter((a) => a.succeeded).length,
       });
       this.taskOutcome = taskOutcomeFor(abortReason, unconfirmed);
+      telemetry.taskEnd(this.taskOutcome, abortReason, lastStep);
 
       // v0.11.22 — record the action sequence as a learned workflow scoped
       // to the active app at task start. Only for clean successes (no
@@ -2042,6 +2049,8 @@ export class Brain {
       // gone — but the catch arm should still teach the next one to
       // self-report. See feedback_clippy_bundle_anchors.md.
       log.error('handleUserMessage threw', serializeErr(err));
+      telemetry.trackException(err, { kind: 'task' });
+      telemetry.taskEnd('failed', 'exception', 0);
       const e = err as Error & { code?: string | number };
       let bubble = "Hmm, that didn't work. Try again!";
       if (e?.code === 'MODULE_NOT_FOUND' || /Cannot find module/i.test(e?.message || '')) {

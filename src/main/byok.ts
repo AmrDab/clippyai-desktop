@@ -17,6 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import { getLicenseKey } from './license';
 import { createLogger } from './logger';
+import * as telemetry from './telemetry';
 import { PROVIDER_PRESETS, getPreset, type ProviderPreset } from './byok/presets';
 import { buildKitUrl, loadKitCache, resolveKit, saveKitCache, type AgentKit, type KitCache } from './byok/kit';
 import { runByokTurn, testConnection, TURN_TIMEOUT_MS, type ByokTarget, type EngineResult } from './byok/engine';
@@ -155,8 +156,10 @@ export function saveByokSettings(input: ByokSaveInput): { ok: true; status: Byok
       return { ok: false, error: 'Could not encrypt the key on this system. The key was not saved.', status: getByokStatus() };
     }
   }
+  const wasActive = isByokActive();
   if (typeof input.enabled === 'boolean') store.set('enabled', input.enabled);
   const { preset, model } = effective();
+  if (!wasActive && isByokActive()) telemetry.track('byok_enabled', { provider: preset.id });
   log.info('Byok.settings', { enabled: store.get('enabled'), provider: preset.id, model, key_present: !!store.get('keyEnc'), active: isByokActive() });
   return { ok: true, status: getByokStatus() };
 }

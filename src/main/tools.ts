@@ -41,6 +41,7 @@ import * as macBridge from './mac-bridge-native';
 import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
+import * as telemetry from './telemetry';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 import { docxFromBlocks } from './skills/generate/docx-from-blocks';
 import { excelFromRows } from './skills/generate/excel-from-rows';
@@ -4142,6 +4143,7 @@ async function securitySweep(params: Record<string, unknown>): Promise<ToolResul
   const args = ['-sections', quick ? 'autoruns,system,defender' : 'autoruns,tasks,services,processes,system,defender'];
   if (includeTrusted) args.push('-includeTrusted', 'true');
   const result = await runComScriptStructured('security-scan.ps1', args, quick ? 60_000 : 180_000);
+  telemetry.track('security_check', { quick, ok: result.ok });
   if (!result.ok || typeof result.data !== 'object' || result.data === null) return { text: result.message };
 
   const d = result.data as Record<string, unknown>;

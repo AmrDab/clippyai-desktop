@@ -20,6 +20,7 @@
 import { BrowserWindow, screen, ipcMain } from 'electron';
 import path from 'path';
 import { createLogger } from './logger';
+import * as telemetry from './telemetry';
 import * as followMe from './follow-me';
 import * as windowFollow from './window-follow';
 import {
@@ -113,6 +114,7 @@ export function start(game: GameKind, trigger: string): string {
   // Keep the previous home if a restart caught us mid-glide back to it.
   _home = _home ?? anchorOf(_win);
   log.info('Game.start', { game, trigger });
+  telemetry.track('game_started', { game, trigger });
   _onChange?.();
   send('game-state', { game });
 

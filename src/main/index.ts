@@ -89,7 +89,7 @@ if (process.platform === 'win32') {
 
 import { createWindow, createOnboardingWindow, getOnboardingWindow } from './window';
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
-import { getBuddyName, getTtsVoice, saveLicense } from './license';
+import { getBuddyName, getTtsVoice, saveLicense, getPlan } from './license';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
 import { Brain } from './brain';
@@ -114,6 +114,7 @@ import * as gamesMod from './games';
 import { brainSettingsStore } from './brain';
 // v0.21 — static import (same Rollup bundle-anchor rule as window-follow).
 import * as agentConnect from './agent-connect';
+import * as telemetry from './telemetry';
 
 bootLog('IMPORTS_LOADED');
 
@@ -206,12 +207,14 @@ async function handleActivateUrl(url: string): Promise<void> {
   else if (mainWindow && !mainWindow.isDestroyed()) await whenLoaded(mainWindow);
   if (!result.ok) {
     log.warn('Activate.failed', { error: result.error });
+    telemetry.track('activation', { outcome: 'fail', error: result.error });
     onboarding?.webContents.send('activation-result', { ok: false, message: result.message });
     onboarding?.focus();
     return;
   }
   saveLicense(result.licenseKey, result.plan, getBuddyName() || 'Clippy', getTtsVoice());
   log.info('Activate.ok', { plan: result.plan });
+  telemetry.track('activation', { outcome: 'ok' });
   if (onboarding) {
     // Onboarding advances itself (Meet Clippy) and persists name/voice on Next.
     onboarding.webContents.send('activation-result', { ok: true, plan: result.plan, licenseKey: result.licenseKey });
@@ -250,6 +253,7 @@ async function handleActivateUrl(url: string): Promise<void> {
 process.on('uncaughtException', (err) => {
   bootLog(`UNCAUGHT_EXCEPTION: ${err.message}`);
   log.error('Uncaught exception (continuing)', err.stack || err.message);
+  telemetry.trackException(err, { kind: 'uncaught_exception' });
   // Do NOT exit. The renderer + agent loop are robust to one tool failing.
   // A crash here is worse than any individual tool error.
 });
@@ -314,6 +318,7 @@ process.on('unhandledRejection', (reason) => {
   if (decision.isFirst) {
     bootLog(`UNHANDLED_REJECTION: ${msg}`);
     log.error('Unhandled rejection', stack);
+    telemetry.trackException(reason, { kind: 'unhandled_rejection' });
   } else if (decision.shouldLog) {
     log.error('Unhandled rejection (repeating)', `${stack} — ${decision.count}× in the last minute`);
   }
@@ -325,6 +330,7 @@ app.whenReady().then(async () => {
   bootLog('APP_READY');
   log.info('ClippyAI starting', { version: app.getVersion() });
   log.info('Crash dumps path', app.getPath('crashDumps'));
+  telemetry.initTelemetry({ getPlan });
 
   // Clippy reads his own brain files before doing anything else. The
   // result is cached; the same OrientationResult is what the onboarding
@@ -388,6 +394,8 @@ app.whenReady().then(async () => {
     void handleActivateUrl(url);
   }
   bootLog('WHENREADY_COMPLETE');
+  telemetry.track('app_start', { licensed: isLicensed() });
+  telemetry.trackMetric('cold_start_ms', Math.round(process.uptime() * 1000));
 });
 
 /**
@@ -573,6 +581,7 @@ function launchWithOnboarding(): void {
   startPeriodicUpdateChecks();
 
   createOnboardingWindow();
+  telemetry.track('onboarding_step', { step: 'opened' });
   log.info('Onboarding window opened, waiting for license entry');
 }
 
@@ -582,6 +591,11 @@ function launchWithOnboarding(): void {
 // route through app.quit() → before-quit). Without this the window blocks the
 // quit and the only way out is Force Quit (and updates hang). See quit-state.ts.
 app.on('before-quit', () => quitState.setQuitting());
+app.on('before-quit', (e) => telemetry.onBeforeQuit(e, () => app.quit()));
+
+// Any renderer (bubble, overlay, settings, onboarding) or helper process died.
+app.on('render-process-gone', (_e, wc, details) => telemetry.trackRendererGone(wc, details));
+app.on('child-process-gone', (_e, d) => { if (d.reason !== 'clean-exit') telemetry.track('child_process_gone', { type: d.type, reason: d.reason, exit_code: d.exitCode }); });
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();

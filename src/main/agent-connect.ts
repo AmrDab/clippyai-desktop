@@ -22,6 +22,7 @@ import * as approval from './approval';
 import * as windowFollow from './window-follow';
 import { setTrayAgentStatus } from './tray';
 import { createLogger, serializeErr } from './logger';
+import * as telemetry from './telemetry';
 import type { Brain } from './brain';
 
 const log = createLogger('AgentConnect');
@@ -98,7 +99,7 @@ async function start(): Promise<void> {
   starting = (async () => {
     const c = config();
     const deps = buildDeps();
-    const onClientsChange = (clients: string[]): void => setTrayAgentStatus(clients[0] ?? null);
+    const onClientsChange = (clients: string[]): void => { setTrayAgentStatus(clients[0] ?? null); telemetry.trackAgentClients(clients); };
     try {
       try {
         handle = await startAgentServer({ port: c.port, token: c.token, version: app.getVersion(), deps, onClientsChange });

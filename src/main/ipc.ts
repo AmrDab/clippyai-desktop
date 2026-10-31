@@ -3,6 +3,7 @@ import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
 import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage, snoozeUpdate, installOnUserQuit } from './updater';
 import { createLogger, serializeErr, ingestRendererLog } from './logger';
+import * as telemetry from './telemetry';
 
 const log = createLogger('IPC');
 
@@ -221,6 +222,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // internet" instead of "Invalid license" when the worker is down.
   ipcMain.handle('validate-license', async (_event, key: string) => {
     const result = await validateLicenseKey(key);
+    telemetry.track('onboarding_step', { step: 'license_checked', result: result.state });
     if (result.state === 'valid') {
       return { valid: true, plan: result.plan };
     }
@@ -243,7 +245,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
     try {
       const { net } = await import('electron');
-      return await new Promise<{ emailed: true } | { error: string }>((resolve) => {
+      const r = await new Promise<{ emailed: true } | { error: string }>((resolve) => {
         const req = net.request({ url: `${WORKER_API_BASE}/v1/free-signup`, method: 'POST' });
         req.setHeader('Content-Type', 'application/json');
         const timeout = setTimeout(() => { req.abort(); resolve({ error: 'offline' }); }, 15_000);
@@ -278,8 +280,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
         req.write(JSON.stringify({ email: trimmed }));
         req.end();
       });
+      telemetry.track('signup', { outcome: 'error' in r ? r.error : 'ok' });
+      return r;
     } catch (err) {
       log.error('FreeSignup.failed', serializeErr(err));
+      telemetry.track('signup', { outcome: 'offline' });
       return { error: 'offline' };
     }
   });
@@ -287,6 +292,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Save license data from onboarding
   ipcMain.handle('save-license', async (_event, key: string, plan: string, buddyName: string, ttsVoice: string) => {
     saveLicense(key, plan, buddyName, ttsVoice);
+    telemetry.track('onboarding_step', { step: 'license_saved' });
     return true;
   });
 
@@ -355,6 +361,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       windowFollowEnabled: brainSettingsStore.get('windowFollowEnabled'),
       // v0.20.0 (Beta) — ⌥G writing-assistant toggle
       writingAssistEnabled: brainSettingsStore.get('writingAssistEnabled'),
+      telemetryEnabled: telemetry.isTelemetryEnabled(),
       // feat/pricing-free-tier — last usage snapshot for the Settings meter.
       // tokensAllowed === 0 means "not yet seen a turn" → meter hides itself.
       ...getUsage(),
@@ -512,6 +519,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (settings.writingAssistEnabled !== undefined) {
       brainSettingsStore.set('writingAssistEnabled', Boolean(settings.writingAssistEnabled));
     }
+    // Anonymous crash & usage reports — applies immediately (off clears the queue).
+    if (settings.telemetryEnabled !== undefined) telemetry.setTelemetryEnabled(Boolean(settings.telemetryEnabled));
     // v0.19.0 PR-6 — onboarding app picker. setUserApps re-validates
     // against the KNOWN_APP_IDS whitelist; any unknown ID is silently
     // dropped, so a malicious renderer can't sneak in "foo-bar" and
@@ -1257,12 +1266,14 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (!(await showMainAndWake())) return false;
     brain.setTutorial(true);
     log.info('Onboarding.tutorial', { state: 'start' });
+    telemetry.track('onboarding_step', { step: 'tutorial_started' });
     return true;
   });
 
   ipcMain.handle('onboarding-finish', async () => {
     brain.setTutorial(false);
     log.info('Onboarding.tutorial', { state: 'finish' });
+    telemetry.track('onboarding_step', { step: 'finished' });
     if (!(await showMainAndWake())) return false;
     postOnboardingPrompts();
     return true;

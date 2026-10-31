@@ -242,6 +242,15 @@ async function loadConfig(): Promise<void> {
     });
   }
 
+  // Anonymous crash & usage reports. Default ON; off applies immediately.
+  const telEl = document.getElementById('setting-telemetry') as HTMLInputElement | null;
+  if (telEl) {
+    telEl.checked = config.telemetryEnabled !== false;
+    telEl.addEventListener('change', () => {
+      window.clippy.updateSettings({ telemetryEnabled: telEl.checked });
+    });
+  }
+
   // Launch on startup
   const launchEl = document.getElementById('setting-launch-startup') as HTMLInputElement;
   if (launchEl) launchEl.checked = Boolean(config.launchOnStartup);

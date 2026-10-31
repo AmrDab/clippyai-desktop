@@ -1,6 +1,7 @@
 import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow, shell } from 'electron';
 import { createLogger, serializeErr } from './logger';
+import * as telemetry from './telemetry';
 import { cleanupTools } from './tools';
 import * as quitState from './quit-state';
 import fs from 'fs';
@@ -214,6 +215,7 @@ function detectSilentFailure(): UpdaterState {
   // Silent failure confirmed. Record it.
   const v = state.lastAttemptedVersion;
   state.failureCount[v] = (state.failureCount[v] || 0) + 1;
+  telemetry.track('update_failed', { to: v, reason: 'silent_install_failure', attempt: state.failureCount[v] });
   log.error('Silent install failure detected', {
     attemptedVersion: v,
     currentVersion,
@@ -290,6 +292,7 @@ export function initUpdater(win: BrowserWindow): void {
       log.info('Update-available suppressed (snoozed by user)', { version: info.version });
       return;
     }
+    telemetry.track('update_offered', { to: info.version });
     sendToRenderer('update-available', info.version);
   });
 
@@ -328,6 +331,7 @@ export function initUpdater(win: BrowserWindow): void {
 
     updateDownloaded = true;
     expectedVersion = info.version;
+    telemetry.track('update_downloaded', { to: info.version });
     onStateChange?.();
     sendToRenderer('update-ready', info.version);
   });
@@ -357,6 +361,7 @@ export function initUpdater(win: BrowserWindow): void {
     }
 
     log.error('Auto-update error', serializeErr(err));
+    telemetry.track('update_failed', { to: expectedVersion || undefined, reason: expectedVersion ? 'updater_error' : 'check_error', error: msg });
 
     // v0.19.0 PR-2.2 — DO NOT surface a user-facing bubble for generic
     // updater errors when we don't have a real version in hand.
@@ -423,6 +428,7 @@ export function snoozeUpdate(version: string): void {
   snoozedUntil = Date.now() + SNOOZE_MS;
   snoozedVersion = version;
   log.info('Update snoozed by user', { version, until: new Date(snoozedUntil).toISOString() });
+  telemetry.track('update_snoozed', { to: version });
 }
 
 function isSnoozed(version: string): boolean {
@@ -456,6 +462,7 @@ export function downloadUpdate(): void {
   log.info('User accepted update — downloading');
   autoUpdater.downloadUpdate().catch((err) => {
     log.error('Download failed', serializeErr(err));
+    telemetry.track('update_failed', { reason: 'download_failed', error: (err as Error)?.message });
   });
 }
 
@@ -518,6 +525,8 @@ export async function installUpdate(): Promise<void> {
     downloadedUpdateHelper?: { file?: string };
   }).downloadedUpdateHelper?.file || '(unknown)';
 
+  telemetry.track('update_install_started', { to: expectedVersion });
+  telemetry.flushBeforeInstall();
   log.info('Install.start', {
     currentVersion: app.getVersion(),
     targetVersion: expectedVersion,
@@ -622,6 +631,7 @@ export async function installUpdate(): Promise<void> {
   // patches, we accept the click.
   if (!installerPath || installerPath === '(unknown)' || !fs.existsSync(installerPath)) {
     log.error('Install.exec aborted — no installer at expected path', { installerPath });
+    telemetry.track('update_failed', { to: expectedVersion, reason: 'installer_missing' });
     sendToRenderer('update-failed', {
       version: expectedVersion || 'unknown',
       reason: 'installer-missing',
