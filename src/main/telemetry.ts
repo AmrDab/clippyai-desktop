@@ -124,22 +124,21 @@ function decodeURIComponentSafe(s: string): string {
 }
 
 export function scrubStack(stack: unknown): string {
-  // Frames only: the first line repeats the free-text message ("TypeError: …").
-  const frames = String(stack ?? '').split('\n').filter((l) => /^\s*at\s/.test(l)).slice(0, MAX_STACK_LINES);
+  // Strict V8 frames only — "    at fn (file:line:col)" or "    at file:line:col".
+  // The first line repeats the free-text message, and a multi-line message can
+  // contain lines that merely start with "at", so anything else is dropped.
+  const V8_FRAME = /^\s+at (?:[^()\n]+ \([^()\n]+:\d+:\d+\)|[^\s()]+:\d+:\d+)$/;
+  const frames = String(stack ?? '').split('\n').filter((l) => V8_FRAME.test(l)).slice(0, MAX_STACK_LINES);
   return scrubText(frames.join('\n'), MAX_STACK_CHARS);
 }
 
 /**
- * An exception message reduced to its shape. Pattern scrubbing can't catch
- * every piece of user content an error may quote (a file name, a snippet of a
- * reply), so quoted text and long numbers are dropped outright; error codes
- * and the wording around them survive.
+ * What an exception's message may contribute: an error code only. Pattern
+ * scrubbing can't reliably catch user content an error may quote (a file
+ * name, a snippet of a reply), so no message text is ever sent.
  */
 export function messageShape(message: unknown): string {
-  return scrubText(message)
-    .replace(/'[^'\n]*'|"[^"\n]*"|`[^`\n]*`/g, '<str>')
-    .replace(/\d{3,}/g, '<n>')
-    .slice(0, 120);
+  return errorCode(message);
 }
 
 /** Free-text error → a code only (ENOTFOUND, ERR_…, HTTP 404), else 'other'. */

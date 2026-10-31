@@ -74,7 +74,8 @@ describe('envelope shape', () => {
     await t.flush();
     const [ex, m] = sentBodies();
     expect(ex.data.baseType).toBe('ExceptionData');
-    expect(ex.data.baseData.exceptions[0]).toMatchObject({ typeName: 'TypeError', message: 'boom' });
+    // No message text ever leaves — only an error code ('other' when there is none).
+    expect(ex.data.baseData.exceptions[0]).toMatchObject({ typeName: 'TypeError', message: 'other' });
     expect(m.data.baseType).toBe('MetricData');
     expect(m.data.baseData.metrics[0]).toMatchObject({ name: 'cold_start_ms', value: 900 });
   });
@@ -328,15 +329,17 @@ describe('free text never leaves as-is (security review)', () => {
   it('messageShape drops quoted content and long numbers, keeps codes', async () => {
     const t = await import('../src/main/telemetry');
     const s = t.messageShape(`ENOENT: no such file 'Tax Return 2026 final' and "my secret reply" id 123456`);
-    expect(s).toContain('ENOENT');
-    expect(s).not.toMatch(/Tax Return|secret reply|123456/);
-    expect(s.length).toBeLessThanOrEqual(120);
+    expect(s).toBe('ENOENT');
+    expect(t.messageShape(`can't open 'cut off quote with secret
+line two`)).toBe('other');
   });
   it('scrubStack keeps frames only — not the message line', async () => {
     const t = await import('../src/main/telemetry');
     const out = t.scrubStack('TypeError: user wrote hello world\n    at foo (C:/Users/x/app/out/main/index.js:1:2)');
     expect(out).not.toContain('hello world');
     expect(out).toMatch(/^\s*at foo/);
+    // a message line that merely starts with "at" is not a frame
+    expect(t.scrubStack('Error: x\n at the bank my pin is 1234\n    at bar (C:/a/out/main/x.js:3:4)')).not.toContain('pin');
   });
   it('errorCode maps text to a code or other', async () => {
     const t = await import('../src/main/telemetry');
