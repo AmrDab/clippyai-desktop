@@ -32,6 +32,8 @@ const SILENT_FAILURE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
 let updateDownloaded = false;
+/** Version currently downloading in the background (one at a time). */
+let backgroundDownloadFor: string | null = null;
 let expectedVersion = '';
 const skippedVersions: Set<string> = new Set();
 // v0.11.23 — guard against double registration. The launchWithOnboarding
@@ -293,7 +295,18 @@ export function initUpdater(win: BrowserWindow): void {
       return;
     }
     telemetry.track('update_offered', { to: info.version });
-    sendToRenderer('update-available', info.version);
+    // Download quietly; the user is only asked once it's ready to install
+    // ("Restart to update / Later" on update-downloaded). Installing still
+    // always waits for that click — nothing restarts on its own.
+    if (backgroundDownloadFor === info.version || updateDownloaded) return;
+    backgroundDownloadFor = info.version;
+    log.info('Update available — downloading in the background', { version: info.version });
+    autoUpdater.downloadUpdate().catch((err) => {
+      backgroundDownloadFor = null;
+      log.error('Background download failed — offering a manual download', serializeErr(err));
+      telemetry.track('update_failed', { to: info.version, reason: 'download_failed', error: telemetry.errorCode((err as Error)?.message) });
+      sendToRenderer('update-available', info.version); // fall back to the Download / Later offer
+    });
   });
 
   autoUpdater.on('update-not-available', () => {
