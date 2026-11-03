@@ -2,6 +2,7 @@
 import { firstWinsForPlan } from './app-catalog';
 import { PermissionFlow, type PermSnapshot, type PermKind } from './permission-flow';
 import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
+import { normalizeLicenseKey, keyLookalikes, lookalikeMessage, KEY_FORMAT_HINT, KEY_NOT_FOUND_MESSAGE } from './license-key';
 
 // v0.19.0 PR-6 — Fluent Reveal effect. Any element marked with
 // [data-fluent-reveal] gets a CSS radial-gradient highlight whose center
@@ -292,7 +293,8 @@ function stopPolling(): void {
 
 btnNext.addEventListener('click', async () => {
   if (currentStep === 1) {
-    const key = licenseInput.value.trim().toUpperCase();
+    const key = normalizeLicenseKey(licenseInput.value);
+    if (key) licenseInput.value = key; // show the cleaned-up key
     licenseError.textContent = '';
 
     // Step 1's footer Next is the "I pasted a key" path. If the field is
@@ -304,7 +306,12 @@ btnNext.addEventListener('click', async () => {
     }
 
     if (!LICENSE_REGEX.test(key)) {
-      licenseError.textContent = 'Invalid format. Expected: CLIPPY-XXXX-XXXX-XXXX';
+      licenseError.textContent = `That doesn't look like a Clippy key. ${KEY_FORMAT_HINT} You can also just click Activate in the email.`;
+      return;
+    }
+    const lookalikes = keyLookalikes(key);
+    if (lookalikes.length) {
+      licenseError.textContent = lookalikeMessage(lookalikes);
       return;
     }
 
@@ -320,7 +327,7 @@ btnNext.addEventListener('click', async () => {
       } else if ((result as { reason?: string }).reason === 'unreachable') {
         licenseError.textContent = "Couldn't reach our validation server. Check your connection and try again — your key isn't necessarily wrong.";
       } else {
-        licenseError.textContent = 'Invalid license key. Please check and try again.';
+        licenseError.textContent = KEY_NOT_FOUND_MESSAGE;
       }
     } catch {
       licenseError.textContent = 'Could not validate. Check your internet connection.';
@@ -472,16 +479,29 @@ async function submitFreeSignup(): Promise<void> {
       // advance from onActivationResult; pasting the key still works.
       emailed = true;
       freeError.className = 'onboarding-hint';
-      freeError.textContent = 'Check your inbox and click the button in the email — or paste your key below.';
+      freeError.textContent = 'Sent! Look for “Your ClippyAI license key” from hello@clippyai.app (check Spam/Promotions too) and click Activate. It can take a minute.';
     } else {
       freeError.textContent = freeErrorMessage((result as { error: string }).error);
     }
   } catch {
     freeError.textContent = freeErrorMessage('offline');
   } finally {
-    btnFreeConfirm.disabled = false;
-    btnFreeConfirm.textContent = emailed ? 'Resend' : 'Confirm';
+    if (emailed) holdResend(); // a second email right away just looks like nothing happened
+    else { btnFreeConfirm.disabled = false; btnFreeConfirm.textContent = 'Confirm'; }
   }
+}
+
+/** After a send, Resend unlocks after 30 s — repeat sends were creating duplicate emails. */
+function holdResend(seconds = 30): void {
+  btnFreeConfirm.disabled = true;
+  let left = seconds;
+  const tick = () => {
+    if (left <= 0) { btnFreeConfirm.disabled = false; btnFreeConfirm.textContent = 'Resend'; return; }
+    btnFreeConfirm.textContent = `Resend (${left}s)`;
+    left -= 1;
+    setTimeout(tick, 1000);
+  };
+  tick();
 }
 
 btnFreeConfirm.addEventListener('click', submitFreeSignup);

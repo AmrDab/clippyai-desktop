@@ -2750,7 +2750,11 @@ export class Brain {
     }
     const map: Record<string, string> = {
       limit_reached: 'Monthly quota used up! Upgrade for more.',
-      invalid_key: 'License key invalid.',
+      // New users message Clippy before activating (telemetry: invalid_key
+      // during setup) — point them at the email instead of a bare error.
+      invalid_key: getLicenseKey()
+        ? "My license key isn't working. Open the newest “Your ClippyAI license key” email and click Activate, or right-click me → Settings → License."
+        : "I'm not activated yet! Open the “Your ClippyAI license key” email we sent you and click Activate, then ask me again. 📎",
       subscription_inactive: 'Subscription inactive.',
       service_unavailable: "My server is having a moment — try again in a bit!",
       feature_locked: "That's a Pro feature! I can chat all day — for desktop control, upgrade at clippyai.app 📎",
