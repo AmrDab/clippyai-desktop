@@ -72,6 +72,7 @@ import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOO
 import type { ToolResult } from './types/tool-result';
 import { GOVERNED_TOOLS, classifyRisk, type RiskVerdict } from './governor';
 import { makeReceipt, statusFromOutcome, verifyWrittenFile } from './receipt';
+import { typedTextLanded } from './tool-verdict';
 import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersClause } from './mac-bridge';
 import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
@@ -533,15 +534,33 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
         args.push('-ProcessId', String(processId));
       }
       const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 5000 });
-      return { text: stdout.trim() || 'Focused' };
-    } catch (err) {
-      // Fallback: try alt+tab
-      try {
-        await keyPress({ key: 'alt+tab' });
-        return { text: 'Switched window via alt+tab' };
-      } catch {
-        return { text: `(focus_window error: ${err instanceof Error ? err.message : ''})` };
+      // v0.23 — honest result (plan §1.1): the script compares the
+      // foreground PID/HWND with the target after its settle wait and
+      // reports success only when the switch really took.
+      let parsed: { success?: boolean; error?: string; title?: string; processId?: number; foregroundProcessId?: number } = {};
+      try { parsed = JSON.parse(stdout.trim()); } catch { /* non-JSON → unverified below */ }
+      const evidence = { title: parsed.title, processId: parsed.processId, foregroundProcessId: parsed.foregroundProcessId };
+      if (parsed.success === true) {
+        return {
+          text: `Focused "${parsed.title}" (pid ${parsed.processId}) — verified in foreground`,
+          receipt: makeReceipt('focus_window', 'verified', true, evidence, 'uia'),
+        };
       }
+      if (parsed.success === false) {
+        const notFound = /not found|must specify/i.test(parsed.error || '');
+        return {
+          text: `(error:${notFound ? 'UI_NOT_FOUND' : 'FOCUS_FAILED'}) focus_window: ${parsed.error || 'unknown failure'}`,
+          receipt: makeReceipt('focus_window', 'error', notFound ? false : true, { ...evidence, reason: parsed.error }, 'uia'),
+        };
+      }
+      return { text: stdout.trim() || 'Focused (unverified)', receipt: makeReceipt('focus_window', 'unverified', true, evidence, 'uia') };
+    } catch (err) {
+      // v0.23 — no blind Alt+Tab "success" any more; say what happened.
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        text: `(error:FOCUS_FAILED) focus_window: ${msg}`,
+        receipt: makeReceipt('focus_window', 'error', null, { reason: msg }, 'uia'),
+      };
     }
   }
 
@@ -634,17 +653,38 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
       ], { timeout: 3000 });
       const existing = parseInt(stdout.trim());
       if (existing > 0) {
-        await focusWindow({ processName: name });
-        return { text: `Focused existing ${name} (pid ${existing})` };
+        // v0.23 — pass the focus verdict through instead of assuming it took.
+        const focused = await focusWindow({ processName: name });
+        if (focused.receipt?.status === 'verified') {
+          return { text: `Focused existing ${name} (pid ${existing})`, receipt: makeReceipt('open_app', 'verified', true, { pid: existing, via: 'focus_window' }) };
+        }
+        return {
+          text: `${name} is already running (pid ${existing}) but could not be brought to front: ${focused.text.substring(0, 160)}`,
+          receipt: makeReceipt('open_app', 'unverified', true, { pid: existing, focus: focused.text.substring(0, 120) }),
+        };
       }
     } catch { /* no existing window — launch new */ }
     try {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command', 'Start-Process', '-FilePath', name,
+      // v0.23 — poll ≤3 s for a window of the launched process so "Launched"
+      // is a verified claim, not a Start-Process return value (plan §1.1).
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Start-Process -FilePath '${name}'; $deadline = (Get-Date).AddSeconds(3); $found = 0; ` +
+        `while ((Get-Date) -lt $deadline) { $p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | ` +
+        `Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; if ($p) { $found = $p.Id; break }; ` +
+        `Start-Sleep -Milliseconds 250 }; $found`,
       ], { timeout: 10000 });
-      return { text: `Launched ${name}` };
+      const pid = parseInt(stdout.trim());
+      if (pid > 0) {
+        return { text: `Launched ${name} (pid ${pid}, window up)`, receipt: makeReceipt('open_app', 'verified', true, { pid }) };
+      }
+      return {
+        text: `Launched ${name} — no window seen within 3 s (unverified; it may still be starting, or run under a different process name)`,
+        receipt: makeReceipt('open_app', 'unverified', true, { pid: null }),
+      };
     } catch (err) {
-      return { text: `(could not open ${name}: ${err instanceof Error ? err.message : ''})` };
+      const msg = err instanceof Error ? err.message : '';
+      return { text: `(could not open ${name}: ${msg})`, receipt: makeReceipt('open_app', 'error', null, { reason: msg }) };
     }
   }
 
@@ -700,18 +740,40 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
     const tmpFile = path.join(os.tmpdir(), `clippy-type-${Date.now()}.txt`);
     try {
       fs.writeFileSync(tmpFile, text, 'utf-8');
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
-        `Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 -LiteralPath '${tmpFile.replace(/'/g, "''")}'); ` +
-        `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v'); ` +
-        `Remove-Item '${tmpFile.replace(/'/g, "''")}'`,
-      ], { timeout: 5000 });
+      // v0.23 — type-text.ps1 refuses when Clippy's own window is in the
+      // foreground, pastes, then reads the focused element back through
+      // UIA so the receipt can say 'verified' (plan §1.1).
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        path.join(getScriptsDir(), 'type-text.ps1'),
+        '-File', tmpFile, '-OwnPid', String(process.pid),
+      ], { timeout: 8000 });
+      let r: { success?: boolean; error?: string; foregroundProcessId?: number; processName?: string; hasReadback?: boolean; readback?: string | null } = {};
+      try { r = JSON.parse(stdout.trim()); } catch { /* no JSON → unverified below */ }
+      if (r.success === false && r.error === 'own_window') {
+        return {
+          text: `(error:FOCUS_FAILED) type_text refused: the focused window is Clippy's own bubble, so the text would land in the chat, not the app. Call focus_window on the target app first.`,
+          receipt: makeReceipt('type_text', 'error', false, { reason: 'own_window', foregroundProcessId: r.foregroundProcessId }, 'sendkeys'),
+        };
+      }
       const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+      const where = r.processName ? `into ${r.processName}` : 'into the focused window';
+      const evidence = { chars: text.length, foregroundProcessId: r.foregroundProcessId ?? null, processName: r.processName ?? '' };
+      if (typedTextLanded(text, r.readback)) {
+        return {
+          text: `Pasted ${text.length} chars ${where}: "${preview}" (verified — the field reads back what was typed)`,
+          receipt: makeReceipt('type_text', 'verified', true, { ...evidence, readback: 'match' }, 'sendkeys'),
+        };
+      }
       // The paste is fire-and-forget — the VM test showed a "Typed 313 chars"
       // that never landed and Clippy told the user it was done. Say so.
-      return { text: `Pasted ${text.length} chars into the focused window: "${preview}" (NOT verified — check the screen before telling the user it's done)` };
+      return {
+        text: `Pasted ${text.length} chars ${where}: "${preview}" (NOT verified — the field could not be read back; check the screen before telling the user it's done)`,
+        receipt: makeReceipt('type_text', 'unverified', true, { ...evidence, readback: r.hasReadback ? 'mismatch' : 'unavailable' }, 'sendkeys'),
+      };
     } catch (err) {
-      return { text: `(type_text error: ${err instanceof Error ? err.message : ''})` };
+      const msg = err instanceof Error ? err.message : '';
+      return { text: `(type_text error: ${msg})`, receipt: makeReceipt('type_text', 'error', null, { reason: msg }, 'sendkeys') };
     } finally {
       try { fs.unlinkSync(tmpFile); } catch { /* PowerShell already removed it */ }
       await restoreClipboard();

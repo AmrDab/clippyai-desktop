@@ -78,7 +78,8 @@ import * as lumiereSeen from './proactive/seen-context';
 // Direct namespace usage at the call sites guarantees these stay bundled.
 import * as permissionPolicyMod from './permission-policy';
 import * as actionHistoryMod from './action-history';
-import { blockedReceipt } from './receipt';
+import { blockedReceipt, type ReceiptStatus } from './receipt';
+import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY } from './tool-verdict';
 // Phase 3 guardrails — in-bubble Approve/Deny prompt for 'approve' decisions.
 import * as approvalMod from './approval';
 import * as toolUndoMod from './tool-undo';
@@ -1219,7 +1220,13 @@ export class Brain {
       // Each entry records whether the destructive call genuinely
       // succeeded (per the tool's own result text). Used at task-end to
       // sanity-check the model's "I sent it!" closer.
-      const destructiveAttempts: Array<{ name: string; succeeded: boolean; resultPreview: string }> = [];
+      // v0.23 — `failed` is the honest counterpart (error/blocked receipt or
+      // error-shaped text); `succeeded` stays conservative for the guard.
+      const destructiveAttempts: Array<{ name: string; succeeded: boolean; failed: boolean; receiptStatus?: ReceiptStatus; resultPreview: string }> = [];
+      // v0.23 — receipt-driven signal (tool-verdict.ts): how many steps PROVED
+      // their effect, and the receipt of the last desktop-changing step.
+      let verifiedSteps = 0;
+      let lastActionReceipt: ReceiptStatus | undefined;
       const screenContextOk = !!screenContext && !screenContext.startsWith('<screen-context-');
       log.info('Task.start', {
         hasScreenContext: screenContextOk,
@@ -1743,9 +1750,10 @@ export class Brain {
             // shouldVerifyAfter() is a pure helper — see scripts/test-verify-after.js.
             let screenAfter: string | undefined;
             // A thrown executeTool rejects into the catch below and never reaches
-            // here, so "errored" = the returned result looks error-shaped (same
-            // heuristic as the looksLikeError check further down at line ~1434).
-            const toolErrored = resultText.startsWith('(') || resultText.toLowerCase().startsWith('error:');
+            // here. v0.23 — "errored" comes from the receipt when the tool
+            // returned one; error-shaped text is the fallback (tool-verdict.ts).
+            const verdict = toolVerdict(result);
+            const toolErrored = !verdict.ok;
             if (shouldVerifyAfter(call.name, toolErrored)) {
               try {
                 const screen = await executeTool('read_screen', {});
@@ -1851,11 +1859,13 @@ export class Brain {
             // Only count tools that actually changed state (not observations).
             // Filter out clearly-failed results so we don't memorize a no-op
             // sequence as a "successful" workflow.
-            const looksLikeError = resultText.startsWith('(') || resultText.toLowerCase().startsWith('error:');
+            const looksLikeError = !verdict.ok;
             if (looksLikeError) telemetry.taskToolFailed(call.name, resultText);
             if (!looksLikeError) {
               successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });
             }
+            if (verdict.verified) verifiedSteps++;
+            if (verdict.receiptStatus && !READ_TOOL_RE.test(call.name)) lastActionReceipt = verdict.receiptStatus;
 
             // === DESTRUCTIVE LEDGER (v0.11.25) ===
             // Track destructive-tool outcomes for the end-of-task
@@ -1867,11 +1877,18 @@ export class Brain {
             if (DESTRUCTIVE_TOOLS.has(call.name)) {
               const heuristicSucceeded = !looksLikeError && !/\b(failed|not found|unavailable|timeout|denied|refused)\b/i.test(resultText);
               // v0.12.5 — NEVER_CONFIRMS_SUCCESS tools force succeeded=false
-              // regardless of result text. See set definition above.
-              const succeeded = NEVER_CONFIRMS_SUCCESS.has(call.name) ? false : heuristicSucceeded;
+              // regardless of result text. See set definition above. v0.23 —
+              // a receipt replaces the text heuristic: only 'verified' counts
+              // as succeeded (a verified type_text still can't vouch for a
+              // *send*, so NEVER_CONFIRMS_SUCCESS keeps precedence).
+              const succeeded = NEVER_CONFIRMS_SUCCESS.has(call.name)
+                ? false
+                : (verdict.receiptStatus ? verdict.verified : heuristicSucceeded);
               destructiveAttempts.push({
                 name: call.name,
                 succeeded,
+                failed: verdict.receiptStatus ? !verdict.ok : !heuristicSucceeded,
+                receiptStatus: verdict.receiptStatus,
                 resultPreview: resultText.substring(0, 120),
               });
             }
@@ -1879,7 +1896,8 @@ export class Brain {
             // === v0.19.0 AUDIT LOG + UNDO FACTORY ===
             try {
               const toolUndo = toolUndoMod;
-              const outcome: import('./action-history').ActionEntry['outcome'] = looksLikeError ? 'failure' : 'success';
+              const outcome: import('./action-history').ActionEntry['outcome'] =
+                looksLikeError ? 'failure' : verdict.receiptStatus === 'unverified' ? 'unverified' : 'success';
               let inverse: import('./action-history').InverseAction | undefined;
               if (outcome !== 'failure') {
                 const factory = toolUndo.TOOL_UNDO[call.name];
@@ -1998,12 +2016,24 @@ export class Brain {
           } else if (sendVerdict === 'unconfirmed') {
             honest = "I sent it, but couldn't fully confirm it landed. Mind a quick glance at Messages? If it's not there, I'll retry.";
           } else {
-            honest = "I did the steps, but couldn't confirm it actually went through. Want me to try a different approach, or check it yourself?";
+            honest = UNCONFIRMED_COPY;
           }
           this.emit('clippy-speak', { text: honest, animate: 'Alert', tint: 'warning' });
           finalSpoken = honest;
           unconfirmed = true;
         }
+      }
+
+      // v0.23 — a bare "Done" after a last desktop-changing step whose
+      // receipt is 'unverified' (type_text with no readback, focus that we
+      // could not confirm, ...) is a claim nobody checked. Same honest copy
+      // as the guard above; only fires on a content-free closer so a real
+      // summary the user can verify is left alone.
+      if (taskCompleted && !unconfirmed && lastActionReceipt === 'unverified' && isPlainDone(finalSpoken)) {
+        log.warn('Task.unverifiedDone', { claimed: finalSpoken.substring(0, 120), lastActionReceipt });
+        this.emit('clippy-speak', { text: UNCONFIRMED_COPY, animate: 'Alert', tint: 'warning' });
+        finalSpoken = UNCONFIRMED_COPY;
+        unconfirmed = true;
       }
 
       // D8: stepsUsed used to be `contents.length - history.length` which is
@@ -2017,6 +2047,8 @@ export class Brain {
         successfulActionCount: successfulActions.length,
         destructiveAttempts: destructiveAttempts.length,
         destructiveSucceeded: destructiveAttempts.filter((a) => a.succeeded).length,
+        verifiedSteps,
+        lastActionReceipt: lastActionReceipt ?? null,
       });
       this.taskOutcome = taskOutcomeFor(abortReason, unconfirmed);
       telemetry.taskEnd(this.taskOutcome, abortReason, lastStep);
