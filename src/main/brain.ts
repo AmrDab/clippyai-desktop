@@ -23,6 +23,7 @@ import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-
 import { trimToBudget } from './history-budget';
 import { taskOutcomeFor, type TaskOutcome } from './task-outcome';
 import { isBareConsent } from './pass-request';
+import { languageSample, proactiveMessage } from './tip-language';
 // v0.18.3 — static imports for local modules that brain.ts uses
 // lazily via require() elsewhere. Rollup's tree-shaker doesn't follow
 // dynamic require() calls reliably for ALL targets — empirically mail-
@@ -2472,7 +2473,7 @@ export class Brain {
       // 200 tokens was too small — the model burned all tokens on thinking and
       // produced empty content. 800 gives room to think (~500) + tip (~50).
       const resp = await this.callTurn(
-        [{ role: 'user', parts: [{ text: `Current screen:\n${context}` }] }],
+        [{ role: 'user', parts: [{ text: proactiveMessage(context, languageSample(this.history)) }] }],
         // v0.16.0 — was 800. Per proactive-silence diagnostic: the
         // production model's thinking mode burns 700-1200 tokens reasoning
         // BEFORE producing a tip, pushing the response over budget. Server
