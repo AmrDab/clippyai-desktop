@@ -82,6 +82,7 @@ import * as profileMod from './profile';
 // below goes through psScript / psCommand: in the long-lived host when it is
 // up, as the old one-shot powershell.exe spawn otherwise.
 import { psScript, psCommand, configurePsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
+import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -1147,99 +1148,50 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
  * coordinate clicks against OCR locally instead of asking the model to
  * pixel-locate from a screenshot — a documented LLM weakness.
  */
-async function captureAndOcr(): Promise<{
-  elements: Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number; line?: number }>;
-  fullText: string;
-} | null> {
+async function captureAndOcr(region: 'foreground' | 'screen' = 'screen'): Promise<OcrLayout | null> {
   // win32-only pipeline — see docstring. On darwin the bridge Vision path
   // handles OCR; reaching here means the bridge is unavailable, in which
   // case the PowerShell spawn would just ENOENT.
   if (process.platform !== 'win32') return null;
-  // v0.11.25 — every failure path now logs WHY it failed. Per report
-  // ccd4d6f4, captureAndOcr returned null silently 3 times in one task;
-  // the model and the diagnostician had zero visibility into which of the
-  // four failure modes (script missing / screenshot crashed / OCR crashed
-  // / parse failed / no elements) actually triggered. Fix: log each.
-  const scriptPath = path.join(getScriptsDir(), 'ocr-recognize.ps1');
-  if (!fs.existsSync(scriptPath)) {
-    log.warn('captureAndOcr: script missing', { scriptPath, scriptsDir: getScriptsDir() });
+  // v0.24 (plan §3.4) — ocr-screen.ps1 captures in memory and OCRs in one
+  // call (no %TEMP% PNG, no second spawn); in the persistent host the OCR
+  // engine stays resident. 'foreground' crops to the foreground window
+  // (skipping Clippy's own), 'screen' is the whole virtual screen. Every
+  // failure mode is still logged (v0.11.25, report ccd4d6f4).
+  let stdout: string;
+  try {
+    const r = await psScript('ocr-screen.ps1', { Region: region, ExcludeProcessId: process.pid }, {
+      timeoutMs: 15000, maxBuffer: 5 * 1024 * 1024, idempotent: true,
+    });
+    stdout = r.stdout;
+  } catch (ocrErr) {
+    const e = ocrErr as { message?: string; stderr?: string; code?: number | string };
+    log.warn('captureAndOcr: ocr-screen.ps1 failed', {
+      exitCode: e.code,
+      error: (e.message || '').substring(0, 200),
+      stderr: (e.stderr || '').substring(0, 200),
+    });
     return null;
   }
-  const tmpPng = path.join(os.tmpdir(), `clippy-ocr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  let parsed: RawOcrRegion & { error?: string };
   try {
-    // Step 1: capture screenshot (v0.11.26 abortable)
-    try {
-      await execFileAbortable('powershell.exe', [
-        '-NoProfile', '-Command',
-        `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
-        `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
-        `$bmp = New-Object System.Drawing.Bitmap($b.Width,$b.Height); ` +
-        `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
-        `$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); ` +
-        `$bmp.Save('${tmpPng.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png); ` +
-        `$g.Dispose(); $bmp.Dispose()`,
-      ], { timeout: 10000 });
-    } catch (capErr) {
-      const e = capErr as { message?: string; stderr?: string };
-      log.warn('captureAndOcr: screenshot failed', {
-        error: (e.message || '').substring(0, 200),
-        stderr: (e.stderr || '').substring(0, 200),
-      });
-      return null;
-    }
-
-    // Confirm the PNG was actually written before invoking OCR. If
-    // CopyFromScreen silently no-op'd (e.g. session-locked), the OCR
-    // script will throw a misleading error.
-    if (!fs.existsSync(tmpPng)) {
-      log.warn('captureAndOcr: tmp png never written', { tmpPng });
-      return null;
-    }
-
-    // Step 2: OCR (v0.11.26 abortable)
-    let stdout: string;
-    try {
-      const r = await execFileAbortable('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-        '-ImagePath', tmpPng,
-      ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
-      stdout = r.stdout;
-    } catch (ocrErr) {
-      const e = ocrErr as { message?: string; stderr?: string; code?: number };
-      log.warn('captureAndOcr: ocr-recognize.ps1 failed', {
-        exitCode: e.code,
-        error: (e.message || '').substring(0, 200),
-        stderr: (e.stderr || '').substring(0, 200),
-      });
-      return null;
-    }
-
-    // Step 3: parse
-    let parsed: { error?: string; elements?: unknown; fullText?: unknown };
-    try {
-      parsed = JSON.parse(stdout.trim());
-    } catch (parseErr) {
-      log.warn('captureAndOcr: OCR returned non-JSON', {
-        stdoutPreview: stdout.substring(0, 200),
-        error: String(parseErr).substring(0, 100),
-      });
-      return null;
-    }
-    if (parsed.error) {
-      log.warn('captureAndOcr: OCR script reported error', { error: parsed.error });
-      return null;
-    }
-    if (!Array.isArray(parsed.elements)) {
-      log.warn('captureAndOcr: OCR returned no elements array', { keys: Object.keys(parsed) });
-      return null;
-    }
-    return {
-      elements: parsed.elements as Array<{ text: string; x: number; y: number; width: number; height: number; confidence?: number; line?: number }>,
-      fullText: String(parsed.fullText || ''),
-    };
-  } finally {
-    try { fs.unlinkSync(tmpPng); } catch { /* cleanup */ }
+    parsed = JSON.parse(stdout.trim());
+  } catch (parseErr) {
+    log.warn('captureAndOcr: OCR returned non-JSON', {
+      stdoutPreview: stdout.substring(0, 200),
+      error: String(parseErr).substring(0, 100),
+    });
+    return null;
   }
+  if (parsed.error) {
+    log.warn('captureAndOcr: OCR script reported error', { error: parsed.error });
+    return null;
+  }
+  if (!Array.isArray(parsed.words)) {
+    log.warn('captureAndOcr: OCR returned no words array', { keys: Object.keys(parsed) });
+    return null;
+  }
+  return layoutFromRegion(parsed);
 }
 
 /**
@@ -1271,64 +1223,6 @@ async function clickPhysical(x: number, y: number): Promise<void> {
     { args: [String(x), String(y)], timeoutMs: 5000 },
   );
   if (!r.ok) throw new Error(r.error ?? r.stderr.trim() ?? 'click failed');
-}
-
-/**
- * Fuzzy-match `target` against a list of OCR text elements. Returns the
- * best-scoring element or null if nothing crosses the threshold.
- *
- * Coordinate space: this matcher is space-agnostic — it returns whatever
- * x/y/width/height the caller passed. The "physical pixels, no DPI scaling"
- * contract applies only to the legacy win32 PS/UIA path; on darwin the Swift
- * bridge supplies top-left-origin POINTS. Each caller clicks in the same
- * space it fed in (clickPhysical for win32 px, macBridge.click for points).
- *
- * Scoring (cheap, deterministic — no embeddings):
- *   - exact (case-insensitive) trim match → 1.0
- *   - target appears as a whole-word substring → 0.9
- *   - target appears as a substring → 0.7 * (target.length / element.length)
- *   - element appears as a substring of target → 0.6 * (element.length / target.length)
- *   - first-letters acronym match (e.g. "NM" matches "New Mail") → 0.5
- * Threshold: 0.5. Below that, return null to signal "not found".
- */
-function fuzzyMatchOcrElement(
-  target: string,
-  elements: Array<{ text: string; x: number; y: number; width: number; height: number }>,
-  fgWindowBounds?: { x: number; y: number; width: number; height: number },
-): { idx: number; score: number; element: { text: string; x: number; y: number; width: number; height: number } } | null {
-  const t = target.trim().toLowerCase();
-  if (!t) return null;
-  let best: { idx: number; score: number; element: typeof elements[number] } | null = null;
-
-  // ClawdCursor 0.8.8 trick: if we have foreground-window bounds, prefer
-  // matches inside that window over matches in background windows. Reduces
-  // the "matched a button label in a stale background window" bug.
-  const inForeground = (el: { x: number; y: number; width: number; height: number }): boolean => {
-    if (!fgWindowBounds) return true;
-    const cx = el.x + el.width / 2;
-    const cy = el.y + el.height / 2;
-    return (
-      cx >= fgWindowBounds.x && cx <= fgWindowBounds.x + fgWindowBounds.width &&
-      cy >= fgWindowBounds.y && cy <= fgWindowBounds.y + fgWindowBounds.height
-    );
-  };
-
-  for (let i = 0; i < elements.length; i++) {
-    const el = elements[i];
-    const e = el.text.trim().toLowerCase();
-    if (!e) continue;
-    let score = 0;
-    if (e === t) score = 1.0;
-    else if (new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(e)) score = 0.9;
-    else if (e.includes(t)) score = 0.7 * (t.length / Math.max(e.length, 1));
-    else if (t.includes(e) && e.length >= 3) score = 0.6 * (e.length / t.length);
-
-    // Foreground bonus
-    if (score > 0 && inForeground(el)) score += 0.05;
-
-    if (score > 0 && (!best || score > best.score)) best = { idx: i, score, element: el };
-  }
-  return best && best.score >= 0.5 ? best : null;
 }
 
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
@@ -1382,7 +1276,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       // Stage 2 — Vision OCR fallback
       log.info('smart_click: AX miss, falling back to OCR', { target });
       const ocrRes = await macBridge.ocrScreen({});
-      const match = fuzzyMatchOcrElement(target, ocrRes.elements, fgBounds);
+      const match = matchOcrTarget(target, ocrRes.elements, fgBounds);
       if (match) {
         const cx = Math.round(match.element.x + match.element.width / 2);
         const cy = Math.round(match.element.y + match.element.height / 2);
@@ -1407,83 +1301,68 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     }
   }
 
-  // Two-tier resolution (v0.11.22):
-  //   Tier 1 — UIA accessibility tree (fast, exact, structured). Constrained
-  //            to the foreground PID so a button label in a background window
-  //            can't win the race. Patched in v0.11.21.
-  //   Tier 2 — Local OCR via Windows.Media.Ocr. If UIA misses (the target
-  //            window is a WebView/canvas/custom-rendered control that
-  //            doesn't expose its UI tree — Edge web content, Electron
-  //            apps without a11y enabled, games), fuzzy-match `target`
-  //            against on-screen text and click the matched element's
-  //            center. NO LLM round-trip — coordinates come from OCR's
-  //            pre-computed boxes (physical pixels, no DPI scaling needed).
+  // Two-tier resolution (v0.11.22, reworked v0.24 — plan §3.2 / §3.4):
+  //   Tier 1 — UIA via smart-find.ps1 in the persistent host, scoped to the
+  //            foreground window: FindFirst on real PropertyConditions, then
+  //            a budgeted TreeWalker pass (3000 nodes / 4 s) — Chromium and
+  //            Electron trees answer in well under a second instead of
+  //            timing out. A hit is acted on by pattern first (Invoke →
+  //            Toggle → SelectionItem → LegacyIAccessible), coordinates last;
+  //            the receipt's execution_path says which one ran.
+  //   Tier 2 — Local OCR via Windows.Media.Ocr. On a UIA miss OR a UIA
+  //            search that ran out of budget (it used to skip OCR on a
+  //            timeout), OCR the foreground window first, then the whole
+  //            virtual screen, matching words, multi-word spans and lines.
+  //            NO LLM round-trip — coordinates come from OCR's boxes
+  //            (physical pixels).
   //
   // This replaces the old "(not found)" fail path that forced the model to
   // estimate coords from a desktop_screenshot — a documented LLM weakness
   // that produced wrong-by-300px clicks (see v0.11.21 log report
   // fbfc636e... clicking outlook.live.com Send button).
   try {
-    // Tier 1 — UIA
-    let fgPid = 0;
-    let fgBounds: { x: number; y: number; width: number; height: number } | undefined;
-    try {
-      const fg = await getActiveWindow();
-      const parsed = JSON.parse(fg.text);
-      if (typeof parsed.processId === 'number') fgPid = parsed.processId;
-      if (parsed.bounds && typeof parsed.bounds.x === 'number') fgBounds = parsed.bounds;
-    } catch { /* fall through */ }
+    const fg = process.platform === 'win32' ? await foregroundForFind() : { pid: 0, handle: 0 };
+    const fgBounds = fg.bounds;
 
-    const findArgs = [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      path.join(getScriptsDir(), 'find-element.ps1'),
-      '-Name', target,
-    ];
-    if (fgPid > 0) findArgs.push('-ProcessId', String(fgPid));
-
-    const { stdout } = await execFileAsync('powershell.exe', findArgs, { timeout: 15000 });
-    let bounds: { x: number; y: number; width: number; height: number } | null = null;
-    try {
-      const out = stdout.trim();
-      if (out.startsWith('[')) {
-        const arr = JSON.parse(out);
-        if (Array.isArray(arr) && arr.length > 0 && arr[0].bounds) bounds = arr[0].bounds;
+    if (process.platform === 'win32') {
+      const sf = await windowsSmartFind(target, 'click', fg);
+      if (sf.kind === 'acted') {
+        const r = sf.result;
+        return {
+          text: `Clicked "${target}" via UIA ${UIA_METHOD_LABEL[r.method] ?? r.method} (${r.controlType} "${r.name}")${r.pending ? ' — the app is still handling it (a dialog may have opened)' : ''}`,
+          receipt: clicked(r.method, { label: r.name, controlType: r.controlType, score: r.score, stage: r.stage, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs, bounds: r.bounds, fgPid: fg.pid, pending: r.pending }),
+        };
       }
-    } catch { /* fall through to OCR */ }
-
-    if (bounds) {
-      const ex = Math.round(bounds.x + bounds.width / 2);
-      const ey = Math.round(bounds.y + bounds.height / 2);
-      await clickPhysical(ex, ey);
-      const where = fgPid > 0 ? ` in foreground window` : '';
-      return { text: `Clicked "${target}" at (${ex},${ey})${where} via UIA`, receipt: clicked('uia', { coords: { x: ex, y: ey }, fgPid }) };
+      if (sf.kind === 'unknown') {
+        // The host gave up mid-call: the click may or may not have landed —
+        // never click a second time via OCR.
+        return { text: `(error:TIMEOUT) smart_click "${target}" — UIA call timed out: ${sf.reason}`, receipt: notRun(sf.reason, null) };
+      }
+      log.info('smart_click: UIA miss, falling back to OCR', { target, fgPid: fg.pid, reason: sf.reason });
     }
 
     // Tier 2 — OCR fallback. The big win for WebViews and custom-rendered UIs.
-    log.info('smart_click: UIA miss, falling back to OCR', { target, fgPid });
-    const ocr = await captureAndOcr();
+    let ocr = await captureAndOcr('foreground');
+    let match = ocr ? matchOcrTarget(target, ocr.elements, fgBounds) : null;
+    if (!match && ocr?.region?.source !== 'screen') {
+      // The label may sit in a popup / dialog outside the foreground frame.
+      const wide = await captureAndOcr('screen');
+      if (wide) { ocr = wide; match = matchOcrTarget(target, wide.elements, fgBounds); }
+    }
     // v0.12.3 — emit (error:UI_NOT_FOUND) so executeTool's Tier-5 wrap can
-    // route to clawdcursor when in-process UIA + OCR both miss. Per audit:
-    // before this fix, the regex /\(error:([A-Z_]+)\)/ never matched the old
-    // free-text "not found via UIA or OCR" string, so the entire v0.12.0
-    // clawdcursor fallback infrastructure was dead weight on the most common
-    // failure mode (smart_click misses on Slack / Discord WebViews).
+    // route to clawdcursor when in-process UIA + OCR both miss.
     if (!ocr) return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — UIA miss, OCR unavailable. Try Tier-5 fallback or read_screen first.`, receipt: notRun('UIA miss, OCR unavailable') };
-    const match = fuzzyMatchOcrElement(target, ocr.elements, fgBounds);
     if (match) {
       const cx = Math.round(match.element.x + match.element.width / 2);
       const cy = Math.round(match.element.y + match.element.height / 2);
       await clickPhysical(cx, cy);
       const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
+      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, kind: match.kind, coords: { x: cx, y: cy }, region: ocr.region?.source }) };
     }
     return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"`, receipt: notRun('not found via UIA or OCR') };
   } catch (err) {
     // v0.12.5 — classify timeouts as TIMEOUT (fallback-eligible) instead of
-    // forcing them to UI_NOT_FOUND. A 15s execFileAsync rejection on the
-    // PSBridge wrapper is a transient condition Tier-5 clawdcursor can
-    // recover from, whereas UI_NOT_FOUND implies "we tried and the element
-    // genuinely isn't there." Per code audit finding #2.
+    // forcing them to UI_NOT_FOUND. Per code audit finding #2.
     const msg = err instanceof Error ? err.message : String(err);
     if (/ETIMEDOUT|timed out|timeout/i.test(msg)) {
       // Timed out after dispatch — we can't tell whether the click landed.
@@ -1491,6 +1370,88 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     }
     return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}`, receipt: notRun(msg) };
   }
+}
+
+// ── v0.24 Windows UIA find + act (smart-find.ps1, plan §3.2) ─────────
+
+interface SmartFindResult {
+  found: boolean;
+  name: string;
+  controlType: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  score: number;
+  stage: string;
+  method: string;
+  pending: boolean;
+  setValue: boolean | null;
+  readback: 'match' | 'mismatch' | 'none';
+  nodesVisited: number;
+  elapsedMs: number;
+  timedOut: boolean;
+  error?: string;
+}
+
+const UIA_METHOD_LABEL: Record<string, string> = {
+  'uia-invoke': 'Invoke', 'uia-toggle': 'Toggle', 'uia-select': 'Select',
+  'uia-legacy': 'default action', 'uia-coords': 'click at the element centre', 'uia-setvalue': 'ValuePattern',
+};
+
+type SmartFindOutcome =
+  | { kind: 'acted'; result: SmartFindResult }
+  | { kind: 'miss'; reason: string; result?: SmartFindResult }
+  | { kind: 'unknown'; reason: string };
+
+interface FindTarget { pid: number; handle: number; bounds?: { x: number; y: number; width: number; height: number } }
+
+async function foregroundForFind(): Promise<FindTarget> {
+  try {
+    const fg = await getActiveWindow();
+    const parsed = JSON.parse(fg.text);
+    const out: FindTarget = {
+      pid: typeof parsed.processId === 'number' ? parsed.processId : 0,
+      handle: typeof parsed.handle === 'number' ? parsed.handle : 0,
+    };
+    if (parsed.bounds && typeof parsed.bounds.x === 'number') out.bounds = parsed.bounds;
+    // Never search Clippy's own bubble.
+    if (out.pid === process.pid) return { pid: 0, handle: 0 };
+    return out;
+  } catch { return { pid: 0, handle: 0 }; }
+}
+
+const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
+
+async function windowsSmartFind(
+  target: string,
+  action: 'click' | 'set-value',
+  fg: FindTarget,
+  value?: string,
+): Promise<SmartFindOutcome> {
+  if (!fg.pid && !fg.handle) return { kind: 'miss', reason: 'no foreground window to search' };
+  let stdout: string;
+  try {
+    ({ stdout } = await psScript('smart-find.ps1', {
+      NameB64: b64(target),
+      WindowHandle: fg.handle || undefined,
+      ProcessId: fg.pid || undefined,
+      Action: action,
+      ValueB64: value !== undefined ? b64(value) : undefined,
+      NodeBudget: 3000,
+      TimeBudgetMs: 4000,
+    }, { timeoutMs: 12000 }));
+  } catch (err) {
+    const e = err as { message?: string; stdout?: string; killed?: boolean; signal?: string };
+    const msg = e.message || String(err);
+    // Killed / timed out / aborted mid-call: it may already have clicked.
+    if (e.killed || e.signal || /ETIMEDOUT|timed out|AbortError/i.test(msg)) return { kind: 'unknown', reason: msg };
+    // A non-zero exit carries the script's own JSON — nothing was acted on.
+    if (e.stdout && e.stdout.trim().startsWith('{')) return { kind: 'miss', reason: e.stdout.trim().slice(0, 200) };
+    return { kind: 'miss', reason: msg };
+  }
+  let r: SmartFindResult;
+  try { r = JSON.parse(stdout.trim()); } catch { return { kind: 'miss', reason: `non-JSON: ${stdout.slice(0, 120)}` }; }
+  if (!r.found) return { kind: 'miss', reason: r.error ? r.error : (r.timedOut ? `UIA budget spent (${r.nodesVisited} nodes, ${r.elapsedMs} ms)` : 'no UIA match'), result: r };
+  if (!r.method) return { kind: 'miss', reason: 'found but no way to act on it', result: r };
+  return { kind: 'acted', result: r };
 }
 
 async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
@@ -1543,7 +1504,32 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
     }
   }
 
-  // Click the target field first, then type
+  // v0.24 (plan §3.2) — win32: ValuePattern.SetValue on the matched field
+  // first (atomic, no clipboard, no focus race), read back for a verified
+  // receipt; when the field has no writable ValuePattern smart-find has
+  // already clicked it, so paste straight away.
+  if (process.platform === 'win32') {
+    const fg = await foregroundForFind();
+    const sf = await windowsSmartFind(target, 'set-value', fg, text);
+    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
+    if (sf.kind === 'acted' && sf.result.setValue) {
+      const r = sf.result;
+      const verified = r.readback === 'match';
+      return {
+        text: `Typed into ${r.controlType} "${r.name}" via UIA ValuePattern: "${preview}"${verified ? ' (verified — the field reads back what was typed)' : ' (NOT verified — the field read back something else; check the screen)'}`,
+        receipt: makeReceipt('smart_type', verified ? 'verified' : 'unverified', true, { target, label: r.name, chars: text.length, readback: r.readback, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs }, 'uia-setvalue'),
+      };
+    }
+    if (sf.kind === 'acted') {
+      await new Promise(r => setTimeout(r, 300));
+      return typeText({ text });
+    }
+    if (sf.kind === 'unknown') {
+      return { text: `(error:TIMEOUT) smart_type "${target}" — UIA call timed out: ${sf.reason}`, receipt: makeReceipt('smart_type', 'error', null, { target, reason: sf.reason }) };
+    }
+  }
+
+  // Click the target field first (OCR fallback inside smart_click), then type
   await smartClick({ target });
   await new Promise(r => setTimeout(r, 300));
   return typeText({ text });

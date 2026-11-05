@@ -165,7 +165,9 @@ function layer1() {
     'get-windows.ps1',
     'focus-window.ps1',
     'ocr-recognize.ps1',
-    'ps-bridge.ps1',
+    'ps-bridge.ps1',               // v0.24 — persistent PowerShell host
+    'smart-find.ps1',              // v0.24 — UIA find + pattern cascade
+    'ocr-screen.ps1',              // v0.24 — in-memory capture + resident OCR
     'show-reminder.ps1',  // v0.11.25 — new helper for cmd-injection fix
     '_outlook-com-precheck.ps1',  // v0.11.29 — discriminates classic vs new Outlook
     'olk-send-email-uia.ps1',     // v0.12.2 — single-shot UIA fallback for new Outlook
@@ -343,16 +345,16 @@ function layer1() {
   if (hasTarget && hasThresh) pass('screenshot downscale constants: TARGET=1024 + THRESHOLD=1280 present');
   else fail('screenshot downscale constants', `TARGET=${hasTarget}, THRESHOLD=${hasThresh}`);
 
-  // 1.17 captureAndOcr 5 failure-mode log strings present (v0.11.25 invariant)
+  // 1.17 captureAndOcr failure-mode log strings present (v0.11.25 invariant;
+  // v0.24 — one in-memory ocr-screen.ps1 call, so no temp-PNG modes left)
   const ocrFailureLogs = [
-    'captureAndOcr: script missing',
-    'captureAndOcr: screenshot failed',
-    'captureAndOcr: tmp png never written',
-    'captureAndOcr: ocr-recognize.ps1 failed',
+    'captureAndOcr: ocr-screen.ps1 failed',
     'captureAndOcr: OCR returned non-JSON',
+    'captureAndOcr: OCR script reported error',
+    'captureAndOcr: OCR returned no words array',
   ];
   const missingLogs = ocrFailureLogs.filter((s) => !toolsSrc.includes(s));
-  if (missingLogs.length === 0) pass('captureAndOcr: all 5 failure-mode log strings present');
+  if (missingLogs.length === 0) pass(`captureAndOcr: all ${ocrFailureLogs.length} failure-mode log strings present`);
   else fail('captureAndOcr failure modes', `missing: ${missingLogs.join(' | ')}`);
 
   // 1.18 abortAllInFlightTools structural test (v0.11.26 invariant)
