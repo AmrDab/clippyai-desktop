@@ -7,6 +7,7 @@ import * as followMe from './follow-me';
 import * as games from './games';
 import { isByokActive, getBrainLabel } from './byok';
 import { getPendingUpdateVersion, installUpdate, installOnUserQuit, setOnUpdateStateChange } from './updater';
+import { appIconPath } from './app-icon';
 
 let tray: Tray | null = null;
 // v0.21 — "Connect an agent": name of the MCP client currently driving
@@ -36,7 +37,7 @@ export function setTrayAgentStatus(clientName: string | null): void {
 
 function createTrayIcon(_awake: boolean): Electron.NativeImage {
   // Use the actual paperclip app icon for the system tray
-  return nativeImage.createFromPath(path.join(__dirname, '../../build/icon.ico')).resize({ width: 16, height: 16 });
+  return nativeImage.createFromPath(appIconPath()).resize({ width: 16, height: 16 });
 }
 
 export function setupTray(win: BrowserWindow, brain: Brain): Tray {

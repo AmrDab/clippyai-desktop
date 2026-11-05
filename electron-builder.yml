@@ -94,6 +94,9 @@ files:
   - "!**/node_modules/**/*.map"
 
 extraResources:
+  # Tray/window icon — build/ is not packed into app.asar (src/main/app-icon.ts).
+  - from: build/icon.ico
+    to: icon.ico
   - from: assets/scripts
     to: scripts
     filter:
