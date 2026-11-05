@@ -1726,18 +1726,9 @@ export class Brain {
               has_image: !!(result.image?.data),
             });
 
-            // === RE-ASSERT CLIPPY'S Z-ORDER ===
-            // Any tool that hands foreground to another app — open_app,
-            // navigate_browser, focus_window, mouse_click, mouse_drag,
-            // key_press (alt+tab!), smart_click, smart_type — can knock
-            // Clippy off topmost. setAlwaysOnTop is idempotent and ~free
-            // on Windows, so just re-assert after every tool call. The
-            // prior open_app/navigate_browser-only filter meant Clippy
-            // disappeared any time the agent used focus_window or
-            // clicked another window.
-            if (!this.win.isDestroyed()) {
-              this.win.setAlwaysOnTop(true, 'screen-saver');
-            }
+            // (z-order re-assert moved to the `finally` below in v0.23 — it
+            // ran inside this try, so a window-API failure was reported to
+            // the model as the TOOL failing. Plan §1.3.)
 
             // === VERIFICATION: inject fresh screen state (opt-in per tool) ===
             // v0.19.1 — previously this ran read_screen after EVERY tool in a
@@ -1932,6 +1923,23 @@ export class Brain {
                 response: { error: msg.substring(0, 300) },
               },
             });
+          } finally {
+            // === RE-ASSERT CLIPPY'S Z-ORDER ===
+            // Any tool that hands foreground to another app — open_app,
+            // navigate_browser, focus_window, mouse_click, mouse_drag,
+            // key_press (alt+tab!), smart_click, smart_type — can knock
+            // Clippy off topmost. setAlwaysOnTop is idempotent and ~free
+            // on Windows, so just re-assert after every tool call. v0.23 —
+            // runs AFTER the result is captured and only on a real
+            // BrowserWindow (test harnesses pass a stub), so it can never
+            // masquerade as a tool failure.
+            try {
+              if (typeof this.win?.setAlwaysOnTop === 'function' && !this.win.isDestroyed()) {
+                this.win.setAlwaysOnTop(true, 'screen-saver');
+              }
+            } catch (zErr) {
+              log.warn('setAlwaysOnTop re-assert failed (non-fatal)', serializeErr(zErr));
+            }
           }
         }
 

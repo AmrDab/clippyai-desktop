@@ -6,6 +6,7 @@ import { createLogger } from './logger';
 // was a false alarm and that lazy require got tree-shaken in alpha.11).
 import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
+import { clampRectToDisplay, rectNeedsClamp } from './window-geometry';
 
 const log = createLogger('Window');
 
@@ -88,14 +89,7 @@ function dimsFor(state: BubbleSizeState): { width: number; height: number } {
 /** Which vertical side of Clippy the bubble body occupies. */
 type BubbleSide = 'above' | 'below';
 
-/** Clamp a rect so it lies fully within the display's work area. Shifts
- *  (never shrinks) the rect; callers size rects to fit a single display. */
-function clampRectToDisplay(rect: Rectangle, display: Display): Rectangle {
-  const wa = display.workArea;
-  const x = Math.round(Math.min(Math.max(rect.x, wa.x), wa.x + wa.width - rect.width));
-  const y = Math.round(Math.min(Math.max(rect.y, wa.y), wa.y + wa.height - rect.height));
-  return { x, y, width: rect.width, height: rect.height };
-}
+// clampRectToDisplay lives in window-geometry.ts (v0.23 — pure, unit-tested).
 
 /** The display the window's center currently sits on. */
 function displayForWindow(win: BrowserWindow): Display {
@@ -315,6 +309,25 @@ export function createWindow(): BrowserWindow {
     if (quitState.isQuitting()) return;
     e.preventDefault();
     win.hide();
+  });
+
+  // v0.23 — keep Clippy on a live display (plan §1.5). Unplugging the monitor
+  // he sat on, or a DPI / resolution change, used to leave him off-screen
+  // with tray → Center on Screen as the only rescue.
+  const keepOnLiveDisplay = (): void => {
+    if (win.isDestroyed()) return;
+    const bounds = win.getBounds();
+    const display = screen.getDisplayMatching(bounds);
+    if (!rectNeedsClamp(bounds, display)) return;
+    const clamped = clampRectToDisplay(bounds, display);
+    log.info('Display changed — clamping Clippy into work area', { from: bounds, to: clamped, display: display.id });
+    win.setBounds(clamped);
+  };
+  screen.on('display-removed', keepOnLiveDisplay);
+  screen.on('display-metrics-changed', keepOnLiveDisplay);
+  win.on('closed', () => {
+    screen.removeListener('display-removed', keepOnLiveDisplay);
+    screen.removeListener('display-metrics-changed', keepOnLiveDisplay);
   });
 
   mainBubbleWindow = win;

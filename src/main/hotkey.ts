@@ -3,7 +3,7 @@ import { Brain, brainSettingsStore as settingsStore } from './brain';
 import { createLogger } from './logger';
 import { triggerWritingAssist } from './writing-assist';
 import { getOnboardingWindow } from './window';
-import { SUMMON_ACCELERATOR, VOICE_ACCELERATOR_DEFAULT, WRITING_ASSIST_ACCELERATOR } from './hotkey-defs';
+import { SUMMON_ACCELERATOR, VOICE_ACCELERATOR_DEFAULT, WRITING_ASSIST_ACCELERATOR, summonTransition } from './hotkey-defs';
 
 const log = createLogger('Hotkey');
 
@@ -16,16 +16,17 @@ let voiceRecording = false;
 export function registerHotkey(win: BrowserWindow, brain: Brain): void {
   // Sleep/wake toggle (existing, since v0.1)
   globalShortcut.register(SUMMON_ACCELERATOR, () => {
-    const newMode = brain.getMode() === 'awake' ? 'sleep' : 'awake';
-    brain.setMode(newMode);
+    // v0.23 — hidden → show + wake (one press after Alt+F4); visible → toggle.
+    const next = summonTransition(brain.getMode(), win.isVisible());
+    if (next.mode !== brain.getMode()) brain.setMode(next.mode);
 
-    if (newMode === 'sleep') {
-      win.hide();
-    } else {
+    if (next.show) {
       win.show();
+    } else {
+      win.hide();
     }
 
-    win.webContents.send('mode-change', newMode);
+    win.webContents.send('mode-change', next.mode);
   });
 
   // v0.17.0 — Voice input toggle. Default Ctrl+Shift+Space. The user can

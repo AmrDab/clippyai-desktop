@@ -477,12 +477,29 @@ function wirePowerMonitor(brainRef: Brain, mw: BrowserWindow): void {
   log.info('PowerMonitor wired', { platform: process.platform });
 }
 
+/**
+ * v0.23 — closing the window (Alt+F4 / red X) puts Clippy to sleep instead of
+ * leaving him hidden-but-awake (plan §1.5). window.ts already prevents the
+ * close and hides; this listener runs after it and flips the mode so the
+ * next summon-hotkey press wakes him in one go.
+ */
+function wireCloseToSleep(brainRef: Brain, mw: BrowserWindow): void {
+  mw.on('close', () => {
+    if (quitState.isQuitting()) return;
+    if (brainRef.getMode() === 'sleep') return;
+    log.info('Window.close → sleep');
+    brainRef.setMode('sleep');
+    if (!mw.isDestroyed()) mw.webContents.send('mode-change', 'sleep');
+  });
+}
+
 function launchMainApp(): void {
   mainWindow = createWindow();
   brain = new Brain(mainWindow);
   registerIpcHandlers(brain, mainWindow);
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
+  wireCloseToSleep(brain, mainWindow);
 
   // v0.16.0 — start the cursor position pump at 1Hz so Clippy can glance
   // toward the user's cursor. Renderer's cursor-look logic throttles
@@ -571,6 +588,7 @@ function launchWithOnboarding(): void {
   registerIpcHandlers(brain, mainWindow);
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
+  wireCloseToSleep(brain, mainWindow);
   gamesMod.setMainWindow(mainWindow);
 
   // Wire updater here too — unlicensed users are the MOST likely to be on
