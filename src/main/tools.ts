@@ -83,6 +83,7 @@ import * as profileMod from './profile';
 // up, as the old one-shot powershell.exe spawn otherwise.
 import { psScript, psCommand, configurePsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
+import { outlookSendArgs } from './outlook-args';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -2199,6 +2200,8 @@ type ComErrorCode =
   | 'OUTLOOK_NOT_RUNNING'   // _outlook-com-precheck: outlook_not_installed
   | 'OUTLOOK_NEW_NO_COM'    // _outlook-com-precheck: new_outlook_no_com
   | 'OUTLOOK_UNVERIFIED'    // v0.12.3 — olk-send-email-uia: send triggered, compose stayed open
+  | 'WORKBOOK_OPEN'         // v0.24 — com-excel-write: the workbook is open in the user's Excel
+  | 'FILE_LOCKED'           // v0.24 — com-excel-write: another process holds the file
   | 'PATH_BLOCKED'          // v0.12.3 — _path-guard rejected user-secret/system path
   | 'COM_ERROR'             // Generic COM activation / script runtime error
   | 'TIMEOUT'               // execFileAbortable timed out
@@ -2226,6 +2229,8 @@ function classifyComError(errorField: string, rawMsg: string): ComErrorCode {
   // codes so the model gets actionable detail instead of generic UNKNOWN.
   if (errorField === 'unverified') return 'OUTLOOK_UNVERIFIED';
   if (errorField === 'path_blocked') return 'PATH_BLOCKED';
+  if (errorField === 'workbook_open') return 'WORKBOOK_OPEN';
+  if (errorField === 'file_locked') return 'FILE_LOCKED';
 
   // Freetext heuristics — order matters, more specific first
   const combined = (errorField + ' ' + rawMsg).toLowerCase();
@@ -2259,6 +2264,10 @@ function comErrorMessage(code: ComErrorCode, scriptDetail: string): string {
       return `(error:OUTLOOK_NEW_NO_COM) You have the new Outlook (olk.exe) which doesn't support COM automation. Use mailto: or open Outlook in the browser and I'll drive it via smart_click.`;
     case 'OUTLOOK_UNVERIFIED':
       return `(error:OUTLOOK_UNVERIFIED) Send was triggered but the compose window did not close in 5s — likely a confirmation dialog (recipient validation, attachment scan, or address-book lookup). Check the screen and confirm the dialog manually. ${scriptDetail}`;
+    case 'WORKBOOK_OPEN':
+      return `(error:WORKBOOK_OPEN) That workbook is open in Excel, so it can't be saved from here without losing someone's changes. Ask the user to save and close it in Excel (or write to a copy instead). ${scriptDetail}`;
+    case 'FILE_LOCKED':
+      return `(error:FILE_LOCKED) Another program has that file open and locked. Ask the user to close it, or write to a copy. ${scriptDetail}`;
     case 'PATH_BLOCKED':
       return `(error:PATH_BLOCKED) That path is in a protected location (system dir, user-secret dir like .ssh/.aws/.azure, browser credential store, or UNC share). ${scriptDetail}`;
     case 'TIMEOUT':
@@ -3281,15 +3290,25 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
   // them; without these every Windows send fell through to the slow
   // headless-web path and lost attachment support) ────────────────────
   if (process.platform === 'win32') {
-    const psArgs = ['-to', to, '-subject', subject, '-body', body];
-    if (params.cc) psArgs.push('-cc', String(params.cc));
-    if (params.attachments) psArgs.push('-attachments', String(params.attachments));
+    // v0.24 (plan §3.6) — subject/body always base64: raw -subject/-body
+    // were cut at the first newline and mangled non-ASCII text.
+    const sendInput = { to, subject, body, cc: params.cc ? String(params.cc) : undefined, attachments: params.attachments ? String(params.attachments) : undefined };
+    const comArgs = outlookSendArgs(sendInput, true);
+    const olkArgs = outlookSendArgs(sendInput, false);
 
     // L1a: classic Outlook COM
     if (!env || env.classic_outlook_com !== false) {
       tried.push('com');
-      const r = await runComScriptStructured('com-outlook-send-email.ps1', psArgs, 30000);
-      if (r.ok) return { text: r.message };
+      const r = await runComScriptStructured('com-outlook-send-email.ps1', comArgs, 45000);
+      if (r.ok) {
+        // v0.24 — the script looks for the message in Sent Items after Send().
+        const d = (r.data ?? {}) as { verified?: boolean; verifiedVia?: string };
+        const verified = d.verified === true;
+        return {
+          text: verified ? r.message : `${r.message} (handed to Outlook but not in Sent Items yet — it may still be in the Outbox; don't tell the user it was delivered)`,
+          receipt: makeReceipt('outlook_send_email', verified ? 'verified' : 'unverified', true, { to, subject, verifiedVia: d.verifiedVia ?? null }, 'com'),
+        };
+      }
       // OUTLOOK_NEW_NO_COM → user clearly has no classic; skip ahead.
       // OUTLOOK_NOT_RUNNING → has classic but it isn't running — can't help.
       if (r.errorCode !== 'OUTLOOK_NEW_NO_COM' && r.errorCode !== 'OUTLOOK_NOT_RUNNING') {
@@ -3301,9 +3320,13 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
     // script's own precheck enforces this, so just try it)
     if (!env || env.new_outlook_installed) {
       tried.push('olk-mailto');
-      const r = await runComScriptStructured('olk-send-email-uia.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 30000);
+      const r = await runComScriptStructured('olk-send-email-uia.ps1', olkArgs, 30000);
       if (r.ok) {
         const note = params.attachments ? ' (note: attachments not sent — mailto: protocol does not carry them)' : '';
+        // New Outlook has no COM, so no Sent Items check is possible here; the
+        // script reports verified:false / verifiedVia:'compose_closed'. No
+        // receipt yet (an 'unverified' one would make the end-of-task guard
+        // contradict every real olk send) — see the v0.24 report.
         return { text: `${r.message}${note}` };
       }
       if (r.errorCode === 'OUTLOOK_UNVERIFIED') return { text: r.message };
@@ -3312,7 +3335,7 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
     // L1c: olk direct AppX launch (bypasses mailto handler)
     if (!env || env.new_outlook_installed) {
       tried.push('olk-direct');
-      const r = await runComScriptStructured('olk-send-email-direct.ps1', psArgs.filter((a) => a !== '-attachments' && !a.startsWith('-attachments_')), 45000);
+      const r = await runComScriptStructured('olk-send-email-direct.ps1', olkArgs, 45000);
       if (r.ok) {
         const note = params.attachments ? ' (note: attachments not sent via olk-direct)' : '';
         return { text: `${r.message}${note}` };

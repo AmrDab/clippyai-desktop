@@ -50,6 +50,30 @@ $colCount = ($rows | ForEach-Object { $_.Count } | Measure-Object -Maximum).Maxi
 $ext = [System.IO.Path]::GetExtension($path).ToLower()
 if ($ext -notin @('.xlsx','.xls','.xlsm','.csv')) { Fail "not an Excel file: $ext" }
 
+# v0.24 (plan sec. 3.6) - a workbook the user has open in Excel used to fail
+# silently (DisplayAlerts off: a second Excel opens it read-only and Save
+# goes nowhere). Detect it up front and say so.
+if (Test-Path -LiteralPath $path) {
+    $locked = $false
+    try { $fs = [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None'); $fs.Close() }
+    catch [System.IO.IOException] { $locked = $true }
+    catch { }
+    if ($locked) {
+        $inExcel = $false
+        try {
+            $running = [System.Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
+            foreach ($b in $running.Workbooks) { if ($b.FullName -eq $path) { $inExcel = $true; break } }
+        } catch { }
+        $leaf = Split-Path -Leaf $path
+        if ($inExcel) {
+            Out-Result @{ ok = $false; error = 'workbook_open'; message = "'$leaf' is open in Excel. Save and close it there first." }
+        } else {
+            Out-Result @{ ok = $false; error = 'file_locked'; message = "'$leaf' is locked by another program (it may be open in Excel or synced)." }
+        }
+        exit 1
+    }
+}
+
 $excel = $null
 $wb = $null
 try {

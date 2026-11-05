@@ -17,7 +17,10 @@
 #   -cc            (optional, comma-separated)
 #   -attachments   (optional, comma-separated absolute paths)
 #
+#   -verifySec     (optional, default 12) how long to look for the message in Sent Items
+#
 # Outputs JSON on the last line. Always emits {ok:true,...} or {ok:false,error:...}.
+# v0.24 - ok:true carries verified (found in Sent Items) + verifiedVia.
 
 param(
     [string]$to = "",
@@ -26,7 +29,8 @@ param(
     [string]$subjectB64 = "",
     [string]$bodyB64 = "",
     [string]$cc = "",
-    [string]$attachments = ""
+    [string]$attachments = "",
+    [int]$verifySec = 12
 )
 
 function Out-Result($obj) {
@@ -80,12 +84,40 @@ try {
             if ($ap -and (Test-Path $ap)) { $mail.Attachments.Add($ap) | Out-Null }
         }
     }
+    $sendStart = (Get-Date).AddSeconds(-30)
     $mail.Send()
+
+    # v0.24 (plan sec. 3.6) - verify instead of trusting Send(): Send() only
+    # queues the item in the Outbox. Poll Sent Items (olFolderSentMail = 5)
+    # for a just-sent item with this subject (newest few, to tolerate a
+    # concurrent send).
+    $verified = $false
+    try {
+        $sentFolder = $outlook.GetNamespace("MAPI").GetDefaultFolder(5)
+        $deadline = (Get-Date).AddSeconds($verifySec)
+        while (-not $verified -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 700
+            try {
+                $items = $sentFolder.Items
+                $items.Sort("[SentOn]", $true)
+                $item = $items.GetFirst()
+                $n = 0
+                while ($item -and $n -lt 3) {
+                    if ($item.Subject -eq $subject -and $item.SentOn -ge $sendStart) { $verified = $true; break }
+                    $item = $items.GetNext()
+                    $n++
+                }
+            } catch { }
+        }
+    } catch { }
+
     Out-Result @{
         ok = $true
         to = $to
         subject = $subject
         sent = $true
+        verified = $verified
+        verifiedVia = if ($verified) { 'sent_items' } else { 'not_in_sent_items' }
     }
 } catch {
     Fail "outlook_send_email failed: $($_.Exception.Message). Outlook may not be installed or signed in."

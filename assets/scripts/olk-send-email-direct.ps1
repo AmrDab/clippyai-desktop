@@ -238,4 +238,8 @@ Out-Result @{
     to = $to
     subject = $subject
     sent = $true
+    # v0.24 - new Outlook has no COM, so no Sent Items check: the compose
+    # window closing is also what happens when the user closes it.
+    verified = $false
+    verifiedVia = 'compose_closed'
 }
