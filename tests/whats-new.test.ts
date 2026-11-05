@@ -21,6 +21,14 @@ describe('whatsNewToShow', () => {
     expect(whatsNewToShow('0.22.0', '0.22.0', true)).toBeNull();
   });
   it('stays quiet for a version with no notes', () => {
-    expect(whatsNewToShow('0.22.0', '0.23.0', true)).toBeNull();
+    expect(whatsNewToShow('0.98.0', '0.99.0', true)).toBeNull();
+  });
+});
+
+describe('v0.23 notes', () => {
+  it('shows the 0.23 card once when upgrading from 0.22', () => {
+    const notes = whatsNewToShow('0.22.4', '0.23.0', true);
+    expect(notes && notes.length).toBeGreaterThan(0);
+    expect(whatsNewToShow('0.23.0', '0.23.1', true)).toBeNull();
   });
 });
