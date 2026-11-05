@@ -401,6 +401,27 @@
           </div>
         </div>
 
+        <!-- v0.23 — Memory. Learned per-app workflows (memory.ts): what Clippy
+             remembers from tasks that finished with a verified step, and the
+             controls to forget them. Everything stays on this machine. -->
+        <div class="s-card">
+          <div class="s-card__header">
+            <h3 class="s-card__title">Memory</h3>
+            <p class="s-card__subtitle">After a task succeeds, Clippy remembers the steps per app so similar requests take the proven path. Stored only on this computer.</p>
+          </div>
+          <div id="memory-app-list"></div>
+          <p id="memory-empty" class="s-help">Nothing remembered yet.</p>
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Forget everything</div>
+              <div class="s-row__help">Removes every remembered workflow for every app.</div>
+            </div>
+            <div class="s-row__control">
+              <button id="btn-memory-forget-all" type="button" class="s-button">Forget all</button>
+            </div>
+          </div>
+        </div>
+
         <!-- v0.20.0-alpha.11 — Focused-window follow. Glides Clippy to the
              bottom-right corner of the newly-focused window at 1Hz so he
              doesn't seem stuck when the user switches monitors or apps.

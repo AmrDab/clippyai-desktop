@@ -2058,7 +2058,12 @@ export class Brain {
       // abort, ≥2 substantive actions). The next time the user asks
       // something similar in the same app, formatWorkflowHint() injects
       // these steps as context so the model takes the proven path.
-      if (taskCompleted && !abortReason && activeProcessAtStart && successfulActions.length >= 2) {
+      // v0.23 — plus: guard didn't fire, no destructive step failed, and at
+      // least one step carries a 'verified' receipt (tool-verdict.ts).
+      if (shouldRecordWorkflow({
+        taskCompleted, abortReason, unconfirmed, activeProcess: activeProcessAtStart,
+        successfulActionCount: successfulActions.length, destructiveAttempts, verifiedSteps,
+      })) {
         try {
           recordWorkflow(activeProcessAtStart, text, successfulActions);
         } catch (err) {

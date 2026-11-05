@@ -32,6 +32,13 @@ contextBridge.exposeInMainWorld('clippy', {
     undoAction: (id: string) => ipcRenderer.invoke('action-undo', id),
   },
 
+  // ── v0.23 — Memory card (learned per-app workflows)
+  memory: {
+    list: () => ipcRenderer.invoke('memory:list'),
+    forgetApp: (app: string) => ipcRenderer.invoke('memory:forget-app', app),
+    forgetAll: () => ipcRenderer.invoke('memory:forget-all'),
+  },
+
   // v0.21 — bubble history panel: persisted conversation (user + Clippy turns).
   getConversation: () => ipcRenderer.invoke('conversation:get'),
   clearConversation: () => ipcRenderer.invoke('conversation:clear'),

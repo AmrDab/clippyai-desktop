@@ -1455,6 +1455,62 @@ async function loadGuardrails(): Promise<void> {
   } catch { /* non-fatal */ }
 }
 
+// v0.23 — Brain → Memory card: remembered apps + Forget / Forget all.
+async function refreshMemory(): Promise<void> {
+  const root = document.getElementById('memory-app-list');
+  const empty = document.getElementById('memory-empty');
+  if (!root || !empty || !window.clippy.memory) return;
+  let apps: Array<{ app: string; workflowCount: number }> = [];
+  try { apps = await window.clippy.memory.list(); } catch { apps = []; }
+  root.innerHTML = '';
+  empty.style.display = apps.length === 0 ? '' : 'none';
+  for (const { app, workflowCount } of apps) {
+    const row = document.createElement('div');
+    row.className = 's-row s-row--inline';
+    const main = document.createElement('div');
+    main.className = 's-row__main';
+    const label = document.createElement('div');
+    label.className = 's-row__label';
+    label.textContent = app;
+    const help = document.createElement('div');
+    help.className = 's-row__help';
+    help.textContent = `${workflowCount} remembered workflow${workflowCount === 1 ? '' : 's'}`;
+    main.append(label, help);
+    const control = document.createElement('div');
+    control.className = 's-row__control';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 's-button';
+    btn.textContent = 'Forget';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      await window.clippy.memory?.forgetApp(app);
+      await refreshMemory();
+    });
+    control.appendChild(btn);
+    row.append(main, control);
+    root.appendChild(row);
+  }
+}
+
+document.getElementById('btn-memory-forget-all')?.addEventListener('click', async () => {
+  if (!window.clippy.memory) return;
+  if (!confirm('Forget every remembered workflow? Clippy will relearn them from future tasks.')) return;
+  await window.clippy.memory.forgetAll();
+  await refreshMemory();
+});
+
+let memoryLoadedOnce = false;
+document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+  if (item.dataset.section !== 'brain') return;
+  item.addEventListener('click', () => {
+    if (!memoryLoadedOnce) {
+      memoryLoadedOnce = true;
+      void refreshMemory();
+    }
+  });
+});
+
 let guardrailsLoadedOnce = false;
 document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
   if (item.dataset.section !== 'guardrails') return;

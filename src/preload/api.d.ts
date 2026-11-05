@@ -118,6 +118,13 @@ interface Window {
     getConfig: () => Promise<Record<string, unknown>>;
     updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
 
+    // ── Memory card (v0.23) — learned per-app workflows
+    memory?: {
+      list: () => Promise<Array<{ app: string; workflowCount: number }>>;
+      forgetApp: (app: string) => Promise<boolean>;
+      forgetAll: () => Promise<boolean>;
+    };
+
     // ── Guardrails (v0.17.8)
     guardrails: {
       getPolicy: () => Promise<{ mode: 'cautious' | 'standard' | 'trusted'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
