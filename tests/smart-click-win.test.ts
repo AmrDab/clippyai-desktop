@@ -136,3 +136,40 @@ describe('smart_type (win32)', () => {
     expect(calls.filter(script('smart-find.ps1'))).toHaveLength(1);
   });
 });
+
+describe('governor context via the persistent host (plan §1.6)', () => {
+  it('assessRisk reads the foreground title through the host — no powershell.exe spawn', async () => {
+    const { EventEmitter } = await import('events');
+    const { PassThrough, Writable } = await import('stream');
+    const { PsHost, configurePsHost } = await import('../src/main/win-host');
+    const { assessRisk } = await import('../src/main/tools');
+    const seen: string[] = [];
+    const spawnFn = () => {
+      const c = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; stdin: Writable; kill: () => boolean };
+      c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.kill = () => true;
+      c.stdin = new Writable({
+        write(chunk, _e, cb) {
+          for (const line of chunk.toString().split('\n').filter(Boolean)) {
+            const req = JSON.parse(line);
+            seen.push(req.script);
+            const out = JSON.stringify({ handle: 1, processId: 9, processName: 'msedge', title: 'Checkout - Place your order - Edge', success: true });
+            c.stdout.write(`\x1e${JSON.stringify({ id: req.id, ok: true, exitCode: 0, out })}\n`);
+          }
+          cb();
+        },
+      });
+      setImmediate(() => c.stdout.write('\x1e{"ready":true}\n'));
+      return c as unknown as import('child_process').ChildProcess;
+    };
+    const host = new PsHost({ bridgePath: () => 'b', scriptsDir: () => 's', spawnFn });
+    configurePsHost({ scriptsDir: () => process.cwd(), host });
+    try {
+      const v = await assessRisk('mouse_click', { x: 10, y: 10 });
+      expect(seen).toEqual(['get-foreground-window.ps1']);
+      expect(execFileMock).not.toHaveBeenCalled();
+      expect(v?.class).toBe('destructive_purchase');
+    } finally {
+      host.shutdown();
+    }
+  });
+});

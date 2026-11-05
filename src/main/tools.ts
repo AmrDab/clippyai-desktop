@@ -5220,8 +5220,12 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  *   - cdp_* tools: the attached tab's URL (cached on the client, free).
  *   - coordinate clicks, Enter-type key_press, type_text ending in "
 ":
- *     the active window title (one get_active_window call; ~1-2s on win32,
- *     fast on darwin). Skipped for ordinary key chords / text.
+ *     the active window title (one get_active_window call). v0.24 (plan
+ *     §1.6): on win32 that call runs in the persistent PowerShell host
+ *     (~20-30 ms, no spawn) instead of a 1-2 s powershell.exe. Deliberately
+ *     NOT cached: a stale title from a window the user just left could
+ *     under-classify a click in the window they switched to. Skipped for
+ *     ordinary key chords / text.
  * Never throws — a failed lookup just means "no extra context".
  */
 export async function assessRisk(tool: string, params: Record<string, unknown> = {}): Promise<RiskVerdict | null> {
