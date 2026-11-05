@@ -95,6 +95,28 @@ namespace ClippyHost {
 $dpi = 'unknown'
 if ($native -ne 'none') { try { $dpi = [ClippyHost.Native]::EnablePerMonitorV2() } catch { } }
 
+# Touch UI Automation from compiled code BEFORE any script binds it through
+# PowerShell. Measured on Win11 26100: when the first UIA call in a process
+# goes through PowerShell's method binder, the managed client-side Win32
+# proxies never register, so every Win32 / WinForms control reads back as
+# ControlType.Pane (no Button, Edit, CheckBox...) for the rest of the
+# process. A first touch from C# registers them for the whole process.
+$uia = 'cold'
+try {
+    if (-not ('ClippyHost.UiaWarm' -as [type])) {
+        $uiaRefs = @([System.Windows.Automation.AutomationElement].Assembly.Location, [System.Windows.Automation.ControlType].Assembly.Location)
+        Add-Type -ReferencedAssemblies $uiaRefs -TypeDefinition @"
+namespace ClippyHost {
+    public static class UiaWarm {
+        public static int Touch() { return System.Windows.Automation.AutomationElement.RootElement.Current.ProcessId; }
+    }
+}
+"@
+    }
+    [void][ClippyHost.UiaWarm]::Touch()
+    $uia = 'warm'
+} catch { $startErr = "$startErr uia: $($_.Exception.Message)".Trim() }
+
 function Q([string]$s) {
     if ($native -ne 'none') { return [ClippyHost.Native]::Quote($s) }
     return ($s | ConvertTo-Json -Compress)
@@ -129,7 +151,7 @@ function Invoke-Captured($Block, [hashtable]$ArgTable) {
     return @($text, $exitCode)
 }
 
-$readyJson = '{"ready":true,"pid":' + $PID + ',"native":' + (Q $native) + ',"dpi":' + (Q $dpi) + ',"psVersion":' + (Q $PSVersionTable.PSVersion.ToString())
+$readyJson = '{"ready":true,"pid":' + $PID + ',"native":' + (Q $native) + ',"dpi":' + (Q $dpi) + ',"uia":' + (Q $uia) + ',"psVersion":' + (Q $PSVersionTable.PSVersion.ToString())
 if ($startErr) { $readyJson += ',"warning":' + (Q $startErr) }
 Send-Line ($readyJson + '}')
 
