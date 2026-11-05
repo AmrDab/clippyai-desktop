@@ -3,24 +3,58 @@
     Combined script: gets windows list + focused window UI tree in ONE call.
     Eliminates multiple PowerShell spawn overhead.
 .PARAMETER FocusedProcessId
-    If specified, includes the UI tree for this process's window.
+    If specified, includes the UI tree for this process's window. When 0
+    (the default) the foreground window's process is used (v0.23).
+.PARAMETER ExcludeProcessId
+    Never build the tree for this process (the caller's own window). If the
+    foreground window belongs to it, the next window down the Z-order is used.
 .PARAMETER MaxDepth
-    Maximum UI tree depth (default 2).
+    Maximum UI tree depth (default 4).
+.PARAMETER MaxNodes
+    Stop descending once this many nodes have been emitted (default 400).
 #>
 param(
     [int]$FocusedProcessId = 0,
-    [int]$MaxDepth = 4
+    [int]$ExcludeProcessId = 0,
+    [int]$MaxDepth = 4,
+    [int]$MaxNodes = 400
 )
 
 try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
+    Add-Type @"
+    using System;
+    using System.Runtime.InteropServices;
+    using System.Text;
+    public class ScreenCtxWin32 {
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll", SetLastError = true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        public static uint PidOf(IntPtr hWnd) { uint pid = 0; GetWindowThreadProcessId(hWnd, out pid); return pid; }
+        // Foreground PID, skipping `exclude` (the caller's own process) by
+        // walking down the Z-order to the next visible, titled window.
+        public static uint ForegroundPid(uint exclude) {
+            IntPtr h = GetForegroundWindow();
+            int guard = 0;
+            while (h != IntPtr.Zero && guard++ < 200) {
+                uint pid = PidOf(h);
+                if (pid != 0 && pid != exclude && IsWindowVisible(h) && GetWindowTextLength(h) > 0) return pid;
+                h = GetWindow(h, 2); // GW_HWNDNEXT
+            }
+            return 0;
+        }
+    }
+"@
 } catch {
     [Console]::Out.Write((@{ error = "Failed to load UI Automation assemblies: $($_.Exception.Message)" } | ConvertTo-Json -Compress))
     exit 1
 }
 
 $ErrorActionPreference = 'Stop'
+$script:nodeCount = 0
 
 # Interactive control types worth including
 $interactiveTypes = @(
@@ -48,7 +82,7 @@ function ConvertTo-UINode {
 
     # Skip non-interactive unnamed elements
     if (-not $isInteractive -and -not $hasName -and $Depth -gt 0) {
-        if ($Depth -ge $TreeMaxDepth) { return $null }
+        if ($Depth -ge $TreeMaxDepth -or $script:nodeCount -ge $MaxNodes) { return $null }
         $childNodes = @()
         try {
             $kids = $Element.FindAll(
@@ -83,8 +117,9 @@ function ConvertTo-UINode {
         bounds       = $bounds
         children     = @()
     }
+    $script:nodeCount++
 
-    if ($Depth -lt $TreeMaxDepth) {
+    if ($Depth -lt $TreeMaxDepth -and $script:nodeCount -lt $MaxNodes) {
         try {
             $kids = $Element.FindAll(
                 [System.Windows.Automation.TreeScope]::Children,
@@ -154,8 +189,12 @@ try {
         } catch {}
     }
 
-    # 2. Get focused window UI tree if requested
+    # 2. Get focused window UI tree. v0.23 — default to the real foreground
+    #    process (the caller used to pass nothing, so the tree never came back).
     $uiTree = $null
+    if ($FocusedProcessId -le 0) {
+        try { $FocusedProcessId = [int][ScreenCtxWin32]::ForegroundPid([uint32]$ExcludeProcessId) } catch { $FocusedProcessId = 0 }
+    }
     if ($FocusedProcessId -gt 0) {
         $condition = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
@@ -172,8 +211,9 @@ try {
 
     # 3. Return combined result
     $result = [ordered]@{
-        windows = $windowList
-        uiTree  = $uiTree
+        windows          = $windowList
+        focusedProcessId = $FocusedProcessId
+        uiTree           = $uiTree
     }
 
     [Console]::Out.Write(($result | ConvertTo-Json -Depth 50 -Compress))

@@ -298,8 +298,13 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
   if (process.platform === 'win32') {
     const scriptPath = path.join(getScriptsDir(), 'get-screen-context.ps1');
     try {
-      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath];
-      if (params.processId) args.push('-ProcessId', String(params.processId));
+      // v0.23 — the script's parameter is -FocusedProcessId (we passed
+      // -ProcessId, so the uiTree branch never ran). With no explicit PID
+      // the script resolves the real foreground process itself, skipping
+      // Clippy's own window.
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+        '-ExcludeProcessId', String(process.pid)];
+      if (params.processId) args.push('-FocusedProcessId', String(params.processId));
       const { stdout } = await execFileAsync('powershell.exe', args, {
         timeout: 10000,
         maxBuffer: 5 * 1024 * 1024,
