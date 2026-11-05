@@ -7,6 +7,7 @@ import {
   requestApproval, resolveApproval, cancelAllApprovals, summarizeArgs,
   markApproved, wasApproved, APPROVAL_TIMEOUT_MS,
 } from '../src/main/approval';
+import { TOOL_META } from '../src/main/tool-meta';
 
 function fakeWin() {
   const send = vi.fn();
@@ -93,11 +94,59 @@ describe('summarizeArgs', () => {
     expect(summarizeArgs('skill__foo', {})).toBe('Run skill foo');
   });
 
-  it('falls back to redacted args and never leaks secrets', () => {
+  it('falls back to plain words for an unknown tool — never JSON, never args', () => {
     const out = summarizeArgs('some_tool', { token: 'abc', text: 'hello' });
-    expect(out).toContain('some_tool');
+    expect(out).toBe('Use some tool');
+    expect(out).not.toContain('{');
     expect(out).not.toContain('abc');
     expect(out).not.toContain('hello');
+  });
+
+  it('labels every TOOL_META entry in plain English without a brace', () => {
+    const sample = {
+      text: 'x'.repeat(313), value: 'v', path: 'C:\\Users\\me\\a.txt', url: 'https://example.com', query: 'q', name: 'Notepad',
+      target: 'Place order', selector: '#buy', key: 'ctrl+s', x: 10, y: 20, command: 'dir', slug: 'foo', to: 'a@b.c',
+      subject: 'Hi', title: 'T', filename: 'f.xlsx', from: 'a', to_path: 'b', input: 'in.zip', output: 'out', field: 'name',
+    };
+    const TEXT_TOOLS = new Set(['type_text', 'smart_type', 'cdp_type', 'browser_type', 'write_clipboard', 'speak_text', 'replace_focused_text', 'generate_qrcode']);
+    const tools = Object.keys(TOOL_META);
+    expect(tools.length).toBeGreaterThan(90);
+    for (const tool of tools) {
+      for (const args of [{}, sample]) {
+        const out = summarizeArgs(tool, args);
+        expect(out, tool).toBeTruthy();
+        expect(out, tool).not.toContain('{');
+        expect(out, tool).not.toContain(tool.includes('_') ? tool : '\u0000'); // a label, not the raw tool name
+        if (TEXT_TOOLS.has(tool)) expect(out, tool).not.toContain('x'.repeat(41)); // long typed text shows as a length
+      }
+    }
+  });
+
+  it('reads like the user would say it', () => {
+    expect(summarizeArgs('type_text', { text: 'x'.repeat(313) })).toBe('Type 313 characters');
+    expect(summarizeArgs('type_text', { text: 'see you at noon' })).toBe('Type "see you at noon"');
+    expect(summarizeArgs('write_clipboard', { text: 'a'.repeat(50) })).toBe('Copy 50 characters to the clipboard');
+    expect(summarizeArgs('smart_click', { target: 'Place order' })).toBe("Click 'Place order'");
+    expect(summarizeArgs('open_url', { url: 'https://example.com' })).toBe('Open https://example.com');
+    expect(summarizeArgs('key_press', { key: 'ctrl+s' })).toBe('Press ctrl+s');
+    expect(summarizeArgs('mouse_click', { x: 5, y: 9, button: 'right' })).toBe('Right-click at (5, 9)');
+    expect(summarizeArgs('excel_write', { path: 'C:\\b.xlsx', range: 'A1:B2' })).toBe('Write cells A1:B2 in C:\\b.xlsx');
+    expect(summarizeArgs('open_app', { name: 'Notepad' })).toBe('Open Notepad');
+  });
+
+  it('never shows text that could be a secret', () => {
+    for (const text of ['hunter2', 'Tr0ub4dor&3', 'sunshine', 'my secret pass phrase']) {
+      const out = summarizeArgs('smart_type', { target: 'Password', text });
+      expect(out).not.toContain(text);
+    }
+    expect(summarizeArgs('type_text', { text: 'hunter2' })).toBe('Type 7 characters');
+    expect(summarizeArgs('cdp_type', { selector: '#otp', text: 'one two three' })).not.toContain('one two');
+  });
+
+  it('a governor escalation reads "{reason} — {action}"', () => {
+    const reason = "Looks like a purchase button: 'Place order'";
+    expect(`${reason} — ${summarizeArgs('smart_click', { target: 'Place order' })}`)
+      .toBe("Looks like a purchase button: 'Place order' — Click 'Place order'");
   });
 
   it('never truncates silently — a hidden tail is called out', () => {
