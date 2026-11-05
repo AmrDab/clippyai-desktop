@@ -6,6 +6,7 @@ import { createLogger } from './logger';
 // was a false alarm and that lazy require got tree-shaken in alpha.11).
 import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
+import { appIconPath } from './app-icon';
 
 const log = createLogger('Window');
 
@@ -113,7 +114,7 @@ export function createWindow(): BrowserWindow {
 
   log.debug('Screen geometry', { screenW, screenH, xPos, yPos, width: CLIPPY_WIDTH, height: CLIPPY_HEIGHT });
 
-  const iconPath = path.join(__dirname, '../../build/icon.ico');
+  const iconPath = appIconPath();
 
   const win = new BrowserWindow({
     width: CLIPPY_WIDTH,
@@ -389,7 +390,7 @@ export function createSettingsWindow(): BrowserWindow {
     // of the cards). Body is now 100vw/100vh so any resize stays correct.
     width: 820,
     height: 680,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     resizable: true,
     minWidth: 640,
     minHeight: 560,
@@ -449,7 +450,7 @@ export function createOnboardingWindow(): BrowserWindow {
     height,
     x,
     y,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -493,7 +494,7 @@ export function createLogWindow(openReport = false): BrowserWindow {
   logWindow = new BrowserWindow({
     width: 700,
     height: 500,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     resizable: true,
     title: 'ClippyAI Logs',
     webPreferences: {
@@ -542,7 +543,7 @@ export function createWritingCardWindow(
     height: WRITING_CARD_HEIGHT,
     x: initialBounds?.x,
     y: initialBounds?.y,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -618,7 +619,7 @@ export function createWritingBadgeWindow(
     height: WRITING_BADGE_HEIGHT,
     x: bounds.x,
     y: bounds.y,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     transparent: true,
     frame: false,
     alwaysOnTop: true,
