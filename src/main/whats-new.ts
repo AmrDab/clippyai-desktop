@@ -11,6 +11,12 @@ import { createLogger } from './logger';
 const log = createLogger('WhatsNew');
 
 const NOTES: Record<string, string[]> = {
+  '0.23': [
+    "I can actually read the app you're in now, not just its title — so I understand your screen better.",
+    "I only say **done** when I've checked it worked. If I couldn't check, I'll tell you.",
+    "Approval prompts are in plain English, with a countdown. Right-click me → **Settings → Brain → Memory** to see or clear what I remember.",
+    "I send anonymous crash reports so problems get fixed fast — turn this off anytime in **Settings → General**.",
+  ],
   '0.22': [
     "I tell you clearly how a task ended: done, stopped by you, or stuck.",
     "If I ever crash or freeze, I pick myself back up, and you can send a report in one click.",
