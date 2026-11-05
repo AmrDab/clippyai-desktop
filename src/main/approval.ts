@@ -46,7 +46,7 @@ export function requestApproval(win: BrowserWindow | null, req: ApprovalRequest)
     const timer = setTimeout(() => finish(id, 'timeout'), APPROVAL_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
     log.info('Approval.request', { id, tool: req.tool, class: req.actionClass });
-    win.webContents.send('approval-request', { id, ...req });
+    win.webContents.send('approval-request', { id, ...req, timeoutMs: APPROVAL_TIMEOUT_MS });
   });
 }
 

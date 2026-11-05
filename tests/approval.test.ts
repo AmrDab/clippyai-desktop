@@ -31,7 +31,7 @@ describe('requestApproval', () => {
   it('resolves approved when the renderer says yes', async () => {
     const { win, send } = fakeWin();
     const p = requestApproval(win, req);
-    expect(send).toHaveBeenCalledWith('approval-request', expect.objectContaining({ tool: 'shell_exec', summary: 'Run `ls`' }));
+    expect(send).toHaveBeenCalledWith('approval-request', expect.objectContaining({ tool: 'shell_exec', summary: 'Run `ls`', timeoutMs: APPROVAL_TIMEOUT_MS }));
     expect(resolveApproval(sentId(send), true)).toBe(true);
     await expect(p).resolves.toBe('approved');
   });
