@@ -4,6 +4,7 @@ import { createLogger, serializeErr } from './logger';
 import * as telemetry from './telemetry';
 import { cleanupTools } from './tools';
 import * as quitState from './quit-state';
+import { installMethodFor } from './update-install-method';
 import fs from 'fs';
 import path from 'path';
 
@@ -27,7 +28,9 @@ const RELEASE_PAGE = process.platform === 'win32'
 // handles DMG mounting and ZIP-based in-place replacement natively. We keep the
 // state tracking infrastructure for now (cheap, useful for telemetry) but
 // MAX_FAILURES_BEFORE_SKIP can stay at 1 since any failure is a clear signal.
-const MAX_FAILURES_BEFORE_SKIP = 1;
+// v0.23.2 — 2: the first failed attempt (silent) retries via the Explorer
+// hand-off; only a second failure skips the version.
+const MAX_FAILURES_BEFORE_SKIP = 2;
 const SILENT_FAILURE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
@@ -462,11 +465,11 @@ function isSnoozed(version: string): boolean {
  */
 export function installOnUserQuit(): boolean {
   if (!updateDownloaded || isSnoozed(expectedVersion)) return false;
-  // Windows' install path hands the installer to Explorer — popping a window
-  // every time the user quits is exactly the intrusion we avoid. Tray item only.
-  if (process.platform === 'win32') return false;
+  // The Explorer fallback pops a window — never on a plain quit. A silent
+  // install can run on the way out, like VS Code.
+  if (process.platform === 'win32' && installMethodFor(readState().failureCount[expectedVersion] || 0) !== 'silent') return false;
   log.info('User quit with a downloaded update — installing on the way out', { version: expectedVersion });
-  if (process.platform === 'darwin') autoUpdater.autoRunAppAfterInstall = false;
+  autoUpdater.autoRunAppAfterInstall = false;
   void installUpdate();
   return true;
 }
@@ -669,6 +672,23 @@ export async function installUpdate(): Promise<void> {
     log.info('Install.unblockedMOTW', { installerPath });
   } catch (err) {
     log.warn('Install.unblockMOTW failed (non-fatal)', serializeErr(err));
+  }
+
+  // v0.23.2 — silent install first: the installer is signed and this copy
+  // has no Mark-of-the-Web, so NSIS runs without SmartScreen. The Explorer
+  // hand-off below is the fallback once a silent attempt didn't land.
+  if (installMethodFor(state.failureCount[expectedVersion] || 0) === 'silent') {
+    const relaunch = autoUpdater.autoRunAppAfterInstall;
+    log.info('Install.exec', { action: 'quitAndInstall', platform: 'win32', relaunch, installerPath });
+    sendToRenderer('clippy-speak', {
+      text: relaunch
+        ? `Installing v${expectedVersion}. I'll be right back on the new version! 📎`
+        : `Installing v${expectedVersion} on the way out. See you on the new version next time! 📎`,
+      animate: 'GetAttention',
+    });
+    quitState.setQuitting();
+    setTimeout(() => autoUpdater.quitAndInstall(true, relaunch), 1200);
+    return;
   }
 
   // Step 2 — open File Explorer with the installer selected. The user
