@@ -5,7 +5,7 @@ copyright: Copyright © 2026 Cloudana · ClippyAI
 # Becomes the exe's FileVersion (rcedit --set-file-version), so it must be
 # 4-part numeric. Convention for prereleases: 4th field = prerelease number
 # (0.20.0-alpha.24 → 0.20.0.24). For a stable X.Y.Z use X.Y.Z.0.
-buildVersion: 0.22.4.0
+buildVersion: 0.23.0.0
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -94,6 +94,9 @@ files:
   - "!**/node_modules/**/*.map"
 
 extraResources:
+  # Tray/window icon — build/ is not packed into app.asar (src/main/app-icon.ts).
+  - from: build/icon.ico
+    to: icon.ico
   - from: assets/scripts
     to: scripts
     filter:

@@ -218,9 +218,13 @@ async function init(): Promise<void> {
   // Phase 3 guardrails — "Can I …?" before a gated tool runs. Approve/Deny
   // answer by id; replacing or hiding the bubble while pending counts as
   // Deny. TTS says only the generic line — never the args.
-  window.clippy.onApprovalRequest?.(({ id, summary }) => {
+  // A countdown under the buttons shows main's auto-deny timeout
+  // (approval.ts APPROVAL_TIMEOUT_MS); at zero the prompt closes as Deny.
+  window.clippy.onApprovalRequest?.(({ id, summary, timeoutMs }) => {
     let answered = false;
+    let tick: ReturnType<typeof setInterval> | null = null;
     const answer = (approved: boolean) => {
+      if (tick) { clearInterval(tick); tick = null; }
       if (answered) return;
       answered = true;
       void window.clippy.respondApproval(id, approved);
@@ -229,6 +233,25 @@ async function init(): Promise<void> {
       { label: 'Approve', variant: 'primary', onClick: () => { answer(true); bubbleCtrl.showThinking(); } },
       { label: 'Deny', variant: 'ghost', onClick: () => { answer(false); bubbleCtrl.hide(); } },
     ], { sticky: true, onDismiss: () => answer(false) });
+    const total = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 60_000;
+    const deadline = Date.now() + total;
+    const countdown = document.createElement('span');
+    countdown.className = 'approval-countdown';
+    countdown.innerHTML = '<span class="approval-countdown-text"></span><span class="approval-countdown-bar" aria-hidden="true"><i></i></span>';
+    const text = countdown.querySelector<HTMLElement>('.approval-countdown-text')!;
+    countdown.querySelector<HTMLElement>('.approval-countdown-bar i')!.style.animationDuration = `${total}ms`;
+    const render = () => {
+      const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      text.textContent = `Auto-deny in ${left}s`;
+      return left;
+    };
+    render();
+    document.getElementById('bubble-actions')?.appendChild(countdown);
+    tick = setInterval(() => {
+      // Bubble replaced (new prompt, reply, hide) — onDismiss already denied.
+      if (!countdown.isConnected) { if (tick) clearInterval(tick); tick = null; return; }
+      if (render() === 0) { answer(false); bubbleCtrl.hide(); }
+    }, 1000);
     tts.speak('Can I go ahead?');
     clippyCtrl.playNamed('GetAttention');
   });

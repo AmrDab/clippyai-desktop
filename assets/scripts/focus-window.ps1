@@ -94,8 +94,11 @@ try {
             [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, int dwFlags, int dwExtraInfo);
             [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
             [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+            [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId")] public static extern uint GetWindowPid(IntPtr hWnd, out uint pid);
             [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
             [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+            public static uint ForegroundPid() { uint pid = 0; GetWindowPid(GetForegroundWindow(), out pid); return pid; }
 
             public static bool ForceForeground(IntPtr hwnd) {
                 IntPtr foreWnd = GetForegroundWindow();
@@ -135,13 +138,21 @@ try {
 
     Start-Sleep -Milliseconds 200
 
+    # v0.23 — honest result: success only if the target is REALLY in the
+    # foreground now (same HWND, or same PID — UWP frames can differ).
     $c = $targetWindow.Current
-    [Console]::Out.Write((@{
-        success     = $true
-        title       = $c.Name
-        processId   = $c.ProcessId
-        handle      = $c.NativeWindowHandle
-    } | ConvertTo-Json -Compress))
+    $fgHwnd = [ForceFocus]::GetForegroundWindow()
+    $fgPid = [ForceFocus]::ForegroundPid()
+    $isFront = ($fgHwnd -eq $hwnd) -or ([int]$fgPid -eq [int]$c.ProcessId)
+    $out = [ordered]@{
+        success             = $isFront
+        title               = $c.Name
+        processId           = $c.ProcessId
+        handle              = $c.NativeWindowHandle
+        foregroundProcessId = [int]$fgPid
+    }
+    if (-not $isFront) { $out.error = "SetForegroundWindow did not take: foreground is pid $fgPid, wanted $($c.ProcessId)" }
+    [Console]::Out.Write(($out | ConvertTo-Json -Compress))
 
 } catch {
     [Console]::Out.Write((@{ success = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress))

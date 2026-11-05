@@ -118,6 +118,13 @@ interface Window {
     getConfig: () => Promise<Record<string, unknown>>;
     updateSettings: (settings: Record<string, unknown>) => Promise<boolean>;
 
+    // ── Memory card (v0.23) — learned per-app workflows
+    memory?: {
+      list: () => Promise<Array<{ app: string; workflowCount: number }>>;
+      forgetApp: (app: string) => Promise<boolean>;
+      forgetAll: () => Promise<boolean>;
+    };
+
     // ── Guardrails (v0.17.8)
     guardrails: {
       getPolicy: () => Promise<{ mode: 'cautious' | 'standard' | 'trusted'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
@@ -165,7 +172,7 @@ interface Window {
     usePowerPass?: () => Promise<string>;
     onPowerPass?: (cb: (active: boolean) => void) => void;
     /** Phase 3 guardrails — main asks "Can I …?" before a gated tool runs. */
-    onApprovalRequest?: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string }) => void) => void;
+    onApprovalRequest?: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string; timeoutMs?: number }) => void) => void;
     respondApproval: (id: string, approved: boolean) => Promise<boolean>;
     onTtsToggle: (cb: (enabled: boolean) => void) => void;
     onSpeechRate: (cb: (rate: number) => void) => void;

@@ -40,6 +40,32 @@ const pipeline = promisify(pipelineCb);
 const CLAWHUB_BASE = 'https://clawhub.ai/api/v1';
 const SKILLS_DIR = path.join(os.homedir(), '.clippyai', 'skills');
 
+// A slug becomes a folder name (path.join) and lands inside a PowerShell
+// string (Expand-Archive), so it must be validated before either: no dots,
+// slashes, quotes or spaces can reach a path or a command line.
+const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+
+export function isValidSkillSlug(slug: unknown): slug is string {
+  return typeof slug === 'string' && SKILL_SLUG_RE.test(slug);
+}
+
+function assertValidSlug(slug: unknown): asserts slug is string {
+  if (!isValidSkillSlug(slug)) throw new Error(`Invalid skill slug: ${JSON.stringify(String(slug)).slice(0, 80)}`);
+}
+
+// Skills are third-party code: they get the app's environment minus anything
+// that looks like a credential (API keys, tokens, secrets, passwords).
+const SECRET_ENV_RE = /KEY|TOKEN|SECRET|PASSWORD/i;
+
+export function skillChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!SECRET_ENV_RE.test(k)) out[k] = v;
+  }
+  out.ELECTRON_RUN_AS_NODE = '1';
+  return out;
+}
+
 // Capability tags that are SAFE to auto-install. Anything outside this set
 // requires explicit user consent dialog before first install/run.
 const SAFE_CAPABILITY_TAGS = new Set([
@@ -176,6 +202,7 @@ export function classifySkillSafety(scan: SkillScan | null): 'safe' | 'consent' 
  * it's a primitive that assumes the caller already decided.
  */
 export async function installSkill(slug: string, version?: string): Promise<SkillManifest> {
+  assertValidSlug(slug);
   await fs.promises.mkdir(SKILLS_DIR, { recursive: true });
   const destDir = path.join(SKILLS_DIR, slug);
 
@@ -338,6 +365,7 @@ export async function listInstalledSkills(): Promise<SkillManifest[]> {
  * regex catches it.
  */
 export async function runSkill(slug: string, params: Record<string, unknown>): Promise<string> {
+  if (!isValidSkillSlug(slug)) return `(error:INVALID_ARGS) Invalid skill slug.`;
   const skillDir = path.join(SKILLS_DIR, slug);
   if (!fs.existsSync(skillDir)) {
     return `(error:SKILL_NOT_INSTALLED) Skill ${slug} is not installed. Call install_skill first.`;
@@ -369,7 +397,7 @@ export async function runSkill(slug: string, params: Record<string, unknown>): P
     // app has no `node` on PATH, so process.execPath + ELECTRON_RUN_AS_NODE
     // is the only entry point we can rely on.
     const nodeCmd = process.execPath;
-    const childEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+    const childEnv = skillChildEnv();
     let cmd: string;
     let cmdArgs: string[];
     if (process.platform === 'win32' && fs.existsSync(runPs1)) {

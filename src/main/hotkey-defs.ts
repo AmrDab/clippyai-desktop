@@ -13,6 +13,18 @@
  */
 
 export const SUMMON_ACCELERATOR = 'Ctrl+Shift+C';
+
+/**
+ * v0.23 — what the summon hotkey does (plan §1.5). A hidden Clippy always
+ * comes back awake (one press after Alt+F4, not two); a visible one toggles.
+ */
+export function summonTransition(
+  mode: 'awake' | 'sleep',
+  visible: boolean,
+): { mode: 'awake' | 'sleep'; show: boolean } {
+  if (!visible) return { mode: 'awake', show: true };
+  return mode === 'awake' ? { mode: 'sleep', show: false } : { mode: 'awake', show: true };
+}
 export const VOICE_ACCELERATOR_DEFAULT = 'CommandOrControl+Shift+Space';
 export const WRITING_ASSIST_ACCELERATOR = 'Alt+G';
 

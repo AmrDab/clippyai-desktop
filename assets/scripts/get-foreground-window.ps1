@@ -47,12 +47,18 @@ try {
         $processName = $proc.ProcessName
     } catch { }
 
-    # Get window title via UI Automation
+    # Get window title + bounds via UI Automation. v0.23 — bounds were
+    # missing, so smart_click's foreground-window OCR filter never activated.
     $title = ""
+    $bounds = $null
     try {
         $element = [System.Windows.Automation.AutomationElement]::FromHandle($fgWindow)
         if ($element) {
             $title = $element.Current.Name
+            $rect = $element.Current.BoundingRectangle
+            if (-not [double]::IsInfinity($rect.X) -and -not [double]::IsInfinity($rect.Y)) {
+                $bounds = [ordered]@{ x = [int]$rect.X; y = [int]$rect.Y; width = [int]$rect.Width; height = [int]$rect.Height }
+            }
         }
     } catch { }
 
@@ -61,6 +67,7 @@ try {
         processId = $processId
         processName = $processName
         title     = $title
+        bounds    = $bounds
         success   = $true
     }
 

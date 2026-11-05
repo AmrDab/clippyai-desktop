@@ -78,6 +78,7 @@ import * as permissionPolicyMod from './permission-policy';
 import * as toolUndoMod from './tool-undo';
 import * as undoMod from './undo';
 import * as actionHistoryMod from './action-history';
+import * as memoryMod from './memory';
 // Phase 3 guardrails — the bubble's Approve/Deny answer lands here.
 import * as approvalMod from './approval';
 // v0.20.0 — onboarding permission walkthrough: read macOS permission state,
@@ -1355,6 +1356,20 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
   ipcMain.handle('guardrails:clear-history', async () => {
     actionHistoryMod.clear();
+    return true;
+  });
+
+  // v0.23 — Settings → Brain → Memory card: what Clippy remembers per app
+  // (learned workflows, memory.ts) and the two forget buttons. The helpers
+  // existed since v0.11.22 but were never wired (plan §1.2).
+  ipcMain.handle('memory:list', async () => memoryMod.listAppsWithMemory());
+  ipcMain.handle('memory:forget-app', async (_event, app: unknown) => {
+    if (typeof app !== 'string' || !app) return false;
+    memoryMod.forgetApp(app);
+    return true;
+  });
+  ipcMain.handle('memory:forget-all', async () => {
+    memoryMod.forgetAll();
     return true;
   });
 

@@ -6,6 +6,8 @@ import { createLogger } from './logger';
 // was a false alarm and that lazy require got tree-shaken in alpha.11).
 import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
+import { clampRectToDisplay, rectNeedsClamp } from './window-geometry';
+import { appIconPath } from './app-icon';
 
 const log = createLogger('Window');
 
@@ -88,14 +90,7 @@ function dimsFor(state: BubbleSizeState): { width: number; height: number } {
 /** Which vertical side of Clippy the bubble body occupies. */
 type BubbleSide = 'above' | 'below';
 
-/** Clamp a rect so it lies fully within the display's work area. Shifts
- *  (never shrinks) the rect; callers size rects to fit a single display. */
-function clampRectToDisplay(rect: Rectangle, display: Display): Rectangle {
-  const wa = display.workArea;
-  const x = Math.round(Math.min(Math.max(rect.x, wa.x), wa.x + wa.width - rect.width));
-  const y = Math.round(Math.min(Math.max(rect.y, wa.y), wa.y + wa.height - rect.height));
-  return { x, y, width: rect.width, height: rect.height };
-}
+// clampRectToDisplay lives in window-geometry.ts (v0.23 — pure, unit-tested).
 
 /** The display the window's center currently sits on. */
 function displayForWindow(win: BrowserWindow): Display {
@@ -113,7 +108,7 @@ export function createWindow(): BrowserWindow {
 
   log.debug('Screen geometry', { screenW, screenH, xPos, yPos, width: CLIPPY_WIDTH, height: CLIPPY_HEIGHT });
 
-  const iconPath = path.join(__dirname, '../../build/icon.ico');
+  const iconPath = appIconPath();
 
   const win = new BrowserWindow({
     width: CLIPPY_WIDTH,
@@ -317,6 +312,25 @@ export function createWindow(): BrowserWindow {
     win.hide();
   });
 
+  // v0.23 — keep Clippy on a live display (plan §1.5). Unplugging the monitor
+  // he sat on, or a DPI / resolution change, used to leave him off-screen
+  // with tray → Center on Screen as the only rescue.
+  const keepOnLiveDisplay = (): void => {
+    if (win.isDestroyed()) return;
+    const bounds = win.getBounds();
+    const display = screen.getDisplayMatching(bounds);
+    if (!rectNeedsClamp(bounds, display)) return;
+    const clamped = clampRectToDisplay(bounds, display);
+    log.info('Display changed — clamping Clippy into work area', { from: bounds, to: clamped, display: display.id });
+    win.setBounds(clamped);
+  };
+  screen.on('display-removed', keepOnLiveDisplay);
+  screen.on('display-metrics-changed', keepOnLiveDisplay);
+  win.on('closed', () => {
+    screen.removeListener('display-removed', keepOnLiveDisplay);
+    screen.removeListener('display-metrics-changed', keepOnLiveDisplay);
+  });
+
   mainBubbleWindow = win;
   return win;
 }
@@ -389,7 +403,7 @@ export function createSettingsWindow(): BrowserWindow {
     // of the cards). Body is now 100vw/100vh so any resize stays correct.
     width: 820,
     height: 680,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     resizable: true,
     minWidth: 640,
     minHeight: 560,
@@ -449,7 +463,7 @@ export function createOnboardingWindow(): BrowserWindow {
     height,
     x,
     y,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -493,7 +507,7 @@ export function createLogWindow(openReport = false): BrowserWindow {
   logWindow = new BrowserWindow({
     width: 700,
     height: 500,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     resizable: true,
     title: 'ClippyAI Logs',
     webPreferences: {
@@ -542,7 +556,7 @@ export function createWritingCardWindow(
     height: WRITING_CARD_HEIGHT,
     x: initialBounds?.x,
     y: initialBounds?.y,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     transparent: true,
     frame: false,
     alwaysOnTop: true,
@@ -618,7 +632,7 @@ export function createWritingBadgeWindow(
     height: WRITING_BADGE_HEIGHT,
     x: bounds.x,
     y: bounds.y,
-    icon: path.join(__dirname, '../../build/icon.ico'),
+    icon: appIconPath(),
     transparent: true,
     frame: false,
     alwaysOnTop: true,
