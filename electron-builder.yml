@@ -108,7 +108,11 @@ extraResources:
   # the model use known-good keyboard shortcuts (Ctrl+Enter to send in
   # Outlook) instead of trying to coordinate-click — which failed in
   # report fbfc636e... when the AI guessed Send was at (188, 187).
-  - from: vendor/clawdcursor/guides
+  # v0.23.2 — copied from clawdcursor's seed-registry/guides into
+  # assets/guides: clawdcursor's npm package stopped shipping them, so the
+  # vendor step found nothing and every build since logged "Guides directory
+  # not found".
+  - from: assets/guides
     to: clawdcursor-guides
     filter:
       - "*.json"
