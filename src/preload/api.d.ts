@@ -172,7 +172,7 @@ interface Window {
     usePowerPass?: () => Promise<string>;
     onPowerPass?: (cb: (active: boolean) => void) => void;
     /** Phase 3 guardrails — main asks "Can I …?" before a gated tool runs. */
-    onApprovalRequest?: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string }) => void) => void;
+    onApprovalRequest?: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string; timeoutMs?: number }) => void) => void;
     respondApproval: (id: string, approved: boolean) => Promise<boolean>;
     onTtsToggle: (cb: (enabled: boolean) => void) => void;
     onSpeechRate: (cb: (rate: number) => void) => void;
