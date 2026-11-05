@@ -22,6 +22,7 @@ import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk } fr
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
 import { taskOutcomeFor, type TaskOutcome } from './task-outcome';
+import { isBareConsent } from './pass-request';
 // v0.18.3 — static imports for local modules that brain.ts uses
 // lazily via require() elsewhere. Rollup's tree-shaker doesn't follow
 // dynamic require() calls reliably for ALL targets — empirically mail-
@@ -1160,7 +1161,8 @@ export class Brain {
     this.stopRequested = false;
     this.cancelReason = null;
     // v0.21 — remember the request so the free Power pass can re-run it.
-    this.lastUserRequest = text;
+    // A bare "yes" to Clippy's Power offer keeps the request it was about.
+    if (!(this.lastUserRequest && isBareConsent(text))) this.lastUserRequest = text;
     if (this.powerPassActive) this.emit('power-pass', true);
 
     // v0.18.1 — start user-takeover monitor. See user-takeover.ts for
