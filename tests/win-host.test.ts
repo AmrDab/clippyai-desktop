@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough, Writable } from 'stream';
+import os from 'os';
 
 type Handler = (req: Record<string, unknown>, fake: FakeChild) => void;
 
@@ -214,6 +215,25 @@ describe('PsHost lifecycle', () => {
     expect(children[0].lines).toContain('EXIT');
     expect(children[0].killed).toBe(true);
     await expect(host.request({ cmd: 'ping' }, 100)).rejects.toMatchObject({ code: 'HOST_UNAVAILABLE' });
+  });
+});
+
+describe('PsHost shutdown while busy', () => {
+  it('kills a host that is mid-request instead of waiting for it (update install)', async () => {
+    const { host, children } = makeHost(() => { /* hang */ });
+    const p = host.request({ cmd: 'eval', code: 'long' }, 60_000);
+    await new Promise((r) => setTimeout(r, 20));
+    host.shutdown();
+    await expect(p).rejects.toMatchObject({ code: 'HOST_UNAVAILABLE' });
+    expect(children[0].killRequested).toBe(true);
+  });
+
+  it('spawns the host outside the install dir (cwd = temp), hidden', async () => {
+    const { host, spawnFn } = makeHost();
+    await host.request({ cmd: 'ping' }, 1000);
+    const opts = (spawnFn.mock.calls[0] as unknown as [string, string[], { cwd?: string; windowsHide?: boolean }])[2];
+    expect(opts.cwd).toBe(os.tmpdir());
+    expect(opts.windowsHide).toBe(true);
   });
 });
 

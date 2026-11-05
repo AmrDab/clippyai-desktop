@@ -34,6 +34,7 @@
 import { spawn, execFile, type ChildProcess, type SpawnOptions } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import os from 'os';
 
 const execFileAsync = promisify(execFile);
 
@@ -182,14 +183,16 @@ export class PsHost {
     return n;
   }
 
-  /** Clean shutdown on quit: ask the host to exit, hard-kill if it lingers. */
+  /** Clean shutdown on quit: ask an idle host to exit (hard-kill if it lingers); kill a busy one now. */
   shutdown(): void {
     this.closed = true;
+    const busy = this.inflight !== null;
     this.failAll(new PsHostError('HOST_UNAVAILABLE', 'host shut down'));
     const c = this.child;
     if (!c) return;
     this.expectedExits.add(c);
     try { c.stdin?.write('EXIT\n'); c.stdin?.end(); } catch { /* pipe already gone */ }
+    if (busy) { try { c.kill(); } catch { /* already dead */ } }
     const t = setTimeout(() => { try { c.kill(); } catch { /* already dead */ } }, 1000);
     t.unref?.();
     this.child = null;
@@ -210,6 +213,8 @@ export class PsHost {
       child = spawnFn('powershell.exe', [...HOST_ARGS, '-File', this.opts.bridgePath(), '-ScriptsDir', this.opts.scriptsDir()], {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        // Long-lived: never hold a handle on the install dir (NSIS update).
+        cwd: os.tmpdir(),
       });
     } catch (err) {
       this.onStartFailed(err instanceof Error ? err.message : String(err));
