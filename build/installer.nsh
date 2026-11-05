@@ -22,7 +22,11 @@
   ; Kill running instance + child tree
   nsExec::ExecToLog 'taskkill /f /t /im ClippyAI.exe'
   Sleep 1000
-  ; Clean up logs directory (~/.clippyai/) which is outside %APPDATA%
-  ; so deleteAppDataOnUninstall doesn't reach it
-  RMDir /r "$PROFILE\.clippyai"
+  ; Clean up ~/.clippyai (logs, installed skills), which is outside %APPDATA%
+  ; so deleteAppDataOnUninstall doesn't reach it. Real uninstall only: an
+  ; update runs this old uninstaller with --updated, and wiping here lost
+  ; every user's logs and installed skills on each update.
+  ${ifNot} ${isUpdated}
+    RMDir /r "$PROFILE\.clippyai"
+  ${endIf}
 !macroend
