@@ -142,7 +142,9 @@ export function stop(reason: string): void {
   if (reason !== 'switch' && reason !== 'finished') {
     say('Thanks for playing! 📎', 'Wave');
   }
-  if (_home && game !== 'rps') glideTo(_home, () => { _home = null; });
+  // A restart ("Hide again") starts the next game before this glide lands;
+  // that game keeps _home, so only clear it when nothing is running.
+  if (_home && game !== 'rps') glideTo(_home, () => { if (!_game) _home = null; });
   else _home = null;
 }
 
