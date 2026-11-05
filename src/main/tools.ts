@@ -78,6 +78,10 @@ import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersC
 import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
 import * as profileMod from './profile';
+// v0.24 — persistent PowerShell host (plan §2.4). Every win32 PowerShell call
+// below goes through psScript / psCommand: in the long-lived host when it is
+// up, as the old one-shot powershell.exe spawn otherwise.
+import { psScript, psCommand, configurePsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -161,8 +165,9 @@ export function abortAllInFlightTools(): number {
     try { ac.abort(); } catch { /* best effort */ }
   }
   activeAborts.clear();
-  if (n > 0) log.info('abortAllInFlightTools', { aborted: n });
-  return n;
+  const ps = abortPsWork();
+  if (n + ps > 0) log.info('abortAllInFlightTools', { aborted: n, psHost: ps });
+  return n + ps;
 }
 
 // ── Path resolution ──────────────────────────────────────────────
@@ -185,32 +190,12 @@ function getScriptsDir(): string {
   return _cachedScriptsDir;
 }
 
-// ── macOS Automation Bridge (placeholder — see M2 in SPEC.md) ───────
-//
-// The Windows build runs a persistent PowerShell process (ps-bridge.ps1) to
-// keep UIA queries fast and stateful. On macOS the equivalent will be a
-// long-lived osascript / Swift helper process queried over stdin/stdout
-// with the same FIFO + READY + __END__ protocol so callers don't change.
-//
-// M0 scaffold: stub `startPSBridge` and `psCommand` to no-op on macOS so
-// the app boots without trying to spawn powershell.exe. Individual tool
-// implementations that call into powershell.exe directly will fail at
-// call time — that's fine, the Brain surfaces tool errors gracefully.
-// They get ported in M2/M3.
-
-// State retained so the M2 macOS bridge implementation can drop in
-// without changing call sites elsewhere in this file.
-let psBridge: ChildProcess | null = null;
-let psHealthInterval: ReturnType<typeof setInterval> | null = null;
-
-function startPSBridge(): Promise<void> {
-  log.info('Automation bridge not yet implemented for macOS (M2)');
-  return Promise.resolve();
-}
-
-async function psCommand(_cmd: string): Promise<string> {
-  return '(error:UNSUPPORTED_ON_MACOS) automation bridge not yet ported — see SPEC.md M2';
-}
+// ── Windows PowerShell host (v0.24, plan §2.4) ──────────────────────
+// win-host.ts owns the persistent ps-bridge.ps1 process. Scripts resolve
+// against the same scripts dir in both host and one-shot mode; the host is
+// switched on in initTools (win32 only), so code paths that never call
+// initTools (unit tests) keep the one-shot spawn.
+setPsScriptsDir(getScriptsDir);
 
 // ── Screen Scale ─────────────────────────────────────────────────
 
@@ -298,19 +283,15 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
   // win32 — UIA accessibility tree via get-screen-context.ps1 (restored
   // from v0.17.7; the v0.20.0 port fell through to osascript here).
   if (process.platform === 'win32') {
-    const scriptPath = path.join(getScriptsDir(), 'get-screen-context.ps1');
     try {
       // v0.23 — the script's parameter is -FocusedProcessId (we passed
       // -ProcessId, so the uiTree branch never ran). With no explicit PID
       // the script resolves the real foreground process itself, skipping
       // Clippy's own window.
-      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-        '-ExcludeProcessId', String(process.pid)];
-      if (params.processId) args.push('-FocusedProcessId', String(params.processId));
-      const { stdout } = await execFileAsync('powershell.exe', args, {
-        timeout: 10000,
-        maxBuffer: 5 * 1024 * 1024,
-      });
+      const { stdout } = await psScript('get-screen-context.ps1', {
+        ExcludeProcessId: process.pid,
+        FocusedProcessId: params.processId ? String(params.processId) : undefined,
+      }, { timeoutMs: 10000, maxBuffer: 5 * 1024 * 1024, idempotent: true });
       const filtered = stripOwnWindowFromScreen(stdout.trim());
       return { text: filtered || '(empty screen context)' };
     } catch (err) {
@@ -401,15 +382,11 @@ async function getActiveWindow(): Promise<ToolResult> {
   }
 
   // win32 — Win32 GetForegroundWindow + UIA title via get-foreground-window.ps1
-  // (restored from v0.17.7). One powershell.exe spawn per call (~1-2s with
-  // Add-Type compile); the only steady-state caller is the proactive tick in
-  // brain.ts (interval clamped to >= 5s in ipc.ts), so no bridge needed.
+  // (restored from v0.17.7). v0.24: runs in the persistent host (~tens of ms)
+  // — callers are the proactive tick, smart_click and the governor (§1.6).
   if (process.platform === 'win32') {
     try {
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        path.join(getScriptsDir(), 'get-foreground-window.ps1'),
-      ], { timeout: 5000 });
+      const { stdout } = await psScript('get-foreground-window.ps1', {}, { timeoutMs: 5000, idempotent: true });
       return { text: stdout.trim() || '(no active window)' };
     } catch (err) {
       log.warn('get_active_window failed', serializeErr(err));
@@ -485,10 +462,7 @@ async function getWindows(): Promise<ToolResult> {
   // win32 — get-windows.ps1 (restored from v0.17.7).
   if (process.platform === 'win32') {
     try {
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        path.join(getScriptsDir(), 'get-windows.ps1'),
-      ], { timeout: 5000 });
+      const { stdout } = await psScript('get-windows.ps1', {}, { timeoutMs: 5000, idempotent: true });
       return { text: stdout.trim() || '(no windows found)' };
     } catch (err) {
       log.warn('get_windows failed', serializeErr(err));
@@ -512,29 +486,27 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
   // "msedge" never appears in Edge's window title.
   if (process.platform === 'win32') {
     try {
-      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        path.join(getScriptsDir(), 'focus-window.ps1')];
+      const args: Record<string, string> = {};
       if (title) {
-        args.push('-Title', String(title));
+        args.Title = String(title);
       } else if (processName) {
         try {
-          const { stdout: pidOut } = await execFileAsync('powershell.exe', [
-            '-NoProfile', '-Command',
+          const { stdout: pidOut } = await psCommand(
             `(Get-Process -Name '${sanitizeAppName(String(processName))}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id`,
-          ], { timeout: 3000 });
+            { timeoutMs: 3000, idempotent: true });
           const pid = parseInt(pidOut.trim());
           if (pid > 0) {
-            args.push('-ProcessId', String(pid));
+            args.ProcessId = String(pid);
           } else {
-            args.push('-Title', String(processName));
+            args.Title = String(processName);
           }
         } catch {
-          args.push('-Title', String(processName));
+          args.Title = String(processName);
         }
       } else if (processId) {
-        args.push('-ProcessId', String(processId));
+        args.ProcessId = String(processId);
       }
-      const { stdout } = await execFileAsync('powershell.exe', args, { timeout: 5000 });
+      const { stdout } = await psScript('focus-window.ps1', args, { timeoutMs: 5000 });
       // v0.23 — honest result (plan §1.1): the script compares the
       // foreground PID/HWND with the target after its settle wait and
       // reports success only when the switch really took.
@@ -646,12 +618,11 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   // win32 — Get-Process pre-check + Start-Process (restored from v0.17.7).
   if (process.platform === 'win32') {
     try {
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      const { stdout } = await psCommand(
         `$p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | ` +
         `Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; ` +
         `if ($p) { $p.Id } else { '' }`,
-      ], { timeout: 3000 });
+        { timeoutMs: 3000, idempotent: true });
       const existing = parseInt(stdout.trim());
       if (existing > 0) {
         // v0.23 — pass the focus verdict through instead of assuming it took.
@@ -668,13 +639,12 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
     try {
       // v0.23 — poll ≤3 s for a window of the launched process so "Launched"
       // is a verified claim, not a Start-Process return value (plan §1.1).
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      const { stdout } = await psCommand(
         `Start-Process -FilePath '${name}'; $deadline = (Get-Date).AddSeconds(3); $found = 0; ` +
         `while ((Get-Date) -lt $deadline) { $p = Get-Process -Name '${name}' -ErrorAction SilentlyContinue | ` +
         `Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; if ($p) { $found = $p.Id; break }; ` +
         `Start-Sleep -Milliseconds 250 }; $found`,
-      ], { timeout: 10000 });
+        { timeoutMs: 10000 });
       const pid = parseInt(stdout.trim());
       if (pid > 0) {
         return { text: `Launched ${name} (pid ${pid}, window up)`, receipt: makeReceipt('open_app', 'verified', true, { pid }) };
@@ -744,11 +714,7 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
       // v0.23 — type-text.ps1 refuses when Clippy's own window is in the
       // foreground, pastes, then reads the focused element back through
       // UIA so the receipt can say 'verified' (plan §1.1).
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-        path.join(getScriptsDir(), 'type-text.ps1'),
-        '-File', tmpFile, '-OwnPid', String(process.pid),
-      ], { timeout: 8000 });
+      const { stdout } = await psScript('type-text.ps1', { File: tmpFile, OwnPid: process.pid }, { timeoutMs: 8000 });
       let r: { success?: boolean; error?: string; foregroundProcessId?: number; processName?: string; hasReadback?: boolean; readback?: string | null } = {};
       try { r = JSON.parse(stdout.trim()); } catch { /* no JSON → unverified below */ }
       if (r.success === false && r.error === 'own_window') {
@@ -885,10 +851,9 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
 
       const safeSendKeys = sanitizeForSendKeys(sendKeysStr);
       if (!safeSendKeys) return { text: `(invalid key: ${rawKey})` };
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      await psCommand(
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${safeSendKeys}')`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: `Pressed: ${rawKey}` };
     } catch (err) {
       return { text: `(key_press error: ${err instanceof Error ? err.message : ''})` };
@@ -1052,14 +1017,13 @@ async function mouseDrag(params: Record<string, unknown>): Promise<ToolResult> {
   // win32 — mouse_event LEFTDOWN → move → LEFTUP (restored from v0.17.7).
   if (process.platform === 'win32') {
     try {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
         `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${sx},${sy}); Start-Sleep -Milliseconds 50; ` +
         `[API.Win32]::mouse_event(2,0,0,0,0); Start-Sleep -Milliseconds 50; ` +
         `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${ex},${ey}); Start-Sleep -Milliseconds 50; ` +
         `[API.Win32]::mouse_event(4,0,0,0,0)`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: `Dragged from (${sx},${sy}) to (${ex},${ey})` };
     } catch (err) {
       return { text: `(mouse_drag error: ${err instanceof Error ? err.message : ''})` };
@@ -1134,12 +1098,11 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
   if (process.platform === 'win32') {
     const delta = direction === 'up' ? 120 * amount : -120 * amount;
     try {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
         `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
         `[API.Win32]::mouse_event(0x0800,0,0,${delta},0)`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: `Scrolled ${direction} at (${x},${y})` };
     } catch (err) {
       return { text: `(mouse_scroll error: ${err instanceof Error ? err.message : ''})` };
@@ -1289,12 +1252,11 @@ async function clickPhysical(x: number, y: number): Promise<void> {
   // win32 — Cursor.Position + mouse_event LEFTDOWN/LEFTUP (restored from
   // v0.17.7). Physical pixels, no screenScale.
   if (process.platform === 'win32') {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
+    await psCommand(
       `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
       `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
       `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
-    ], { timeout: 5000 });
+      { timeoutMs: 5000 });
     return;
   }
   // System Events `click at {x, y}` requires Accessibility permission. The
@@ -1666,9 +1628,9 @@ async function desktopScreenshot(): Promise<ToolResult> {
   // throws HelperError('missing') on Windows.
   if (process.platform === 'win32') {
     try {
-      // v0.11.26 abortable so sleep can kill an in-flight 10s capture.
-      const { stdout } = await execFileAbortable('powershell.exe', [
-        '-NoProfile', '-Command',
+      // v0.11.26 abortable so sleep can kill an in-flight 10s capture
+      // (v0.24: abortPsWork covers both the host and one-shot spawns).
+      const { stdout } = await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
         `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
         `$nw = $b.Width; $nh = $b.Height; ` +
@@ -1692,7 +1654,7 @@ async function desktopScreenshot(): Promise<ToolResult> {
         `$bmp.Dispose(); ` +
         `Write-Output ("$nw $nh $fw $fh"); ` +
         `Write-Output ([Convert]::ToBase64String($ms.ToArray()))`,
-      ], { timeout: 10000, maxBuffer: 20 * 1024 * 1024 });
+        { timeoutMs: 10000, maxBuffer: 20 * 1024 * 1024, idempotent: true });
 
       const lines = stdout.trim().split(/\r?\n/);
       const headerParts = (lines[0] || '').split(' ');
@@ -1868,10 +1830,9 @@ async function writeClipboard(params: Record<string, unknown>): Promise<ToolResu
     const tmpFile = path.join(os.tmpdir(), `clippy-clip-${Date.now()}.txt`);
     try {
       fs.writeFileSync(tmpFile, text, 'utf-8');
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      await psCommand(
         `Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 -LiteralPath '${tmpFile.replace(/'/g, "''")}')`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: `Wrote ${text.length} chars to clipboard` };
     } catch (err) {
       return { text: `(write_clipboard error: ${err instanceof Error ? err.message : ''})` };
@@ -2013,14 +1974,13 @@ async function mouseDoubleClick(params: Record<string, unknown>): Promise<ToolRe
   // win32 — two LEFTDOWN/LEFTUP pairs 50ms apart (restored from v0.17.7).
   if (process.platform === 'win32') {
     try {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
         `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
         `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0); ` +
         `Start-Sleep -Milliseconds 50; ` +
         `[API.Win32]::mouse_event(2,0,0,0,0); [API.Win32]::mouse_event(4,0,0,0,0)`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: `Double-clicked at (${x},${y})` };
     } catch (err) {
       return { text: `(mouse_double_click error: ${err instanceof Error ? err.message : ''})` };
@@ -2071,12 +2031,11 @@ async function mouseRightClick(params: Record<string, unknown>): Promise<ToolRes
   // from v0.17.7.
   if (process.platform === 'win32') {
     try {
-      await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
         `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y}); ` +
         `[API.Win32]::mouse_event(8,0,0,0,0); [API.Win32]::mouse_event(16,0,0,0,0)`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: `Right-clicked at (${x},${y})` };
     } catch (err) {
       return { text: `(mouse_right_click error: ${err instanceof Error ? err.message : ''})` };
@@ -2129,11 +2088,10 @@ async function mouseHover(params: Record<string, unknown>): Promise<ToolResult> 
   // (darwin via the Swift bridge above, win32 here) instead of advertising
   // win32 in tool-meta and then returning UNSUPPORTED.
   try {
-    await execFileAsync('powershell.exe', [
-      '-NoProfile', '-Command',
+    await psCommand(
       `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; ` +
       `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y})`,
-    ], { timeout: 5000 });
+      { timeoutMs: 5000 });
     return { text: `Moved cursor to (${x},${y})` };
   } catch (err) {
     return { text: `(mouse_hover error: ${err instanceof Error ? err.message : String(err)})` };
@@ -2169,8 +2127,7 @@ async function getFocusedElement(): Promise<ToolResult> {
   // win32 — UIA AutomationElement.FocusedElement (restored from v0.17.7).
   if (process.platform === 'win32') {
     try {
-      const { stdout } = await execFileAsync('powershell.exe', [
-        '-NoProfile', '-Command',
+      const { stdout } = await psCommand(
         `Add-Type -AssemblyName UIAutomationClient; ` +
         `$el = [System.Windows.Automation.AutomationElement]::FocusedElement; ` +
         `if ($el) { ` +
@@ -2180,7 +2137,7 @@ async function getFocusedElement(): Promise<ToolResult> {
           `$b = $el.Current.BoundingRectangle; ` +
           `"name=$name | type=$type | id=$auto | bounds=$($b.X),$($b.Y),$($b.Width),$($b.Height)" ` +
         `} else { "(no focused element)" }`,
-      ], { timeout: 5000 });
+        { timeoutMs: 5000 });
       return { text: stdout.trim() || '(no focused element)' };
     } catch (err) {
       return { text: `(get_focused_element error: ${err instanceof Error ? err.message : ''})` };
@@ -5137,14 +5094,12 @@ export async function initTools(): Promise<void> {
   // Non-blocking — never delay startup just because skills enumeration
   // hits a slow disk.
   refreshSkillRegistry().catch((err) => log.warn('Skill registry refresh failed', serializeErr(err)));
-  // PSBridge warmup is SLOW (~12s on fresh Windows installs) and blocking
-  // it here makes Clippy show nothing for ~12s after click-to-launch. Start
-  // it in the background and let psCommand() fall back to one-off PowerShell
-  // calls until the bridge reports READY. Users get a responsive app now;
-  // per-call overhead of one-off PS is ~100-500ms until warmup completes.
-  startPSBridge().catch((err) => {
-    log.warn('Bridge stub failed unexpectedly', serializeErr(err));
-  });
+  // v0.24 — persistent PowerShell host (plan §2.4). Nothing is spawned here:
+  // the host starts lazily on the first PowerShell-backed tool call, and
+  // callers fall back to one-shot spawns while it warms up or if it fails.
+  if (process.platform === 'win32') {
+    configurePsHost({ scriptsDir: getScriptsDir, log: createLogger('PsHost') });
+  }
 
   initialized = true;
   log.info('Tools ready', { toolCount: Object.keys(TOOL_MAP).length });
@@ -5313,19 +5268,11 @@ export async function assessRisk(tool: string, params: Record<string, unknown> =
 }
 
 /**
- * Cleanup on app quit. The macOS bridge (M2) will be a single osascript or
- * Swift helper process — no Windows-style child tree to kill — so SIGKILL
- * on the direct child is sufficient. DMG auto-update doesn't need the
- * exclusive-file-handle guarantee that taskkill /T provided on Windows.
+ * Cleanup on app quit / before an update install: stop the persistent
+ * PowerShell host (EXIT on stdin, hard kill after 1 s) and any one-shot
+ * PowerShell still running.
  */
 export function cleanupTools(): void {
-  if (psHealthInterval) {
-    clearInterval(psHealthInterval);
-    psHealthInterval = null;
-  }
-
-  if (psBridge && !psBridge.killed) {
-    try { psBridge.kill('SIGKILL'); } catch { /* already dead */ }
-    psBridge = null;
-  }
+  abortPsWork();
+  shutdownPsHost();
 }
