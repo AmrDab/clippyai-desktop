@@ -63,6 +63,7 @@ import { hasApiKey } from './license';
 import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
+import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
 // never from a model-supplied argument.
@@ -2980,21 +2981,13 @@ function sanitizeShellEnv(): NodeJS.ProcessEnv {
 //      text / OCR / page content. If the user says "run this command
 //      from the screen", read it back and ASK first.
 //
-// Blocklist is intentionally tiny: rm -rf / variants, dd to /dev/, mkfs,
-// forkbomb. These are well-known patterns that should NEVER be passed
-// even by accident — they're not a substitute for the policy gate, just
-// a hard floor.
-
-const SHELL_BLOCKLIST_PATTERNS: RegExp[] = [
-  // rm -rf / (and variants with extra flags, --no-preserve-root, /*, ~/*)
-  /\brm\s+(-[a-zA-Z]*[rRf][a-zA-Z]*\s+)+(--no-preserve-root\s+)?[/~](\s|$|\*)/,
-  // dd writing to a raw device (if=... of=/dev/...)
-  /\bdd\s+[^|;&]*\bof=\/dev\//,
-  // mkfs.* (any filesystem format)
-  /\bmkfs(\.[a-z0-9]+)?\s+/,
-  // classic bash forkbomb
-  /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
-];
+// Blocklist (shell-guard.ts): rm -rf / variants, dd to /dev/, mkfs, forkbomb,
+// plus the Windows equivalents (format, rd /s / Remove-Item -Recurse on
+// drive roots and system folders, reg delete HKLM, shadow-copy / backup
+// deletion, bcdedit, cipher /w, disabling Defender / firewall, SYSTEM
+// scheduled tasks, takeown /r on system dirs). These should NEVER be passed
+// even by accident — they're not a substitute for the policy gate, just a
+// hard floor.
 
 const SHELL_OUTPUT_CAP_BYTES = 32 * 1024;       // 32 KB combined stdout+stderr
 const SHELL_TIMEOUT_DEFAULT_MS = 30_000;
@@ -3007,24 +3000,23 @@ async function shellExec(params: Record<string, unknown>): Promise<ToolResult> {
   // Blocklist gate — runs BEFORE the permission gate (which is upstream
   // in brain.ts). Even if the user clicked "approve", we refuse these
   // specific patterns — they have no legitimate one-line use.
-  for (const re of SHELL_BLOCKLIST_PATTERNS) {
-    if (re.test(command)) {
-      log.warn('shell_exec blocked', { command: command.substring(0, 120) });
-      return { text: `(error:BLOCKED_COMMAND) "${command.substring(0, 80)}..." matches a hardcoded danger pattern (rm -rf /, dd to /dev/, mkfs, forkbomb). Refused.` };
-    }
+  const blocked = shellBlockReason(command);
+  if (blocked) {
+    log.warn('shell_exec blocked', { command: command.substring(0, 120), rule: blocked });
+    return { text: `(error:BLOCKED_COMMAND) "${command.substring(0, 80)}..." matches a hardcoded danger pattern (${blocked}). Refused even with approval.` };
   }
 
   // Resolve working dir. Default to homedir. Expand ~ for convenience.
-  // Refuse `/` and `/System` even if the user/policy approved — there is
-  // no legitimate `cwd=/` use case and tools relying on the cwd for
-  // relative paths would do catastrophic things in those locations.
+  // Refuse `/`, `/System`, drive roots, C:\Windows and Program Files even
+  // if the user/policy approved — there is no legitimate use case and tools
+  // relying on the cwd for relative paths would do catastrophic things there.
   let cwd = os.homedir();
   if (params.cwd) {
     const raw = String(params.cwd);
     cwd = raw.startsWith('~')
       ? path.join(os.homedir(), raw.slice(1))
       : raw;
-    if (cwd === '/' || cwd === '/System' || cwd.startsWith('/System/')) {
+    if (isProtectedShellCwd(cwd)) {
       return { text: `(error:PROTECTED_PATH) shell_exec refuses cwd: ${cwd}` };
     }
     try {
