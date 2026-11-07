@@ -194,6 +194,7 @@ function detectSilentFailure(): UpdaterState {
     // lastAttemptedVersion first then tried to delete failureCount[''],
     // leaving stale failureCount entries that never cleaned up.
     const succeededVersion = state.lastAttemptedVersion;
+    telemetry.track('update_installed', { to: succeededVersion });
     state.lastAttemptedVersion = '';
     state.lastAttemptedAt = '';
     delete state.failureCount[succeededVersion];
@@ -462,13 +463,71 @@ function isSnoozed(version: string): boolean {
  */
 export function installOnUserQuit(): boolean {
   if (!updateDownloaded || isSnoozed(expectedVersion)) return false;
-  // Windows' install path hands the installer to Explorer — popping a window
-  // every time the user quits is exactly the intrusion we avoid. Tray item only.
-  if (process.platform === 'win32') return false;
+  // Windows (v0.24): install silently on the way out. Telemetry showed most
+  // users never click "Restart now" (it opens Explorer for a double-click), so
+  // downloaded updates sat uninstalled. The installer is now signed and we
+  // strip Mark-of-the-Web first. If a silent attempt for this version already
+  // failed, the boot-time check counted it — don't retry silently; the user
+  // keeps the manual tray path.
+  if (process.platform === 'win32') {
+    if ((readState().failureCount[expectedVersion] || 0) > 0) return false;
+    void installSilentlyOnQuit();
+    return true;
+  }
   log.info('User quit with a downloaded update — installing on the way out', { version: expectedVersion });
   if (process.platform === 'darwin') autoUpdater.autoRunAppAfterInstall = false;
   void installUpdate();
   return true;
+}
+
+/**
+ * v0.24 — Windows install-on-quit. Same ordering as installUpdate() (record
+ * the attempt, release PSBridge locks, clear a stale installer.exe), then a
+ * silent NSIS run with no relaunch, because the user asked to quit. A silent
+ * failure is caught on the next boot by detectSilentFailure().
+ */
+async function installSilentlyOnQuit(): Promise<void> {
+  const installerPath = (autoUpdater as unknown as {
+    downloadedUpdateHelper?: { file?: string };
+  }).downloadedUpdateHelper?.file || '';
+  log.info('User quit with a downloaded update — installing silently', { version: expectedVersion, installerPath });
+  telemetry.track('update_install_started', { to: expectedVersion, mode: 'on_quit' });
+  telemetry.flushBeforeInstall();
+
+  const state = readState();
+  state.lastAttemptedVersion = expectedVersion;
+  state.lastAttemptedAt = new Date().toISOString();
+  writeState(state);
+
+  try { cleanupTools(); } catch (err) { log.warn('cleanupTools error (non-fatal)', serializeErr(err)); }
+  try {
+    const staleInstaller = path.join(cacheDir(), 'installer.exe');
+    if (fs.existsSync(staleInstaller)) fs.unlinkSync(staleInstaller);
+  } catch (err) {
+    log.warn('Install.cacheClean failed (non-fatal)', serializeErr(err));
+  }
+  if (installerPath && fs.existsSync(installerPath)) {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      await promisify(execFile)('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Unblock-File -LiteralPath '${installerPath.replace(/'/g, "''")}'`,
+      ], { timeout: 4000 });
+    } catch (err) {
+      log.warn('Install.unblockMOTW failed (non-fatal)', serializeErr(err));
+    }
+  }
+
+  quitState.setQuitting();
+  try {
+    autoUpdater.quitAndInstall(true, false);
+  } catch (err) {
+    log.error('quitAndInstall threw', serializeErr(err));
+  }
+  // quitAndInstall only quits when it managed to start the installer. The
+  // user asked to quit either way — make sure we do.
+  setTimeout(() => app.quit(), 3000);
 }
 
 export function downloadUpdate(): void {
