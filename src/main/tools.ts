@@ -1438,7 +1438,7 @@ async function windowsSmartFind(
       ValueB64: value !== undefined ? b64(value) : undefined,
       NodeBudget: 3000,
       TimeBudgetMs: 4000,
-    }, { timeoutMs: 12000 }));
+    }, { timeoutMs: 15000 })); // 4 s search + up to 6 s for a slow app's Invoke
   } catch (err) {
     const e = err as { message?: string; stdout?: string; killed?: boolean; signal?: string };
     const msg = e.message || String(err);

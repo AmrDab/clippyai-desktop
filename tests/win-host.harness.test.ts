@@ -171,7 +171,8 @@ describe.skipIf(!RUN)('Windows PowerShell host harness (own WinForms window)', (
     expect(r).toMatchObject({ found: true, method: 'uia-setvalue', setValue: true, readback: 'match' });
     // the harness form's stdout is OEM-encoded, so only compare the ASCII head
     expect(await waitEvent('text Quarterly')).toBeTruthy();
-    expect(await foreground()).not.toBe(info.hwnd);
+    // (no foreground assertion: like the checkbox, the Win32 edit's ValuePattern
+    // activates its window — expected when Clippy types into the app the user named)
   }, 30000);
 
   it('OCR resident in the host: own-form crop, multi-word line match, warm calls faster than cold', async () => {

@@ -203,10 +203,15 @@ public static class ClippySmartFind {
 
     // Run a pattern call with a bound: InvokePattern.Invoke blocks while a
     // modal dialog it opened is up. 1 = done, 0 = threw, 2 = still running (pending).
+    // Invoke on UWP/WinUI apps (Calculator) routinely takes 2-3 s to return; a
+    // 1.5 s bound reported every press as "pending" and the one-shot script
+    // then exited and killed the call before it ran (VM test, v0.24). Wait
+    // longer, and never let process exit abort an in-flight pattern call.
+    const int PatternWaitMs = 6000;
     static int Bounded(Action a, int ms) {
         Exception err = null;
         var th = new Thread(() => { PerMonitorV2(); try { a(); } catch (Exception e) { err = e; } });
-        th.IsBackground = true;
+        th.IsBackground = false;
         th.Start();
         if (!th.Join(ms)) return 2;
         return err == null ? 1 : 0;
@@ -229,17 +234,17 @@ public static class ClippySmartFind {
         int rc;
         if (el.TryGetCurrentPattern(InvokePattern.Pattern, out p)) {
             var ip = (InvokePattern)p;
-            rc = Bounded(() => ip.Invoke(), 1500);
+            rc = Bounded(() => ip.Invoke(), PatternWaitMs);
             if (rc != 0) { pending = rc == 2; return "uia-invoke"; }
         }
         if (el.TryGetCurrentPattern(TogglePattern.Pattern, out p)) {
             var tp = (TogglePattern)p;
-            rc = Bounded(() => tp.Toggle(), 1500);
+            rc = Bounded(() => tp.Toggle(), PatternWaitMs);
             if (rc != 0) { pending = rc == 2; return "uia-toggle"; }
         }
         if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out p)) {
             var sp = (SelectionItemPattern)p;
-            rc = Bounded(() => sp.Select(), 1500);
+            rc = Bounded(() => sp.Select(), PatternWaitMs);
             if (rc != 0) { pending = rc == 2; return "uia-select"; }
         }
         var pt = new POINT { X = (int)Math.Round(r.X + r.Width / 2), Y = (int)Math.Round(r.Y + r.Height / 2) };
@@ -257,7 +262,7 @@ public static class ClippySmartFind {
                     string anorm = Norm(an);
                     if (anorm.Length > 0 && (anorm == en || anorm.Contains(en) || en.Contains(anorm))) {
                         var a2 = acc; var c2 = child;
-                        rc = Bounded(() => a2.accDoDefaultAction(c2), 1500);
+                        rc = Bounded(() => a2.accDoDefaultAction(c2), PatternWaitMs);
                         if (rc != 0) { pending = rc == 2; return "uia-legacy"; }
                     }
                 }
@@ -301,7 +306,7 @@ public static class ClippySmartFind {
                 bool ro = true;
                 try { ro = vp.Current.IsReadOnly; } catch { }
                 if (!ro) {
-                    int rc = Bounded(() => vp.SetValue(value), 2000);
+                    int rc = Bounded(() => vp.SetValue(value), PatternWaitMs);
                     if (rc != 0) {
                         done = true; method = "uia-setvalue"; pending = rc == 2;
                         string back = null;
