@@ -89,6 +89,7 @@ if (process.platform === 'win32') {
 
 import { createWindow, createOnboardingWindow, getOnboardingWindow } from './window';
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
+import * as claimWatch from './claim-watch';
 import { getBuddyName, getTtsVoice, saveLicense, getPlan } from './license';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
@@ -202,19 +203,30 @@ async function handleActivateUrl(url: string): Promise<void> {
     }
   }
   const result = await activateFromUrl(url);
-  const onboarding = getOnboardingWindow();
-  if (onboarding) await whenLoaded(onboarding);
-  else if (mainWindow && !mainWindow.isDestroyed()) await whenLoaded(mainWindow);
   if (!result.ok) {
+    const onboarding = getOnboardingWindow();
+    if (onboarding) await whenLoaded(onboarding);
     log.warn('Activate.failed', { error: result.error });
     telemetry.track('activation', { outcome: 'fail', error: result.error });
     onboarding?.webContents.send('activation-result', { ok: false, message: result.message });
     onboarding?.focus();
     return;
   }
-  saveLicense(result.licenseKey, result.plan, getBuddyName() || 'Clippy', getTtsVoice());
-  log.info('Activate.ok', { plan: result.plan });
-  telemetry.track('activation', { outcome: 'ok' });
+  await applyActivation(result.licenseKey, result.plan, 'link');
+}
+
+// v0.24 — the email link was opened on another device (phone); the key
+// arrives by polling (claim-watch.ts). Only while not licensed yet.
+claimWatch.setClaimHandler((r) => applyActivation(r.licenseKey, r.plan, 'claim'), () => isLicensed());
+
+async function applyActivation(licenseKey: string, plan: string, via: 'link' | 'claim'): Promise<void> {
+  const onboarding = getOnboardingWindow();
+  if (onboarding) await whenLoaded(onboarding);
+  else if (mainWindow && !mainWindow.isDestroyed()) await whenLoaded(mainWindow);
+  saveLicense(licenseKey, plan, getBuddyName() || 'Clippy', getTtsVoice());
+  log.info('Activate.ok', { plan, via });
+  telemetry.track('activation', { outcome: 'ok', via });
+  const result = { licenseKey, plan };
   if (onboarding) {
     // Onboarding advances itself (Meet Clippy) and persists name/voice on Next.
     onboarding.webContents.send('activation-result', { ok: true, plan: result.plan, licenseKey: result.licenseKey });

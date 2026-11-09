@@ -4,6 +4,7 @@ import { executeTool } from './tools';
 import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage, snoozeUpdate, installOnUserQuit } from './updater';
 import { createLogger, serializeErr, ingestRendererLog } from './logger';
 import * as telemetry from './telemetry';
+import * as claimWatch from './claim-watch';
 
 const log = createLogger('IPC');
 
@@ -260,6 +261,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
             try { parsed = JSON.parse(data); } catch { /* fall through to status-based mapping */ }
             if (status === 200 && parsed.emailed) {
               log.info('FreeSignup.emailed');
+              claimWatch.watchClaim(); // finish by ourselves if the link is opened on a phone
               resolve({ emailed: true });
             } else if (status === 400) {
               resolve({ error: parsed.error || 'invalid_email' });
@@ -278,7 +280,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           log.error('FreeSignup.error', serializeErr(err));
           resolve({ error: 'offline' });
         });
-        req.write(JSON.stringify({ email: trimmed }));
+        req.write(JSON.stringify({ email: trimmed, claim: claimWatch.getSignupClaim() }));
         req.end();
       });
       telemetry.track('signup', { outcome: 'error' in r ? r.error : 'ok' });
