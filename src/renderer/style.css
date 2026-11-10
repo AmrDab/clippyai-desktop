@@ -1184,30 +1184,6 @@ body.clippy-window {
   background: #ddd;
 }
 
-.btn-trial {
-  display: block;
-  width: 100%;
-  background: #2196F3;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  padding: 10px 24px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  font-family: inherit;
-}
-.btn-trial:hover { background: #1976D2; }
-.btn-trial:disabled { background: #ccc; cursor: not-allowed; }
-
-.trial-hint {
-  font-size: 12px;
-  color: #666;
-  text-align: center;
-  font-style: italic;
-  margin-top: 8px;
-}
-
 .onboarding-footer {
   display: flex;
   justify-content: space-between;
@@ -3136,20 +3112,6 @@ body.onboarding-window {
   background: var(--s-surface);
   color: var(--s-ink);
 }
-.btn-trial {
-  background: var(--s-surface);
-  color: var(--s-ink);
-  border: 1px solid var(--s-hairline-strong);
-  border-radius: var(--s-radius-md);
-  padding: 10px 20px;
-  font-size: var(--s-fs-13);
-  font-weight: 500;
-}
-.btn-trial:hover {
-  background: var(--s-surface-soft);
-  border-color: var(--s-ink-faint);
-}
-
 /* Activate step (1) — must fit the 480×700 window with no scrolling, privacy
    line included. Free CTA is full-width primary; the two paid plans sit
    side-by-side as compact secondary buttons with their price under each. */
@@ -3575,25 +3537,6 @@ body.onboarding-window[data-platform="win"] {
 
 [data-platform="win"] .btn-secondary:hover,
 [data-platform="win"] .step-nav-prev:hover {
-  background: rgba(255, 255, 255, 1);
-  border-color: rgba(0, 0, 0, 0.2);
-}
-
-/* Paid-plan buttons are SECONDARY (same look as .btn-secondary) so the free
-   CTA stays the one accent button. Pre-fix this filled them with the accent
-   but inherited the v2 block's dark ink → navy-on-blue at 3.9:1. */
-[data-platform="win"] .btn-trial {
-  background: var(--fluent-card-bg);
-  color: #1a1a1a;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: var(--fluent-radius-sm);
-  font-family: var(--fluent-font);
-  font-weight: 600;
-  transition: background var(--fluent-transition),
-              border-color var(--fluent-transition);
-}
-
-[data-platform="win"] .btn-trial:hover {
   background: rgba(255, 255, 255, 1);
   border-color: rgba(0, 0, 0, 0.2);
 }
