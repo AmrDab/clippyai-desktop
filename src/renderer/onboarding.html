@@ -1,72 +1,62 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <title>ClippyAI</title>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body class="onboarding-window">
   <div class="onboarding">
+    <button id="setup-close" class="setup-close" type="button" aria-label="Close" data-i18n-aria="close">&times;</button>
     <div class="onboarding-header">
       <h1>ClippyAI</h1>
-      <p class="tagline">Your AI desktop buddy is waiting</p>
     </div>
 
     <!-- Step 1: Setup (onboarding v3) — email, then the 6-digit code from the
          email. Opens when the silent trial isn't available, when the trial is
          used up, or from the "add your email" bubble (?mode=email: this screen
-         only). Pasting a license key stays available. -->
+         only). Text comes from i18n.ts via data-i18n. -->
     <div class="onboarding-step active" data-step="1">
-      <h2 id="setup-title">Get started — free</h2>
-      <p class="onboarding-subhead" id="setup-sub">No card needed. We'll email you a 6-digit code.</p>
+      <h2 id="setup-title" data-i18n="setup.title"></h2>
+      <p class="onboarding-subhead" id="setup-sub" data-i18n="setup.sub"></p>
 
       <div id="free-section">
         <div id="email-stage">
-          <label for="setup-email">Your email</label>
-          <input id="setup-email" type="email" placeholder="you@example.com" spellcheck="false" autocomplete="email" inputmode="email" />
-          <button class="btn-primary" id="btn-send-code" type="button">Send code</button>
+          <label for="setup-email" data-i18n="email.label"></label>
+          <input id="setup-email" type="email" data-i18n-placeholder="email.placeholder" spellcheck="false" autocomplete="email" inputmode="email" />
+          <div class="onboarding-hint" id="email-suggest" hidden>
+            <span id="email-suggest-text"></span>
+            <button class="onboarding-skip-link" id="btn-email-fix" type="button" data-i18n="email.suggest.yes"></button>
+          </div>
+          <button class="btn-primary" id="btn-send-code" type="button" data-i18n="email.send"></button>
         </div>
         <div id="code-stage" style="display:none;">
-          <label for="setup-code">Type the 6-digit code we sent to <span id="code-sent-to"></span></label>
-          <input id="setup-code" class="code-input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code" spellcheck="false" />
+          <label for="setup-code" id="code-label"></label>
+          <p class="onboarding-hint" id="code-hint" data-i18n="code.hint"></p>
+          <input id="setup-code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" placeholder="000000" />
+          <button class="btn-primary" id="btn-verify-code" type="button" disabled data-i18n="code.continue"></button>
           <div class="code-actions">
-            <button class="onboarding-skip-link" id="btn-resend-code" type="button" disabled>Send a new code</button>
-            <button class="onboarding-skip-link" id="btn-change-email" type="button">Use a different email</button>
+            <button class="onboarding-skip-link" id="btn-resend-code" type="button" disabled data-i18n="code.resend"></button>
+            <button class="onboarding-skip-link" id="btn-change-email" type="button" data-i18n="code.change"></button>
           </div>
+          <p class="onboarding-hint" id="code-resent" role="status"></p>
+          <button class="btn-secondary" id="btn-open-inbox" type="button" hidden></button>
         </div>
         <div class="onboarding-error" id="setup-error" role="alert"></div>
       </div>
 
-      <!-- Paid plans. Upgrading keeps your key; Power/Max charge on checkout. -->
-      <div id="plans-section">
-        <div class="onboarding-divider"><span>or</span></div>
-        <p class="onboarding-subhead" style="margin-bottom:var(--s-space-2);">
-          Want Clippy to run your desktop? Power adds automation, browser control and multi-monitor.
-        </p>
-        <div class="plan-grid">
-          <div>
-            <button class="btn-trial" id="btn-get-power" type="button">Get Power</button>
-            <p class="trial-hint">$19.99/mo · cancel anytime</p>
-          </div>
-          <div>
-            <button class="btn-trial" id="btn-get-max" type="button">Get Max</button>
-            <p class="trial-hint">$39.99/mo · premium voice, 4× usage · cancel anytime</p>
-          </div>
-        </div>
-        <p class="trial-hint" id="plans-hint" style="display:none;"></p>
-      </div>
-
-      <!-- Tertiary: paste a key -->
+      <!-- Paste a license key (old emails, other devices). -->
       <div id="license-section">
-        <div class="onboarding-divider"><span>I have a license key</span></div>
-        <label for="license-key">License key</label>
-        <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
-        <div class="onboarding-error" id="license-error"></div>
+        <button class="onboarding-skip-link" id="btn-key-link" type="button" data-i18n="key.link"></button>
+        <div id="key-row" hidden>
+          <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" aria-label="License key" />
+          <button class="btn-secondary" id="btn-key-activate" type="button" data-i18n="key.activate"></button>
+        </div>
+        <div class="onboarding-error" id="license-error" role="alert"></div>
       </div>
 
-      <p class="onboarding-hint" id="privacy-line">
-        Clippy reads your screen only to help with what you ask, or to offer a tip (tips can be turned off in Settings → Brain) — screenshots are never stored.
-      </p>
+      <p class="onboarding-hint" id="privacy-line" data-i18n="privacy"></p>
     </div>
 
     <!-- Step 2: Meet Clippy -->

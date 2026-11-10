@@ -3,6 +3,9 @@ import { firstWinsForPlan } from './app-catalog';
 import { PermissionFlow, type PermSnapshot, type PermKind } from './permission-flow';
 import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
 import { normalizeCode, isCompleteCode, isValidEmail } from '../main/account-input';
+import { suggestEmail, inboxLink } from '../main/email-suggest';
+import { t, isLang, type Key, type Lang } from '../main/i18n';
+import { accountErrorText, clearsCodeInput, needsNewCode, resendHoldSeconds, RESEND_COUNTDOWN_MAX_S } from '../main/account-copy';
 import { normalizeLicenseKey, keyLookalikes, lookalikeMessage, KEY_FORMAT_HINT, KEY_NOT_FOUND_MESSAGE } from './license-key';
 
 // v0.19.0 PR-6 — Fluent Reveal effect. Any element marked with
@@ -23,6 +26,16 @@ function installFluentReveal(): void {
   });
 }
 installFluentReveal();
+
+// Window URL carries mode (email-only screen), reason (heading) and lang (set by main).
+const params = new URLSearchParams(location.search);
+const EMAIL_ONLY = params.get('mode') === 'email';
+const LANG: Lang = isLang(params.get('lang')) ? (params.get('lang') as Lang) : 'en';
+const T = (key: Key, vars?: Record<string, string | number>): string => t(LANG, key, vars);
+document.documentElement.lang = LANG;
+document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => { el.textContent = T(el.dataset.i18n as Key); });
+document.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]').forEach((el) => { el.placeholder = T(el.dataset.i18nPlaceholder as Key); });
+document.querySelectorAll<HTMLElement>('[data-i18n-aria]').forEach((el) => { el.setAttribute('aria-label', T(el.dataset.i18nAria as Key)); });
 
 const LICENSE_REGEX = /^CLIPPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const TRY_IT_PROMPT = "What's on my screen?";
@@ -88,6 +101,9 @@ function showStep(step: number): void {
   });
 
   // No Back once the tutorial has started — Clippy is already live.
+  // Step 1 is the email/code screen: no wizard footer, only the × button.
+  document.querySelector<HTMLElement>('.onboarding-footer')!.style.display = step === 1 ? 'none' : '';
+  document.getElementById('setup-close')!.style.display = step === 1 ? '' : 'none';
   btnBack.style.visibility = step > 1 && step !== LAST_STEP ? 'visible' : 'hidden';
   // Try it: the footer button is an escape hatch ("Skip") until Clippy has
   // answered the first ask, then it becomes "Finish" (see onTutorialEvent).
@@ -295,52 +311,6 @@ function stopPolling(): void {
 // ── Navigation ────────────────────────────────────────────────────────
 
 btnNext.addEventListener('click', async () => {
-  if (currentStep === 1) {
-    const key = normalizeLicenseKey(licenseInput.value);
-    if (key) licenseInput.value = key; // show the cleaned-up key
-    licenseError.textContent = '';
-
-    // Step 1's footer Next is the "I pasted a key" path. If the field is
-    // empty, nudge the user toward the email box rather than throwing a
-    // format error — email + code is the primary path.
-    if (!key) {
-      licenseError.textContent = 'Enter your license key, or use your email above.';
-      return;
-    }
-
-    if (!LICENSE_REGEX.test(key)) {
-      licenseError.textContent = `That doesn't look like a Clippy key. ${KEY_FORMAT_HINT} You can also just click Activate in the email.`;
-      return;
-    }
-    const lookalikes = keyLookalikes(key);
-    if (lookalikes.length) {
-      licenseError.textContent = lookalikeMessage(lookalikes);
-      return;
-    }
-
-    btnNext.disabled = true;
-    btnNext.textContent = 'Validating...';
-
-    try {
-      const result = await window.clippy.validateLicense(key);
-      if (result.valid) {
-        validatedPlan = result.plan;
-        licenseInput.value = key;
-        showStep(2);
-      } else if ((result as { reason?: string }).reason === 'unreachable') {
-        licenseError.textContent = "Couldn't reach our validation server. Check your connection and try again — your key isn't necessarily wrong.";
-      } else {
-        licenseError.textContent = KEY_NOT_FOUND_MESSAGE;
-      }
-    } catch {
-      licenseError.textContent = 'Could not validate. Check your internet connection.';
-    } finally {
-      btnNext.disabled = false;
-      if (currentStep === 1) btnNext.textContent = 'Next';
-    }
-    return;
-  }
-
   if (currentStep === 2) {
     // Persist license + buddy + voice on transition out of Meet Clippy so
     // the user's identity is committed BEFORE Clippy appears for Try it.
@@ -398,13 +368,65 @@ document.getElementById('btn-relaunch-later')?.addEventListener('click', async (
   window.close();
 });
 
-// Auto-uppercase license input. (The free/paid sections stay visible —
-// they're distinct paths, not a fallback that hides when a key is typed.)
-// v0.21 — Enter in the key field validates, same as the footer Next button.
+// ── Paste a license key (old emails / other devices) ──────────────────
+// Hidden behind "I have a license key"; Activate (or Enter) validates.
+const btnKeyLink = document.getElementById('btn-key-link') as HTMLButtonElement;
+const keyRow = document.getElementById('key-row')!;
+const btnKeyActivate = document.getElementById('btn-key-activate') as HTMLButtonElement;
+
+btnKeyLink.addEventListener('click', () => {
+  keyRow.hidden = false;
+  btnKeyLink.hidden = true;
+  licenseInput.focus();
+});
+
+async function activateKey(): Promise<void> {
+  const key = normalizeLicenseKey(licenseInput.value);
+  if (key) licenseInput.value = key; // show the cleaned-up key
+  licenseError.textContent = '';
+  if (!key) return;
+
+  if (!LICENSE_REGEX.test(key)) {
+    licenseError.textContent = `That doesn't look like a Clippy key. ${KEY_FORMAT_HINT} You can also just click Activate in the email.`;
+    return;
+  }
+  const lookalikes = keyLookalikes(key);
+  if (lookalikes.length) {
+    licenseError.textContent = lookalikeMessage(lookalikes);
+    return;
+  }
+
+  btnKeyActivate.disabled = true;
+  try {
+    const result = await window.clippy.validateLicense(key);
+    if (result.valid) {
+      validatedPlan = result.plan;
+      licenseInput.value = key;
+      if (!IS_MAC) {
+        // Windows: no wizard after sign-in. Save the key and go to Clippy.
+        await window.clippy.saveLicense(key, result.plan, 'Clippy', '');
+        await finishFirstRun();
+      } else {
+        showStep(2);
+      }
+    } else if ((result as { reason?: string }).reason === 'unreachable') {
+      licenseError.textContent = "Couldn't reach our validation server. Check your connection and try again — your key isn't necessarily wrong.";
+    } else {
+      licenseError.textContent = KEY_NOT_FOUND_MESSAGE;
+    }
+  } catch {
+    licenseError.textContent = 'Could not validate. Check your internet connection.';
+  } finally {
+    btnKeyActivate.disabled = false;
+  }
+}
+
+btnKeyActivate.addEventListener('click', () => { void activateKey(); });
+// v0.21 — Enter in the key field validates, same as the Activate button.
 licenseInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.isComposing && !btnNext.disabled) {
+  if (e.key === 'Enter' && !e.isComposing && !btnKeyActivate.disabled) {
     e.preventDefault();
-    btnNext.click();
+    void activateKey();
   }
 });
 
@@ -414,128 +436,192 @@ licenseInput.addEventListener('input', () => {
   licenseInput.setSelectionRange(pos, pos);
 });
 
+/** Windows: signed in (code or key) -> straight to Clippy; the greeting + chips come from main. */
+async function finishFirstRun(): Promise<void> {
+  try { await window.clippy.onOnboardingComplete(); } catch { /* main logs */ }
+  window.close();
+}
+
 // ── One-click activation (clippyai://activate from the email button) ──
-// Main redeems the token and saves the license before telling us; on ok we
-// carry the key + plan into the same step-2 save path as a pasted key.
+// Main redeems the token and saves the license before telling us.
 window.clippy.onActivationResult((r) => {
   if (r.ok) {
     validatedPlan = r.plan || 'free';
-    if (r.licenseKey) licenseInput.value = r.licenseKey;
     licenseError.textContent = '';
-    if (currentStep === 1) showStep(2);
+    // The email-only window has no step 2: confirm and close it.
+    if (EMAIL_ONLY) { void window.clippy.emailDone(); return; }
+    if (currentStep !== 1) return;
+    if (!IS_MAC) { void finishFirstRun(); return; }
+    if (r.licenseKey) licenseInput.value = r.licenseKey;
+    showStep(2);
     return;
   }
   if (currentStep === 1) {
-    licenseError.textContent = r.message || 'That activation link didn\'t work. Paste the key from your email instead.';
+    keyRow.hidden = false;
+    btnKeyLink.hidden = true;
+    licenseError.textContent = r.message || "That activation link didn't work. Paste the key from your email instead.";
     licenseInput.focus();
   }
 });
 
 // ── Primary path: email → 6-digit code ────────────────────────────────
-// ?mode=email (opened from the "add your email" bubble or a used-up trial)
-// shows this screen only; on success Clippy confirms and the window closes.
-const params = new URLSearchParams(location.search);
-const EMAIL_ONLY = params.get('mode') === 'email';
+// ?mode=email (opened from the "add your email" bubble, a used-up trial or an
+// upgrade click) shows this screen only; on success Clippy confirms and the
+// window closes. Copy comes from i18n.ts; errors from account-copy.ts.
 const emailStage = document.getElementById('email-stage')!;
 const codeStage = document.getElementById('code-stage')!;
 const setupEmail = document.getElementById('setup-email') as HTMLInputElement;
 const setupCode = document.getElementById('setup-code') as HTMLInputElement;
 const btnSendCode = document.getElementById('btn-send-code') as HTMLButtonElement;
+const btnVerify = document.getElementById('btn-verify-code') as HTMLButtonElement;
 const btnResendCode = document.getElementById('btn-resend-code') as HTMLButtonElement;
 const btnChangeEmail = document.getElementById('btn-change-email') as HTMLButtonElement;
+const btnOpenInbox = document.getElementById('btn-open-inbox') as HTMLButtonElement;
+const btnEmailFix = document.getElementById('btn-email-fix') as HTMLButtonElement;
+const emailSuggestEl = document.getElementById('email-suggest')!;
+const emailSuggestText = document.getElementById('email-suggest-text')!;
+const codeResentEl = document.getElementById('code-resent')!;
 const setupError = document.getElementById('setup-error')!;
-const codeSentTo = document.getElementById('code-sent-to')!;
+const codeLabel = document.getElementById('code-label')!;
 
-if (EMAIL_ONLY) {
-  document.body.classList.add('setup-email-only');
-  const title = document.getElementById('setup-title')!;
-  const sub = document.getElementById('setup-sub')!;
-  if (params.get('reason') === 'trial_ended') {
-    title.textContent = 'Your free trial is used up';
-    sub.textContent = "Add your email to keep going. It's still free.";
-  } else {
-    title.textContent = 'Keep me free forever';
-    sub.textContent = "Add your email. We'll send a 6-digit code. No card needed.";
-  }
+{
+  // Heading per reason (and per language).
+  const reason = params.get('reason');
+  const [titleKey, subKey] =
+    reason === 'trial_ended' ? (['ended.title', 'ended.sub'] as const)
+    : reason === 'upgrade' ? (['upgrade.title', 'upgrade.sub'] as const)
+    : reason === 'offer' || EMAIL_ONLY ? (['offer.title', 'offer.sub'] as const)
+    : (['setup.title', 'setup.sub'] as const);
+  document.getElementById('setup-title')!.textContent = T(titleKey);
+  document.getElementById('setup-sub')!.textContent = T(subKey);
 }
+if (EMAIL_ONLY) document.body.classList.add('setup-email-only');
 
 let sentTo = '';
-let busy = false;
+let sending = false;
+let verifying = false;
 
 function showSetupError(msg: string): void { setupError.textContent = msg; }
+function codeDigits(): string { return normalizeCode(setupCode.value); }
+function updateVerifyButton(): void { btnVerify.disabled = verifying || !isCompleteCode(codeDigits()); }
 
 function showCodeStage(): void {
   emailStage.style.display = 'none';
   codeStage.style.display = '';
-  codeSentTo.textContent = sentTo;
+  codeLabel.textContent = T('code.label', { email: sentTo });
+  const inbox = inboxLink(sentTo);
+  btnOpenInbox.hidden = !inbox;
+  if (inbox) {
+    btnOpenInbox.textContent = T(inbox.provider === 'gmail' ? 'code.open.gmail' : 'code.open.outlook');
+    btnOpenInbox.onclick = () => { void window.clippy.openExternalUrl(inbox.url); };
+  }
   setupCode.value = '';
+  updateVerifyButton();
   setupCode.focus();
-  holdResend();
+  holdResend(30);
 }
 
-/** "Send a new code" unlocks 30 s after a send — repeat sends just look like nothing happened. */
+/** "Send a new code" is locked while the server would refuse (30 s after a send, or its retry_after). */
 let resendTimer: number | null = null;
-function holdResend(seconds = 30): void {
-  if (resendTimer !== null) clearTimeout(resendTimer);
+function enableResend(): void {
+  if (resendTimer !== null) { clearTimeout(resendTimer); resendTimer = null; }
+  btnResendCode.disabled = false;
+  btnResendCode.textContent = T('code.resend');
+}
+function holdResend(seconds: number): void {
+  if (resendTimer !== null) { clearTimeout(resendTimer); resendTimer = null; }
   btnResendCode.disabled = true;
+  if (seconds > RESEND_COUNTDOWN_MAX_S) {
+    // Too long for a countdown: just locked until the server would accept again.
+    btnResendCode.textContent = T('code.resend');
+    resendTimer = window.setTimeout(enableResend, Math.min(seconds, 24 * 60 * 60) * 1000);
+    return;
+  }
   let left = seconds;
   const tick = () => {
-    if (left <= 0) { btnResendCode.disabled = false; btnResendCode.textContent = 'Send a new code'; return; }
-    btnResendCode.textContent = `Send a new code (${left}s)`;
+    if (left <= 0) { enableResend(); return; }
+    btnResendCode.textContent = T('code.resend.wait', { s: left });
     left -= 1;
     resendTimer = window.setTimeout(tick, 1000);
   };
   tick();
 }
 
+let resentTimer: number | null = null;
+function flashResent(): void {
+  codeResentEl.textContent = T('code.resent');
+  if (resentTimer !== null) clearTimeout(resentTimer);
+  resentTimer = window.setTimeout(() => { codeResentEl.textContent = ''; }, 4000);
+}
+
 async function sendCodeTo(email: string, resend: boolean): Promise<void> {
-  if (busy) return;
+  if (sending) return;
   showSetupError('');
-  if (!isValidEmail(email)) { showSetupError("That email doesn't look right. Double-check it and try again."); setupEmail.focus(); return; }
-  busy = true;
+  if (!isValidEmail(email)) { showSetupError(T('err.invalid_email')); setupEmail.focus(); return; }
+  sending = true;
   btnSendCode.disabled = true;
-  btnSendCode.textContent = 'Sending…';
+  btnSendCode.textContent = T('email.sending');
+  if (resend) btnResendCode.disabled = true;
   try {
     const r = await window.clippy.sendCode(email);
     if (r.ok) {
       sentTo = email.trim();
-      showCodeStage();
+      if (resend) { holdResend(30); flashResent(); } else showCodeStage();
     } else {
-      showSetupError(r.message);
-      if (resend) holdResend(5);
+      showSetupError(accountErrorText(LANG, r));
+      if (resend) holdResend(resendHoldSeconds(r));
     }
   } catch {
-    showSetupError("Couldn't reach our server. Check your connection and try again.");
+    showSetupError(T('err.offline'));
+    if (resend) holdResend(5);
   } finally {
-    busy = false;
+    sending = false;
     btnSendCode.disabled = false;
-    btnSendCode.textContent = 'Send code';
+    btnSendCode.textContent = T('email.send');
   }
 }
 
 async function submitCode(): Promise<void> {
-  const code = normalizeCode(setupCode.value);
-  if (busy || !isCompleteCode(code)) return;
-  busy = true;
+  const code = codeDigits();
+  if (verifying || !isCompleteCode(code)) return;
+  verifying = true;
   showSetupError('');
-  setupCode.disabled = true;
+  btnVerify.textContent = T('code.checking');
+  updateVerifyButton();
+  setupCode.readOnly = true; // keeps focus, unlike disabled
   try {
     const r = await window.clippy.verifyCode(sentTo, code);
     if (r.ok) {
       if (EMAIL_ONLY) { await window.clippy.emailDone(); return; }
       licenseSavedInMain = true;
       validatedPlan = r.plan;
-      showStep(2);
+      if (!IS_MAC) await finishFirstRun(); // Windows: straight to Clippy
+      else showStep(2);
       return;
     }
-    showSetupError(r.message);
-    setupCode.value = '';
+    showSetupError(accountErrorText(LANG, r));
+    if (clearsCodeInput(r)) setupCode.value = '';
+    if (needsNewCode(r)) enableResend();
+    else if (r.error === 'rate_limited') holdResend(resendHoldSeconds(r));
   } catch {
-    showSetupError("Couldn't reach our server. Check your connection and try again.");
+    // Network trouble: keep the digits; Continue retries.
+    showSetupError(T('err.offline'));
   } finally {
-    busy = false;
-    setupCode.disabled = false;
+    verifying = false;
+    setupCode.readOnly = false;
+    btnVerify.textContent = T('code.continue');
+    updateVerifyButton();
     if (currentStep === 1) setupCode.focus();
+  }
+}
+
+// Typo hint under the email box; never blocks sending.
+function showEmailSuggestion(): void {
+  const fix = suggestEmail(setupEmail.value);
+  emailSuggestEl.hidden = !fix;
+  if (fix) {
+    emailSuggestText.textContent = T('email.suggest', { email: fix });
+    btnEmailFix.dataset.fix = fix;
   }
 }
 
@@ -543,36 +629,40 @@ btnSendCode.addEventListener('click', () => { void sendCodeTo(setupEmail.value, 
 setupEmail.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void sendCodeTo(setupEmail.value, false); }
 });
-setupEmail.addEventListener('input', () => showSetupError(''));
+setupEmail.addEventListener('input', () => { showSetupError(''); emailSuggestEl.hidden = true; });
+setupEmail.addEventListener('blur', showEmailSuggestion);
+btnEmailFix.addEventListener('click', () => {
+  if (btnEmailFix.dataset.fix) setupEmail.value = btnEmailFix.dataset.fix;
+  emailSuggestEl.hidden = true;
+  setupEmail.focus();
+});
 btnResendCode.addEventListener('click', () => { void sendCodeTo(sentTo, true); });
 btnChangeEmail.addEventListener('click', () => {
   showSetupError('');
+  codeResentEl.textContent = '';
   codeStage.style.display = 'none';
   emailStage.style.display = '';
   setupEmail.focus();
 });
-// Digits only (typed or pasted); the sixth digit submits by itself.
+// Digits only (typed or pasted, " 123 456" included); the sixth digit submits by itself.
 setupCode.addEventListener('input', () => {
-  setupCode.value = normalizeCode(setupCode.value);
+  setupCode.value = codeDigits();
   showSetupError('');
-  if (isCompleteCode(setupCode.value)) void submitCode();
+  updateVerifyButton();
+  if (isCompleteCode(setupCode.value) && !sending) void submitCode();
+});
+setupCode.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void submitCode(); }
+});
+btnVerify.addEventListener('click', () => { void submitCode(); });
+
+// ── Closing the setup window ──────────────────────────────────────────
+// × and Esc work on step 1 in every mode; the app stays in the tray and the
+// trial key is untouched. (The header is the drag handle, see style.css.)
+const btnClose = document.getElementById('setup-close') as HTMLButtonElement;
+btnClose.addEventListener('click', () => window.close());
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && currentStep === 1) window.close();
 });
 
-// ── Upgrade → Stripe Checkout (main creates the session, then polls for the plan) ──
-const plansHint = document.getElementById('plans-hint')!;
-
-for (const [id, plan] of [['btn-get-power', 'power'], ['btn-get-max', 'max']] as const) {
-  document.getElementById(id)?.addEventListener('click', async () => {
-    plansHint.style.display = 'block';
-    plansHint.textContent = 'Opening checkout…';
-    try {
-      const r = await window.clippy.upgrade(plan);
-      if (r.status === 'opened') plansHint.textContent = "Checkout opened in your browser. Once you've paid, Clippy notices by itself.";
-      else if (r.status === 'updating') plansHint.textContent = 'Updating your plan. Clippy will tell you when it is done.';
-      else if (r.status === 'needs_email') { plansHint.textContent = 'Add your email above first, then upgrade.'; setupEmail.focus(); }
-      else plansHint.textContent = r.message;
-    } catch {
-      plansHint.textContent = "Couldn't start checkout. Try again in a moment.";
-    }
-  });
-}
+setupEmail.focus();

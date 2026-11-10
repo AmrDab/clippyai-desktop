@@ -3171,19 +3171,34 @@ body.onboarding-window {
 }
 .code-actions { display: flex; justify-content: space-between; }
 .code-actions .onboarding-skip-link:disabled { opacity: 0.5; cursor: default; }
-/* Email-only screen (?mode=email): no wizard chrome, no key paste. */
-body.setup-email-only .onboarding-footer,
+/* Email-only screen (?mode=email): short window, no key paste, no privacy line. */
 body.setup-email-only #license-section,
-body.setup-email-only #plans-section,
 body.setup-email-only #privacy-line { display: none; }
-.plan-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--s-space-3);
-}
-.plan-grid .btn-trial { width: 100%; padding: 8px 12px; }
-.plan-grid .trial-hint { margin-top: var(--s-space-1); }
+#license-section { display: flex; flex-direction: column; gap: var(--s-space-2); }
+#key-row { display: grid; grid-template-columns: 1fr auto; gap: var(--s-space-2); }
+#btn-open-inbox { align-self: flex-start; }
+#code-resent:empty { display: none; }
 
+/* Setup window chrome: the header is the drag handle, the × sits top-right. */
+.onboarding { position: relative; }
+.onboarding-header { -webkit-app-region: drag; }
+.setup-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--s-ink-faint, #888);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.setup-close:hover { background: rgba(0, 0, 0, 0.06); color: var(--s-ink, #333); }
+.setup-close:focus-visible { outline: 2px solid var(--accent, #0078d4); }
 /* Divider in onboarding (e.g. step 2 "don't have a key?") — quieter */
 .onboarding-divider {
   color: var(--s-ink-faint);
@@ -3702,3 +3717,9 @@ body.onboarding-window[data-platform="win"] {
   z-index: 30;
 }
 #power-pass-pill.hidden { display: none; }
+
+#first-win-overlay-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.75;
+}
