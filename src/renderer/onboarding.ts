@@ -479,7 +479,7 @@ async function submitFreeSignup(): Promise<void> {
       // advance from onActivationResult; pasting the key still works.
       emailed = true;
       freeError.className = 'onboarding-hint';
-      freeError.textContent = 'Sent! Look for “Your ClippyAI license key” from hello@clippyai.app (check Spam/Promotions too) and click Activate — on this PC or on your phone. I’ll finish setting up by myself.';
+      freeError.textContent = 'Sent! Look for “Your ClippyAI license key” from hello@clippyai.app (check Spam/Promotions too) and click Activate. It can take a minute.';
     } else {
       freeError.textContent = freeErrorMessage((result as { error: string }).error);
     }

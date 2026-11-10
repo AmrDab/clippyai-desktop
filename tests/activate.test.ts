@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { parseActivateUrl, findActivateUrl, redeemActivationToken, activateFromUrl, planLabel, pickUpClaim } from '../src/main/activate';
+import { parseActivateUrl, findActivateUrl, redeemActivationToken, activateFromUrl, planLabel } from '../src/main/activate';
 
 describe('parseActivateUrl', () => {
   it('accepts clippyai://activate?t=<token>', () => {
@@ -88,23 +88,5 @@ describe('planLabel', () => {
   it('capitalizes the plan for the bubble line', () => {
     expect(planLabel('power')).toBe('Power');
     expect(planLabel('')).toBe('Free');
-  });
-});
-
-describe('pickUpClaim (cross-device activation)', () => {
-  it('returns the key on 200 and posts the claim', async () => {
-    const f = mockFetch(200, { licenseKey: 'CLIPPY-AAAA-BBBB-CCCC', plan: 'free' });
-    expect(await pickUpClaim('c'.repeat(43), f as any)).toEqual({ ok: true, licenseKey: 'CLIPPY-AAAA-BBBB-CCCC', plan: 'free' });
-    expect(JSON.parse((f.mock.calls[0] as any)[1].body)).toEqual({ claim: 'c'.repeat(43) });
-  });
-
-  it('keeps waiting on 202, rate limits, server errors and network failures', async () => {
-    for (const status of [202, 429, 500, 503]) expect(await pickUpClaim('c'.repeat(43), mockFetch(status, {}) as any)).toBe('pending');
-    expect(await pickUpClaim('c'.repeat(43), vi.fn(async () => { throw new Error('offline'); }) as any)).toBe('pending');
-    expect(await pickUpClaim('c'.repeat(43), mockFetch(200, {}) as any)).toBe('pending');
-  });
-
-  it('stops on 400 (claim rejected)', async () => {
-    expect(await pickUpClaim('bad', mockFetch(400, { error: 'invalid_claim' }) as any)).toBe('stop');
   });
 });

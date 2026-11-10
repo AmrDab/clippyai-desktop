@@ -75,30 +75,6 @@ export async function redeemActivationToken(token: string, fetchFn: FetchLike = 
   return fail('server');
 }
 
-const CLAIM_ENDPOINT = 'https://api.clippyai.app/v1/activate/claim';
-
-/**
- * Cross-device pickup: POST /v1/activate/claim {claim}. 200 → the key (once);
- * 202 / rate limit / network / server error → 'pending' (keep polling);
- * 400 → 'stop' (the server rejects this claim, polling can't help).
- */
-export async function pickUpClaim(claim: string, fetchFn: FetchLike = fetch as unknown as FetchLike): Promise<Extract<ActivationResult, { ok: true }> | 'pending' | 'stop'> {
-  try {
-    const res = await fetchFn(CLAIM_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ claim }),
-    });
-    if (res.status === 400) return 'stop';
-    if (res.status !== 200) return 'pending';
-    const body = (await res.json()) as { licenseKey?: unknown; plan?: unknown };
-    if (typeof body.licenseKey !== 'string' || !body.licenseKey) return 'pending';
-    return { ok: true, licenseKey: body.licenseKey, plan: typeof body.plan === 'string' && body.plan ? body.plan : 'free' };
-  } catch {
-    return 'pending';
-  }
-}
-
 /** Parse + redeem in one step. */
 export async function activateFromUrl(raw: string, fetchFn?: FetchLike): Promise<ActivationResult> {
   const token = parseActivateUrl(raw);
