@@ -53,9 +53,10 @@ import * as profileMod from './profile';
 // v0.20.0-alpha.12 — static import for window-follow (NOT lazy require)
 // to keep Rollup from tree-shaking it. See memory: feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
-import { setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
+import { noteOnboardingStep, setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
 import { takeWhatsNew, claimFirstRunScript, claimNamePrompt } from './whats-new';
 import { wakeScript } from './first-run';
+import { isOnboardingStep } from './onboarding-track';
 // Badge click reuses the ⌥G correction flow.
 import { triggerWritingAssist } from './writing-assist';
 // updater imports moved to top of file
@@ -235,6 +236,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Onboarding v3 — email + 6-digit code. send-code emails the code; verify-code
   // checks it and stores the returned key
   // in main — the key never comes back to the renderer.
+  // Setup-screen step reached (email focused, code screen shown, resend clicked): fixed enums only.
+  ipcMain.on('onboarding-track', (_event, step: unknown) => {
+    if (isOnboardingStep(step)) noteOnboardingStep(step);
+  });
+
   ipcMain.handle('account:send-code', async (_event, email: unknown) => {
     const r = await accountMod.sendEmailCode(typeof email === 'string' ? email : '');
     return r.ok ? { ok: true } : { ok: false, error: r.error, retryAfter: r.error === 'rate_limited' ? r.retryAfter : undefined };
@@ -519,6 +525,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     const current = brainSettingsStore.get('suggestionDenylist') as string[];
     if (!current.includes(id)) {
       brainSettingsStore.set('suggestionDenylist', [...current, id]);
+      telemetry.noteProactive('muted');
       log.info('Suggestion.denied', { rule_id: id });
       // v0.20.0-alpha.3 — keep brain's cached denylist Set in sync, otherwise
       // the rule that was just denied could still fire on the next proactive
@@ -747,6 +754,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
   ipcMain.handle('install-update', async () => {
+    telemetry.track('update_prompt', { action: 'restart', surface: 'main' });
     installUpdate();
     return true;
   });
@@ -755,6 +763,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
   ipcMain.handle('snooze-update', async (_event, version: string) => {
+    telemetry.track('update_prompt', { action: 'later', surface: 'main' });
     snoozeUpdate(String(version || ''));
     return true;
   });
@@ -1403,6 +1412,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           const current = brainSettingsStore.get('suggestionDenylist') as string[];
           if (!current.includes(ruleId)) {
             brainSettingsStore.set('suggestionDenylist', [...current, ruleId]);
+            telemetry.noteProactive('muted');
             log.info('Suggestion.denied', { rule_id: ruleId, source: 'context_menu' });
           }
         },

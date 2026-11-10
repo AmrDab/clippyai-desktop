@@ -1,4 +1,7 @@
 import { uiLang } from './lang';
+import * as telemetry from './telemetry';
+import { elapsedBucket } from './telemetry';
+import { OnboardingTracker, type OnboardingStep } from './onboarding-track';
 import { BrowserWindow, screen, ipcMain, Rectangle, Display } from 'electron';
 import path from 'path';
 import { createLogger } from './logger';
@@ -24,6 +27,13 @@ export function takeRecovered(): boolean {
 
 let settingsWindow: BrowserWindow | null = null;
 let onboardingWindow: BrowserWindow | null = null;
+let onboardingTracker: OnboardingTracker | null = null;
+
+/** Setup screen step reached (from the renderer or main). Sent once per step. */
+export function noteOnboardingStep(step: OnboardingStep): void {
+  if (!onboardingTracker) return;
+  if (onboardingTracker.note(step, Date.now())) telemetry.track('onboarding_step', { step });
+}
 
 // Small window sized to Clippy sprite — expands when bubble shows.
 //
@@ -492,7 +502,13 @@ export function createOnboardingWindow(opts: { lang?: string } = {}): BrowserWin
     onboardingWindow.loadFile(path.join(__dirname, '../renderer/onboarding.html'), { query });
   }
 
-  onboardingWindow.on('closed', () => { onboardingWindow = null; });
+  onboardingTracker = new OnboardingTracker(Date.now());
+  onboardingWindow.on('closed', () => {
+    onboardingWindow = null;
+    const info = onboardingTracker?.closed(Date.now());
+    onboardingTracker = null;
+    if (info) telemetry.track('onboarding_step', { step: 'closed', last_step: info.lastStep, completed: info.completed, time_in_step: elapsedBucket(info.timeInStepMs) });
+  });
   return onboardingWindow;
 }
 

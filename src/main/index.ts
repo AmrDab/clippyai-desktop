@@ -177,6 +177,7 @@ app.on('second-instance', (_event, argv) => {
   // Windows/Linux: the OS launched a second instance with the URL in argv.
   const url = findActivateUrl(argv);
   if (url) queueActivateUrl(url);
+  if (argv.includes('--send-test-exception')) telemetry.sendTestException();
 });
 
 // A first-launch URL can arrive while the renderer is still loading; a send
@@ -402,7 +403,9 @@ app.whenReady().then(async () => {
     void handleActivateUrl(url);
   }
   bootLog('WHENREADY_COMPLETE');
-  telemetry.track('app_start', { licensed: isLicensed() });
+  telemetry.track('app_start', { licensed: isLicensed(), ...telemetry.startInfo() });
+  // Owner-only: prove the exceptions path from a packaged build (docs: telemetry.ts header).
+  if (process.argv.includes('--send-test-exception') || process.env.CLIPPY_TEST_EXCEPTION === '1') telemetry.sendTestException();
   telemetry.trackMetric('cold_start_ms', Math.round(process.uptime() * 1000));
 });
 

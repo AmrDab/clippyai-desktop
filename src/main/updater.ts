@@ -227,6 +227,7 @@ function detectSilentFailure(): UpdaterState {
 }
 
 function sendToRenderer(channel: string, ...args: unknown[]): void {
+  if (channel === 'update-ready') telemetry.track('update_prompt', { action: 'shown', surface: 'main' });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, ...args);
   }

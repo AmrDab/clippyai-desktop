@@ -11,6 +11,11 @@ import { createLogger } from './logger';
 const log = createLogger('WhatsNew');
 
 const NOTES: Record<string, string[]> = {
+  '0.24': [
+    "Updates now install **quietly by themselves**, when you're away or when you quit. No more hunting for a restart button.",
+    "Upgrading keeps your **same license key**. Nothing to copy, nothing to re-enter.",
+    "I speak your language now: **Portuguese, Spanish and French**, as well as English.",
+  ],
   '0.23': [
     "I can actually read the app you're in now, not just its title — so I understand your screen better.",
     "I only say **done** when I've checked it worked. If I couldn't check, I'll tell you.",

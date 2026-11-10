@@ -488,6 +488,7 @@ function codeDigits(): string { return normalizeCode(setupCode.value); }
 function updateVerifyButton(): void { btnVerify.disabled = verifying || !isCompleteCode(codeDigits()); }
 
 function showCodeStage(): void {
+  window.clippy.trackOnboarding('code_screen_shown');
   emailStage.style.display = 'none';
   codeStage.style.display = '';
   codeLabel.textContent = T('code.label', { email: sentTo });
@@ -612,12 +613,13 @@ setupEmail.addEventListener('keydown', (e) => {
 });
 setupEmail.addEventListener('input', () => { showSetupError(''); emailSuggestEl.hidden = true; });
 setupEmail.addEventListener('blur', showEmailSuggestion);
+
 btnEmailFix.addEventListener('click', () => {
   if (btnEmailFix.dataset.fix) setupEmail.value = btnEmailFix.dataset.fix;
   emailSuggestEl.hidden = true;
   setupEmail.focus();
 });
-btnResendCode.addEventListener('click', () => { void sendCodeTo(sentTo, true); });
+btnResendCode.addEventListener('click', () => { window.clippy.trackOnboarding('resend_clicked'); void sendCodeTo(sentTo, true); });
 btnChangeEmail.addEventListener('click', () => {
   showSetupError('');
   codeResentEl.textContent = '';
@@ -646,4 +648,6 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && currentStep === 1) window.close();
 });
 
+// Funnel: the email box has focus (main sends each step once).
+setupEmail.addEventListener('focus', () => window.clippy.trackOnboarding('email_focused'), { once: true });
 setupEmail.focus();

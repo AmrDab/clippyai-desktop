@@ -10,7 +10,7 @@ import * as telemetry from './telemetry';
 import * as api from './account-api';
 import { planLabel } from './activate';
 import * as quitState from './quit-state';
-import { createOnboardingWindow, getSettingsWindow } from './window';
+import { createOnboardingWindow, getSettingsWindow, noteOnboardingStep } from './window';
 import { uiLang } from './lang';
 import { t } from './i18n';
 import { getLicenseKey, getPlan, saveLicense, getBuddyName, getTtsVoice, setPlan } from './license';
@@ -50,6 +50,7 @@ export async function verifyEmailCode(email: string, code: string): Promise<Veri
     };
   }
   saveLicense(r.licenseKey, r.plan, getBuddyName() || 'Clippy', getTtsVoice());
+  noteOnboardingStep('verified');
   log.info('Code.verified', { plan: r.plan });
   return { ok: true, plan: r.plan };
 }

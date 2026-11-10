@@ -32,3 +32,14 @@ describe('v0.23 notes', () => {
     expect(whatsNewToShow('0.23.0', '0.23.1', true)).toBeNull();
   });
 });
+
+describe("v0.24 notes", () => {
+  it("shows three short lines once when upgrading from 0.23", () => {
+    const notes = whatsNewToShow("0.23.2", "0.24.0", true);
+    expect(notes).toHaveLength(3);
+    expect(notes!.join(" ")).toMatch(/quietly/);
+    expect(notes!.join(" ")).toMatch(/same license key/);
+    expect(notes!.join(" ")).toMatch(/Portuguese, Spanish and French/);
+    expect(whatsNewToShow("0.24.0", "0.24.1", true)).toBeNull();
+  });
+});

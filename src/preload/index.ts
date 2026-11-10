@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('clippy', {
   validateLicense: (key: string) => ipcRenderer.invoke('validate-license', key),
 
   // Onboarding v3 — email + 6-digit code. Main stores the key; it never comes back here.
+  trackOnboarding: (step: string) => ipcRenderer.send('onboarding-track', step),
   sendCode: (email: string) => ipcRenderer.invoke('account:send-code', email),
   verifyCode: (email: string, code: string) => ipcRenderer.invoke('account:verify-code', email, code),
   savePersona: (buddyName: string, ttsVoice: string) => ipcRenderer.invoke('save-persona', buddyName, ttsVoice),

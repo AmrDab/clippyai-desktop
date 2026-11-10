@@ -66,6 +66,8 @@ interface Window {
 
     // ── License management
     validateLicense: (key: string) => Promise<{ valid: boolean; plan: string; reason?: string }>;
+    /** Setup-screen step for the funnel (fixed enum, see onboarding-track.ts). */
+    trackOnboarding: (step: 'email_focused' | 'code_screen_shown' | 'resend_clicked') => void;
     /** Onboarding v3 — emails a 6-digit code. */
     sendCode: (email: string) => Promise<{ ok: true } | { ok: false; error: string; retryAfter?: number }>;
     /** Verifies the code; on success main has already stored the key + plan. */

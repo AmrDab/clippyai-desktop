@@ -218,14 +218,42 @@ describe('containment', () => {
     expect(sentBodies().length).toBe(3);
   });
 
-  it('network failure never throws and drops the batch (no retry)', async () => {
+  it('network failure never throws; the batch is retried once with the next flush', async () => {
     fetchMock.mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND'));
     t.track('x');
     await expect(t.flush()).resolves.toBe(0);
     expect(t.__queueForTests().length).toBe(0);
+    // the second flush resends the same batch (plus anything new)
+    t.track('y');
+    expect(await t.flush()).toBe(200);
+    expect(sentBodies().map((b) => b.data.baseData.name)).toEqual(['x', 'x', 'y']);
+  });
+
+  it('a batch that fails twice is dropped, counted, and reported on the next start', async () => {
+    fetchMock.mockResolvedValue({ status: 503 });
+    t.track('x');
+    await t.flush();
+    await t.flush();
+    fetchMock.mockClear();
+    expect(await t.flush()).toBe(0); // nothing left to send
+    expect(fetchMock).not.toHaveBeenCalled();
+    t.__resetForTests();
+    t.initTelemetry({ getPlan: () => 'free' });
+    expect(t.startInfo().dropped).toBe(1);
+  });
+
+  it('does not retry a 4xx', async () => {
+    fetchMock.mockResolvedValue({ status: 400 });
+    t.track('x');
+    await t.flush();
     fetchMock.mockClear();
     expect(await t.flush()).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(t.isRetryableStatus(0)).toBe(true);
+    expect(t.isRetryableStatus(429)).toBe(true);
+    expect(t.isRetryableStatus(500)).toBe(true);
+    expect(t.isRetryableStatus(400)).toBe(false);
+    expect(t.isRetryableStatus(206)).toBe(false);
   });
 
   it('a throwing fetch implementation is contained', async () => {
@@ -346,5 +374,120 @@ line two`)).toBe('other');
     expect(t.errorCode('getaddrinfo ENOTFOUND github.com')).toBe('ENOTFOUND');
     expect(t.errorCode('HttpError: 404 status 404 Not Found')).toBe('HTTP 404');
     expect(t.errorCode('something with the user name Bob')).toBe('other');
+  });
+});
+
+describe('per-session seq', () => {
+  it('numbers events 1..n so a gap means a lost event', async () => {
+    t.track('a'); t.track('b'); t.trackMetric('m', 1); t.trackException(new Error('boom'));
+    await t.flush();
+    expect(sentBodies().map((b) => b.data.baseData.properties.seq)).toEqual(['1', '2', '3', '4']);
+  });
+});
+
+describe('internal tag', () => {
+  it('is added only on owner machines (CLIPPY_INTERNAL=1 or an internal file)', async () => {
+    t.track('plain');
+    await t.flush();
+    process.env.CLIPPY_INTERNAL = '1';
+    t.__resetForTests();
+    t.initTelemetry({ getPlan: () => 'power' });
+    t.track('mine');
+    delete process.env.CLIPPY_INTERNAL;
+    await t.flush();
+    const bodies = sentBodies();
+    expect(bodies[0].data.baseData.properties.internal).toBeUndefined();
+    expect(bodies[1].data.baseData.properties.internal).toBe('true');
+    t.__resetForTests();
+    fs.writeFileSync(path.join(tmp, 'internal'), '');
+    expect(t.isInternal()).toBe(true);
+    fs.rmSync(path.join(tmp, 'internal'));
+    t.__resetForTests();
+    expect(t.isInternal()).toBe(false);
+  });
+});
+
+describe('start info: prev_exit, first_run, prev_version', () => {
+  it('pure decisions', () => {
+    expect(t.decidePrevExit(true, false)).toBe('first_run');
+    expect(t.decidePrevExit(true, true)).toBe('first_run');
+    expect(t.decidePrevExit(false, true)).toBe('unclean');
+    expect(t.decidePrevExit(false, false)).toBe('clean');
+    expect(t.previousVersion('0.23.2', '0.24.0')).toBe('0.23.2');
+    expect(t.previousVersion('0.24.0', '0.24.0')).toBeUndefined();
+    expect(t.previousVersion('', '0.24.0')).toBeUndefined();
+  });
+  it('first run, then unclean when the marker was never removed, then clean after a quit', () => {
+    expect(t.startInfo()).toMatchObject({ prev_exit: 'first_run', first_run: true });
+    t.__resetForTests();
+    t.initTelemetry({ getPlan: () => 'free' }); // the previous session left its marker behind
+    expect(t.startInfo().prev_exit).toBe('unclean');
+    expect(t.startInfo().first_run).toBeUndefined();
+    t.onBeforeQuit({ preventDefault: () => {} }, () => {});
+    t.__resetForTests();
+    t.initTelemetry({ getPlan: () => 'free' });
+    expect(t.startInfo().prev_exit).toBe('clean');
+  });
+});
+
+describe('task_end fields', () => {
+  async function ended(fn: () => void): Promise<{ properties: Record<string, string>; measurements: Record<string, number> }> {
+    t.taskBegin(); fn(); t.taskEnd('done', null, 2, { completed: true, actions: 0 });
+    await t.flush();
+    return sentBodies().filter((b) => b.data.baseData.name === 'task_end').pop()!.data.baseData;
+  }
+  it('drops result; adds completed, actions, kind, ended_with and the speed fields', async () => {
+    const e = await ended(() => {
+      t.taskScreenCtx('timeout');
+      t.taskBeforeTurn();
+      t.taskTurn({ ms: 1800, provider: 'DeepSeek', finishReason: 'stop' });
+      t.taskTurn({ ms: 900, provider: 'DeepSeek', finishReason: 'tool_calls' });
+    });
+    expect(e.properties.result).toBeUndefined();
+    expect(e.properties).toMatchObject({
+      completed: 'true', kind: 'chat', ended_with: 'answer', screen_ctx: 'timeout',
+      pre_turn: '<250ms', model_time: '2.5-5s', provider: 'deepseek', finish_reason: 'tool_calls',
+    });
+    expect(e.measurements).toMatchObject({ actions: 0, steps: 2 });
+  });
+  it('kind is action when tools ran; tools_used lists name:count', async () => {
+    t.taskBegin();
+    t.taskToolUsed('open_app'); t.taskToolUsed('open_app'); t.taskToolUsed('skill__secret');
+    t.taskEnd('done', null, 3, { completed: true, actions: 2 });
+    await t.flush();
+    const e = sentBodies().pop()!.data.baseData;
+    expect(e.properties).toMatchObject({ kind: 'action', tools_used: 'open_app:2,skill:1' });
+    expect(e.measurements.actions).toBe(2);
+  });
+  it('ended_with: upsell, cap, decline, error, answer', () => {
+    expect(t.endedWith('', true, false)).toBe('upsell');
+    expect(t.endedWith('', false, true)).toBe('cap');
+    expect(t.endedWith('limit_reached', false, false)).toBe('cap');
+    expect(t.endedWith('feature_locked', false, false)).toBe('decline');
+    expect(t.endedWith('timeout', false, false)).toBe('error');
+    expect(t.endedWith('', false, false)).toBe('answer');
+  });
+  it('screen_ctx defaults to off when no capture was recorded', async () => {
+    const e = await ended(() => {});
+    expect(e.properties.screen_ctx).toBe('off');
+    expect(e.properties.pre_turn).toBeUndefined();
+  });
+});
+
+describe('quit stats and the deliberate test exception', () => {
+  it('app_quit carries uptime, tasks and proactive counters', async () => {
+    t.taskBegin(); t.taskEnd('done', null, 1);
+    t.noteProactive('shown'); t.noteProactive('shown'); t.noteProactive('muted');
+    t.onBeforeQuit({ preventDefault: () => {} }, () => {});
+    await t.flush();
+    const q = sentBodies().find((b) => b.data.baseData.name === 'app_quit')!.data.baseData;
+    expect(q.properties.uptime).toMatch(/^(<5s|5-15s|15-30s|30-60s|1-2m|2-5m|>5m)$/);
+    expect(q.measurements).toMatchObject({ tasks: 1, proactive_shown: 2, proactive_muted: 1 });
+  });
+  it('sendTestException sends one TelemetryTestException', async () => {
+    t.sendTestException();
+    await new Promise((r) => setTimeout(r, 0));
+    const ex = sentBodies().find((b) => b.name === 'Microsoft.ApplicationInsights.Exception');
+    expect(ex!.data.baseData.exceptions[0].typeName).toBe('TelemetryTestException');
   });
 });
