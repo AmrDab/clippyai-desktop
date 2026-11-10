@@ -78,7 +78,7 @@ let pollGeneration = 0;
 function say(win: BrowserWindow | null, text: string, animate = 'Congratulate'): void {
   if (!win || win.isDestroyed()) return;
   log.info('Clippy.say', { text, animation: animate, trigger: 'upgrade' });
-  win.webContents.send('clippy-speak', { text, animate });
+  win.webContents.send('clippy-speak', { text, animate, tint: 'success' });
 }
 
 export type UpgradeOutcome =

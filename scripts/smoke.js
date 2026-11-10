@@ -1973,9 +1973,11 @@ function layer1() {
     const noAppPickerId = !/id="app-picker"/.test(onbHtml) && !/id="api-keys"/.test(onbHtml) && !/btn-install-bridge/.test(onbHtml);
     const hasFirstWinsId = /id="first-wins-chips"/.test(onbHtml);
     const hasTryIt = /id="tryit-hotkey"/.test(onbHtml) && /id="btn-tryit-type"/.test(onbHtml) && /What's on my screen\?/.test(onbHtml);
-    const hasPlans = /id="btn-get-power"/.test(onbHtml) && /id="btn-get-max"/.test(onbHtml) && /\$19\.99\/mo · cancel anytime/.test(onbHtml);
+    // Onboarding v3: the plan buttons are gone from setup (upgrades live in Settings and the bubble).
+    const hasPlans = !/id="btn-get-power"/.test(onbHtml) && !/id="btn-get-max"/.test(onbHtml);
     const noTrial = !/7-Day|Free Trial|onboarding-wake-word/i.test(onbHtml) && !/wakeWordEnabled/.test(onbTs);
-    const hasPrivacy = /id="privacy-line"/.test(onbHtml) && /screenshots are never stored/.test(onbHtml);
+    const i18nSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'i18n.ts'), 'utf8');
+    const hasPrivacy = /id="privacy-line"/.test(onbHtml) && /Screenshots are never stored/.test(i18nSrc);
     if (hasStep3 && hasStep4 && noStep5 && noAppPickerId && hasFirstWinsId && hasTryIt && hasPlans && noTrial && hasPrivacy) {
       pass('onboarding v2: html is Activate → Meet Clippy → (mac Permissions) → Try it; Get Power/Max, privacy line, no trial/wake-word');
     } else {
@@ -2032,7 +2034,7 @@ function layer1() {
     const preHasGetUserApps = /getUserApps:\s*\(\)/.test(preSrc);
     const preHasSetApiKey   = /setApiKey:\s*\(/.test(preSrc);
     const preHasFireChip    = /fireFirstWinChip:/.test(preSrc);
-    const preHasOnOverlay   = /onFirstWinOverlay:/.test(preSrc);
+    const preHasOnOverlay   = /onFirstRunScript:/.test(preSrc);
     if (preHasGetUserApps && preHasSetApiKey && preHasFireChip && preHasOnOverlay) {
       pass('v0.19.0 PR-6: preload exposes getUserApps/setApiKey/fireFirstWinChip/onFirstWinOverlay');
     } else {
@@ -2140,7 +2142,7 @@ function layer1() {
     }
 
     // 11. main.ts (renderer) wires the overlay + chip pump
-    const mainTsHasOverlayListener = /onFirstWinOverlay\?/.test(mainTsSrc);
+    const mainTsHasOverlayListener = /onFirstRunScript\?/.test(mainTsSrc);
     const mainTsHasChipListener    = /onFirstWinChip\?/.test(mainTsSrc);
     const mainTsHasPlatform        = /setAttribute\(['"]data-platform['"]/.test(mainTsSrc);
     if (mainTsHasOverlayListener && mainTsHasChipListener && mainTsHasPlatform) {

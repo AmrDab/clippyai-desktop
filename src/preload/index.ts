@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('clippy', {
   updateSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke('update-settings', settings),
 
-  onSpeak: (cb: (payload: { text: string; animate: string; tint?: 'info' | 'warning' | 'error' }) => void) => {
+  onSpeak: (cb: (payload: { text: string; animate: string; tint?: 'info' | 'warning' | 'error' | 'success' }) => void) => {
     ipcRenderer.on('clippy-speak', (_e, payload) => cb(payload));
   },
 

@@ -172,7 +172,7 @@ interface Window {
 
     // ── Speech / TTS
     // v0.19.0 — ruleId present when a deterministic rule fired the tip
-    onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string; tint?: 'info' | 'warning' | 'error' }) => void) => void;
+    onSpeak: (cb: (payload: { text: string; animate: string; ruleId?: string; tint?: 'info' | 'warning' | 'error' | 'success' }) => void) => void;
     /** feat/pricing-free-tier — token-cap upsell for capped free users. */
     onUpgrade?: (cb: (payload: { text: string; cta: string; power_pass_available?: boolean; power_pass_used?: boolean; reset_date?: string }) => void) => void;
     /** v0.21 — free daily Power pass: re-run the last request with power_pass:true. */

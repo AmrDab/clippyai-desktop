@@ -6,6 +6,7 @@ import { normalizeCode, isCompleteCode, isValidEmail } from '../main/account-inp
 import { suggestEmail, inboxLink } from '../main/email-suggest';
 import { t, isLang, type Key, type Lang } from '../main/i18n';
 import { accountErrorText, clearsCodeInput, needsNewCode, resendHoldSeconds, RESEND_COUNTDOWN_MAX_S } from '../main/account-copy';
+import { EASE_OUT, DUR, reducedMotion } from './motion';
 import { normalizeLicenseKey, keyLookalikes, lookalikeMessage, KEY_FORMAT_HINT, KEY_NOT_FOUND_MESSAGE } from './license-key';
 
 // v0.19.0 PR-6 — Fluent Reveal effect. Any element marked with
@@ -487,10 +488,29 @@ function showSetupError(msg: string): void { setupError.textContent = msg; }
 function codeDigits(): string { return normalizeCode(setupCode.value); }
 function updateVerifyButton(): void { btnVerify.disabled = verifying || !isCompleteCode(codeDigits()); }
 
+/** Forward enters from the right, back from the left. Only the entering stage moves. */
+function enterStage(el: HTMLElement, dir: 1 | -1): void {
+  if (reducedMotion()) return;
+  el.animate(
+    [{ opacity: 0, transform: `translateX(${8 * dir}px)` }, { opacity: 1, transform: 'none' }],
+    { duration: DUR.base, easing: EASE_OUT },
+  );
+}
+
+/** A rejected code shakes the field once (same cadence as the bubble's error shake). */
+function rejectCode(): void {
+  if (reducedMotion()) return;
+  setupCode.animate(
+    { transform: ['translateX(0)', 'translateX(-4px)', 'translateX(4px)', 'translateX(-2px)', 'translateX(2px)', 'translateX(0)'] },
+    { duration: 320, easing: EASE_OUT },
+  );
+}
+
 function showCodeStage(): void {
   window.clippy.trackOnboarding('code_screen_shown');
   emailStage.style.display = 'none';
   codeStage.style.display = '';
+  enterStage(codeStage, 1);
   codeLabel.textContent = T('code.label', { email: sentTo });
   const inbox = inboxLink(sentTo);
   btnOpenInbox.hidden = !inbox;
@@ -577,12 +597,15 @@ async function submitCode(): Promise<void> {
     if (r.ok) {
       licenseSavedInMain = true;
       validatedPlan = r.plan;
+      // A short success beat before the window moves on.
+      btnVerify.textContent = T('code.done');
+      if (!reducedMotion()) await new Promise((res) => setTimeout(res, DUR.celebrate));
       if (!IS_MAC) await finishFirstRun(); // Windows: straight to Clippy
       else showStep(2);
       return;
     }
     showSetupError(accountErrorText(LANG, r));
-    if (clearsCodeInput(r)) setupCode.value = '';
+    if (clearsCodeInput(r)) { setupCode.value = ''; rejectCode(); }
     if (needsNewCode(r)) enableResend();
     else if (r.error === 'rate_limited') holdResend(resendHoldSeconds(r));
   } catch {
@@ -625,6 +648,7 @@ btnChangeEmail.addEventListener('click', () => {
   codeResentEl.textContent = '';
   codeStage.style.display = 'none';
   emailStage.style.display = '';
+  enterStage(emailStage, -1);
   setupEmail.focus();
 });
 // Digits only (typed or pasted, " 123 456" included); the sixth digit submits by itself.

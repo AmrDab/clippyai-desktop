@@ -5,6 +5,7 @@ import { clickAction } from './click-action';
 import { powerOfferLabel, resetLine } from './upgrade-card';
 import { t, isLang, type Key, type Lang } from '../main/i18n';
 import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
+import { EASE_OUT, DUR, reducedMotion } from './motion';
 import { silentGapMs, AFTER_SPEECH_MS, type ScriptPayload, type ScriptLine } from '../main/first-run';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
@@ -189,11 +190,17 @@ async function init(): Promise<void> {
     const upgradeAction = {
       label: powerOfferLabel(),
       variant: 'primary' as const,
-      onClick: () => {
-        // Checkout runs in main; say what happened (needs_email opens the setup window by itself).
+      onClick: (btn: HTMLButtonElement) => {
+        // Respond on the press: grey out and say what is happening (also stops a double click opening checkout twice).
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = T('checkout.opening');
+        const restore = () => { btn.disabled = false; btn.textContent = label; };
+        // Checkout runs in main; needs_email opens the setup window by itself.
         void window.clippy.upgrade?.('power').then((r) => {
           if (r.status === 'opened') bubbleCtrl.speak(T('checkout.opened'));
           else if (r.status === 'error') bubbleCtrl.speakError(T('checkout.error'));
+          else restore();
         }).catch(() => bubbleCtrl.speakError(T('checkout.error')));
       },
     };
@@ -214,7 +221,7 @@ async function init(): Promise<void> {
           void window.clippy.usePowerPass?.();
         } },
         { ...upgradeAction, variant: 'ghost' },
-      ]);
+      ], { tint: 'default' });
     } else if (cooledDown) {
       bubbleCtrl.speak(safeText);
     } else {
@@ -223,7 +230,7 @@ async function init(): Promise<void> {
         upgradeAction,
         // No-op onClick so "Maybe later" dismisses without sending stray text.
         { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
-      ]);
+      ], { tint: 'default' });
     }
     tts.speak(safeText);
     clippyCtrl.playNamed('Alert');
@@ -267,6 +274,7 @@ async function init(): Promise<void> {
     const render = () => {
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       text.textContent = `Auto-deny in ${left}s`;
+      countdown.toggleAttribute('data-urgent', left <= 10); // last ten seconds: rose, and it stays
       return left;
     };
     render();
@@ -478,7 +486,7 @@ async function init(): Promise<void> {
       label: a.label,
       variant: a.value.startsWith('rps:') || a.value.startsWith('start:') || a.value === 'again' ? 'primary' : 'ghost',
       onClick: () => { void window.clippy.gameAction?.(a.value); },
-    })), { sticky: true });
+    })), { sticky: true, tint: 'default' });
     if (animate) clippyCtrl.playNamed(animate);
   });
   document.addEventListener('keydown', (e) => {
@@ -551,9 +559,13 @@ async function init(): Promise<void> {
     }
   }
   function dismissFirstWinOverlay(): void {
-    if (!firstWinOverlayEl) return;
-    firstWinOverlayEl.remove();
+    const el = firstWinOverlayEl;
+    if (!el) return;
     firstWinOverlayEl = null;
+    if (reducedMotion()) { el.remove(); return; }
+    // Leaves the way it came in: down and out, 150 ms.
+    el.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(8px)' }],
+      { duration: DUR.fast, easing: EASE_OUT }).finished.then(() => el.remove(), () => el.remove());
   }
 
   // === Scripted first run (first-run.ts) ================================
@@ -662,14 +674,14 @@ async function init(): Promise<void> {
     bubbleCtrl.speakWithActions(`I just updated to **v${version}**! What's new:\n${notes.map((n) => `- ${n}`).join('\n')}`, [
       { label: 'Nice!', variant: 'primary', onClick: () => { bubbleCtrl.hide(); } },
       { label: 'Full changelog', variant: 'ghost', onClick: () => { void window.clippy.openExternalUrl('https://clippyai.app/changelog'); } },
-    ], { sticky: true });
+    ], { sticky: true, tint: 'default' });
   };
   const showRecovered = () => {
     clippyCtrl.playNamed('Alert');
     bubbleCtrl.speakWithActions("Whoa, I tripped over my own paperclip there. I'm back! Want to tell the team what happened?", [
       { label: 'Send a report', variant: 'primary', onClick: () => { void window.clippy.openReport?.(); bubbleCtrl.hide(); } },
       { label: 'Not now', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
-    ], { sticky: true });
+    ], { sticky: true, tint: 'default' });
   };
   void (async () => {
     try {
@@ -692,7 +704,7 @@ async function init(): Promise<void> {
         },
       },
       later(version),
-    ]);
+    ], { tint: 'default' });
   });
 
   window.clippy.onUpdateReady((version, stale) => {
@@ -701,7 +713,7 @@ async function init(): Promise<void> {
       bubbleCtrl.speakWithActions(`I have an update ready (v${version}). It takes about 20 seconds.`, [
         { label: 'Restart now', variant: 'primary', onClick: () => { bubbleCtrl.speak('Installing update, restarting...'); void window.clippy.installUpdate(); } },
         later(version),
-      ]);
+      ], { tint: 'default' });
       return;
     }
     clippyCtrl.playNamed('GetAttention');
@@ -715,7 +727,7 @@ async function init(): Promise<void> {
         },
       },
       later(version),
-    ]);
+    ], { tint: 'default' });
     tts.speak('Update ready!');
   });
 
@@ -741,7 +753,7 @@ async function init(): Promise<void> {
         },
       },
       later(version),
-    ]);
+    ], { tint: 'default' });
   });
 
   // === Drag + Click handling ===
