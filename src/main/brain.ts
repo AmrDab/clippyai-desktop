@@ -42,6 +42,10 @@ import { languageSample, proactiveMessage } from './tip-language';
 // dependency risk for these modules (cursor-vision and user-takeover
 // only depend on electron + node stdlib + ./logger).
 import * as cursorVision from './cursor-vision';
+import {
+  newCtxState, planCapture, recordOutcome, heavyBudgetMs, windowCallFailed, extractProcessName, raceDeadline,
+  type CtxState, type ScreenCtxOutcome,
+} from './screen-context';
 import * as userTakeover from './user-takeover';
 import { getLicenseKey, getPlan, recordUsage } from './license';
 import { openSetup } from './account';
@@ -778,6 +782,8 @@ export class Brain {
   // retryLastWithPowerPass(); cleared in handleUserMessage's finally{} so
   // done / error / cancel all end it. `lastUserRequest` is the text we re-run.
   private powerPassActive = false;
+  private passTurns = 0;
+  private passActions = 0;
   private lastUserRequest: string | null = null;
   // v0.22 — how the current task ended; sent with 'working-stop' so the
   // bubble shows Done / Stopped / Stuck / Step limit instead of one look.
@@ -786,7 +792,10 @@ export class Brain {
     const text = this.lastUserRequest;
     if (!text) return "I don't have a request to retry — just ask me again! 📎";
     log.info('PowerPass.start', { text: text.substring(0, 120) });
+    telemetry.track('power_pass', { outcome: 'started' });
     this.powerPassActive = true;
+    this.passTurns = 0;
+    this.passActions = 0;
     try {
       return await this.handleUserMessage(text);
     } finally {
@@ -1243,24 +1252,12 @@ export class Brain {
       // Build initial user message — add screen context if we can grab it
       // fast. Pass userText so memory.lookupWorkflow can match learned
       // workflows for this user+app+task.
-      const screenContext = await this.captureScreenContext(2500, text);
-      // Pre-capture the active app's process name so we can record the
-      // workflow under it on success (active app may shift mid-task).
-      let activeProcessAtStart = '';
-      try {
-        const aw = await executeTool('get_active_window', {});
-        const parsed = JSON.parse(aw.text);
-        // v0.20.0-alpha.5 — the macOS Swift bridge returns `{app, pid, ...}`
-        // while the Windows / AppleScript fallback returns `{processName,
-        // ...}`. The previous parser only read `processName`, so on macOS
-        // (bridge active) this was always '' — the model lost the active-app
-        // signal and conflated empty context with "ClippyAI bubble", refusing
-        // every desktop intent. Accept either shape.
-        const name = (typeof parsed.processName === 'string' && parsed.processName)
-          || (typeof parsed.app === 'string' && parsed.app)
-          || '';
-        if (name) activeProcessAtStart = name;
-      } catch { /* memory recording is best-effort */ }
+      // One bounded capture (screen-context.ts): never blocks the turn for long, and
+      // the active process comes from the same call (no second get_active_window).
+      const ctx = await this.captureTurnContext(text);
+      const screenContext = ctx.context;
+      const activeProcessAtStart = ctx.process;
+      telemetry.taskScreenCtx(ctx.outcome);
       // Track successful tool calls so we can distill them into a learned
       // workflow on task completion. Only the model-emitted Tool.call args
       // — populated below in the loop.
@@ -1427,6 +1424,7 @@ export class Brain {
         // Show thinking animation while waiting for API response
         if (step > 0) this.emit('play-animation', 'Thinking');
         const turnStart = Date.now();
+        telemetry.taskBeforeTurn();
         const resp = await this.callTurn(contents, {
           user_profile: userProfile,
           ...(this.tutorialActive ? { onboarding: true } : {}),
@@ -1434,6 +1432,8 @@ export class Brain {
           ...(this.powerPassActive ? { power_pass: true } : {}),
         });
         const turnMs = Date.now() - turnStart;
+        if (this.powerPassActive) this.passTurns++;
+        telemetry.taskTurn({ ms: turnMs, provider: isError(resp) ? undefined : resp.provider, finishReason: isError(resp) ? undefined : resp.finish_reason });
 
         if (isError(resp)) {
           // v0.21 — a cancel (sleep / override / takeover) aborts an
@@ -1442,6 +1442,7 @@ export class Brain {
           if (this.cancelRequested) continue;
           log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
           telemetry.taskTurnError(resp.error);
+          if (resp.error === 'limit_reached') telemetry.track('upsell_shown', { trigger: 'limit_reached', cta: 'power', pass_available: false });
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
           // Onboarding v3: no key at all opens the email + code screen instead of a dead end.
           if (resp.error === 'invalid_key' && !getLicenseKey()) openSetup();
@@ -1492,6 +1493,13 @@ export class Brain {
         // the loop — there's no work to continue.
         if (okResp.upgrade_cta === 'power') {
           const capLine = spoken || "That one needs Power — it gives me way more room. Want to keep going?";
+          telemetry.taskUpsell(!!okResp.reset_date);
+          telemetry.track('upsell_shown', {
+            trigger: okResp.reset_date ? 'free_cap' : 'upgrade_cta',
+            cta: 'power',
+            pass_available: okResp.power_pass_available === true,
+            pass_used: okResp.power_pass_used === true,
+          });
           log.info('Clippy.upsell', { trigger: 'upgrade_cta', cta: 'power', step: step + 1, power_pass_available: okResp.power_pass_available === true, power_pass_used: okResp.power_pass_used === true });
           // v0.21 — pass fields are additive: absent → the renderer behaves
           // exactly as before. A power_pass_used reply never carries
@@ -1658,6 +1666,7 @@ export class Brain {
             break; // exit the per-call loop; outer loop will catch cancelRequested at top of next step
           }
           const toolStart = Date.now();
+          telemetry.taskToolUsed(call.name);
           log.info('Tool.call', { step: step + 1, tool: call.name, args: redactArgs(call.args) });
           // Trigger an in-progress animation BEFORE the tool runs so the
           // sprite shows what Clippy is doing during the wait. Without
@@ -2112,7 +2121,8 @@ export class Brain {
         lastActionReceipt: lastActionReceipt ?? null,
       });
       this.taskOutcome = taskOutcomeFor(abortReason, unconfirmed);
-      telemetry.taskEnd(this.taskOutcome, abortReason, lastStep);
+      telemetry.taskEnd(this.taskOutcome, abortReason, lastStep, { completed: taskCompleted, actions: successfulActions.length });
+      if (this.powerPassActive) this.passActions = successfulActions.length;
 
       // v0.11.22 — record the action sequence as a learned workflow scoped
       // to the active app at task start. Only for clean successes (no
@@ -2166,7 +2176,12 @@ export class Brain {
       this.isExecuting = false;
       // v0.21 — the free Power pass covers exactly one task (done, error or
       // cancel all land here); clear it and drop the renderer's ⚡ pill.
-      if (this.powerPassActive) { this.powerPassActive = false; this.emit('power-pass', false); }
+      if (this.powerPassActive) {
+        // The pass covers one task: did it get anything done? (the owner report: a pass burned and nothing happened)
+        telemetry.track('power_pass', { outcome: this.passActions > 0 ? 'used' : 'no_action', turns: this.passTurns, actions: this.passActions });
+        this.powerPassActive = false;
+        this.emit('power-pass', false);
+      }
       // v0.19.0-rc.5 — extend the proactive-quiet window past this reply. Replies
       // never set noRepeatUntil before, so the proactive loop would re-fire
       // ~10-60s after the user typed (depending on interval). Now any user
@@ -2508,6 +2523,7 @@ export class Brain {
             if (this.recentProactiveMessages.length > Brain.MAX_PROACTIVE_HISTORY) {
               this.recentProactiveMessages.shift();
             }
+            telemetry.noteProactive('shown');
             log.info('Clippy.say', { text, animation: rule.animation, trigger: 'rule', rule_id: rule.id });
             this.emit('clippy-speak', { text, animate: rule.animation, ruleId: rule.id });
             this.noRepeatUntil = Date.now() + settingsStore.get('proactiveCooldownMs');
@@ -2585,6 +2601,7 @@ export class Brain {
       if (this.recentProactiveMessages.length > Brain.MAX_PROACTIVE_HISTORY) {
         this.recentProactiveMessages.shift();
       }
+      telemetry.noteProactive('shown');
       log.info('Clippy.say', { text: reply, animation: 'GetAttention', trigger: 'proactive' });
       this.emit('clippy-speak', { text: reply, animate: 'GetAttention' });
       // v0.12.3 — cooldown is now user-configurable via Settings → Brain →
@@ -2606,6 +2623,83 @@ export class Brain {
   }
 
   // ========== Helpers ==========
+
+  /** Active window + (optional) screen dump + the app guide and any learned-workflow hint, as the model sees it. */
+  private composeScreenContext(activeText: string, screenText: string, userText?: string): string {
+    // v0.11.22 — extract process name from active-window JSON, then
+    // append (a) the bundled ClawdCursor app guide and (b) the
+    // per-machine learned-workflow hint if one matches the user's ask.
+    // Both are app-agnostic injections — they do NOT replace the
+    // smart_click OCR fallback, they supplement it. Guide tells the
+    // model the right shortcut (e.g. Cmd+Enter for Outlook send) so
+    // it skips coordinate-clicking entirely.
+    let extras = '';
+    try {
+      // v0.20.0-alpha.5 — the macOS Swift bridge returns `{app, pid}`
+      // while the AppleScript fallback returns `{processName}`. Accept
+      // either shape or this hint injection silently never fires on
+      // macOS (proc undefined → no guide/workflow hint).
+      const parsedActive = JSON.parse(activeText) as { processName?: string; app?: string };
+      const proc = parsedActive.processName || parsedActive.app;
+      if (proc) {
+        const guide = getGuidePrompt(proc);
+        if (guide) extras += guide;
+        if (userText && memoryEnabled()) {
+          const hint = formatWorkflowHint(proc, userText);
+          if (hint) extras += hint;
+        }
+      }
+    } catch {
+      // activeText not JSON (e.g. "(no active window)") — skip extras
+    }
+
+    // v0.18.0 — screenText cap 2000 → 800. Trims the first-turn
+    // context bloat from 5-10KB to ~3KB. Active window + 800 chars
+    // of OCR is enough for "what app/page is this." On the fast
+    // path screenText is empty so this is a no-op there.
+    return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 800)}${extras}`;
+  }
+
+  private ctxState: CtxState = newCtxState();
+
+  /**
+   * The per-turn screen context, bounded (screen-context.ts explains the old
+   * 6-9 s stall). Window first with a tight deadline; the UIA/OCR dump only with
+   * what is left of a small budget and a short script timeout; whatever is ready
+   * goes out. Reused for 3 s; skipped for a minute after repeated timeouts.
+   */
+  private async captureTurnContext(userText: string): Promise<{ context: string; outcome: ScreenCtxOutcome; process: string }> {
+    const started = Date.now();
+    const done = (context: string, outcome: ScreenCtxOutcome, process: string) => ({ context, outcome, process });
+    const plan = planCapture(this.ctxState, started);
+    if (plan.kind === 'cached') return done(plan.cache.text, 'ok', plan.cache.process);
+    if (plan.kind === 'skip') return done('', 'off', '');
+    let windowText = '';
+    try {
+      const w = await raceDeadline(executeTool('get_active_window', { timeoutMs: plan.windowMs }), plan.windowMs + 200);
+      if (!w.timedOut) windowText = w.value.text;
+    } catch (err) {
+      log.warn('Turn screen context: window call threw', { err: serializeErr(err) });
+    }
+    if (windowCallFailed(windowText)) {
+      this.ctxState = recordOutcome(this.ctxState, 'timeout', null, Date.now());
+      return done('<screen-context-timeout>', 'timeout', '');
+    }
+    const proc = extractProcessName(windowText);
+    let screenText = '';
+    let partial = true;
+    const left = heavyBudgetMs(plan, Date.now() - started);
+    if (left >= 200) {
+      try {
+        const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left }), left + 150);
+        if (!r.timedOut && r.value.text && !/^\((read_screen )?error/i.test(r.value.text)) { screenText = r.value.text; partial = false; }
+      } catch { /* window-only context */ }
+    }
+    const text = this.composeScreenContext(windowText, screenText, userText);
+    const outcome: ScreenCtxOutcome = partial ? 'partial' : 'ok';
+    this.ctxState = recordOutcome(this.ctxState, outcome, { text, process: proc, at: Date.now() }, Date.now());
+    return done(text, outcome, proc);
+  }
 
   /**
    * v0.18.0 — `mode` parameter. The proactive loop was timing out 100%
@@ -2649,38 +2743,7 @@ export class Brain {
         const screenText = (screen && screen.status === 'fulfilled') ? screen.value.text : '';
         if (!activeText && !screenText) return '';
 
-        // v0.11.22 — extract process name from active-window JSON, then
-        // append (a) the bundled ClawdCursor app guide and (b) the
-        // per-machine learned-workflow hint if one matches the user's ask.
-        // Both are app-agnostic injections — they do NOT replace the
-        // smart_click OCR fallback, they supplement it. Guide tells the
-        // model the right shortcut (e.g. Cmd+Enter for Outlook send) so
-        // it skips coordinate-clicking entirely.
-        let extras = '';
-        try {
-          // v0.20.0-alpha.5 — the macOS Swift bridge returns `{app, pid}`
-          // while the AppleScript fallback returns `{processName}`. Accept
-          // either shape or this hint injection silently never fires on
-          // macOS (proc undefined → no guide/workflow hint).
-          const parsedActive = JSON.parse(activeText) as { processName?: string; app?: string };
-          const proc = parsedActive.processName || parsedActive.app;
-          if (proc) {
-            const guide = getGuidePrompt(proc);
-            if (guide) extras += guide;
-            if (userText && memoryEnabled()) {
-              const hint = formatWorkflowHint(proc, userText);
-              if (hint) extras += hint;
-            }
-          }
-        } catch {
-          // activeText not JSON (e.g. "(no active window)") — skip extras
-        }
-
-        // v0.18.0 — screenText cap 2000 → 800. Trims the first-turn
-        // context bloat from 5-10KB to ~3KB. Active window + 800 chars
-        // of OCR is enough for "what app/page is this." On the fast
-        // path screenText is empty so this is a no-op there.
-        return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 800)}${extras}`;
+        return this.composeScreenContext(activeText, screenText, userText);
       })();
       const timeout = new Promise<string>((r) => setTimeout(() => r('<screen-context-timeout>'), timeoutMs));
       return await Promise.race([promise, timeout]);

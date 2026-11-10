@@ -244,6 +244,16 @@ function stripOwnWindowFromScreen(raw: string): string {
   return raw;
 }
 
+/**
+ * Internal `timeoutMs` param (brain's per-turn screen context): a tighter script
+ * timeout than the default, so a slow UIA dump is cancelled by the host itself
+ * instead of running on and blocking the next request. The model never sets it.
+ */
+function scriptTimeoutParam(params: Record<string, unknown>, fallbackMs: number): number {
+  const t = Number(params.timeoutMs);
+  return Number.isFinite(t) && t >= 200 && t < fallbackMs ? Math.floor(t) : fallbackMs;
+}
+
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
   const mode = String(params.mode || 'accessibility');
 
@@ -293,7 +303,7 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
       const { stdout } = await psScript('get-screen-context.ps1', {
         ExcludeProcessId: process.pid,
         FocusedProcessId: params.processId ? String(params.processId) : undefined,
-      }, { timeoutMs: 10000, maxBuffer: 5 * 1024 * 1024, idempotent: true });
+      }, { timeoutMs: scriptTimeoutParam(params, 10000), maxBuffer: 5 * 1024 * 1024, idempotent: true });
       const filtered = stripOwnWindowFromScreen(stdout.trim());
       return { text: filtered || '(empty screen context)' };
     } catch (err) {
@@ -359,7 +369,7 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
   return { text: filtered };
 }
 
-async function getActiveWindow(): Promise<ToolResult> {
+async function getActiveWindow(params: Record<string, unknown> = {}): Promise<ToolResult> {
   // v0.20.0 — darwin path routes through the Swift bridge's active-window
   // subcommand. Returns a structured WindowInfo (CGWindow + AX merge); we
   // serialize to JSON for the brain. On bridge missing → fall through to
@@ -388,7 +398,7 @@ async function getActiveWindow(): Promise<ToolResult> {
   // — callers are the proactive tick, smart_click and the governor (§1.6).
   if (process.platform === 'win32') {
     try {
-      const { stdout } = await psScript('get-foreground-window.ps1', {}, { timeoutMs: 5000, idempotent: true });
+      const { stdout } = await psScript('get-foreground-window.ps1', {}, { timeoutMs: scriptTimeoutParam(params, 5000), idempotent: true });
       return { text: stdout.trim() || '(no active window)' };
     } catch (err) {
       log.warn('get_active_window failed', serializeErr(err));
