@@ -2,7 +2,7 @@ import { ClippyController, AgentData, HdSprite } from './clippy';
 import { BubbleController } from './bubble';
 import { TTS } from './tts';
 import { clickAction } from './click-action';
-import { powerOffer, resetLine } from './upgrade-card';
+import { powerOfferLabel, resetLine } from './upgrade-card';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
@@ -178,8 +178,7 @@ async function init(): Promise<void> {
   const UPGRADE_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
   let lastUpgradePromptAt = 0;
   window.clippy.onUpgrade?.(({ text, power_pass_available, power_pass_used, reset_date }) => {
-    const offer = powerOffer(Date.now());
-    const upgradeAction = { label: offer.label, variant: 'primary' as const, onClick: () => { void window.clippy.openExternalUrl(offer.url); } };
+    const upgradeAction = { label: powerOfferLabel(), variant: 'primary' as const, onClick: () => { void window.clippy.upgrade?.('power'); } };
     const reset = resetLine(reset_date, Date.now());
     const safeText = `${text || "I'm tapped out on free tokens this month."}${reset ? ` ${reset}` : ''}`;
     // A power_pass_used reply ("comes back tomorrow — want Power all the
@@ -210,6 +209,14 @@ async function init(): Promise<void> {
     }
     tts.speak(safeText);
     clippyCtrl.playNamed('Alert');
+  });
+  // Onboarding v3 — a trial key just got its first answer: offer to add the
+  // email (main rate-limits this to once a day).
+  window.clippy.onAddEmailOffer?.(({ text }) => {
+    bubbleCtrl.speakWithActions(text, [
+      { label: 'Keep me free forever — add your email', variant: 'primary', onClick: () => { window.clippy.openSetup?.(); } },
+      { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
+    ]);
   });
   // v0.21 — "⚡ Power" pill while a pass task runs; main clears it at task end.
   const powerPill = document.getElementById('power-pass-pill');

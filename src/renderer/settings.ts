@@ -277,12 +277,23 @@ async function loadConfig(): Promise<void> {
   renderUpgradeCta(planName);
 }
 
-// ── Stripe checkout URLs ─────────────────────────────────────────────────────
-// Single source of truth for this renderer module. Onboarding + main.ts each
-// keep their own local copies (they are separate bundles); keep in sync if the
-// links ever rotate.
-const STRIPE_POWER = 'https://buy.stripe.com/8x2bJ06jXfC65XDe2Oe3e03'; // $19.99/mo
-const STRIPE_MAX   = 'https://buy.stripe.com/5kQaEW7o1cpUdq52k6e3e05'; // $39.99/mo
+// ── Upgrade ──────────────────────────────────────────────────────────────────
+// Main creates the Stripe Checkout session (POST /v1/checkout) and polls for the
+// new plan; a trial key is sent to the email screen first. Anything the user
+// needs to know besides the browser opening is shown in place of the link text.
+async function startUpgrade(plan: 'power' | 'max', link: HTMLElement): Promise<void> {
+  const original = link.textContent;
+  try {
+    const r = await window.clippy.upgrade(plan);
+    if (r.status === 'error') link.textContent = r.message;
+    else if (r.status === 'needs_email') link.textContent = 'Add your email first: the setup window just opened.';
+    else if (r.status === 'updated') link.textContent = `You're on ${r.plan} now.`;
+    else link.textContent = 'Checkout opened in your browser.';
+  } catch {
+    link.textContent = "Couldn't start checkout. Try again in a moment.";
+  }
+  setTimeout(() => { link.textContent = original; }, 6000);
+}
 
 // feat/pricing-free-tier — monthly usage meter for free-tier users. Reads the
 // usage snapshot (tokensUsed / tokensAllowed) the worker stamps on every /turn
@@ -318,7 +329,7 @@ function renderUsageMeter(plan: string, config: Record<string, unknown>): void {
       upgradeLink.dataset.wired = '1';
       upgradeLink.addEventListener('click', (e) => {
         e.preventDefault();
-        window.clippy.openExternalUrl(STRIPE_POWER);
+        void startUpgrade('power', upgradeLink);
       });
     }
   }
@@ -340,7 +351,7 @@ function renderUpgradeCta(plan: string): void {
     link.dataset.wired = '1';
     link.addEventListener('click', (e) => {
       e.preventDefault();
-      window.clippy.openExternalUrl(STRIPE_MAX);
+      void startUpgrade('max', link);
     });
   }
   // Tailor the label for Power users.

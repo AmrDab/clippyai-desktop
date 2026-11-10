@@ -1,13 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { powerOffer, resetLine } from '../src/renderer/upgrade-card';
+import { powerOfferLabel, resetLine } from '../src/renderer/upgrade-card';
 
-describe('powerOffer', () => {
-  it('carries the $1 promo until Nov 10 PT, then the plain checkout', () => {
-    const before = powerOffer(Date.parse('2026-11-10T20:00:00-08:00'));
-    expect(before.label).toContain('$1');
-    expect(before.url).toContain('prefilled_promo_code=CLIPPY1');
-    const after = powerOffer(Date.parse('2026-11-11T00:00:01-08:00'));
-    expect(after).toEqual({ label: 'Get Power', url: expect.not.stringContaining('promo') });
+describe('powerOfferLabel', () => {
+  it('is a plain Get Power button; the checkout link comes from the server', () => {
+    expect(powerOfferLabel()).toBe('Get Power');
   });
 });
 
