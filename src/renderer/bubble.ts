@@ -1,16 +1,12 @@
 import { Recorder } from './recorder';
 import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
+import { typeTotalMs, typedText, hasMarkdown, DeferredCollapse } from './bubble-motion';
+import { reducedMotion } from './motion';
 
 // v0.12.3 — auto-hide is now configurable via Settings.bubbleAutoHideMs.
 // 0 = "Manual" (never auto-hide). Default 30000 (was 20000 — 20s stole long
 // replies mid-read per UX audit finding #4).
 const DEFAULT_AUTO_HIDE_MS = 30000;
-// v0.12.3 — typewriter speeds up when text is long so TTS doesn't finish
-// 5s before the bubble. 25ms/char on a 200-char tip = 5s typing while TTS
-// finishes in ~3s. Per UX audit finding #1.
-const TYPE_INTERVAL_FAST_MS = 10;  // for replies > 80 chars
-const TYPE_INTERVAL_NORMAL_MS = 18; // for short replies (still feels alive)
-
 // v0.19.0 PR-2 — state machine + tint system. Compact = ambient one-liner
 // (auto-fades, no input). Standard = the v0.12 behavior; default for any
 // reply or any text > 80 chars. Expanded = full chat panel with history,
@@ -37,6 +33,7 @@ const AVOIDANCE_RADIUS_PX = 90;
 const AVOIDANCE_RELEASE_PX = 220; // hysteresis — cursor must leave further than entry
 
 const INPUT_PLACEHOLDER = 'Ask Clippy anything…';
+const TYPING_HTML = '<span class="typing" role="img" aria-label="Clippy is thinking"><i></i><i></i><i></i></span>';
 
 export interface SuggestionChip {
   label: string;
@@ -50,7 +47,7 @@ interface BubbleActionButton {
   label: string;
   /** Optional handler. If omitted, clicking the button sends `label` as
    *  user text — same pattern as a chip but rendered inline with the tip. */
-  onClick?: () => void;
+  onClick?: (btn: HTMLButtonElement) => void;
   /** Optional style hint — "primary" gets the accent fill, anything else
    *  is a quieter outline. */
   variant?: 'primary' | 'ghost';
@@ -480,8 +477,9 @@ export class BubbleController {
    * built their own buttons or relied on click-Clippy semantics. Now
    * they have a real entry point with the warning tint baked in.
    */
-  speakWithActions(text: string, actions: BubbleActionButton[], opts: { sticky?: boolean; onDismiss?: () => void } = {}): void {
-    this.speak(text, { autoState: 'standard', tint: 'warning', sticky: opts.sticky });
+  speakWithActions(text: string, actions: BubbleActionButton[], opts: { sticky?: boolean; onDismiss?: () => void; tint?: BubbleTint } = {}): void {
+    // Amber means "approve this risky action"; offers and notices pass tint 'default' (brand yellow).
+    this.speak(text, { autoState: 'standard', tint: opts.tint ?? 'warning', sticky: opts.sticky });
     if (opts.sticky && this.state !== 'expanded') {
       // Prompt the user is waiting on: show it whole (bold rendered), no typewriter.
       this.clearTypeTimer();
@@ -499,7 +497,7 @@ export class BubbleController {
         e.stopPropagation();
         this.pendingDismiss = null; // a button was chosen — not a dismissal
         if (a.onClick) {
-          try { a.onClick(); } catch { /* caller logs */ }
+          try { a.onClick(btn); } catch { /* caller logs */ }
         } else {
           this.onSend(a.label);
         }
@@ -594,18 +592,13 @@ export class BubbleController {
     if (this.state === 'expanded') {
       // Expanded panel uses the history view for replies. Re-render
       // history including this new message.
-      this.renderHistoryPanel();
+      this.renderHistoryPanel(true);
     } else {
       this.bubbleText.textContent = '';
       this.bubbleText.className = '';
       this.clearTypeTimer();
-      const interval = text.length > 80 ? TYPE_INTERVAL_FAST_MS : TYPE_INTERVAL_NORMAL_MS;
-      let i = 0;
-      this.typeTimer = window.setInterval(() => {
-        this.bubbleText.textContent += text[i];
-        i++;
-        if (i >= text.length) this.clearTypeTimer();
-      }, interval);
+      if (hasMarkdown(text)) this.bubbleText.innerHTML = this.renderMarkdown(text); // same rendering as the chat panel
+      else this.typeOut(text);
     }
     // sticky = wait for the user (approval prompt); never auto-hide.
     if (opts.sticky) this.clearAutoHide();
@@ -670,14 +663,13 @@ export class BubbleController {
     if (this.state === 'compact') this.setState('standard');
     this.setTint('busy');
     this.show();
-    this.bubbleText.textContent = '…';
+    this.bubbleText.innerHTML = TYPING_HTML;
     this.bubbleText.className = '';
     if (this.state === 'expanded' && !this.history.querySelector('.chat-thinking')) {
       // #bubble-text is hidden in expanded — show the ellipsis as a Clippy row.
       const row = document.createElement('div');
       row.className = 'chat-msg chat-clippy chat-thinking';
-      row.setAttribute('aria-label', 'Clippy is thinking');
-      row.textContent = '…';
+      row.innerHTML = TYPING_HTML;
       this.history.appendChild(row);
       this.history.scrollTop = this.history.scrollHeight;
     }
@@ -719,6 +711,9 @@ export class BubbleController {
     this.input.focus();
   }
 
+  /** Let the exit fade play, then shrink the OS window; any show() in between cancels it. */
+  private collapse = new DeferredCollapse(() => window.clippy.collapseWindow());
+
   hide(): void {
     this.fireDismiss();
     this.bubble.classList.add('hidden');
@@ -726,7 +721,7 @@ export class BubbleController {
     this.showingHistory = false;
     this.clearAutoHide();
     this.clearTypeTimer();
-    window.clippy.collapseWindow();
+    this.collapse.schedule();
   }
 
   // Public so smoke tests + main.ts can call it directly.
@@ -771,7 +766,13 @@ export class BubbleController {
     return 'standard';
   }
 
-  private show(): void {
+  /** `instant`: opened from the keyboard (voice hotkey), so no fade. */
+  private show(instant = false): void {
+    this.collapse.cancel();
+    if (instant) {
+      this.bubble.setAttribute('data-instant', '');
+      requestAnimationFrame(() => this.bubble.removeAttribute('data-instant'));
+    }
     this.bubble.classList.remove('hidden');
     window.clippy.expandWindow();
     // Force a rect refresh after the show transition.
@@ -795,24 +796,26 @@ export class BubbleController {
 
   /** Expanded-state history panel: last 20 user + Clippy turns, newest at
    *  the bottom, auto-scrolled. */
-  private renderHistoryPanel(): void {
+  private renderHistoryPanel(animateLast = false): void {
     const recent = visibleHistory(this.chatHistory);
     if (recent.length === 0) {
       this.history.innerHTML = '<div class="chat-empty">No messages yet. Say hello!</div>';
       return;
     }
-    this.history.innerHTML = this.renderRows(recent);
+    this.history.innerHTML = this.renderRows(recent, animateLast);
     this.history.scrollTop = this.history.scrollHeight;
   }
 
   /** Chat rows: user turns right/accent as plain text (no HTML injection
    *  risk); Clippy turns left, markdown-rendered. The role label is
    *  visually hidden — side + colour carry it for sighted users. */
-  private renderRows(msgs: ChatMessage[]): string {
-    return msgs.map((msg) => msg.role === 'user'
-      ? `<div class="chat-msg chat-user"><span class="chat-label">You</span>${this.escapeHtml(msg.text)}</div>`
-      : `<div class="chat-msg chat-clippy"><span class="chat-label">Clippy</span>${this.renderMarkdown(msg.text)}</div>`,
-    ).join('');
+  private renderRows(msgs: ChatMessage[], animateLast = false): string {
+    return msgs.map((msg, i) => {
+      const cls = animateLast && i === msgs.length - 1 ? ' is-new' : '';
+      return msg.role === 'user'
+      ? `<div class="chat-msg chat-user${cls}"><span class="chat-label">You</span>${this.escapeHtml(msg.text)}</div>`
+      : `<div class="chat-msg chat-clippy${cls}"><span class="chat-label">Clippy</span>${this.renderMarkdown(msg.text)}</div>`;
+    }).join('');
   }
 
   /** v0.21 — inline confirm for the header's trash button; lives in the
@@ -917,7 +920,7 @@ export class BubbleController {
     this.input.value = '';
     this.recallIdx = null;
     this.syncComposer();
-    if (this.state === 'expanded') this.renderHistoryPanel();
+    if (this.state === 'expanded') this.renderHistoryPanel(true);
     if (this.state !== 'expanded') this.hideInput();
     this.showThinking();
     this.onSend(text);
@@ -938,6 +941,18 @@ export class BubbleController {
       clearTimeout(this.hideTimer);
       this.hideTimer = null;
     }
+  }
+
+  /** Reveal text at a constant rate, capped (bubble-motion.ts). Whole code points, so an emoji is never split. */
+  private typeOut(text: string): void {
+    if (reducedMotion() || typeTotalMs(text) <= 0) { this.bubbleText.textContent = text; return; }
+    const t0 = performance.now();
+    // A timer, not requestAnimationFrame: it keeps running if the window is occluded, so no bubble is left half-typed.
+    this.typeTimer = window.setInterval(() => {
+      const shown = typedText(text, performance.now() - t0);
+      this.bubbleText.textContent = shown;
+      if (shown.length >= text.length) this.clearTypeTimer();
+    }, 16);
   }
 
   private clearTypeTimer(): void {
@@ -1010,7 +1025,7 @@ export class BubbleController {
   async startVoice(): Promise<void> {
     if (!this.voiceEnabled) return;
     if (this.isRecording()) return;
-    this.show();
+    this.show(true);
     if (this.state === 'compact') this.setState('standard');
     if (this.inputArea.classList.contains('hidden')) this.toggleInput();
 

@@ -96,6 +96,15 @@ body.clippy-window {
 /* Tint palette — CSS custom properties so JS only flips data-tint and
    CSS picks up the right accent (a 3px status strip + button borders). */
 :root {
+  /* Motion tokens (design audit). Curves are Emil Kowalski's; durations stay
+   * inside his budget. transform + opacity only: hardware acceleration is OFF
+   * on Windows, so layout/paint properties are CPU work on every frame. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 120ms;
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-celebrate: 400ms;
   --bubble-radius: 16px;
   /* v0.21.1 — near-opaque paper. The Windows build runs with hardware
    * acceleration off, so backdrop-filter is dropped and a 0.92 bg let the
@@ -155,8 +164,6 @@ body.clippy-window {
   max-width: calc(100vw - 10px);
   min-height: 64px;
   background: var(--bubble-bg);
-  -webkit-backdrop-filter: saturate(180%) blur(16px);
-  backdrop-filter: saturate(180%) blur(16px);
   border: 1px solid var(--bubble-hairline);
   border-radius: var(--bubble-radius);
   padding: 12px 14px;
@@ -178,13 +185,11 @@ body.clippy-window {
   box-shadow:
     var(--bubble-shadow),
     inset 0 1px 0 var(--bubble-inner-stroke);
+  /* Grows from and shrinks to the tail (right: 28px + half its 11px width). */
+  transform-origin: calc(100% - 34px) 100%;
   transition:
-    width 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    min-height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.22s ease,
-    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-    background 0.25s ease;
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
   -webkit-app-region: no-drag;
   cursor: default;
   z-index: 10;
@@ -285,66 +290,24 @@ body.clippy-window {
   padding: 0;
   display: flex;
   flex-direction: column;
-  /* v0.19.0 RC-6 — disable the property-level width/height/min-height
-   * tweens specifically in expanded mode. The `bubble-grow` keyframe
-   * animation (300ms scale-in from origin bottom-right) is what should
-   * own the transition feel; running both at once produced a double
-   * tween where the panel grew via scale AND simultaneously animated
-   * its computed width/height — visible as a soft "settling" wobble at
-   * the end of the grow. Opacity + transform tweens still inherit from
-   * `.bubble` so fade-in remains smooth. */
-  transition:
-    opacity 0.22s ease,
-    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-    background 0.25s ease;
+  transform-origin: 100% 100%;
 }
 
-/* ── Entry / exit transitions ─────────────────────────────────────── */
+/* ── Enter / exit ─────────────────────────────────────────────────── */
+/* Enter: .bubble's own 200ms. Exit: faster, the same path back to the tail. */
 .bubble.hidden {
   opacity: 0;
-  transform: translateY(4px) scale(0.96);
+  transform: translateY(4px) scale(0.97);
   pointer-events: none;
-  transition:
-    opacity 0.15s ease,
-    transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition-duration: var(--dur-fast);
 }
-
-/* compact → standard: slide-down 8px + fade-in over 200ms */
-.bubble[data-state="standard"]:not(.hidden) {
-  animation: bubble-slide-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-/* standard → expanded: grow from the anchor corner over 300ms */
-.bubble[data-state="expanded"]:not(.hidden) {
-  animation: bubble-grow 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes bubble-slide-in {
-  /* Slight scale riding the slide makes the pop read "alive" instead of
-     "panel" — origin sits toward the tail so growth points at Clippy. */
-  from { opacity: 0; transform: translateY(-8px) scale(0.97); transform-origin: 85% 100%; }
-  to   { opacity: 1; transform: translateY(0) scale(1);       transform-origin: 85% 100%; }
-}
-@keyframes bubble-grow {
-  from { opacity: 0; transform: scale(0.92); transform-origin: bottom right; }
-  to   { opacity: 1; transform: scale(1);     transform-origin: bottom right; }
-}
+/* Opened from the keyboard (voice hotkey): no animation. */
+.bubble[data-instant] { transition: none; }
 
 /* ── Hint animations per tint (run once on data-tint change) ──────── */
-/* The .bubble--tint-hint class is toggled by JS for one animation cycle. */
-.bubble[data-tint="default"].bubble--tint-hint { animation: tint-default-glow 1.2s ease both; }
-.bubble[data-tint="info"].bubble--tint-hint #bubble-input::placeholder { animation: tint-info-blink 1.6s ease-in-out infinite; }
-.bubble[data-tint="warning"].bubble--tint-hint #bubble-actions button { animation: tint-warning-pulse 0.6s ease both; }
-.bubble[data-tint="busy"].bubble--tint-hint::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.18) 50%, transparent 100%);
-  background-size: 200% 100%;
-  animation: tint-busy-shimmer 1.4s linear infinite;
-  pointer-events: none;
-}
-.bubble[data-tint="error"].bubble--tint-hint { animation: tint-error-shake 0.4s ease both; }
+/* The .bubble--tint-hint class is toggled by JS for one animation cycle.
+   Only the two with a purpose stay: the error shake and the success check. */
+.bubble[data-tint="error"].bubble--tint-hint { animation: tint-error-shake 320ms var(--ease-out); }
 .bubble[data-tint="success"].bubble--tint-hint::after {
   content: '\2713';
   position: absolute;
@@ -353,25 +316,7 @@ body.clippy-window {
   color: var(--tint-success-accent);
   font-size: 16px;
   font-weight: 700;
-  animation: tint-success-check 1.2s ease both;
-}
-
-@keyframes tint-default-glow {
-  0%   { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 0 0 rgba(255, 212, 0, 0); }
-  35%  { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 24px 4px rgba(255, 212, 0, 0.28); }
-  100% { box-shadow: var(--bubble-shadow), inset 0 1px 0 var(--bubble-inner-stroke), inset 0 0 0 0 rgba(255, 212, 0, 0); }
-}
-@keyframes tint-info-blink {
-  0%, 100% { opacity: 0.38; }
-  50%      { opacity: 0.85; }
-}
-@keyframes tint-warning-pulse {
-  0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.04); box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18); }
-}
-@keyframes tint-busy-shimmer {
-  0%   { background-position: -100% 0; }
-  100% { background-position:  200% 0; }
+  animation: tint-success-check var(--dur-celebrate) var(--ease-out) both;
 }
 @keyframes tint-error-shake {
   0%, 100% { transform: translateX(0); }
@@ -381,9 +326,8 @@ body.clippy-window {
   80%      { transform: translateX(2px); }
 }
 @keyframes tint-success-check {
-  0%   { opacity: 0; transform: scale(0.5); }
-  40%  { opacity: 1; transform: scale(1.15); }
-  100% { opacity: 1; transform: scale(1); }
+  from { opacity: 0; transform: scale(0.9); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 /* ── Avoidance translate (cursor approaches → slide 120px away) ──── */
@@ -410,8 +354,6 @@ body.clippy-window {
   transform: rotate(45deg);
   transform-origin: center;
   box-shadow: 1.5px 1.5px 3px rgba(15, 23, 42, 0.04);
-  -webkit-backdrop-filter: saturate(180%) blur(16px);
-  backdrop-filter: saturate(180%) blur(16px);
   z-index: -1;
 }
 #bubble-tail::before {
@@ -439,7 +381,9 @@ body.clippy-window {
 .bubble--below {
   bottom: auto;
   top: 5px;
+  transform-origin: calc(100% - 34px) 0;
 }
+.bubble--below.hidden { transform: translateY(-4px) scale(0.97); }
 .bubble--below #bubble-tail {
   bottom: auto;
   top: -8px;
@@ -470,7 +414,7 @@ body.clippy-window {
 .bubble[data-state="expanded"] #bubble-header { display: flex; }
 
 .bubble-header-title { color: var(--bubble-ink); font-size: 13px; }
-.bubble-header-status { font-weight: 500; color: var(--bubble-ink-soft); margin-left: 6px; }
+.bubble-header-status { font-weight: 500; color: var(--bubble-ink-soft); margin-left: 6px; font-variant-numeric: tabular-nums; }
 .bubble-header-status::before {
   content: '';
   display: inline-block;
@@ -500,9 +444,10 @@ body.clippy-window {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-press) var(--ease-out);
   -webkit-app-region: no-drag;
 }
+.bubble-header-controls button:active { transform: scale(0.95); }
 .bubble-header-controls button:hover {
   background: rgba(15, 23, 42, 0.06);
   color: var(--bubble-ink);
@@ -607,7 +552,8 @@ body.clippy-window {
 }
 .chat-user {
   align-self: flex-end;
-  background: linear-gradient(180deg, #FFE14A 0%, #FFD400 100%);
+  background-color: #FFD400;
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0) 100%);
   color: #1c1917;
   border-bottom-right-radius: 5px;
   white-space: pre-wrap;
@@ -618,7 +564,24 @@ body.clippy-window {
   color: #1e293b;
   border-bottom-left-radius: 5px;
 }
-.chat-clippy.chat-thinking { color: var(--bubble-ink-soft); letter-spacing: 0.1em; }
+.chat-clippy.chat-thinking { color: var(--bubble-ink-soft); }
+/* Stepped, not eased: three repaints a second, and it matches the pixel-art sprite. */
+.typing { display: inline-flex; align-items: center; gap: 4px; height: 20px; vertical-align: middle; }
+.typing i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor;
+  opacity: 0.25;
+  animation: typing-dot 0.9s step-end infinite;
+}
+.typing i:nth-child(2) { animation-delay: 0.3s; }
+.typing i:nth-child(3) { animation-delay: 0.6s; }
+@keyframes typing-dot {
+  0%   { opacity: 0.9; }
+  33%  { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing i { animation: none; opacity: 0.6; }
+}
 /* Role label is for screen readers; side + colour carry it visually. */
 .chat-label {
   position: absolute;
@@ -709,14 +672,15 @@ body.clippy-window {
   background: rgba(255, 255, 255, 0.6);
   color: var(--tint-text, var(--bubble-ink));
   cursor: pointer;
-  transition: background 0.12s ease, transform 0.08s ease, box-shadow 0.12s ease;
+  transition: transform var(--dur-press) var(--ease-out), background-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
   -webkit-app-region: no-drag;
 }
 #bubble-actions button:hover {
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
 }
-#bubble-actions button:active { transform: translateY(0.5px); }
+#bubble-actions button:active { transform: scale(0.97); }
+#bubble-actions button:disabled { opacity: 0.6; cursor: default; }
 /* Approval prompt auto-deny countdown (renderer/main.ts). */
 .approval-countdown {
   flex-basis: 100%;
@@ -737,10 +701,17 @@ body.clippy-window {
 .approval-countdown-bar i {
   display: block;
   height: 100%;
-  background: var(--tint-accent, currentColor);
+  background-color: var(--tint-accent, currentColor);
   transform-origin: left center;
   animation: approval-drain linear forwards;
 }
+.approval-countdown, .approval-countdown-bar i { transition: opacity var(--dur-base) ease, color var(--dur-base) ease, background-color var(--dur-base) ease; }
+/* The last ten seconds: the line and the bar turn rose and stay that way. */
+.approval-countdown[data-urgent] { opacity: 1; color: var(--tint-error-accent); }
+.approval-countdown[data-urgent] .approval-countdown-bar i { background-color: var(--tint-error-accent); }
+/* A new chat row eases in alone (a keyframe is right: each row is a new element that animates once). */
+.chat-msg.is-new { animation: msg-in var(--dur-fast) var(--ease-out); }
+@keyframes msg-in { from { opacity: 0; transform: translateY(4px); } }
 @keyframes approval-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @media (prefers-reduced-motion: reduce) {
   .approval-countdown-bar { display: none; } /* the seconds text still counts down */
@@ -764,8 +735,6 @@ body.clippy-window {
   font-weight: 500;
   font-family: Inter, system-ui, sans-serif;
   background: rgba(255, 255, 255, 0.55);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
   border: 1px solid var(--bubble-hairline);
   border-radius: 999px;
   color: var(--bubble-ink);
@@ -872,18 +841,23 @@ body.clippy-window {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    opacity var(--dur-fast) ease;
   -webkit-app-region: no-drag;
 }
 #bubble-send:hover:not(:disabled) {
-  background: linear-gradient(180deg, #FFEB7A 0%, #FFD831 100%);
+  background-color: #FFDD3C;
   box-shadow:
     0 3px 8px rgba(0, 0, 0, 0.15),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
-#bubble-send:active:not(:disabled) { transform: translateY(0.5px); }
+#bubble-send:active:not(:disabled) { transform: scale(0.95); }
 #bubble-send:disabled {
-  background: rgba(15, 23, 42, 0.06);
+  background-color: rgba(15, 23, 42, 0.06);
+  background-image: none;
   color: var(--bubble-ink-soft);
   border-color: transparent;
   box-shadow: none;
@@ -899,10 +873,11 @@ body.clippy-window {
 #bubble-send.is-stop .send-icon { display: none; }
 #bubble-send.is-stop .stop-icon { display: block; }
 #bubble-send.is-stop {
-  background: rgba(15, 23, 42, 0.86);
+  background-color: rgba(15, 23, 42, 0.86);
+  background-image: none;
   color: #fff;
 }
-#bubble-send.is-stop:hover { background: rgba(15, 23, 42, 1); }
+#bubble-send.is-stop:hover { background-color: rgb(15, 23, 42); }
 
 /* ── Mic button — ghost icon with retained level-pulse ──────────── */
 #bubble-mic {
@@ -919,14 +894,13 @@ body.clippy-window {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-press) var(--ease-out);
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
 #bubble-mic:hover { background: rgba(15, 23, 42, 0.06); color: var(--bubble-ink); }
-#bubble-mic:active { transform: translateY(0.5px); }
+#bubble-mic:active { transform: scale(0.95); }
 @media (prefers-reduced-motion: reduce) {
-  .bubble-composer, #bubble-send, #bubble-mic { transition: none; }
   #bubble-mic.recording, #bubble-mic.encoding .mic-icon { animation: none; }
 }
 #bubble-mic .mic-icon { position: relative; z-index: 2; }
@@ -1011,7 +985,7 @@ body.clippy-window {
   .bubble-composer { background: rgba(20, 20, 24, 0.85); box-shadow: none; }
   #bubble-input::placeholder { color: rgba(226, 232, 240, 0.42); }
   #bubble-input { scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
-  #bubble-send:disabled { background: rgba(255, 255, 255, 0.08); }
+  #bubble-send:disabled { background-color: rgba(255, 255, 255, 0.08); }
   #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); color: #e2e8f0; }
   .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
   .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
@@ -1499,7 +1473,7 @@ body.settings-window {
   --glass-card-bg: rgba(255, 255, 255, 0.55);
   --glass-card-bg-hover: rgba(255, 255, 255, 0.72);
   --glass-card-bg-selected: rgba(255, 212, 0, 0.22);
-  --glass-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --glass-spring: var(--ease-out);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
   letter-spacing: -0.02em;
 }
@@ -1596,7 +1570,6 @@ body.settings-window {
 }
 [data-platform="mac"] .btn-primary:hover {
   background: linear-gradient(180deg, rgba(255, 220, 30, 0.98) 0%, rgba(255, 195, 0, 0.95) 100%);
-  transform: translateY(-1px);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.55) inset,
     0 8px 20px rgba(255, 184, 0, 0.32);
@@ -1621,8 +1594,9 @@ body.settings-window {
 }
 [data-platform="mac"] .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.7);
-  transform: translateY(-1px);
 }
+[data-platform="mac"] .btn-primary:active:not(:disabled),
+[data-platform="mac"] .btn-secondary:active { transform: scale(0.97); }
 
 /* ── Progress dots — render as a thin glass capsule with active dot
    tinted with --glass-accent-strong. The container is a pill, each dot
@@ -2122,13 +2096,11 @@ body.settings-window {
   cursor: pointer;
   -webkit-backdrop-filter: blur(20px) saturate(1.5);
   backdrop-filter: blur(20px) saturate(1.5);
-  transition: transform 0.18s var(--glass-spring), background 0.18s ease, box-shadow 0.18s ease;
+  transition: transform var(--dur-press) var(--ease-out), background-color var(--dur-fast) ease;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
 }
 .first-win-chip:hover {
   background: rgba(255, 255, 255, 0.98);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.09);
 }
 
 /* Step 7 — Screen-Recording restart choice. Quiet card so it reads as an
@@ -2154,7 +2126,7 @@ body.settings-window {
 }
 
 .first-win-chip:active {
-  transform: translateY(0);
+  transform: scale(0.97);
 }
 .first-win-chip:disabled {
   opacity: 0.5;
@@ -2214,9 +2186,7 @@ body.settings-window {
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  background: rgba(252, 252, 254, 0.82);
-  -webkit-backdrop-filter: blur(32px) saturate(1.8);
-  backdrop-filter: blur(32px) saturate(1.8);
+  background: rgba(252, 252, 254, 0.98);
   border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: 20px;
   box-shadow:
@@ -2225,7 +2195,7 @@ body.settings-window {
     0 4px 8px rgba(0, 0, 0, 0.08);
   z-index: 20;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
-  animation: glass-step-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: glass-step-in 300ms var(--ease-out);
 }
 #first-win-overlay.hidden {
   display: none;
@@ -3095,6 +3065,14 @@ body.onboarding-window {
   background: #1e293b;
   border-color: #1e293b;
 }
+.btn-primary, .btn-secondary {
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+.btn-primary:active:not(:disabled), .btn-secondary:active:not(:disabled) { transform: scale(0.97); }
 .btn-primary:disabled {
   background: var(--s-hairline-strong);
   border-color: var(--s-hairline-strong);
@@ -3133,6 +3111,8 @@ body.onboarding-window {
 }
 .code-actions { display: flex; justify-content: space-between; }
 .code-actions .onboarding-skip-link:disabled { opacity: 0.5; cursor: default; }
+.code-actions .onboarding-skip-link { font-variant-numeric: tabular-nums; }
+#code-label { overflow-wrap: anywhere; }
 #license-section { display: flex; flex-direction: column; gap: var(--s-space-2); }
 #key-row { display: grid; grid-template-columns: 1fr auto; gap: var(--s-space-2); }
 #btn-open-inbox { align-self: flex-start; }
@@ -3268,6 +3248,14 @@ body.onboarding-window {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+/* Gentler, not zero: the bubble still fades, it just doesn't move. */
+@media (prefers-reduced-motion: reduce) {
+  .bubble, .bubble.hidden {
+    transition-property: opacity;
+    transition-duration: var(--dur-fast) !important;
+  }
+  .bubble.hidden, .bubble--below.hidden { transform: none; }
 }
 
 /* === Platform Visual Tokens — v0.19.0 ====================================
@@ -3410,7 +3398,7 @@ body.onboarding-window[data-platform="win"] {
   padding: 12px;
   cursor: pointer;
   transition: box-shadow var(--fluent-transition),
-              transform var(--fluent-transition),
+              transform var(--dur-press) var(--ease-out),
               background var(--fluent-transition);
   position: relative;
   overflow: hidden;
@@ -3496,21 +3484,20 @@ body.onboarding-window[data-platform="win"] {
   box-shadow: var(--fluent-card-shadow);
   transition: background var(--fluent-transition),
               box-shadow var(--fluent-transition),
-              transform var(--fluent-transition);
+              transform var(--dur-press) var(--ease-out);
 }
 
 [data-platform="win"] .btn-primary:hover,
 [data-platform="win"] .step-nav-next:hover {
   background: var(--fluent-accent-hover);
   box-shadow: var(--fluent-card-shadow-hover);
-  transform: translateY(-1px);
 }
 
 [data-platform="win"] .btn-primary:active,
 [data-platform="win"] .step-nav-next:active {
   background: var(--fluent-accent-pressed);
   box-shadow: var(--fluent-card-shadow-pressed);
-  transform: translateY(0);
+  transform: scale(0.97);
 }
 
 [data-platform="win"] .btn-primary:disabled {
@@ -3599,12 +3586,10 @@ body.onboarding-window[data-platform="win"] {
 }
 [data-platform="win"] .first-win-chip:hover {
   background: var(--fluent-card-bg);
-  box-shadow: var(--fluent-card-shadow-hover);
-  transform: translateY(-1px);
 }
 [data-platform="win"] .first-win-chip:active {
   box-shadow: var(--fluent-card-shadow-pressed);
-  transform: translateY(0);
+  transform: scale(0.97);
 }
 
 /* ── Step transition — slide + fade ──────────────────────────────────── */
