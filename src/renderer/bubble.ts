@@ -709,6 +709,16 @@ export class BubbleController {
       || !this.actionsArea.classList.contains('hidden');
   }
 
+  /** First-run name question: swap the input's placeholder (null restores the default) and focus it. */
+  setInputPlaceholder(text: string | null): void {
+    this.input.placeholder = text ?? INPUT_PLACEHOLDER;
+  }
+
+  focusInput(): void {
+    this.inputArea.classList.remove('hidden');
+    this.input.focus();
+  }
+
   hide(): void {
     this.fireDismiss();
     this.bubble.classList.add('hidden');

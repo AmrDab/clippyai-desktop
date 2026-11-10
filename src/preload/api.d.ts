@@ -113,7 +113,7 @@ interface Window {
     setApiKey?: (appId: string, token: string) => Promise<{ ok: boolean; error?: string }>;
     clearApiKey?: (appId: string) => Promise<{ ok: boolean; error?: string }>;
     fireFirstWinChip?: (text: string) => Promise<boolean>;
-    onFirstWinOverlay?: (cb: () => void) => void;
+    onFirstRunScript?: (cb: (payload: { lines: { text: string; animate: string | string[] }[]; chips: 'speak' | 'silent' | 'none'; intro?: string; startDelayMs?: number; askName?: string }) => void) => void;
     onFirstWinChip?: (cb: (text: string) => void) => void;
 
     // ── Brain orientation (soul.md → identity.md → …)

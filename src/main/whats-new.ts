@@ -51,6 +51,14 @@ export function claimNamePrompt(): boolean {
   return true;
 }
 
+/** The scripted first-run (wake-up + name exchange) plays once per install. True the first time only. */
+export function claimFirstRunScript(): boolean {
+  const s = store as unknown as { get(k: string): unknown; set(k: string, v: unknown): void };
+  if (s.get('firstRunScriptShown') === true) return false;
+  s.set('firstRunScriptShown', true);
+  return true;
+}
+
 /** The renderer asks once it's ready; answers at most once per launch. */
 export function takeWhatsNew(): { version: string; notes: string[] } | null {
   const p = pending;

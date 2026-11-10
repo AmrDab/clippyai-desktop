@@ -43,10 +43,15 @@ import { languageSample, proactiveMessage } from './tip-language';
 // only depend on electron + node stdlib + ./logger).
 import * as cursorVision from './cursor-vision';
 import * as userTakeover from './user-takeover';
-import { getLicenseKey, recordUsage } from './license';
+import { getLicenseKey, getPlan, recordUsage } from './license';
 import { openSetup } from './account';
 import { uiLang } from './lang';
 import { t } from './i18n';
+import {
+  NAME_STOP_LIST, FIRST_RUN_ASKING, FIRST_RUN_IDLE, FOLLOW_UP_DELAY_MS, decideFirstRun, afterModelAnswer, isPaidPlan,
+  reactScript, skipScript, laterScript, silentChipsScript, reactionHistoryText, sanitizeUserName,
+  type FirstRunState, type FirstRunDecision, type ScriptPayload,
+} from './first-run';
 import { getGuidePrompt } from './guides';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
@@ -930,6 +935,51 @@ export class Brain {
     return this.isExecuting;
   }
 
+  /** First-run script: the name question is on screen; the next message is checked as a name (first-run.ts). */
+  beginNameQuestion(): void {
+    this.firstRun = FIRST_RUN_ASKING;
+  }
+
+  private firstRun: FirstRunState = FIRST_RUN_IDLE;
+
+  private playScript(script: ScriptPayload): void {
+    this.emit('first-run-script', script);
+  }
+
+  /** The user answered the name question with a name or "skip": handle it here, no model turn. */
+  private answerFirstRun(text: string, decision: Exclude<FirstRunDecision, { action: 'model' }>): string {
+    const lang = uiLang();
+    const paid = isPaidPlan(getPlan());
+    let spoken: string;
+    if (decision.action === 'react') {
+      saveUserProfile({ Name: decision.name, 'What to call you': decision.name });
+      spoken = reactionHistoryText(lang, decision.name, paid);
+      this.playScript(reactScript(lang, decision.name, paid));
+      log.info('FirstRun.name', { outcome: 'captured' });
+    } else {
+      const script = skipScript(lang, paid);
+      spoken = script.lines.map((l) => l.text).join(' ');
+      this.playScript(script);
+      log.info('FirstRun.name', { outcome: 'skipped' });
+    }
+    // The model sees the exchange, so a Free chat can use the name for the rest of this session.
+    this.pushHistory({ role: 'user', parts: [{ text }] });
+    this.pushHistory({ role: 'model', parts: [{ text: spoken }] });
+    return spoken;
+  }
+
+  /** After a real answer to a message that was not a name: the one follow-up, or the chips, once. */
+  private maybeFirstRunFollowUp(): void {
+    if (this.firstRun.phase !== 'off' || (!this.firstRun.followUpAfterAnswer && !this.firstRun.silentChipsAfterAnswer)) return;
+    setTimeout(() => {
+      if (this.isExecuting) return;
+      const r = afterModelAnswer(this.firstRun);
+      this.firstRun = r.next;
+      if (r.show === 'later') this.playScript(laterScript(uiLang()));
+      else if (r.show === 'chips') this.playScript(silentChipsScript());
+    }, FOLLOW_UP_DELAY_MS);
+  }
+
   /**
    * Restart the proactive loop so a settings change (interval or on/off)
    * takes effect immediately instead of waiting for the next sleep/wake cycle.
@@ -980,6 +1030,14 @@ export class Brain {
     const task_id = randomUUID();
     setCurrentTaskId(task_id);
     log.info('User.message', { text: text.substring(0, 200), length: text.length, task_id });
+
+    // First-run name question (scripted, first-run.ts): while it is open the next
+    // message is checked as a name before anything else.
+    {
+      const d = decideFirstRun(this.firstRun, text);
+      this.firstRun = d.next;
+      if (d.decision.action !== 'model') return this.answerFirstRun(text, d.decision);
+    }
 
     // v0.20.0 — RESUME after a takeover stop. If a task was just interrupted
     // (user clicked/typed) and the user now says "continue" / "keep going" /
@@ -1086,21 +1144,6 @@ export class Brain {
     //     common non-name words so "I'm tired" doesn't make name="Tired" and
     //     "call me later" doesn't make name="Later".
     if (!isProfileSetUp()) {
-      const NAME_STOP_LIST = new Set([
-        // Greetings + affirmations
-        'hey', 'hi', 'hello', 'hiya', 'howdy', 'sup', 'yo', 'ok', 'okay',
-        'yes', 'yeah', 'yep', 'nope', 'no', 'sure', 'cool', 'nice',
-        // Common "I'm X" complements that aren't names
-        'tired', 'busy', 'back', 'fine', 'good', 'great', 'happy', 'sad',
-        'hungry', 'thirsty', 'bored', 'angry', 'sleepy', 'ready', 'done',
-        'free', 'available', 'here', 'in', 'out', 'home', 'working',
-        'going', 'leaving', 'sorry', 'late', 'early',
-        // "call me X" complements that aren't names
-        'later', 'back', 'tomorrow', 'soon', 'never', 'asap', 'maybe',
-        // First-message instructions / clippy mentions
-        'clippy', 'you', 'me', 'this', 'that', 'help', 'wait', 'stop',
-        'cancel', 'pause', 'resume', 'quit', 'exit', 'close', 'open',
-      ]);
       const match = text.match(/(?:my name is|call me|i'm called|name's|i am)\s+([A-Za-z]{2,20})\b/i);
       if (match) {
         const candidate = match[1].toLowerCase();
@@ -1109,7 +1152,7 @@ export class Brain {
         } else {
           const name = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
           saveUserProfile({ Name: name });
-          const greeting = `Nice to meet you, ${name}! I'll remember that. How can I help? 📎`;
+          const greeting = t(uiLang(), 'name.react.later', { name });
           log.info('Clippy.say', { text: greeting, animation: 'Wave', trigger: 'name_intro', userName: name });
           this.pushHistory({ role: 'user', parts: [{ text }] });
           this.pushHistory({ role: 'model', parts: [{ text: greeting }] });
@@ -1331,6 +1374,7 @@ export class Brain {
       // computer-use 50.
       const MAX_STEPS = 40;
       let finalSpoken = '';
+      let answeredOk = false; // a real /v1/turn answer was spoken (not an error line)
       let taskCompleted = false;
       // D5/D8: track step count and abort reason accurately.
       let lastStep = 0;
@@ -1469,6 +1513,7 @@ export class Brain {
           log.info('Clippy.say', { text: spoken, animation: anim, trigger: 'reply', step: step + 1 });
           this.emit('clippy-speak', { text: spoken, animate: anim });
           finalSpoken = spoken;
+          answeredOk = true;
         }
 
         // feat/pricing-free-tier — one gentle "near the limit" nudge AFTER the
@@ -2090,6 +2135,7 @@ export class Brain {
       if (finalSpoken) {
         this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
       }
+      if (answeredOk && this.taskOutcome === 'done') this.maybeFirstRunFollowUp();
       return finalSpoken || "I'm not sure what to say.";
     } catch (err) {
       // v0.20.0 — classify the exception so the bubble shows actionable copy
@@ -3068,7 +3114,9 @@ export class Brain {
       // platform here is the structural fix — server filters out tools whose
       // `platforms` field excludes this platform. Old clients (no platform
       // field) get the previous unfiltered behavior — backwards-compatible.
-      req.write(JSON.stringify({ contents: pruned, tool_tiers: buildToolTiers(), mail_env, installed_skills, mcp_chrome, platform: process.platform, caps, ...opts }));
+      // user_name: the sanitized first name, so Free chats (which get no profile) can still use it.
+      const userName = sanitizeUserName(getUserProfile().Name);
+      req.write(JSON.stringify({ contents: pruned, tool_tiers: buildToolTiers(), mail_env, installed_skills, mcp_chrome, platform: process.platform, caps, ...(userName ? { user_name: userName } : {}), ...opts }));
       req.end();
     });
   }

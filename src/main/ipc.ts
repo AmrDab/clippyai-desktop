@@ -54,7 +54,8 @@ import * as profileMod from './profile';
 // to keep Rollup from tree-shaking it. See memory: feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
 import { setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
-import { takeWhatsNew } from './whats-new';
+import { takeWhatsNew, claimFirstRunScript, claimNamePrompt } from './whats-new';
+import { wakeScript } from './first-run';
 // Badge click reuses the ⌥G correction flow.
 import { triggerWritingAssist } from './writing-assist';
 // updater imports moved to top of file
@@ -1211,13 +1212,13 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
   function postOnboardingPrompts(): void {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    // Onboarding v3: finishing setup shows the greeting + chips (what Clippy
-    // can do) instead of asking for a name; the name is editable in Settings.
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('first-win-overlay');
-      }
-    }, 1500);
+    // Onboarding v3: finishing setup plays the scripted wake-up and asks the name
+    // (first-run.ts). Once per install: never again, and an idle-update relaunch
+    // does not come through here.
+    if (!claimFirstRunScript()) return;
+    claimNamePrompt(); // the existing-user name prompt must never fire for someone who saw this
+    brain.beginNameQuestion();
+    mainWindow.webContents.send('first-run-script', wakeScript(uiLang()));
   }
 
   ipcMain.handle('onboarding-complete', async () => {

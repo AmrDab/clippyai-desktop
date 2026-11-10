@@ -201,6 +201,10 @@ export class TTS {
     this.rate = Math.max(0.5, Math.min(2.0, rate));
   }
 
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     if (!enabled) this.stopAll();

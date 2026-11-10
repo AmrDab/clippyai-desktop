@@ -5,6 +5,7 @@ import { clickAction } from './click-action';
 import { powerOfferLabel, resetLine } from './upgrade-card';
 import { t, isLang, type Key, type Lang } from '../main/i18n';
 import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
+import { silentGapMs, AFTER_SPEECH_MS, type ScriptPayload, type ScriptLine } from '../main/first-run';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
@@ -485,8 +486,7 @@ async function init(): Promise<void> {
   });
 
   // === v0.19.0 PR-6 — first-5-wins overlay (post-onboarding) ==========
-  // Main process emits 'first-win-overlay' 3s after the user reaches
-  // onboarding step 6 ("you're ready"). We surface a non-modal pop-up
+  // The scripted first run (below) opens this at its last step. We surface a non-modal pop-up
   // above Clippy's bubble with the same 5 chips as step 6. Click any
   // chip and the overlay fires the prompt as a normal user message via
   // 'first-win-chip', then closes itself.
@@ -495,7 +495,7 @@ async function init(): Promise<void> {
   // renders, imported lazily to avoid pulling the whole catalog module
   // unless we actually need it.
   let firstWinOverlayEl: HTMLElement | null = null;
-  async function showFirstWinOverlay(): Promise<void> {
+  async function showFirstWinOverlay(opts: { silent?: boolean } = {}): Promise<void> {
     if (firstWinOverlayEl) return; // already showing — re-trigger is no-op
     const { paidFirstWins } = await import('./app-catalog');
     let plan = '';
@@ -543,15 +543,87 @@ async function init(): Promise<void> {
     hint.textContent = T('hello.hotkey', { hotkey: acceleratorLabel(VOICE_ACCELERATOR_DEFAULT, (navigator.platform || '').toLowerCase().includes('mac') ? 'mac' : 'win') });
     firstWinOverlayEl.appendChild(hint);
     document.body.appendChild(firstWinOverlayEl);
-    clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak(T('hello'));
+    // The "try me" line is spoken once, here; the header only shows it.
+    if (!opts.silent) {
+      clippyCtrl.playNamed('GetAttention');
+      bubbleCtrl.speak(T('hello'));
+      tts.speak(T('hello'));
+    }
   }
   function dismissFirstWinOverlay(): void {
     if (!firstWinOverlayEl) return;
     firstWinOverlayEl.remove();
     firstWinOverlayEl = null;
   }
-  window.clippy.onFirstWinOverlay?.(() => { void showFirstWinOverlay(); });
+
+  // === Scripted first run (first-run.ts) ================================
+  // Main builds the lines (wake-up, name reaction, plan line, follow-up); this
+  // plays them: animation + bubble + voice, each line advancing once the
+  // previous one has been spoken (+0.6 s), or after a fixed pause when the
+  // voice is off. A click or a key press during the wake-up jumps to the
+  // sticky name question, which opens the input with a "Type your name" hint.
+  let scriptToken = 0;
+  let scriptSkip = false;
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  async function waitSpoken(text: string, token: number): Promise<void> {
+    const live = () => !scriptSkip && token === scriptToken;
+    await sleep(250); // give the voice a moment to start
+    if (tts.isEnabled() && tts.isSpeaking()) {
+      const until = Date.now() + 20_000;
+      while (tts.isSpeaking() && live() && Date.now() < until) await sleep(100);
+      if (live()) await sleep(AFTER_SPEECH_MS);
+    } else {
+      const end = Date.now() + silentGapMs(text);
+      while (Date.now() < end && live()) await sleep(100);
+    }
+  }
+
+  function playLine(line: ScriptLine, sticky: boolean, token: number): void {
+    const anims = Array.isArray(line.animate) ? line.animate : [line.animate];
+    if (anims[0]) clippyCtrl.playNamed(anims[0]);
+    anims.slice(1).forEach((name, i) => setTimeout(() => { if (token === scriptToken) clippyCtrl.playNamed(name); }, 1100 * (i + 1)));
+    bubbleCtrl.speak(line.text, { autoState: 'standard', sticky });
+    tts.speak(line.text);
+  }
+
+  async function playFirstRunScript(p: ScriptPayload): Promise<void> {
+    const token = ++scriptToken;
+    scriptSkip = false;
+    const asking = !!p.askName;
+    const skip = () => { scriptSkip = true; };
+    if (asking) {
+      document.addEventListener('pointerdown', skip, true);
+      document.addEventListener('keydown', skip, true);
+    } else {
+      bubbleCtrl.setInputPlaceholder(null); // the name was answered: normal placeholder again
+    }
+    try {
+      if (p.intro) clippyCtrl.playNamed(p.intro);
+      if (p.startDelayMs) await sleep(p.startDelayMs);
+      for (let i = 0; i < p.lines.length; i++) {
+        if (token !== scriptToken) return;
+        const line = p.lines[i];
+        const last = i === p.lines.length - 1;
+        if (scriptSkip && asking && !last) continue; // jump straight to the question
+        const sticky = asking && last;
+        playLine(line, sticky, token);
+        if (sticky) {
+          bubbleCtrl.setInputPlaceholder(p.askName!);
+          bubbleCtrl.focusInput();
+          return;
+        }
+        await waitSpoken(line.text, token);
+      }
+      if (token !== scriptToken) return;
+      if (p.chips === 'speak') await showFirstWinOverlay();
+      else if (p.chips === 'silent') await showFirstWinOverlay({ silent: true });
+    } finally {
+      document.removeEventListener('pointerdown', skip, true);
+      document.removeEventListener('keydown', skip, true);
+    }
+  }
+  window.clippy.onFirstRunScript?.((payload) => { void playFirstRunScript(payload); });
 
   // When a chip fires (from either the onboarding step-6 OR the overlay
   // here), main.ts pumps that string back to the renderer via

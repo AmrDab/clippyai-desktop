@@ -352,8 +352,9 @@ contextBridge.exposeInMainWorld('clippy', {
   setApiKey: (appId: string, token: string) => ipcRenderer.invoke('set-api-key', appId, token),
   clearApiKey: (appId: string) => ipcRenderer.invoke('clear-api-key', appId),
   fireFirstWinChip: (text: string) => ipcRenderer.invoke('first-win-chip', text),
-  onFirstWinOverlay: (cb: () => void) => {
-    ipcRenderer.on('first-win-overlay', () => cb());
+  // Scripted first run (first-run.ts): wake-up, name exchange, chips. Payload is built in main.
+  onFirstRunScript: (cb: (payload: { lines: { text: string; animate: string | string[] }[]; chips: 'speak' | 'silent' | 'none'; intro?: string; startDelayMs?: number; askName?: string }) => void) => {
+    ipcRenderer.on('first-run-script', (_e, payload) => cb(payload));
   },
   onFirstWinChip: (cb: (text: string) => void) => {
     ipcRenderer.on('first-win-chip', (_e, text) => cb(text));

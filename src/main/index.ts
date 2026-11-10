@@ -91,6 +91,8 @@ import { createWindow, createOnboardingWindow, getOnboardingWindow, getSettingsW
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
 import { getBuddyName, getTtsVoice, saveLicense, getPlan } from './license';
 import { refreshPlan } from './account';
+import { uiLang } from './lang';
+import { t } from './i18n';
 import { isBubbleBusy } from './ui-busy';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
@@ -596,8 +598,9 @@ function launchMainApp(): void {
     setTimeout(() => {
       // D9: log direct webContents.send so the audit trail matches what
       // the user actually saw on screen.
-      const text = "Hey! I don't think we've met yet. What should I call you? Just type your name! 📎";
+      const text = t(uiLang(), 'name.ask.existing');
       log.info('Clippy.say', { text, animation: 'Wave', trigger: 'name_prompt' });
+      brain?.beginNameQuestion(); // the next message is checked as a name (first-run.ts)
       mainWindow?.webContents.send('clippy-speak', { text, animate: 'Wave' });
     }, 3000);
   }
