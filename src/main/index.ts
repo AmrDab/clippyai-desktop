@@ -100,7 +100,7 @@ import { isLicensed, revalidateIfNeeded } from './license';
 import { isProfileSetUp } from './brain';
 import { initTools, cleanupTools } from './tools';
 import { createLogger, cleanOldLogs, serializeErr } from './logger';
-import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater';
+import { initUpdater, checkForUpdates, startPeriodicUpdateChecks, startIdleInstall } from './updater';
 import { startScheduler, stopScheduler } from './scheduler';
 import { checkWhatsNew } from './whats-new';
 // v0.20.0-alpha.12 — STATIC import (NOT dynamic import()/require()) so
@@ -568,6 +568,7 @@ function launchMainApp(): void {
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
+  startIdleInstall(() => brain?.isBusy() ?? false); // idle 10 min + no task: install and relaunch
 
   // v0.16.1 — time-based liveliness pings (morning greet, stretch reminder,
   // wrap-up tip). Setinterval-based, gated on brain.getMode() === 'awake'
@@ -606,6 +607,7 @@ function launchWithOnboarding(): void {
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks();
+  startIdleInstall(() => brain?.isBusy() ?? false);
 
   createOnboardingWindow();
   telemetry.track('onboarding_step', { step: 'opened' });

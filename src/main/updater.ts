@@ -1,9 +1,10 @@
 import { autoUpdater, UpdateInfo } from 'electron-updater';
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, shell, powerMonitor } from 'electron';
 import { createLogger, serializeErr } from './logger';
 import * as telemetry from './telemetry';
 import { cleanupTools } from './tools';
 import * as quitState from './quit-state';
+import { cmpVersion, classifyAttempt, shouldIdleInstall } from './update-policy';
 import fs from 'fs';
 import path from 'path';
 
@@ -28,7 +29,6 @@ const RELEASE_PAGE = process.platform === 'win32'
 // state tracking infrastructure for now (cheap, useful for telemetry) but
 // MAX_FAILURES_BEFORE_SKIP can stay at 1 since any failure is a clear signal.
 const MAX_FAILURES_BEFORE_SKIP = 1;
-const SILENT_FAILURE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
 let updateDownloaded = false;
@@ -110,22 +110,6 @@ function writeState(state: UpdaterState): void {
 }
 
 /**
- * Compare semver-ish version strings. Returns negative if a<b, positive if
- * a>b, 0 if equal. Tolerates missing segments ("1.2" == "1.2.0"). We don't
- * need full semver (no prerelease tags in our version scheme).
- */
-function cmpVersion(a: string, b: string): number {
-  const parse = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0);
-  const pa = parse(a);
-  const pb = parse(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-
-/**
  * Nuke the entire electron-updater cache: installer.exe, pending/ staging,
  * sha512 checksums, everything. Called after a silent-failure detection so
  * the next update check gets a clean slate and can't re-fire
@@ -158,8 +142,10 @@ function purgeCache(reason: string): void {
  *
  * Flow: installUpdate() writes `{ version, timestamp }` to updater-state.json
  * just before quitAndInstall. If we boot and find an attempt recorded for a
- * version > our current version AND the attempt is recent (< 2h), the install
- * failed — NSIS likely blocked by SmartScreen/AV/UAC. Escalate.
+ * version > our current version, the install failed — NSIS likely blocked by
+ * SmartScreen/AV/UAC. Escalate. (v0.24: no age cutoff. An idle install that
+ * dies overnight is only noticed at the next boot, hours later; discarding it
+ * as "stale" left the cached installer to be retried forever.)
  */
 function detectSilentFailure(): UpdaterState {
   const state = readState();
@@ -181,10 +167,9 @@ function detectSilentFailure(): UpdaterState {
   }
 
   const attemptedAt = Date.parse(state.lastAttemptedAt);
-  const ageMs = Date.now() - attemptedAt;
-  const attemptedVsCurrent = cmpVersion(state.lastAttemptedVersion, currentVersion);
+  const ageMs = Number.isFinite(attemptedAt) ? Date.now() - attemptedAt : 0;
 
-  if (attemptedVsCurrent <= 0) {
+  if (classifyAttempt(state.lastAttemptedVersion, currentVersion) === 'succeeded') {
     // We're now on (or past) the version we attempted. Install succeeded.
     log.info('Previous install attempt succeeded', {
       attempted: state.lastAttemptedVersion,
@@ -198,19 +183,6 @@ function detectSilentFailure(): UpdaterState {
     state.lastAttemptedVersion = '';
     state.lastAttemptedAt = '';
     delete state.failureCount[succeededVersion];
-    writeState(state);
-    return state;
-  }
-
-  if (ageMs > SILENT_FAILURE_WINDOW_MS) {
-    // Attempt is old — user may have uninstalled and reinstalled an older
-    // version deliberately, or OS was off for days. Don't penalize.
-    log.warn('Stale install attempt ignored', {
-      attempted: state.lastAttemptedVersion,
-      ageHours: Math.round(ageMs / 3_600_000),
-    });
-    state.lastAttemptedVersion = '';
-    state.lastAttemptedAt = '';
     writeState(state);
     return state;
   }
@@ -471,7 +443,7 @@ export function installOnUserQuit(): boolean {
   // keeps the manual tray path.
   if (process.platform === 'win32') {
     if ((readState().failureCount[expectedVersion] || 0) > 0) return false;
-    void installSilentlyOnQuit();
+    void installSilently('on_quit');
     return true;
   }
   log.info('User quit with a downloaded update — installing on the way out', { version: expectedVersion });
@@ -481,17 +453,19 @@ export function installOnUserQuit(): boolean {
 }
 
 /**
- * v0.24 — Windows install-on-quit. Same ordering as installUpdate() (record
+ * v0.24 — Windows silent install. Same ordering as installUpdate() (record
  * the attempt, release PSBridge locks, clear a stale installer.exe), then a
- * silent NSIS run with no relaunch, because the user asked to quit. A silent
- * failure is caught on the next boot by detectSilentFailure().
+ * silent NSIS run. 'on_quit': no relaunch, because the user asked to quit.
+ * 'idle': the PC has been untouched for a while, so relaunch on the new
+ * version. A silent failure is caught on the next boot by detectSilentFailure().
  */
-async function installSilentlyOnQuit(): Promise<void> {
+async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
+  const relaunch = mode === 'idle';
   const installerPath = (autoUpdater as unknown as {
     downloadedUpdateHelper?: { file?: string };
   }).downloadedUpdateHelper?.file || '';
-  log.info('User quit with a downloaded update — installing silently', { version: expectedVersion, installerPath });
-  telemetry.track('update_install_started', { to: expectedVersion, mode: 'on_quit' });
+  log.info(relaunch ? 'PC idle with a downloaded update — installing silently' : 'User quit with a downloaded update — installing silently', { version: expectedVersion, installerPath });
+  telemetry.track('update_install_started', { to: expectedVersion, mode });
   telemetry.flushBeforeInstall();
 
   const state = readState();
@@ -521,13 +495,56 @@ async function installSilentlyOnQuit(): Promise<void> {
 
   quitState.setQuitting();
   try {
-    autoUpdater.quitAndInstall(true, false);
+    autoUpdater.quitAndInstall(true, relaunch);
   } catch (err) {
     log.error('quitAndInstall threw', serializeErr(err));
+    if (relaunch) {
+      // Nobody asked to quit: stay up, and forget the attempt so the next boot doesn't count a failure that never ran.
+      quitState.setQuitting(false);
+      const st = readState();
+      st.lastAttemptedVersion = '';
+      st.lastAttemptedAt = '';
+      writeState(st);
+    } else {
+      setTimeout(() => app.quit(), 3000);
+    }
+    return;
   }
-  // quitAndInstall only quits when it managed to start the installer. The
-  // user asked to quit either way — make sure we do.
-  setTimeout(() => app.quit(), 3000);
+  // quitAndInstall only quits when it managed to start the installer. On a
+  // user quit they asked for it either way — make sure we do.
+  if (!relaunch) setTimeout(() => app.quit(), 3000);
+}
+
+// ── v0.24 idle install ────────────────────────────────────────────────
+const IDLE_CHECK_MS = 60_000;
+let idleWatcher: ReturnType<typeof setInterval> | null = null;
+let idleInstallTried = false;
+
+/**
+ * Once an update is downloaded, install it (with relaunch) when no task is
+ * running and the PC has been idle for 10 minutes. `isTaskActive` is the
+ * brain's in-flight-task flag. Idempotent; one attempt per process, so a
+ * silent failure can't loop — the next boot's check counts it.
+ */
+export function startIdleInstall(isTaskActive: () => boolean): void {
+  if (idleWatcher || process.platform !== 'win32') return;
+  idleWatcher = setInterval(() => {
+    try {
+      if (!updateDownloaded) return;
+      if (!shouldIdleInstall({
+        platform: process.platform,
+        updateDownloaded,
+        failedBefore: (readState().failureCount[expectedVersion] || 0) > 0,
+        taskRunning: isTaskActive(),
+        idleSeconds: powerMonitor.getSystemIdleTime(),
+        alreadyTried: idleInstallTried,
+      })) return;
+      idleInstallTried = true;
+      void installSilently('idle');
+    } catch (err) {
+      log.warn('Idle install check failed (non-fatal)', serializeErr(err));
+    }
+  }, IDLE_CHECK_MS);
 }
 
 export function downloadUpdate(): void {
