@@ -43,7 +43,9 @@ import { languageSample, proactiveMessage } from './tip-language';
 // only depend on electron + node stdlib + ./logger).
 import * as cursorVision from './cursor-vision';
 import * as userTakeover from './user-takeover';
-import { getLicenseKey, recordUsage } from './license';
+import { getLicenseKey, recordUsage, isTrial, getEmailPromptAt, markEmailPrompted } from './license';
+import { openSetup } from './account';
+import { shouldOfferEmail } from './account-api';
 import { getGuidePrompt } from './guides';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
@@ -1328,6 +1330,7 @@ export class Brain {
       // computer-use 50.
       const MAX_STEPS = 40;
       let finalSpoken = '';
+      let answeredOk = false; // a real /v1/turn answer was spoken (not an error line)
       let taskCompleted = false;
       // D5/D8: track step count and abort reason accurately.
       let lastStep = 0;
@@ -1396,6 +1399,10 @@ export class Brain {
           log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
           telemetry.taskTurnError(resp.error);
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
+          // Onboarding v3: a used-up trial or a missing key opens the email +
+          // code screen instead of leaving the user at a dead end.
+          if (resp.error === 'trial_ended') openSetup('trial_ended');
+          else if (resp.error === 'invalid_key' && !getLicenseKey()) openSetup();
           log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'error', error: resp.error });
           this.emit('clippy-speak', { text: msg, animate: 'Alert' });
           finalSpoken = msg;
@@ -1464,6 +1471,7 @@ export class Brain {
           log.info('Clippy.say', { text: spoken, animation: anim, trigger: 'reply', step: step + 1 });
           this.emit('clippy-speak', { text: spoken, animate: anim });
           finalSpoken = spoken;
+          answeredOk = true;
         }
 
         // feat/pricing-free-tier — one gentle "near the limit" nudge AFTER the
@@ -2085,6 +2093,7 @@ export class Brain {
       if (finalSpoken) {
         this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
       }
+      if (answeredOk && this.taskOutcome === 'done') this.offerEmailSoon();
       return finalSpoken || "I'm not sure what to say.";
     } catch (err) {
       // v0.20.0 — classify the exception so the bubble shows actionable copy
@@ -2798,11 +2807,11 @@ export class Brain {
     }
     const map: Record<string, string> = {
       limit_reached: 'Monthly quota used up! Upgrade for more.',
-      // New users message Clippy before activating (telemetry: invalid_key
-      // during setup) — point them at the email instead of a bare error.
+      trial_ended: "Your free trial is used up. Add your email to keep going. It's still free. 📎",
+      // No key at all: the setup window opens (see the Turn.error branch).
       invalid_key: getLicenseKey()
-        ? "My license key isn't working. Open the newest “Your ClippyAI license key” email and click Activate, or right-click me → Settings → License."
-        : "I'm not activated yet! Open the “Your ClippyAI license key” email we sent you and click Activate, then ask me again. 📎",
+        ? "My license key isn't working. Right-click me → Settings → License to enter it again, or add your email to get a new one."
+        : "Let's get you set up first. I opened the setup window. 📎",
       subscription_inactive: 'Subscription inactive.',
       service_unavailable: "My server is having a moment — try again in a bit!",
       feature_locked: "That's a Pro feature! I can chat all day — for desktop control, upgrade at clippyai.app 📎",
@@ -2812,6 +2821,22 @@ export class Brain {
       parse_error: 'Got a garbled response. Try again!',
     };
     return map[error] || detail || 'Something went wrong.';
+  }
+
+  /**
+   * Onboarding v3 — after a trial key's answer, one gentle "add your email"
+   * bubble (a day apart at most). Delayed so it never replaces the answer the
+   * user is still reading; skipped if a new task started meanwhile.
+   */
+  private offerEmailSoon(): void {
+    if (!shouldOfferEmail(isTrial(), getEmailPromptAt(), Date.now())) return;
+    markEmailPrompted();
+    setTimeout(() => {
+      if (this.isExecuting || this.mode === 'sleep') return;
+      const text = "Want to keep me free forever? Add your email so your free account is yours.";
+      log.info('Clippy.offer', { trigger: 'add_email' });
+      this.emit('clippy-add-email', { text });
+    }, 8000);
   }
 
   private emit(channel: string, payload?: unknown): void {
@@ -2871,7 +2896,7 @@ export class Brain {
       const result = await this.callTurnOnce(contents, opts);
       // Don't retry non-transient errors
       if (!isError(result)) return result;
-      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'feature_locked', 'parse_error'].includes(result.error)) {
+      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'trial_ended', 'feature_locked', 'parse_error'].includes(result.error)) {
         return result;
       }
       // Retry transient errors (ai_error, network, timeout, rate_limited)
