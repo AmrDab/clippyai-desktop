@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   requestTrial, sendCode, verifyCode, requestCheckout, checkPlan, pollForUpgrade,
   parseMachineGuid, trialMachineHash, normalizeCode, isCompleteCode, isValidEmail,
-  isUpgrade, isSafeCheckoutUrl, accountErrorMessage, shouldOfferEmail, type FetchLike,
+  isUpgrade, isSafeCheckoutUrl, shouldOfferEmail, shouldRefreshPlan, type FetchLike,
 } from '../src/main/account-api';
 
 function reply(status: number, body: unknown): FetchLike {
@@ -29,6 +29,10 @@ describe('code + email input', () => {
   it('keeps digits only, max 6', () => {
     expect(normalizeCode('12a3-45 678')).toBe('123456');
     expect(normalizeCode('')).toBe('');
+    expect(normalizeCode(' 123456')).toBe('123456');
+    expect(normalizeCode('123 456')).toBe('123456');
+    expect(normalizeCode('123-456')).toBe('123456');
+    expect(normalizeCode('123456789')).toBe('123456');
     expect(isCompleteCode('123456')).toBe(true);
     expect(isCompleteCode('12345')).toBe(false);
     expect(isCompleteCode('12345a')).toBe(false);
@@ -62,7 +66,19 @@ describe('sendCode', () => {
   it('asks for a code (code:true) and trims the email', async () => {
     const f = reply(200, { ok: true, sent: true });
     expect(await sendCode('  me@x.com ', f)).toEqual({ ok: true });
-    expect(JSON.parse(lastCall(f)[1].body)).toEqual({ email: 'me@x.com', code: true });
+    expect(JSON.parse(lastCall(f)[1].body)).toEqual({ email: 'me@x.com', code: true, lang: 'en' });
+  });
+  it('sends the UI language for the code email (default en)', async () => {
+    const f = reply(200, { ok: true });
+    await sendCode('a@b.co', f, 'pt');
+    expect(JSON.parse(lastCall(f)[1].body)).toEqual({ email: 'a@b.co', code: true, lang: 'pt' });
+    const g = reply(200, { ok: true });
+    await sendCode('a@b.co', g);
+    expect(JSON.parse(lastCall(g)[1].body).lang).toBe('en');
+  });
+  it('passes retry_after on 429', async () => {
+    expect(await sendCode('a@b.co', reply(429, { error: 'rate_limited', retry_after: 42 }))).toEqual({ ok: false, error: 'rate_limited', retryAfter: 42 });
+    expect(await sendCode('a@b.co', reply(429, {}))).toEqual({ ok: false, error: 'rate_limited', retryAfter: undefined });
   });
   it('rejects a bad email without a request', async () => {
     const f = reply(200, { ok: true });
@@ -71,7 +87,6 @@ describe('sendCode', () => {
   });
   it('maps 400, 429, 5xx and offline', async () => {
     expect(await sendCode('a@b.co', reply(400, {}))).toEqual({ ok: false, error: 'invalid_email' });
-    expect(await sendCode('a@b.co', reply(429, {}))).toEqual({ ok: false, error: 'rate_limited' });
     expect(await sendCode('a@b.co', reply(502, {}))).toEqual({ ok: false, error: 'server' });
     expect(await sendCode('a@b.co', offline)).toEqual({ ok: false, error: 'offline' });
   });
@@ -97,7 +112,7 @@ describe('verifyCode', () => {
   it('maps wrong code with tries left, expired, rate limit, server, offline', async () => {
     expect(await verifyCode('a@b.co', '123456', '', reply(400, { error: 'wrong_code', tries_left: 3 }))).toEqual({ ok: false, error: 'wrong_code', triesLeft: 3 });
     expect(await verifyCode('a@b.co', '123456', '', reply(410, { error: 'code_expired' }))).toEqual({ ok: false, error: 'code_expired' });
-    expect(await verifyCode('a@b.co', '123456', '', reply(429, {}))).toEqual({ ok: false, error: 'rate_limited' });
+    expect(await verifyCode('a@b.co', '123456', '', reply(429, { retry_after: 3600 }))).toEqual({ ok: false, error: 'rate_limited', retryAfter: 3600 });
     expect(await verifyCode('a@b.co', '123456', '', reply(500, {}))).toEqual({ ok: false, error: 'server' });
     expect(await verifyCode('a@b.co', '123456', '', offline)).toEqual({ ok: false, error: 'offline' });
   });
@@ -202,14 +217,6 @@ describe('pollForUpgrade', () => {
   });
 });
 
-describe('accountErrorMessage', () => {
-  it('has clear copy for wrong and expired codes', () => {
-    expect(accountErrorMessage('wrong_code', 2)).toContain('2 tries left');
-    expect(accountErrorMessage('wrong_code', 1)).toContain('1 try left');
-    expect(accountErrorMessage('code_expired')).toContain('expired');
-  });
-});
-
 describe('shouldOfferEmail', () => {
   const DAY = 24 * 60 * 60 * 1000;
   it('offers to a trial key never prompted, then once a day', () => {
@@ -219,5 +226,13 @@ describe('shouldOfferEmail', () => {
   });
   it('never offers once the email is confirmed', () => {
     expect(shouldOfferEmail(false, 0, 1_000_000_000_000)).toBe(false);
+  });
+});
+
+describe('shouldRefreshPlan', () => {
+  it('refreshes at most once a minute', () => {
+    expect(shouldRefreshPlan(0, 1_000_000)).toBe(true);
+    expect(shouldRefreshPlan(1_000_000 - 59_999, 1_000_000)).toBe(false);
+    expect(shouldRefreshPlan(1_000_000 - 60_000, 1_000_000)).toBe(true);
   });
 });

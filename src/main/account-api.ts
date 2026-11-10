@@ -20,11 +20,13 @@ export interface FetchInit { method: string; headers: Record<string, string>; bo
 export type FetchLike = (url: string, init: FetchInit) => Promise<{ status: number; json: () => Promise<unknown> }>;
 
 const REQUEST_TIMEOUT_MS = 15_000;
+/** First launch waits on this one: keep it short so setup shows quickly on a bad network. */
+const TRIAL_TIMEOUT_MS = 6_000;
 
 type Json = Record<string, unknown>;
 
 /** POST JSON. status 0 = could not reach the server at all. */
-async function postJson(fetchFn: FetchLike, path: string, body: unknown, bearer?: string): Promise<{ status: number; body: Json }> {
+async function postJson(fetchFn: FetchLike, path: string, body: unknown, bearer?: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<{ status: number; body: Json }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
   try {
@@ -32,7 +34,7 @@ async function postJson(fetchFn: FetchLike, path: string, body: unknown, bearer?
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     let parsed: Json = {};
     try {
@@ -46,6 +48,8 @@ async function postJson(fetchFn: FetchLike, path: string, body: unknown, bearer?
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+/** Seconds the server asks us to wait (429 bodies carry `retry_after`); undefined when absent. */
+const retryAfter = (b: Json): number | undefined => (typeof b.retry_after === 'number' && b.retry_after > 0 ? Math.ceil(b.retry_after) : undefined);
 
 // ── Pure helpers ─────────────────────────────────────────────────────
 
@@ -72,7 +76,7 @@ export type TrialResult =
   | { ok: false; error: 'trial_used' | 'rate_limited' | 'offline' | 'server' };
 
 export async function requestTrial(machineHash: string, fetchFn: FetchLike): Promise<TrialResult> {
-  const r = await postJson(fetchFn, '/v1/trial', { machine: machineHash });
+  const r = await postJson(fetchFn, '/v1/trial', { machine: machineHash }, undefined, TRIAL_TIMEOUT_MS);
   if (r.status === 200 && str(r.body.licenseKey)) return { ok: true, licenseKey: str(r.body.licenseKey) };
   if (r.status === 409) return { ok: false, error: 'trial_used' };
   if (r.status === 429) return { ok: false, error: 'rate_limited' };
@@ -83,15 +87,17 @@ export async function requestTrial(machineHash: string, fetchFn: FetchLike): Pro
 
 export type SendCodeResult =
   | { ok: true }
-  | { ok: false; error: 'invalid_email' | 'rate_limited' | 'offline' | 'server' };
+  | { ok: false; error: 'invalid_email' | 'offline' | 'server' }
+  | { ok: false; error: 'rate_limited'; retryAfter?: number };
 
-export async function sendCode(email: string, fetchFn: FetchLike): Promise<SendCodeResult> {
+/** `lang` picks the language of the code email (backend ignores unknown values). */
+export async function sendCode(email: string, fetchFn: FetchLike, lang = 'en'): Promise<SendCodeResult> {
   const trimmed = email.trim();
   if (!isValidEmail(trimmed)) return { ok: false, error: 'invalid_email' };
-  const r = await postJson(fetchFn, '/v1/free-signup', { email: trimmed, code: true });
+  const r = await postJson(fetchFn, '/v1/free-signup', { email: trimmed, code: true, lang });
   if (r.status === 200 && r.body.ok === true) return { ok: true };
   if (r.status === 400) return { ok: false, error: 'invalid_email' };
-  if (r.status === 429) return { ok: false, error: 'rate_limited' };
+  if (r.status === 429) return { ok: false, error: 'rate_limited', retryAfter: retryAfter(r.body) };
   return { ok: false, error: r.status === 0 ? 'offline' : 'server' };
 }
 
@@ -100,7 +106,8 @@ export async function sendCode(email: string, fetchFn: FetchLike): Promise<SendC
 export type VerifyResult =
   | { ok: true; licenseKey: string; plan: string }
   | { ok: false; error: 'wrong_code'; triesLeft: number }
-  | { ok: false; error: 'code_expired' | 'invalid_email' | 'rate_limited' | 'offline' | 'server' };
+  | { ok: false; error: 'rate_limited'; retryAfter?: number }
+  | { ok: false; error: 'code_expired' | 'invalid_email' | 'offline' | 'server' };
 
 /** `bearer` is the current (trial) key so the backend can attach the email to it. */
 export async function verifyCode(email: string, code: string, bearer: string | undefined, fetchFn: FetchLike): Promise<VerifyResult> {
@@ -114,22 +121,8 @@ export async function verifyCode(email: string, code: string, bearer: string | u
     return { ok: false, error: 'wrong_code', triesLeft: typeof r.body.tries_left === 'number' ? r.body.tries_left : 0 };
   }
   if (r.status === 400) return { ok: false, error: 'invalid_email' };
-  if (r.status === 429) return { ok: false, error: 'rate_limited' };
+  if (r.status === 429) return { ok: false, error: 'rate_limited', retryAfter: retryAfter(r.body) };
   return { ok: false, error: r.status === 0 ? 'offline' : 'server' };
-}
-
-/** Plain-English copy for the setup screen. */
-export function accountErrorMessage(e: Exclude<SendCodeResult, { ok: true }>['error'] | Exclude<VerifyResult, { ok: true }>['error'], triesLeft?: number): string {
-  switch (e) {
-    case 'invalid_email': return "That email doesn't look right. Double-check it and try again.";
-    case 'rate_limited': return 'Too many tries for now. Wait a minute and try again.';
-    case 'wrong_code': return triesLeft && triesLeft > 0
-      ? `That code isn't right. ${triesLeft} ${triesLeft === 1 ? 'try' : 'tries'} left.`
-      : "That code isn't right.";
-    case 'code_expired': return 'That code has expired or was used up. Tap "Send a new code".';
-    case 'offline': return "Couldn't reach our server. Check your connection and try again.";
-    default: return 'Our server had a hiccup. Try again in a moment.';
-  }
 }
 
 // ── POST /v1/checkout ────────────────────────────────────────────────
@@ -204,4 +197,13 @@ export const EMAIL_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 /** Offer the bubble only to trial keys, at most once a day. */
 export function shouldOfferEmail(isTrialKey: boolean, lastPromptAt: number, now: number): boolean {
   return isTrialKey && now - lastPromptAt >= EMAIL_PROMPT_COOLDOWN_MS;
+}
+
+// ── Plan refresh ─────────────────────────────────────────────────────
+
+export const PLAN_REFRESH_MIN_GAP_MS = 60_000;
+
+/** Re-check the plan at launch and when Settings opens, but never more than once a minute (/validate is rate limited). */
+export function shouldRefreshPlan(lastRefreshAt: number, now: number): boolean {
+  return now - lastRefreshAt >= PLAN_REFRESH_MIN_GAP_MS;
 }
