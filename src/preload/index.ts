@@ -8,11 +8,18 @@ contextBridge.exposeInMainWorld('clippy', {
 
   validateLicense: (key: string) => ipcRenderer.invoke('validate-license', key),
 
-  // Free-tier signup. POSTs the email to the worker; main persists the
-  // returned license key so subsequent turns are authenticated. The key
-  // never crosses back to the renderer console — main logs it, the
-  // onboarding flow only reads `licenseKey` to advance.
-  freeSignup: (email: string) => ipcRenderer.invoke('free-signup', email),
+  // Onboarding v3 — email + 6-digit code. Main stores the key; it never comes back here.
+  sendCode: (email: string) => ipcRenderer.invoke('account:send-code', email),
+  verifyCode: (email: string, code: string) => ipcRenderer.invoke('account:verify-code', email, code),
+  emailDone: () => ipcRenderer.invoke('account:email-done'),
+  savePersona: (buddyName: string, ttsVoice: string) => ipcRenderer.invoke('save-persona', buddyName, ttsVoice),
+  openSetup: () => ipcRenderer.send('open-setup'),
+  // Checkout via main (Bearer key), then main polls /validate and announces the new plan.
+  upgrade: (plan: 'power' | 'max') => ipcRenderer.invoke('account:upgrade', plan),
+  // After a trial key's first answer: Clippy offers "add your email".
+  onAddEmailOffer: (cb: (payload: { text: string }) => void) => {
+    ipcRenderer.on('clippy-add-email', (_e, payload) => cb(payload));
+  },
 
   saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) =>
     ipcRenderer.invoke('save-license', key, plan, buddyName, ttsVoice),

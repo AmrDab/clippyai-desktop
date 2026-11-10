@@ -2,6 +2,7 @@
 import { firstWinsForPlan } from './app-catalog';
 import { PermissionFlow, type PermSnapshot, type PermKind } from './permission-flow';
 import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
+import { normalizeCode, isCompleteCode, isValidEmail } from '../main/account-input';
 import { normalizeLicenseKey, keyLookalikes, lookalikeMessage, KEY_FORMAT_HINT, KEY_NOT_FOUND_MESSAGE } from './license-key';
 
 // v0.19.0 PR-6 — Fluent Reveal effect. Any element marked with
@@ -28,6 +29,8 @@ const TRY_IT_PROMPT = "What's on my screen?";
 
 let currentStep = 1;
 let validatedPlan = '';
+// Set after a confirmed email code: main already holds the key + plan.
+let licenseSavedInMain = false;
 // Try it (step 4) state — see startTryIt / onTutorialEvent.
 let tutorialStarted = false;
 let tutorialAnswered = false;
@@ -298,10 +301,10 @@ btnNext.addEventListener('click', async () => {
     licenseError.textContent = '';
 
     // Step 1's footer Next is the "I pasted a key" path. If the field is
-    // empty, nudge the user toward the free button rather than throwing a
-    // format error — free is the primary path.
+    // empty, nudge the user toward the email box rather than throwing a
+    // format error — email + code is the primary path.
     if (!key) {
-      licenseError.textContent = 'Enter your license key, or tap "Use Clippy free" above.';
+      licenseError.textContent = 'Enter your license key, or use your email above.';
       return;
     }
 
@@ -349,7 +352,10 @@ btnNext.addEventListener('click', async () => {
     btnNext.textContent = 'Saving...';
 
     try {
-      await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
+      // A code sign-in already stored the key in main (it never reaches this
+      // window); a pasted key is saved here.
+      if (licenseSavedInMain) await window.clippy.savePersona(buddyName, ttsVoice);
+      else await window.clippy.saveLicense(key, validatedPlan, buddyName, ttsVoice);
       // v0.19.0 PR-6.3 — commit launch-on-startup pick from the onboarding
       // toggle. Best-effort; main idempotently updates the login item, so
       // a failure here just leaves the OS default (no auto-launch) and the
@@ -425,106 +431,148 @@ window.clippy.onActivationResult((r) => {
   }
 });
 
-// ── Primary path: free signup (email → activation link + key, no card) ─
-const btnUseFree = document.getElementById('btn-use-free') as HTMLButtonElement;
-const freeEmailRow = document.getElementById('free-email-row')!;
-const freeEmailInput = document.getElementById('free-email') as HTMLInputElement;
-const btnFreeConfirm = document.getElementById('btn-free-confirm') as HTMLButtonElement;
-const freeError = document.getElementById('free-error')!;
+// ── Primary path: email → 6-digit code ────────────────────────────────
+// ?mode=email (opened from the "add your email" bubble or a used-up trial)
+// shows this screen only; on success Clippy confirms and the window closes.
+const params = new URLSearchParams(location.search);
+const EMAIL_ONLY = params.get('mode') === 'email';
+const emailStage = document.getElementById('email-stage')!;
+const codeStage = document.getElementById('code-stage')!;
+const setupEmail = document.getElementById('setup-email') as HTMLInputElement;
+const setupCode = document.getElementById('setup-code') as HTMLInputElement;
+const btnSendCode = document.getElementById('btn-send-code') as HTMLButtonElement;
+const btnResendCode = document.getElementById('btn-resend-code') as HTMLButtonElement;
+const btnChangeEmail = document.getElementById('btn-change-email') as HTMLButtonElement;
+const setupError = document.getElementById('setup-error')!;
+const codeSentTo = document.getElementById('code-sent-to')!;
 
-// Friendly copy for the error tokens the worker / preload can return.
-function freeErrorMessage(code: string): string {
-  switch (code) {
-    case 'invalid_email': return "That email doesn't look right — double-check it and try again.";
-    case 'rate_limited': return 'Too many attempts right now. Wait a minute, then try again — or paste a license key below.';
-    case 'email_failed': return "We couldn't send the email. Try again in a moment — or paste a license key below.";
-    case 'offline': return "Couldn't reach our server. Check your connection and try again — or paste a license key below.";
-    default: return 'Something went wrong. Try again, or paste a license key below.';
+if (EMAIL_ONLY) {
+  document.body.classList.add('setup-email-only');
+  const title = document.getElementById('setup-title')!;
+  const sub = document.getElementById('setup-sub')!;
+  if (params.get('reason') === 'trial_ended') {
+    title.textContent = 'Your free trial is used up';
+    sub.textContent = "Add your email to keep going. It's still free.";
+  } else {
+    title.textContent = 'Keep me free forever';
+    sub.textContent = "Add your email. We'll send a 6-digit code. No card needed.";
   }
 }
 
-// Reveal the email field on first tap (the field replaces the button so the
-// step still fits the window); Confirm submits.
-btnUseFree.addEventListener('click', () => {
-  freeError.textContent = '';
-  btnUseFree.style.display = 'none';
-  freeEmailRow.style.display = '';
-  freeEmailInput.focus();
-});
+let sentTo = '';
+let busy = false;
 
-async function submitFreeSignup(): Promise<void> {
-  const email = freeEmailInput.value.trim();
-  freeError.textContent = '';
-  if (!email) {
-    freeError.textContent = 'Enter your email to continue.';
-    freeEmailInput.focus();
-    return;
-  }
-  // Cheap client-side format gate — mirrors the worker's lenient check so an
-  // obviously-malformed address fails instantly instead of after a round-trip.
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    freeError.textContent = freeErrorMessage('invalid_email');
-    freeEmailInput.focus();
-    return;
-  }
-  freeError.className = 'onboarding-error';
-  btnFreeConfirm.disabled = true;
-  btnFreeConfirm.textContent = 'Sending…';
-  let emailed = false;
-  try {
-    const result = await window.clippy.freeSignup(email);
-    if ('emailed' in result && result.emailed) {
-      // The worker emailed an activation link + the key; neither comes back
-      // over the wire. The email button opens clippyai://activate and we
-      // advance from onActivationResult; pasting the key still works.
-      emailed = true;
-      freeError.className = 'onboarding-hint';
-      freeError.textContent = 'Sent! Look for “Your ClippyAI license key” from hello@clippyai.app (check Spam/Promotions too) and click Activate. It can take a minute.';
-    } else {
-      freeError.textContent = freeErrorMessage((result as { error: string }).error);
-    }
-  } catch {
-    freeError.textContent = freeErrorMessage('offline');
-  } finally {
-    if (emailed) holdResend(); // a second email right away just looks like nothing happened
-    else { btnFreeConfirm.disabled = false; btnFreeConfirm.textContent = 'Confirm'; }
-  }
+function showSetupError(msg: string): void { setupError.textContent = msg; }
+
+function showCodeStage(): void {
+  emailStage.style.display = 'none';
+  codeStage.style.display = '';
+  codeSentTo.textContent = sentTo;
+  setupCode.value = '';
+  setupCode.focus();
+  holdResend();
 }
 
-/** After a send, Resend unlocks after 30 s — repeat sends were creating duplicate emails. */
+/** "Send a new code" unlocks 30 s after a send — repeat sends just look like nothing happened. */
+let resendTimer: number | null = null;
 function holdResend(seconds = 30): void {
-  btnFreeConfirm.disabled = true;
+  if (resendTimer !== null) clearTimeout(resendTimer);
+  btnResendCode.disabled = true;
   let left = seconds;
   const tick = () => {
-    if (left <= 0) { btnFreeConfirm.disabled = false; btnFreeConfirm.textContent = 'Resend'; return; }
-    btnFreeConfirm.textContent = `Resend (${left}s)`;
+    if (left <= 0) { btnResendCode.disabled = false; btnResendCode.textContent = 'Send a new code'; return; }
+    btnResendCode.textContent = `Send a new code (${left}s)`;
     left -= 1;
-    setTimeout(tick, 1000);
+    resendTimer = window.setTimeout(tick, 1000);
   };
   tick();
 }
 
-btnFreeConfirm.addEventListener('click', submitFreeSignup);
-freeEmailInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); void submitFreeSignup(); }
+async function sendCodeTo(email: string, resend: boolean): Promise<void> {
+  if (busy) return;
+  showSetupError('');
+  if (!isValidEmail(email)) { showSetupError("That email doesn't look right. Double-check it and try again."); setupEmail.focus(); return; }
+  busy = true;
+  btnSendCode.disabled = true;
+  btnSendCode.textContent = 'Sending…';
+  try {
+    const r = await window.clippy.sendCode(email);
+    if (r.ok) {
+      sentTo = email.trim();
+      showCodeStage();
+    } else {
+      showSetupError(r.message);
+      if (resend) holdResend(5);
+    }
+  } catch {
+    showSetupError("Couldn't reach our server. Check your connection and try again.");
+  } finally {
+    busy = false;
+    btnSendCode.disabled = false;
+    btnSendCode.textContent = 'Send code';
+  }
+}
+
+async function submitCode(): Promise<void> {
+  const code = normalizeCode(setupCode.value);
+  if (busy || !isCompleteCode(code)) return;
+  busy = true;
+  showSetupError('');
+  setupCode.disabled = true;
+  try {
+    const r = await window.clippy.verifyCode(sentTo, code);
+    if (r.ok) {
+      if (EMAIL_ONLY) { await window.clippy.emailDone(); return; }
+      licenseSavedInMain = true;
+      validatedPlan = r.plan;
+      showStep(2);
+      return;
+    }
+    showSetupError(r.message);
+    setupCode.value = '';
+  } catch {
+    showSetupError("Couldn't reach our server. Check your connection and try again.");
+  } finally {
+    busy = false;
+    setupCode.disabled = false;
+    if (currentStep === 1) setupCode.focus();
+  }
+}
+
+btnSendCode.addEventListener('click', () => { void sendCodeTo(setupEmail.value, false); });
+setupEmail.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void sendCodeTo(setupEmail.value, false); }
 });
-// A validation error shouldn't outlive the typo it describes; the
-// "check your inbox" hint (onboarding-hint class) is not an error, keep it.
-freeEmailInput.addEventListener('input', () => {
-  if (freeError.className === 'onboarding-error') freeError.textContent = '';
+setupEmail.addEventListener('input', () => showSetupError(''));
+btnResendCode.addEventListener('click', () => { void sendCodeTo(sentTo, true); });
+btnChangeEmail.addEventListener('click', () => {
+  showSetupError('');
+  codeStage.style.display = 'none';
+  emailStage.style.display = '';
+  setupEmail.focus();
+});
+// Digits only (typed or pasted); the sixth digit submits by itself.
+setupCode.addEventListener('input', () => {
+  setupCode.value = normalizeCode(setupCode.value);
+  showSetupError('');
+  if (isCompleteCode(setupCode.value)) void submitCode();
 });
 
-// ── Paid plans → Stripe checkout in the browser ───────────────────────
-// Neither plan has a trial — checkout charges immediately. Same links as
-// settings.ts / main.ts (separate bundles); keep in sync if they rotate.
-const STRIPE_POWER_URL = 'https://buy.stripe.com/8x2bJ06jXfC65XDe2Oe3e03'; // $19.99/mo
-const STRIPE_MAX_URL = 'https://buy.stripe.com/5kQaEW7o1cpUdq52k6e3e05';   // $39.99/mo
+// ── Upgrade → Stripe Checkout (main creates the session, then polls for the plan) ──
 const plansHint = document.getElementById('plans-hint')!;
 
-for (const [id, url] of [['btn-get-power', STRIPE_POWER_URL], ['btn-get-max', STRIPE_MAX_URL]] as const) {
+for (const [id, plan] of [['btn-get-power', 'power'], ['btn-get-max', 'max']] as const) {
   document.getElementById(id)?.addEventListener('click', async () => {
-    await window.clippy.openExternalUrl(url);
     plansHint.style.display = 'block';
-    licenseInput.focus();
+    plansHint.textContent = 'Opening checkout…';
+    try {
+      const r = await window.clippy.upgrade(plan);
+      if (r.status === 'opened') plansHint.textContent = "Checkout opened in your browser. Once you've paid, Clippy notices by itself.";
+      else if (r.status === 'updated') plansHint.textContent = `You're on ${r.plan} now.`;
+      else if (r.status === 'needs_email') { plansHint.textContent = 'Add your email above first, then upgrade.'; setupEmail.focus(); }
+      else plansHint.textContent = r.message;
+    } catch {
+      plansHint.textContent = "Couldn't start checkout. Try again in a moment.";
+    }
   });
 }

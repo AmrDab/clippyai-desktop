@@ -433,7 +433,12 @@ export function createSettingsWindow(): BrowserWindow {
   return settingsWindow;
 }
 
-export function createOnboardingWindow(): BrowserWindow {
+/**
+ * `mode: 'email'` (onboarding v3) opens the email + code screen only, for a
+ * trial key that needs its email confirmed; `reason` picks the heading copy.
+ * Without it the window runs the full first-run flow.
+ */
+export function createOnboardingWindow(opts: { mode?: 'email'; reason?: 'trial_ended' | 'offer' } = {}): BrowserWindow {
   if (onboardingWindow && !onboardingWindow.isDestroyed()) {
     onboardingWindow.focus();
     return onboardingWindow;
@@ -479,10 +484,14 @@ export function createOnboardingWindow(): BrowserWindow {
     },
   });
 
+  const query: Record<string, string> = {};
+  if (opts.mode) query.mode = opts.mode;
+  if (opts.reason) query.reason = opts.reason;
   if (process.env.ELECTRON_RENDERER_URL) {
-    onboardingWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/onboarding.html`);
+    const qs = new URLSearchParams(query).toString();
+    onboardingWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/onboarding.html${qs ? `?${qs}` : ''}`);
   } else {
-    onboardingWindow.loadFile(path.join(__dirname, '../renderer/onboarding.html'));
+    onboardingWindow.loadFile(path.join(__dirname, '../renderer/onboarding.html'), { query });
   }
 
   onboardingWindow.on('closed', () => { onboardingWindow = null; });

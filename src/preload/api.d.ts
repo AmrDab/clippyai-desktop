@@ -66,11 +66,19 @@ interface Window {
 
     // ── License management
     validateLicense: (key: string) => Promise<{ valid: boolean; plan: string; reason?: string }>;
-    /** Free-tier signup. Returns { emailed: true } once the worker has sent
-     *  the license key by email (the key never comes back over the wire),
-     *  or an `error` token ('invalid_email' | 'rate_limited' | 'email_failed'
-     *  | 'offline' | …) the renderer maps to a friendly inline message. */
-    freeSignup: (email: string) => Promise<{ emailed: true } | { error: string }>;
+    /** Onboarding v3 — emails a 6-digit code. */
+    sendCode: (email: string) => Promise<{ ok: true } | { ok: false; error: string; message: string }>;
+    /** Verifies the code; on success main has already stored the key + plan. */
+    verifyCode: (email: string, code: string) => Promise<{ ok: true; plan: string } | { ok: false; error: string; message: string }>;
+    /** Email-only screen finished: Clippy confirms and the window closes. */
+    emailDone: () => Promise<boolean>;
+    /** Meet Clippy step after a code sign-in (key already saved in main). */
+    savePersona: (buddyName: string, ttsVoice: string) => Promise<boolean>;
+    /** Opens the email + code screen. */
+    openSetup: () => void;
+    /** Upgrade via /v1/checkout in main. 'needs_email' = the email screen was opened first. */
+    upgrade: (plan: 'power' | 'max') => Promise<{ status: 'needs_email' } | { status: 'opened' } | { status: 'updated'; plan: string } | { status: 'error'; message: string }>;
+    onAddEmailOffer: (cb: (payload: { text: string }) => void) => void;
     saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
     /** Full local reset → relaunch into onboarding. Main shows a native
      *  confirm dialog first and resolves false if the user cancels; on

@@ -89,7 +89,8 @@ if (process.platform === 'win32') {
 
 import { createWindow, createOnboardingWindow, getOnboardingWindow } from './window';
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
-import { getBuddyName, getTtsVoice, saveLicense, getPlan } from './license';
+import { getBuddyName, getTtsVoice, saveLicense, getPlan, isTrial } from './license';
+import { startTrial } from './account';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
 import { Brain } from './brain';
@@ -187,7 +188,8 @@ async function handleActivateUrl(url: string): Promise<void> {
   // already-licensed app asks before a link replaces its license — and
   // before the token is redeemed. Onboarding (no license yet, the user just
   // requested the email) proceeds without asking.
-  if (!getOnboardingWindow() && isLicensed()) {
+  // A silent-trial key has no account behind it yet — nothing to protect.
+  if (!getOnboardingWindow() && isLicensed() && !isTrial()) {
     const { response } = await dialog.showMessageBox({
       type: 'question',
       buttons: ['Use the new license', 'Keep my current license'],
@@ -382,6 +384,13 @@ app.whenReady().then(async () => {
       log.warn('License key no longer valid — showing onboarding');
       launchWithOnboarding();
     }
+  } else if (await startTrial()) {
+    // Onboarding v3: Clippy works the moment it is installed. The email is
+    // asked for after the first answer (brain.ts) or when the trial runs out.
+    bootLog('TRIAL_STARTED');
+    log.info('Trial key minted — launching without setup');
+    telemetry.track('onboarding_step', { step: 'trial_started' });
+    launchMainApp();
   } else {
     bootLog('NO_LICENSE_ONBOARDING');
     log.info('No valid license — showing onboarding');

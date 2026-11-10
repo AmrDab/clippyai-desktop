@@ -3156,16 +3156,26 @@ body.onboarding-window {
 .onboarding-step[data-step="1"] { gap: var(--s-space-3); }
 .onboarding-step[data-step="1"] .onboarding-divider { margin: var(--s-space-1) 0; }
 #free-section .btn-primary { width: 100%; }
-/* Email field + Confirm on one row (label above both). */
-#free-email-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
+/* Email / code stages: label, field, button stacked. */
+#email-stage, #code-stage {
+  display: flex;
+  flex-direction: column;
   gap: var(--s-space-2);
-  align-items: stretch;
-  /* Keeps the "check your inbox" hint clear of the Confirm/Resend shadow. */
-  margin-bottom: var(--s-space-2);
 }
-#free-email-row label { grid-column: 1 / -1; margin-bottom: 0; }
+#email-stage label, #code-stage label { margin-bottom: 0; }
+.code-input {
+  font-size: 24px;
+  letter-spacing: 0.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.code-actions { display: flex; justify-content: space-between; }
+.code-actions .onboarding-skip-link:disabled { opacity: 0.5; cursor: default; }
+/* Email-only screen (?mode=email): no wizard chrome, no key paste. */
+body.setup-email-only .onboarding-footer,
+body.setup-email-only #license-section,
+body.setup-email-only #plans-section,
+body.setup-email-only #privacy-line { display: none; }
 .plan-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

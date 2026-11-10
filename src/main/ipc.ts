@@ -4,12 +4,10 @@ import { executeTool } from './tools';
 import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage, snoozeUpdate, installOnUserQuit } from './updater';
 import { createLogger, serializeErr, ingestRendererLog } from './logger';
 import * as telemetry from './telemetry';
+import * as accountMod from './account';
+import { accountErrorMessage } from './account-api';
 
 const log = createLogger('IPC');
-
-// Worker base URL — mirrors API_BASE in brain.ts / license.ts. Kept here so
-// the free-signup handler doesn't reach across modules for a constant.
-const WORKER_API_BASE = 'https://api.clippyai.app';
 
 import {
   validateLicenseKey,
@@ -230,63 +228,47 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return { valid: false, plan: '', reason: result.state };
   });
 
-  // Free-tier signup. POSTs { email } to the worker's /v1/free-signup
-  // endpoint; on 200 the worker emails the user a free license key (it
-  // never returns the key in the response). Returns { emailed: true } to
-  // onboarding — the user then pastes the key via the existing step-2
-  // path — or { error } ('invalid_email' | 'rate_limited' | 'email_failed'
-  // | 'offline') for a friendly inline message.
-  ipcMain.handle('free-signup', async (_event, email: string) => {
-    const trimmed = (typeof email === 'string' ? email : '').trim();
-    // Cheap client-side gate so an obviously-bad address never hits the
-    // worker (and never burns a rate-limit slot). The worker is still the
-    // source of truth — it re-validates and may 400 anyway.
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed)) {
-      return { error: 'invalid_email' };
+  // Onboarding v3 — email + 6-digit code. send-code emails the code; verify-code
+  // checks it (with the current trial key as Bearer) and stores the returned key
+  // in main — the key never comes back to the renderer.
+  ipcMain.handle('account:send-code', async (_event, email: unknown) => {
+    const r = await accountMod.sendEmailCode(typeof email === 'string' ? email : '');
+    return r.ok ? { ok: true } : { ok: false, error: r.error, message: accountErrorMessage(r.error) };
+  });
+
+  ipcMain.handle('account:verify-code', async (_event, email: unknown, code: unknown) => {
+    if (typeof email !== 'string' || typeof code !== 'string') return { ok: false, error: 'wrong_code', message: accountErrorMessage('wrong_code') };
+    return accountMod.verifyEmailCode(email, code);
+  });
+
+  // Email confirmed from the email-only screen: say so and close it.
+  ipcMain.handle('account:email-done', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!mainWindow.isDestroyed()) {
+      const text = "You're all set. Your email is confirmed and I'm free to use. 📎";
+      log.info('Clippy.say', { text, animation: 'Congratulate', trigger: 'email_confirmed' });
+      mainWindow.webContents.send('clippy-speak', { text, animate: 'Congratulate' });
     }
+    if (win && !win.isDestroyed()) win.close();
+    return true;
+  });
+
+  // Meet Clippy step after a code sign-in: the key is already saved in main.
+  ipcMain.handle('save-persona', async (_event, buddyName: string, ttsVoice: string) => {
+    saveLicense(getLicenseKey(), getPlan(), buddyName, ttsVoice);
+    return true;
+  });
+
+  // "Add your email" bubble button.
+  ipcMain.on('open-setup', () => accountMod.openSetup('offer'));
+
+  // Upgrade (onboarding, Settings, the bubble): checkout via main, then poll for the new plan.
+  ipcMain.handle('account:upgrade', async (_event, plan: unknown) => {
     try {
-      const { net } = await import('electron');
-      const r = await new Promise<{ emailed: true } | { error: string }>((resolve) => {
-        const req = net.request({ url: `${WORKER_API_BASE}/v1/free-signup`, method: 'POST' });
-        req.setHeader('Content-Type', 'application/json');
-        const timeout = setTimeout(() => { req.abort(); resolve({ error: 'offline' }); }, 15_000);
-        req.on('response', (response) => {
-          let data = '';
-          response.on('data', (chunk) => { data += chunk.toString(); });
-          response.on('end', () => {
-            clearTimeout(timeout);
-            const status = response.statusCode || 0;
-            let parsed: { ok?: boolean; emailed?: boolean; error?: string } = {};
-            try { parsed = JSON.parse(data); } catch { /* fall through to status-based mapping */ }
-            if (status === 200 && parsed.emailed) {
-              log.info('FreeSignup.emailed');
-              resolve({ emailed: true });
-            } else if (status === 400) {
-              resolve({ error: parsed.error || 'invalid_email' });
-            } else if (status === 429) {
-              resolve({ error: parsed.error || 'rate_limited' });
-            } else if (status === 502) {
-              resolve({ error: parsed.error || 'email_failed' });
-            } else {
-              log.warn('FreeSignup.unexpected', { status });
-              resolve({ error: 'offline' });
-            }
-          });
-        });
-        req.on('error', (err) => {
-          clearTimeout(timeout);
-          log.error('FreeSignup.error', serializeErr(err));
-          resolve({ error: 'offline' });
-        });
-        req.write(JSON.stringify({ email: trimmed }));
-        req.end();
-      });
-      telemetry.track('signup', { outcome: 'error' in r ? r.error : 'ok' });
-      return r;
+      return await accountMod.startUpgrade(plan, mainWindow);
     } catch (err) {
-      log.error('FreeSignup.failed', serializeErr(err));
-      telemetry.track('signup', { outcome: 'offline' });
-      return { error: 'offline' };
+      log.error('Upgrade.failed', serializeErr(err));
+      return { status: 'error', message: "Couldn't start checkout. Try again in a moment." };
     }
   });
 
@@ -570,7 +552,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
         await shell.openExternal(url);
         return true;
       }
-      if (parsed.hostname === 'buy.stripe.com' || parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app' || parsed.hostname === 'github.com') {
+      if (parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app' || parsed.hostname === 'github.com') {
         await shell.openExternal(url);
         return true;
       }

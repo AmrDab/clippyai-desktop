@@ -12,24 +12,32 @@
       <p class="tagline">Your AI desktop buddy is waiting</p>
     </div>
 
-    <!-- Step 1: Activate — free is the primary path; one-click email link
-         (clippyai://activate) or paste the key from the same email. -->
+    <!-- Step 1: Setup (onboarding v3) — email, then the 6-digit code from the
+         email. Opens when the silent trial isn't available, when the trial is
+         used up, or from the "add your email" bubble (?mode=email: this screen
+         only). Pasting a license key stays available. -->
     <div class="onboarding-step active" data-step="1">
-      <h2>Get started — free forever</h2>
-      <p class="onboarding-subhead">No card needed — just an email and you're in.</p>
+      <h2 id="setup-title">Get started — free</h2>
+      <p class="onboarding-subhead" id="setup-sub">No card needed. We'll email you a 6-digit code.</p>
 
-      <!-- Primary: free signup -->
       <div id="free-section">
-        <button class="btn-primary" id="btn-use-free" type="button">Use Clippy free</button>
-        <div id="free-email-row" style="display:none;">
-          <label for="free-email">Your email</label>
-          <input id="free-email" type="email" placeholder="you@example.com" spellcheck="false" autocomplete="email" inputmode="email" />
-          <button class="btn-primary" id="btn-free-confirm" type="button">Confirm</button>
+        <div id="email-stage">
+          <label for="setup-email">Your email</label>
+          <input id="setup-email" type="email" placeholder="you@example.com" spellcheck="false" autocomplete="email" inputmode="email" />
+          <button class="btn-primary" id="btn-send-code" type="button">Send code</button>
         </div>
-        <div class="onboarding-error" id="free-error"></div>
+        <div id="code-stage" style="display:none;">
+          <label for="setup-code">Type the 6-digit code we sent to <span id="code-sent-to"></span></label>
+          <input id="setup-code" class="code-input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code" spellcheck="false" />
+          <div class="code-actions">
+            <button class="onboarding-skip-link" id="btn-resend-code" type="button" disabled>Send a new code</button>
+            <button class="onboarding-skip-link" id="btn-change-email" type="button">Use a different email</button>
+          </div>
+        </div>
+        <div class="onboarding-error" id="setup-error" role="alert"></div>
       </div>
 
-      <!-- Secondary: paid plans. No trial exists — Power/Max charge on checkout. -->
+      <!-- Paid plans. Upgrading keeps your key; Power/Max charge on checkout. -->
       <div id="plans-section">
         <div class="onboarding-divider"><span>or</span></div>
         <p class="onboarding-subhead" style="margin-bottom:var(--s-space-2);">
@@ -45,14 +53,12 @@
             <p class="trial-hint">$39.99/mo · premium voice, 4× usage · cancel anytime</p>
           </div>
         </div>
-        <p class="trial-hint" id="plans-hint" style="display:none;">
-          Checkout opened in your browser. After paying, click the activation button in your email — or paste the key from that email below.
-        </p>
+        <p class="trial-hint" id="plans-hint" style="display:none;"></p>
       </div>
 
       <!-- Tertiary: paste a key -->
       <div id="license-section">
-        <div class="onboarding-divider"><span>already have a key?</span></div>
+        <div class="onboarding-divider"><span>I have a license key</span></div>
         <label for="license-key">License key</label>
         <input id="license-key" type="text" placeholder="CLIPPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" />
         <div class="onboarding-error" id="license-error"></div>
