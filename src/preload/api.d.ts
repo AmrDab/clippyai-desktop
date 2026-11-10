@@ -70,15 +70,10 @@ interface Window {
     sendCode: (email: string) => Promise<{ ok: true } | { ok: false; error: string; retryAfter?: number }>;
     /** Verifies the code; on success main has already stored the key + plan. */
     verifyCode: (email: string, code: string) => Promise<{ ok: true; plan: string } | { ok: false; error: string; triesLeft?: number; retryAfter?: number }>;
-    /** Email-only screen finished: Clippy confirms and the window closes. */
-    emailDone: () => Promise<boolean>;
     /** Meet Clippy step after a code sign-in (key already saved in main). */
     savePersona: (buddyName: string, ttsVoice: string) => Promise<boolean>;
-    /** Opens the email + code screen. */
-    openSetup: () => void;
     /** Upgrade via /v1/checkout in main. 'needs_email' = the email screen was opened first. */
     upgrade: (plan: 'power' | 'max') => Promise<{ status: 'needs_email' } | { status: 'opened' } | { status: 'updating' } | { status: 'already'; plan: string } | { status: 'error'; message: string }>;
-    onAddEmailOffer: (cb: (payload: { text: string; yes: string; later: string }) => void) => void;
     setBubbleBusy: (busy: boolean) => void;
     onPlanChanged: (cb: (plan: string) => void) => void;
     saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;

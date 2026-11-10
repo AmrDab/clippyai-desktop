@@ -37,11 +37,6 @@ interface LicenseStore {
   // a dedicated usage endpoint. Additive + best-effort: zero means "unknown".
   tokensUsed: number;
   tokensAllowed: number;
-  // Onboarding v3 — the key came from the silent first-launch trial and has no
-  // email attached yet. Cleared when an email is confirmed or any other key is saved.
-  trial: boolean;
-  // Last time the "add your email" bubble was offered (ms) — once a day at most.
-  emailPromptAt: number;
 }
 
 const store = new Store<LicenseStore>({
@@ -61,8 +56,6 @@ const store = new Store<LicenseStore>({
     ttsEngine: 'system',
     tokensUsed: 0,
     tokensAllowed: 0,
-    trial: false,
-    emailPromptAt: 0,
   },
 });
 
@@ -127,19 +120,6 @@ export function getUsage(): { tokensUsed: number; tokensAllowed: number } {
   };
 }
 
-/** True while the stored key is the unconfirmed first-launch trial key. */
-export function isTrial(): boolean {
-  return store.get('trial') === true && !!store.get('licenseKey');
-}
-
-export function getEmailPromptAt(): number {
-  return store.get('emailPromptAt', 0);
-}
-
-export function markEmailPrompted(): void {
-  store.set('emailPromptAt', Date.now());
-}
-
 export function isFirstRun(): boolean {
   return !store.get('licenseKey');
 }
@@ -172,16 +152,6 @@ export function saveLicense(key: string, plan: string, buddyName: string, ttsVoi
   store.set('ttsVoice', ttsVoice);
   store.set('validated', true);
   store.set('lastValidated', Date.now());
-  store.set('trial', false);
-}
-
-/** Onboarding v3 — keep the silent trial key. Default name/voice stay as they are. */
-export function saveTrialLicense(key: string): void {
-  store.set('licenseKey', key);
-  store.set('plan', 'free');
-  store.set('validated', true);
-  store.set('lastValidated', Date.now());
-  store.set('trial', true);
 }
 
 /** A plan change seen by polling /validate after checkout (same key, new plan). */
@@ -192,7 +162,6 @@ export function setPlan(plan: string): void {
 export function clearLicense(): void {
   store.set('licenseKey', '');
   store.set('plan', '');
-  store.set('trial', false);
   store.set('validated', false);
   store.set('graceExpiry', 0);
   store.set('lastValidated', 0);

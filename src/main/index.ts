@@ -89,8 +89,8 @@ if (process.platform === 'win32') {
 
 import { createWindow, createOnboardingWindow, getOnboardingWindow, getSettingsWindow } from './window';
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
-import { getBuddyName, getTtsVoice, saveLicense, getPlan, isTrial } from './license';
-import { startTrial, refreshPlan } from './account';
+import { getBuddyName, getTtsVoice, saveLicense, getPlan } from './license';
+import { refreshPlan } from './account';
 import { isBubbleBusy } from './ui-busy';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
@@ -190,8 +190,7 @@ async function handleActivateUrl(url: string): Promise<void> {
   // already-licensed app asks before a link replaces its license — and
   // before the token is redeemed. Onboarding (no license yet, the user just
   // requested the email) proceeds without asking.
-  // A silent-trial key has no account behind it yet — nothing to protect.
-  if (!getOnboardingWindow() && isLicensed() && !isTrial()) {
+  if (!getOnboardingWindow() && isLicensed()) {
     const { response } = await dialog.showMessageBox({
       type: 'question',
       buttons: ['Use the new license', 'Keep my current license'],
@@ -389,13 +388,6 @@ app.whenReady().then(async () => {
       log.warn('License key no longer valid — showing onboarding');
       launchWithOnboarding();
     }
-  } else if (await startTrial()) {
-    // Onboarding v3: Clippy works the moment it is installed. The email is
-    // asked for after the first answer (brain.ts) or when the trial runs out.
-    bootLog('TRIAL_STARTED');
-    log.info('Trial key minted — launching without setup');
-    telemetry.track('onboarding_step', { step: 'trial_started' });
-    launchMainApp({ firstRun: true });
   } else {
     bootLog('NO_LICENSE_ONBOARDING');
     log.info('No valid license — showing onboarding');
@@ -516,7 +508,7 @@ function isBusyElsewhere(): boolean {
     || isBubbleBusy(); // half-typed text, open chat panel, or a prompt waiting for an answer
 }
 
-function launchMainApp(opts: { firstRun?: boolean } = {}): void {
+function launchMainApp(): void {
   const resume = consumeUpdateResume(); // silent relaunch after an idle install
   mainWindow = createWindow();
   brain = new Brain(mainWindow);
@@ -598,15 +590,9 @@ function launchMainApp(opts: { firstRun?: boolean } = {}): void {
   // v0.22 — once after a minor update: what's new (whats-new.ts).
   checkWhatsNew(isProfileSetUp());
 
-  if (opts.firstRun) {
-    // First launch: show what Clippy can do (greeting + two chips + hotkey)
-    // instead of asking for a name. The name stays editable in Settings.
-    const win = mainWindow;
-    void whenLoaded(win).then(() => setTimeout(() => {
-      if (!win.isDestroyed()) win.webContents.send('first-win-overlay');
-    }, 1500));
-  } else if (!resume && !isProfileSetUp() && claimNamePrompt()) {
-    // Existing users without a saved name: asked once, never again.
+  if (!resume && !isProfileSetUp() && claimNamePrompt()) {
+    // Existing users without a saved name: asked once, never again. (New users
+    // get the greeting + chips after setup instead, see ipc.ts.)
     setTimeout(() => {
       // D9: log direct webContents.send so the audit trail matches what
       // the user actually saw on screen.

@@ -27,9 +27,8 @@ function installFluentReveal(): void {
 }
 installFluentReveal();
 
-// Window URL carries mode (email-only screen), reason (heading) and lang (set by main).
+// Window URL carries lang (set by main).
 const params = new URLSearchParams(location.search);
-const EMAIL_ONLY = params.get('mode') === 'email';
 const LANG: Lang = isLang(params.get('lang')) ? (params.get('lang') as Lang) : 'en';
 const T = (key: Key, vars?: Record<string, string | number>): string => t(LANG, key, vars);
 document.documentElement.lang = LANG;
@@ -448,8 +447,6 @@ window.clippy.onActivationResult((r) => {
   if (r.ok) {
     validatedPlan = r.plan || 'free';
     licenseError.textContent = '';
-    // The email-only window has no step 2: confirm and close it.
-    if (EMAIL_ONLY) { void window.clippy.emailDone(); return; }
     if (currentStep !== 1) return;
     if (!IS_MAC) { void finishFirstRun(); return; }
     if (r.licenseKey) licenseInput.value = r.licenseKey;
@@ -465,9 +462,7 @@ window.clippy.onActivationResult((r) => {
 });
 
 // ── Primary path: email → 6-digit code ────────────────────────────────
-// ?mode=email (opened from the "add your email" bubble, a used-up trial or an
-// upgrade click) shows this screen only; on success Clippy confirms and the
-// window closes. Copy comes from i18n.ts; errors from account-copy.ts.
+// Copy comes from i18n.ts; errors from account-copy.ts.
 const emailStage = document.getElementById('email-stage')!;
 const codeStage = document.getElementById('code-stage')!;
 const setupEmail = document.getElementById('setup-email') as HTMLInputElement;
@@ -483,19 +478,6 @@ const emailSuggestText = document.getElementById('email-suggest-text')!;
 const codeResentEl = document.getElementById('code-resent')!;
 const setupError = document.getElementById('setup-error')!;
 const codeLabel = document.getElementById('code-label')!;
-
-{
-  // Heading per reason (and per language).
-  const reason = params.get('reason');
-  const [titleKey, subKey] =
-    reason === 'trial_ended' ? (['ended.title', 'ended.sub'] as const)
-    : reason === 'upgrade' ? (['upgrade.title', 'upgrade.sub'] as const)
-    : reason === 'offer' || EMAIL_ONLY ? (['offer.title', 'offer.sub'] as const)
-    : (['setup.title', 'setup.sub'] as const);
-  document.getElementById('setup-title')!.textContent = T(titleKey);
-  document.getElementById('setup-sub')!.textContent = T(subKey);
-}
-if (EMAIL_ONLY) document.body.classList.add('setup-email-only');
 
 let sentTo = '';
 let sending = false;
@@ -592,7 +574,6 @@ async function submitCode(): Promise<void> {
   try {
     const r = await window.clippy.verifyCode(sentTo, code);
     if (r.ok) {
-      if (EMAIL_ONLY) { await window.clippy.emailDone(); return; }
       licenseSavedInMain = true;
       validatedPlan = r.plan;
       if (!IS_MAC) await finishFirstRun(); // Windows: straight to Clippy
@@ -657,8 +638,8 @@ setupCode.addEventListener('keydown', (e) => {
 btnVerify.addEventListener('click', () => { void submitCode(); });
 
 // ── Closing the setup window ──────────────────────────────────────────
-// × and Esc work on step 1 in every mode; the app stays in the tray and the
-// trial key is untouched. (The header is the drag handle, see style.css.)
+// × and Esc work on step 1; the app stays in the tray and the
+// license is untouched. (The header is the drag handle, see style.css.)
 const btnClose = document.getElementById('setup-close') as HTMLButtonElement;
 btnClose.addEventListener('click', () => window.close());
 document.addEventListener('keydown', (e) => {

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  requestTrial, sendCode, verifyCode, requestCheckout, checkPlan, pollForUpgrade,
-  parseMachineGuid, trialMachineHash, normalizeCode, isCompleteCode, isValidEmail,
-  isUpgrade, isSafeCheckoutUrl, shouldOfferEmail, shouldRefreshPlan, type FetchLike,
+  sendCode, verifyCode, requestCheckout, checkPlan, pollForUpgrade,
+  normalizeCode, isCompleteCode, isValidEmail,
+  isUpgrade, isSafeCheckoutUrl, shouldRefreshPlan, type FetchLike,
 } from '../src/main/account-api';
 
 function reply(status: number, body: unknown): FetchLike {
@@ -10,20 +10,6 @@ function reply(status: number, body: unknown): FetchLike {
 }
 const offline: FetchLike = vi.fn(async () => { throw new Error('ENOTFOUND'); }) as unknown as FetchLike;
 const lastCall = (f: FetchLike) => (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, { headers: Record<string, string>; body: string }];
-
-describe('machine hash', () => {
-  it('parses MachineGuid out of reg query output', () => {
-    const out = '\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    ABCD1234-00ff-4a2b-9c3d-0123456789AB\r\n';
-    expect(parseMachineGuid(out)).toBe('abcd1234-00ff-4a2b-9c3d-0123456789ab');
-    expect(parseMachineGuid('nothing here')).toBeNull();
-  });
-  it('is a stable 64-char hex that differs per machine and never equals the raw guid', () => {
-    const a = trialMachineHash('ABCD1234-00ff-4a2b-9c3d-0123456789ab');
-    expect(a).toMatch(/^[0-9a-f]{64}$/);
-    expect(trialMachineHash('abcd1234-00ff-4a2b-9c3d-0123456789ab ')).toBe(a);
-    expect(trialMachineHash('other')).not.toBe(a);
-  });
-});
 
 describe('code + email input', () => {
   it('keeps digits only, max 6', () => {
@@ -41,24 +27,6 @@ describe('code + email input', () => {
     expect(isValidEmail(' a@b.co ')).toBe(true);
     expect(isValidEmail('a@b')).toBe(false);
     expect(isValidEmail('a b@c.d')).toBe(false);
-  });
-});
-
-describe('requestTrial', () => {
-  it('200 returns the key and sends only the machine hash', async () => {
-    const f = reply(200, { licenseKey: 'CLIPPY-AAAA-BBBB-CCCC', plan: 'free', trial: true });
-    expect(await requestTrial('h'.repeat(64), f)).toEqual({ ok: true, licenseKey: 'CLIPPY-AAAA-BBBB-CCCC' });
-    const [url, init] = lastCall(f);
-    expect(url).toBe('https://api.clippyai.app/v1/trial');
-    expect(JSON.parse(init.body)).toEqual({ machine: 'h'.repeat(64) });
-    expect(init.headers.Authorization).toBeUndefined();
-  });
-  it('maps 409, 429, 5xx and offline', async () => {
-    expect(await requestTrial('x', reply(409, { error: 'trial_used' }))).toEqual({ ok: false, error: 'trial_used' });
-    expect(await requestTrial('x', reply(429, {}))).toEqual({ ok: false, error: 'rate_limited' });
-    expect(await requestTrial('x', reply(500, {}))).toEqual({ ok: false, error: 'server' });
-    expect(await requestTrial('x', reply(200, {}))).toEqual({ ok: false, error: 'server' });
-    expect(await requestTrial('x', offline)).toEqual({ ok: false, error: 'offline' });
   });
 });
 
@@ -93,32 +61,27 @@ describe('sendCode', () => {
 });
 
 describe('verifyCode', () => {
-  it('returns the key and sends the trial key as Bearer', async () => {
+  it('returns the key and sends no Authorization header', async () => {
     const f = reply(200, { licenseKey: 'CLIPPY-1111-2222-3333', plan: 'power' });
-    expect(await verifyCode('a@b.co', '012345', 'CLIPPY-TRIAL', f)).toEqual({ ok: true, licenseKey: 'CLIPPY-1111-2222-3333', plan: 'power' });
+    expect(await verifyCode('a@b.co', '012345', f)).toEqual({ ok: true, licenseKey: 'CLIPPY-1111-2222-3333', plan: 'power' });
     const [url, init] = lastCall(f);
     expect(url).toBe('https://api.clippyai.app/v1/verify-code');
-    expect(init.headers.Authorization).toBe('Bearer CLIPPY-TRIAL');
+    expect(init.headers.Authorization).toBeUndefined();
     expect(JSON.parse(init.body)).toEqual({ email: 'a@b.co', code: '012345' });
   });
-  it('omits Authorization when there is no current key', async () => {
-    const f = reply(200, { licenseKey: 'K', plan: 'free' });
-    await verifyCode('a@b.co', '000000', undefined, f);
-    expect(lastCall(f)[1].headers.Authorization).toBeUndefined();
-  });
   it('defaults the plan to free', async () => {
-    expect(await verifyCode('a@b.co', '123456', '', reply(200, { licenseKey: 'K' }))).toEqual({ ok: true, licenseKey: 'K', plan: 'free' });
+    expect(await verifyCode('a@b.co', '123456', reply(200, { licenseKey: 'K' }))).toEqual({ ok: true, licenseKey: 'K', plan: 'free' });
   });
   it('maps wrong code with tries left, expired, rate limit, server, offline', async () => {
-    expect(await verifyCode('a@b.co', '123456', '', reply(400, { error: 'wrong_code', tries_left: 3 }))).toEqual({ ok: false, error: 'wrong_code', triesLeft: 3 });
-    expect(await verifyCode('a@b.co', '123456', '', reply(410, { error: 'code_expired' }))).toEqual({ ok: false, error: 'code_expired' });
-    expect(await verifyCode('a@b.co', '123456', '', reply(429, { retry_after: 3600 }))).toEqual({ ok: false, error: 'rate_limited', retryAfter: 3600 });
-    expect(await verifyCode('a@b.co', '123456', '', reply(500, {}))).toEqual({ ok: false, error: 'server' });
-    expect(await verifyCode('a@b.co', '123456', '', offline)).toEqual({ ok: false, error: 'offline' });
+    expect(await verifyCode('a@b.co', '123456', reply(400, { error: 'wrong_code', tries_left: 3 }))).toEqual({ ok: false, error: 'wrong_code', triesLeft: 3 });
+    expect(await verifyCode('a@b.co', '123456', reply(410, { error: 'code_expired' }))).toEqual({ ok: false, error: 'code_expired' });
+    expect(await verifyCode('a@b.co', '123456', reply(429, { retry_after: 3600 }))).toEqual({ ok: false, error: 'rate_limited', retryAfter: 3600 });
+    expect(await verifyCode('a@b.co', '123456', reply(500, {}))).toEqual({ ok: false, error: 'server' });
+    expect(await verifyCode('a@b.co', '123456', offline)).toEqual({ ok: false, error: 'offline' });
   });
   it('never calls the server for an incomplete code', async () => {
     const f = reply(200, {});
-    expect((await verifyCode('a@b.co', '123', '', f)).ok).toBe(false);
+    expect((await verifyCode('a@b.co', '123', f)).ok).toBe(false);
     expect(f).not.toHaveBeenCalled();
   });
 });
@@ -137,7 +100,6 @@ describe('requestCheckout', () => {
   });
   it('maps 401, 403, 400, 5xx and offline', async () => {
     expect(await requestCheckout('K', 'max', reply(401, {}))).toEqual({ ok: false, error: 'unauthorized' });
-    expect(await requestCheckout('K', 'max', reply(403, { error: 'email_required' }))).toEqual({ ok: false, error: 'email_required' });
     expect(await requestCheckout('K', 'max', reply(400, { error: 'unknown_plan' }))).toEqual({ ok: false, error: 'unknown_plan' });
     expect(await requestCheckout('K', 'max', reply(500, {}))).toEqual({ ok: false, error: 'server' });
     expect(await requestCheckout('K', 'max', offline)).toEqual({ ok: false, error: 'offline' });
@@ -214,18 +176,6 @@ describe('pollForUpgrade', () => {
     const plan = await pollForUpgrade({ fromPlan: 'free', check, sleep: async (ms) => { t += ms; }, now: () => t, cancelled: () => true });
     expect(plan).toBeNull();
     expect(check).not.toHaveBeenCalled();
-  });
-});
-
-describe('shouldOfferEmail', () => {
-  const DAY = 24 * 60 * 60 * 1000;
-  it('offers to a trial key never prompted, then once a day', () => {
-    expect(shouldOfferEmail(true, 0, 1_000_000_000_000)).toBe(true);
-    expect(shouldOfferEmail(true, 1_000_000_000_000 - DAY + 1, 1_000_000_000_000)).toBe(false);
-    expect(shouldOfferEmail(true, 1_000_000_000_000 - DAY, 1_000_000_000_000)).toBe(true);
-  });
-  it('never offers once the email is confirmed', () => {
-    expect(shouldOfferEmail(false, 0, 1_000_000_000_000)).toBe(false);
   });
 });
 

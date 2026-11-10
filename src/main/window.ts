@@ -434,20 +434,17 @@ export function createSettingsWindow(): BrowserWindow {
   return settingsWindow;
 }
 
-/**
- * `mode: 'email'` (onboarding v3) opens the email + code screen only, for a
- * trial key that needs its email confirmed; `reason` picks the heading copy.
- * Without it the window runs the full first-run flow.
- */
-export function createOnboardingWindow(opts: { mode?: 'email'; reason?: 'trial_ended' | 'offer' | 'upgrade'; lang?: string } = {}): BrowserWindow {
+/** The setup window: email + 6-digit code (and, on macOS, the rest of the wizard). */
+export function createOnboardingWindow(opts: { lang?: string } = {}): BrowserWindow {
   if (onboardingWindow && !onboardingWindow.isDestroyed()) {
     onboardingWindow.focus();
     return onboardingWindow;
   }
 
   const width = 480;
-  // The email-only screen is five lines of content; the full first-run flow keeps the tall window.
-  const height = opts.mode === 'email' ? 440 : 700;
+  // Windows shows only the email/code screen (no wizard after it), so a shorter window fits;
+  // macOS keeps the tall one for the permission and Try-it steps.
+  const height = process.platform === 'win32' ? 600 : 700;
   // Centered, but never over Clippy's bottom-right corner: during "Try it"
   // the reply bubble (expanded window: 540×660, 10px inset) must stay
   // visible beside the onboarding window, not underneath it. On 1366-wide
@@ -487,8 +484,6 @@ export function createOnboardingWindow(opts: { mode?: 'email'; reason?: 'trial_e
   });
 
   const query: Record<string, string> = {};
-  if (opts.mode) query.mode = opts.mode;
-  if (opts.reason) query.reason = opts.reason;
   query.lang = opts.lang ?? uiLang();
   if (process.env.ELECTRON_RENDERER_URL) {
     const qs = new URLSearchParams(query).toString();

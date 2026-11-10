@@ -1,12 +1,10 @@
 /**
- * account.ts — Electron glue for onboarding v3: the silent first-launch trial,
- * the email + 6-digit-code setup, and upgrade-by-checkout. The testable logic
+ * account.ts — Electron glue for onboarding v3: the email + 6-digit-code setup, and upgrade-by-checkout. The testable logic
  * (HTTP clients, parsing, polling) lives in account-api.ts.
  *
  * The license key and the code are never logged; outcome codes only.
  */
 import { net, shell, BrowserWindow } from 'electron';
-import { execFile } from 'child_process';
 import { createLogger } from './logger';
 import * as telemetry from './telemetry';
 import * as api from './account-api';
@@ -15,48 +13,16 @@ import * as quitState from './quit-state';
 import { createOnboardingWindow, getSettingsWindow } from './window';
 import { uiLang } from './lang';
 import { t } from './i18n';
-import { getLicenseKey, getPlan, isTrial, saveTrialLicense, saveLicense, getBuddyName, getTtsVoice, setPlan } from './license';
+import { getLicenseKey, getPlan, saveLicense, getBuddyName, getTtsVoice, setPlan } from './license';
 
 const log = createLogger('Account');
 
 // net.fetch honours the system proxy (plain fetch in main does not).
 const netFetch: api.FetchLike = (url, init) => net.fetch(url, init as unknown as RequestInit);
 
-function readMachineGuid(): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
-      { windowsHide: true, timeout: 2000 },
-      (err, stdout) => resolve(err ? null : api.parseMachineGuid(String(stdout))));
-  });
-}
-
-/**
- * First launch with no license: mint the silent trial key for this PC.
- * Returns true when a trial key was saved (skip the setup window). Windows
- * only — elsewhere, and on 409/429/offline, the caller opens the email setup.
- */
-export async function startTrial(): Promise<boolean> {
-  if (process.platform !== 'win32') return false;
-  const guid = await readMachineGuid();
-  if (!guid) {
-    log.warn('Trial.noMachineGuid');
-    return false;
-  }
-  const r = await api.requestTrial(api.trialMachineHash(guid), netFetch);
-  telemetry.track('trial', { outcome: r.ok ? 'ok' : r.error });
-  if (!r.ok) {
-    log.info('Trial.unavailable', { error: r.error });
-    return false;
-  }
-  saveTrialLicense(r.licenseKey);
-  log.info('Trial.started');
-  return true;
-}
-
-/** Open the email + code screen: email-only when a (trial) key exists, full first-run flow otherwise. */
-export function openSetup(reason?: 'trial_ended' | 'offer' | 'upgrade'): void {
-  const win = getLicenseKey() ? createOnboardingWindow({ mode: 'email', reason }) : createOnboardingWindow();
-  win.once('closed', setupClosed);
+/** Open the email + code setup window (also used when there is no license and Clippy is asked something). */
+export function openSetup(): void {
+  createOnboardingWindow();
 }
 
 export async function sendEmailCode(email: string): Promise<api.SendCodeResult> {
@@ -70,9 +36,9 @@ export type VerifyOutcome =
   | { ok: true; plan: string }
   | { ok: false; error: string; triesLeft?: number; retryAfter?: number };
 
-/** Verify the code with the current (trial) key as Bearer, then store the returned key. The key stays in main. */
+/** Verify the code, then store the returned key. The key stays in main. */
 export async function verifyEmailCode(email: string, code: string): Promise<VerifyOutcome> {
-  const r = await api.verifyCode(email, code, getLicenseKey() || undefined, netFetch);
+  const r = await api.verifyCode(email, code, netFetch);
   telemetry.track('signup', { outcome: r.ok ? 'verified' : r.error });
   if (!r.ok) {
     log.info('Code.verifyFailed', { error: r.error });
@@ -85,25 +51,7 @@ export async function verifyEmailCode(email: string, code: string): Promise<Veri
   }
   saveLicense(r.licenseKey, r.plan, getBuddyName() || 'Clippy', getTtsVoice());
   log.info('Code.verified', { plan: r.plan });
-  continuePendingUpgrade(r.plan);
   return { ok: true, plan: r.plan };
-}
-
-// ── Upgrade clicked on a trial key: email first, then checkout by itself ──
-
-let pendingUpgrade: 'power' | 'max' | null = null;
-let upgradeWindow: BrowserWindow | null = null;
-
-function continuePendingUpgrade(plan: string): void {
-  const want = pendingUpgrade;
-  pendingUpgrade = null;
-  // Already on that plan or higher (a returning customer): nothing to buy.
-  if (want && api.isUpgrade(plan, want)) void startUpgrade(want, upgradeWindow);
-}
-
-/** The setup window closed without a confirmed email: forget the upgrade intent. */
-export function setupClosed(): void {
-  pendingUpgrade = null;
 }
 
 // ── Plan refresh (launch, Settings open) ──
@@ -142,10 +90,8 @@ export type UpgradeOutcome =
 export async function startUpgrade(plan: unknown, win: BrowserWindow | null): Promise<UpgradeOutcome> {
   if (plan !== 'power' && plan !== 'max') return { status: 'error', message: 'Unknown plan.' };
   const key = getLicenseKey();
-  if (!key || isTrial()) {
-    pendingUpgrade = plan;
-    upgradeWindow = win;
-    openSetup('upgrade');
+  if (!key) {
+    openSetup(); // no account yet: sign in first
     return { status: 'needs_email' };
   }
   const before = getPlan();
@@ -153,12 +99,6 @@ export async function startUpgrade(plan: unknown, win: BrowserWindow | null): Pr
   telemetry.track('upgrade', { plan, outcome: r.ok ? ('updated' in r ? 'updated' : 'checkout') : r.error });
   if (!r.ok) {
     log.info('Checkout.failed', { error: r.error });
-    if (r.error === 'email_required') {
-      pendingUpgrade = plan;
-      upgradeWindow = win;
-      openSetup('upgrade');
-      return { status: 'needs_email' };
-    }
     return { status: 'error', message: t(uiLang(), 'checkout.error') };
   }
   // Never announce a plan from the click alone: an in-place change may still

@@ -271,17 +271,7 @@ async function loadConfig(): Promise<void> {
   const key = (config.licenseKey as string) || '';
   licenseKeyDisplay.textContent = key ? maskKey(key) : 'No key set';
   const planName = (config.plan as string) || 'Unknown';
-  const isTrialKey = config.trial === true;
-  licensePlanDisplay.textContent = isTrialKey ? 'Free trial — no account yet' : planName;
-  // A trial key has no account behind it: sign in / add an email instead of "Change key", no billing portal.
-  const changeBtn = document.getElementById('btn-change-license');
-  if (changeBtn) {
-    changeBtn.textContent = isTrialKey ? 'Add your email or sign in' : 'Change key';
-    changeBtn.classList.toggle('s-button--primary', isTrialKey);
-    changeBtn.dataset.trial = isTrialKey ? '1' : '';
-  }
-  const manageEl = document.getElementById('manage-subscription');
-  if (manageEl) manageEl.style.display = isTrialKey ? 'none' : '';
+  licensePlanDisplay.textContent = planName;
   showPlanFeatures(planName);
   renderUsageMeter(planName, config);
   renderUpgradeCta(planName);
@@ -289,7 +279,7 @@ async function loadConfig(): Promise<void> {
 
 // ── Upgrade ──────────────────────────────────────────────────────────────────
 // Main creates the Stripe Checkout session (POST /v1/checkout) and polls for the
-// new plan; a trial key is sent to the email screen first. Anything the user
+// new plan; with no account the setup window opens first. Anything the user
 // needs to know besides the browser opening is shown in place of the link text.
 async function startUpgrade(plan: 'power' | 'max', link: HTMLElement): Promise<void> {
   const original = link.textContent;
@@ -727,13 +717,10 @@ if (btnChangeLicense) {
   // overwrites it once a new key validates, so closing onboarding midway
   // leaves the user on their old (working) key instead of unlicensed.
   btnChangeLicense.addEventListener('click', () => {
-    if (btnChangeLicense.dataset.trial === '1') {
-      window.clippy.openSetup(); // email + code screen for the trial key
-    } else {
-      window.clippy.openOnboarding();
-      window.close();
-    }
+    window.clippy.openOnboarding();
+    window.close();
   });
+
 }
 
 // Reset ClippyAI (Danger zone) — full local wipe + relaunch into onboarding.

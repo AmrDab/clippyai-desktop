@@ -227,16 +227,8 @@ async function init(): Promise<void> {
     tts.speak(safeText);
     clippyCtrl.playNamed('Alert');
   });
-  // Onboarding v3 — a trial key just got its first answer: offer to add the
-  // email (main rate-limits this to once a day).
-  window.clippy.onAddEmailOffer?.(({ text, yes, later }) => {
-    bubbleCtrl.speakWithActions(text, [
-      { label: yes, variant: 'primary', onClick: () => { window.clippy.openSetup?.(); } },
-      { label: later, variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
-    ]);
-  });
   // Tell main when the user is mid-conversation (draft, open chat, prompt waiting)
-  // so offers and idle update restarts don't land on top of it.
+  // so idle update restarts don't land on top of it.
   let reportedBusy = false;
   setInterval(() => {
     const busy = bubbleCtrl.isBusyForPrompt();

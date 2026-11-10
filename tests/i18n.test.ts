@@ -22,7 +22,7 @@ describe('pickLang', () => {
 
 describe('t', () => {
   it('looks up and fills placeholders', () => {
-    expect(t('pt', 'done.paid', { plan: 'Power' })).toBe('Que bom ter você de volta! Seu plano é o Power.');
+    expect(t('pt', 'upgraded', { plan: 'Power' })).toBe('Agora você está no Power!');
     expect(t('en', 'code.resend.wait', { s: 12 })).toBe('Send a new code (12s)');
   });
   it('keeps an unfilled placeholder visible', () => {
@@ -48,6 +48,13 @@ describe('t', () => {
         expect(ph(STRINGS[lang][k]), `${lang}:${k}`).toBe(ph(STRINGS.en[k]));
       }
     }
+  });
+  it('the setup heading says email is needed and Clippy is free, in every language', () => {
+    expect(t('en', 'setup.title')).toBe("Let's get you set up");
+    expect(t('en', 'setup.sub')).toContain('Clippy is free, no card');
+    expect(t('pt', 'setup.sub')).toContain('grátis, sem cartão');
+    expect(t('es', 'setup.sub')).toContain('gratis, sin tarjeta');
+    expect(t('fr', 'setup.sub')).toContain('gratuit, sans carte');
   });
   it('the code email is localized', () => {
     expect(t('pt', 'mail.subject', { code: '123456' })).toBe('123456 é o seu código do ClippyAI');

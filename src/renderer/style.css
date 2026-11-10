@@ -3171,9 +3171,6 @@ body.onboarding-window {
 }
 .code-actions { display: flex; justify-content: space-between; }
 .code-actions .onboarding-skip-link:disabled { opacity: 0.5; cursor: default; }
-/* Email-only screen (?mode=email): short window, no key paste, no privacy line. */
-body.setup-email-only #license-section,
-body.setup-email-only #privacy-line { display: none; }
 #license-section { display: flex; flex-direction: column; gap: var(--s-space-2); }
 #key-row { display: grid; grid-template-columns: 1fr auto; gap: var(--s-space-2); }
 #btn-open-inbox { align-self: flex-start; }

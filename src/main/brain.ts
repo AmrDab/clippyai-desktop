@@ -43,12 +43,10 @@ import { languageSample, proactiveMessage } from './tip-language';
 // only depend on electron + node stdlib + ./logger).
 import * as cursorVision from './cursor-vision';
 import * as userTakeover from './user-takeover';
-import { getLicenseKey, recordUsage, isTrial, getEmailPromptAt, markEmailPrompted } from './license';
+import { getLicenseKey, recordUsage } from './license';
 import { openSetup } from './account';
-import { shouldOfferEmail } from './account-api';
 import { uiLang } from './lang';
 import { t } from './i18n';
-import { isBubbleBusy } from './ui-busy';
 import { getGuidePrompt } from './guides';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
@@ -1333,7 +1331,6 @@ export class Brain {
       // computer-use 50.
       const MAX_STEPS = 40;
       let finalSpoken = '';
-      let answeredOk = false; // a real /v1/turn answer was spoken (not an error line)
       let taskCompleted = false;
       // D5/D8: track step count and abort reason accurately.
       let lastStep = 0;
@@ -1402,10 +1399,8 @@ export class Brain {
           log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
           telemetry.taskTurnError(resp.error);
           const msg = this.errorMessage(resp.error, resp.detail || resp.message);
-          // Onboarding v3: a used-up trial or a missing key opens the email +
-          // code screen instead of leaving the user at a dead end.
-          if (resp.error === 'trial_ended') openSetup('trial_ended');
-          else if (resp.error === 'invalid_key' && !getLicenseKey()) openSetup();
+          // Onboarding v3: no key at all opens the email + code screen instead of a dead end.
+          if (resp.error === 'invalid_key' && !getLicenseKey()) openSetup();
           log.info('Clippy.say', { text: msg, animation: 'Alert', trigger: 'error', error: resp.error });
           this.emit('clippy-speak', { text: msg, animate: 'Alert' });
           finalSpoken = msg;
@@ -1474,7 +1469,6 @@ export class Brain {
           log.info('Clippy.say', { text: spoken, animation: anim, trigger: 'reply', step: step + 1 });
           this.emit('clippy-speak', { text: spoken, animate: anim });
           finalSpoken = spoken;
-          answeredOk = true;
         }
 
         // feat/pricing-free-tier — one gentle "near the limit" nudge AFTER the
@@ -2096,7 +2090,6 @@ export class Brain {
       if (finalSpoken) {
         this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
       }
-      if (answeredOk && this.taskOutcome === 'done') this.offerEmailSoon();
       return finalSpoken || "I'm not sure what to say.";
     } catch (err) {
       // v0.20.0 — classify the exception so the bubble shows actionable copy
@@ -2810,7 +2803,6 @@ export class Brain {
     }
     const map: Record<string, string> = {
       limit_reached: 'Monthly quota used up! Upgrade for more.',
-      trial_ended: `${t(uiLang(), 'ended.bubble')} 📎`,
       // No key at all: the setup window opens (see the Turn.error branch).
       invalid_key: getLicenseKey()
         ? "My license key isn't working. Right-click me → Settings → License to enter it again, or add your email to get a new one."
@@ -2824,26 +2816,6 @@ export class Brain {
       parse_error: 'Got a garbled response. Try again!',
     };
     return map[error] || detail || 'Something went wrong.';
-  }
-
-  /**
-   * Onboarding v3 — after a trial key's answer, one gentle "add your email"
-   * bubble (a day apart at most). Delayed 20 s so it never replaces the answer the
-   * user is still reading; skipped while the user is busy in the bubble.
-   */
-  private offerEmailSoon(): void {
-    if (!shouldOfferEmail(isTrial(), getEmailPromptAt(), Date.now())) return;
-    setTimeout(() => {
-      // Never on top of something the user is doing: a running task, sleep, half-typed
-      // text, the open chat panel, a prompt waiting. Not marked as prompted, so the
-      // next answer tries again.
-      if (this.isExecuting || this.mode === 'sleep' || isBubbleBusy()) return;
-      if (!shouldOfferEmail(isTrial(), getEmailPromptAt(), Date.now())) return;
-      markEmailPrompted();
-      const lang = uiLang();
-      log.info('Clippy.offer', { trigger: 'add_email' });
-      this.emit('clippy-add-email', { text: t(lang, 'offer.bubble'), yes: t(lang, 'offer.yes'), later: t(lang, 'offer.later') });
-    }, 20_000);
   }
 
   private emit(channel: string, payload?: unknown): void {
@@ -2903,7 +2875,7 @@ export class Brain {
       const result = await this.callTurnOnce(contents, opts);
       // Don't retry non-transient errors
       if (!isError(result)) return result;
-      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'trial_ended', 'feature_locked', 'parse_error'].includes(result.error)) {
+      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'feature_locked', 'parse_error'].includes(result.error)) {
         return result;
       }
       // Retry transient errors (ai_error, network, timeout, rate_limited)

@@ -8,7 +8,6 @@ import * as accountMod from './account';
 import { setBubbleBusy } from './ui-busy';
 import { uiLang } from './lang';
 import { t } from './i18n';
-import { planLabel } from './activate';
 import { isSafeInboxUrl } from './email-suggest';
 
 const log = createLogger('IPC');
@@ -32,7 +31,6 @@ import {
   getTtsEngine,
   setTtsEngine,
   getUsage,
-  isTrial,
   store as licenseStore,
 } from './license';
 import { setSecret, clearSecret } from './skills/secrets';
@@ -234,7 +232,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
 
   // Onboarding v3 — email + 6-digit code. send-code emails the code; verify-code
-  // checks it (with the current trial key as Bearer) and stores the returned key
+  // checks it and stores the returned key
   // in main — the key never comes back to the renderer.
   ipcMain.handle('account:send-code', async (_event, email: unknown) => {
     const r = await accountMod.sendEmailCode(typeof email === 'string' ? email : '');
@@ -246,22 +244,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return accountMod.verifyEmailCode(email, code);
   });
 
-  // Email confirmed from the email-only screen: say so and close it.
-  ipcMain.handle('account:email-done', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!mainWindow.isDestroyed()) {
-      // The plan came back with the code: a returning Power/Max customer is welcomed back, not told "free".
-      const plan = getPlan();
-      const text = ((!plan || plan.toLowerCase() === 'free')
-        ? t(uiLang(), 'done.free')
-        : t(uiLang(), 'done.paid', { plan: planLabel(plan) })) + ' 📎';
-      log.info('Clippy.say', { text, animation: 'Congratulate', trigger: 'email_confirmed' });
-      mainWindow.webContents.send('clippy-speak', { text, animate: 'Congratulate' });
-    }
-    if (win && !win.isDestroyed()) win.close();
-    return true;
-  });
-
   // Meet Clippy step after a code sign-in: the key is already saved in main.
   ipcMain.handle('save-persona', async (_event, buddyName: string, ttsVoice: string) => {
     saveLicense(getLicenseKey(), getPlan(), buddyName, ttsVoice);
@@ -269,9 +251,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
 
   ipcMain.on('bubble-busy', (_event, busy: unknown) => setBubbleBusy(busy === true));
-
-  // "Add your email" bubble button.
-  ipcMain.on('open-setup', () => accountMod.openSetup('offer'));
 
   // Upgrade (onboarding, Settings, the bubble): checkout via main, then poll for the new plan.
   ipcMain.handle('account:upgrade', async (_event, plan: unknown) => {
@@ -318,7 +297,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       licenseKey: masked,
       licenseKeyPresent: !!key,
       plan: getPlan(),
-      trial: isTrial(),
       lang: uiLang(),
       buddyName: getBuddyName(),
       ttsVoice: getTtsVoice(),

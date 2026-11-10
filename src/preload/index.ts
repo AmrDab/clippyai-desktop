@@ -11,9 +11,7 @@ contextBridge.exposeInMainWorld('clippy', {
   // Onboarding v3 — email + 6-digit code. Main stores the key; it never comes back here.
   sendCode: (email: string) => ipcRenderer.invoke('account:send-code', email),
   verifyCode: (email: string, code: string) => ipcRenderer.invoke('account:verify-code', email, code),
-  emailDone: () => ipcRenderer.invoke('account:email-done'),
   savePersona: (buddyName: string, ttsVoice: string) => ipcRenderer.invoke('save-persona', buddyName, ttsVoice),
-  openSetup: () => ipcRenderer.send('open-setup'),
   // Bubble reports "user is mid-conversation" (draft, open chat, prompt waiting) so main doesn't interrupt.
   setBubbleBusy: (busy: boolean) => ipcRenderer.send('bubble-busy', busy),
   onPlanChanged: (cb: (plan: string) => void) => {
@@ -21,11 +19,6 @@ contextBridge.exposeInMainWorld('clippy', {
   },
   // Checkout via main (Bearer key), then main polls /validate and announces the new plan.
   upgrade: (plan: 'power' | 'max') => ipcRenderer.invoke('account:upgrade', plan),
-  // After a trial key's first answer: Clippy offers "add your email".
-  onAddEmailOffer: (cb: (payload: { text: string; yes: string; later: string }) => void) => {
-    ipcRenderer.on('clippy-add-email', (_e, payload) => cb(payload));
-  },
-
   saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) =>
     ipcRenderer.invoke('save-license', key, plan, buddyName, ttsVoice),
 
