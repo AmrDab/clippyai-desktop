@@ -5,7 +5,11 @@ import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPerio
 import { createLogger, serializeErr, ingestRendererLog } from './logger';
 import * as telemetry from './telemetry';
 import * as accountMod from './account';
-import { accountErrorMessage } from './account-api';
+import { setBubbleBusy } from './ui-busy';
+import { uiLang } from './lang';
+import { t } from './i18n';
+import { planLabel } from './activate';
+import { isSafeInboxUrl } from './email-suggest';
 
 const log = createLogger('IPC');
 
@@ -28,6 +32,7 @@ import {
   getTtsEngine,
   setTtsEngine,
   getUsage,
+  isTrial,
   store as licenseStore,
 } from './license';
 import { setSecret, clearSecret } from './skills/secrets';
@@ -233,11 +238,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // in main — the key never comes back to the renderer.
   ipcMain.handle('account:send-code', async (_event, email: unknown) => {
     const r = await accountMod.sendEmailCode(typeof email === 'string' ? email : '');
-    return r.ok ? { ok: true } : { ok: false, error: r.error, message: accountErrorMessage(r.error) };
+    return r.ok ? { ok: true } : { ok: false, error: r.error, retryAfter: r.error === 'rate_limited' ? r.retryAfter : undefined };
   });
 
   ipcMain.handle('account:verify-code', async (_event, email: unknown, code: unknown) => {
-    if (typeof email !== 'string' || typeof code !== 'string') return { ok: false, error: 'wrong_code', message: accountErrorMessage('wrong_code') };
+    if (typeof email !== 'string' || typeof code !== 'string') return { ok: false, error: 'wrong_code', triesLeft: 0 };
     return accountMod.verifyEmailCode(email, code);
   });
 
@@ -245,7 +250,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   ipcMain.handle('account:email-done', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!mainWindow.isDestroyed()) {
-      const text = "You're all set. Your email is confirmed and I'm free to use. 📎";
+      // The plan came back with the code: a returning Power/Max customer is welcomed back, not told "free".
+      const plan = getPlan();
+      const text = ((!plan || plan.toLowerCase() === 'free')
+        ? t(uiLang(), 'done.free')
+        : t(uiLang(), 'done.paid', { plan: planLabel(plan) })) + ' 📎';
       log.info('Clippy.say', { text, animation: 'Congratulate', trigger: 'email_confirmed' });
       mainWindow.webContents.send('clippy-speak', { text, animate: 'Congratulate' });
     }
@@ -259,6 +268,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return true;
   });
 
+  ipcMain.on('bubble-busy', (_event, busy: unknown) => setBubbleBusy(busy === true));
+
   // "Add your email" bubble button.
   ipcMain.on('open-setup', () => accountMod.openSetup('offer'));
 
@@ -268,7 +279,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       return await accountMod.startUpgrade(plan, mainWindow);
     } catch (err) {
       log.error('Upgrade.failed', serializeErr(err));
-      return { status: 'error', message: "Couldn't start checkout. Try again in a moment." };
+      return { status: 'error', message: t(uiLang(), 'checkout.error') };
     }
   });
 
@@ -294,6 +305,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // `licenseKeyPresent: !!getLicenseKey()`.
   ipcMain.handle('get-config', async () => {
     const key = getLicenseKey();
+    void accountMod.refreshPlan(); // plan may have changed on the server (paid on the web, cancelled); throttled
     const masked = key
       ? (() => {
           const parts = key.split('-');
@@ -306,6 +318,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       licenseKey: masked,
       licenseKeyPresent: !!key,
       plan: getPlan(),
+      trial: isTrial(),
+      lang: uiLang(),
       buddyName: getBuddyName(),
       ttsVoice: getTtsVoice(),
       proactiveInterval: brainSettingsStore.get('proactiveInterval'),
@@ -549,6 +563,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       // safe to allow unconditionally — every Settings → About → Support
       // click was silently failing the hostname check.
       if (parsed.protocol === 'mailto:') {
+        await shell.openExternal(url);
+        return true;
+      }
+      if (isSafeInboxUrl(url)) {
         await shell.openExternal(url);
         return true;
       }
@@ -1215,28 +1233,13 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
   function postOnboardingPrompts(): void {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    // Clippy asks for the user's name (removed from onboarding form)
-    if (!isProfileSetUp()) {
-      setTimeout(() => {
-        // D9: log direct webContents.send so the audit trail matches what
-        // the user actually saw on screen.
-        const text = "Hey! I don't think we've met yet. What should I call you? Just type your name! 📎";
-        log.info('Clippy.say', { text, animation: 'Wave', trigger: 'name_prompt' });
-        mainWindow?.webContents.send('clippy-speak', { text, animate: 'Wave' });
-      }, 3000);
-    } else {
-      // v0.19.0 PR-6 — "first-5-wins" overlay. If the user already has a
-      // profile (returning user — re-running onboarding to change apps,
-      // for example) we skip the name prompt and instead surface the
-      // 5 quick-win chips after a 3s settle. New users get the chips
-      // AFTER they answer the name prompt — see the rendezvous logic in
-      // src/renderer/main.ts which schedules this same overlay there.
-      setTimeout(() => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('first-win-overlay');
-        }
-      }, 3000);
-    }
+    // Onboarding v3: finishing setup shows the greeting + chips (what Clippy
+    // can do) instead of asking for a name; the name is editable in Settings.
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('first-win-overlay');
+      }
+    }, 1500);
   }
 
   ipcMain.handle('onboarding-complete', async () => {

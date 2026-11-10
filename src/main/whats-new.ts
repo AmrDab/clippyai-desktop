@@ -43,6 +43,14 @@ export function checkWhatsNew(existingUser: boolean): void {
   if (notes) pending = { version: current, notes };
 }
 
+/** The name question is asked at most once per install (and never on a first run). True the first time only. */
+export function claimNamePrompt(): boolean {
+  const s = store as unknown as { get(k: string): unknown; set(k: string, v: unknown): void };
+  if (s.get('namePromptShown') === true) return false;
+  s.set('namePromptShown', true);
+  return true;
+}
+
 /** The renderer asks once it's ready; answers at most once per launch. */
 export function takeWhatsNew(): { version: string; notes: string[] } | null {
   const p = pending;

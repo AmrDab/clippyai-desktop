@@ -90,7 +90,8 @@ if (process.platform === 'win32') {
 import { createWindow, createOnboardingWindow, getOnboardingWindow, getSettingsWindow } from './window';
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
 import { getBuddyName, getTtsVoice, saveLicense, getPlan, isTrial } from './license';
-import { startTrial } from './account';
+import { startTrial, refreshPlan } from './account';
+import { isBubbleBusy } from './ui-busy';
 import { setupTray } from './tray';
 import { registerHotkey } from './hotkey';
 import { Brain } from './brain';
@@ -100,9 +101,9 @@ import { isLicensed, revalidateIfNeeded } from './license';
 import { isProfileSetUp } from './brain';
 import { initTools, cleanupTools } from './tools';
 import { createLogger, cleanOldLogs, serializeErr } from './logger';
-import { initUpdater, checkForUpdates, startPeriodicUpdateChecks, startIdleInstall } from './updater';
+import { initUpdater, checkForUpdates, startPeriodicUpdateChecks, startIdleInstall, consumeUpdateResume } from './updater';
 import { startScheduler, stopScheduler } from './scheduler';
-import { checkWhatsNew } from './whats-new';
+import { checkWhatsNew, claimNamePrompt } from './whats-new';
 // v0.20.0-alpha.12 — STATIC import (NOT dynamic import()/require()) so
 // Rollup keeps this module in the bundle. The alpha.11 attempt used
 // `import('./window-follow').then(...)` and `require('./window-follow')`
@@ -380,6 +381,9 @@ app.whenReady().then(async () => {
     if (stillValid) {
       bootLog('LAUNCHING_MAIN');
       launchMainApp();
+      // The 24 h check may have been skipped; the plan can still have changed
+      // on the server (paid on the web, cancelled). Background, never blocks.
+      void refreshPlan();
     } else {
       bootLog('LICENSE_INVALID_ONBOARDING');
       log.warn('License key no longer valid — showing onboarding');
@@ -391,7 +395,7 @@ app.whenReady().then(async () => {
     bootLog('TRIAL_STARTED');
     log.info('Trial key minted — launching without setup');
     telemetry.track('onboarding_step', { step: 'trial_started' });
-    launchMainApp();
+    launchMainApp({ firstRun: true });
   } else {
     bootLog('NO_LICENSE_ONBOARDING');
     log.info('No valid license — showing onboarding');
@@ -508,10 +512,12 @@ function isBusyElsewhere(): boolean {
   return !!getOnboardingWindow() || !!getSettingsWindow()
     || agentConnect.hasActiveAgentClients()
     || gamesMod.isActive()
-    || approvalMod.hasPendingApproval();
+    || approvalMod.hasPendingApproval()
+    || isBubbleBusy(); // half-typed text, open chat panel, or a prompt waiting for an answer
 }
 
-function launchMainApp(): void {
+function launchMainApp(opts: { firstRun?: boolean } = {}): void {
+  const resume = consumeUpdateResume(); // silent relaunch after an idle install
   mainWindow = createWindow();
   brain = new Brain(mainWindow);
   registerIpcHandlers(brain, mainWindow);
@@ -553,6 +559,11 @@ function launchMainApp(): void {
 
   brain.setMode('awake');
   mainWindow.webContents.send('mode-change', 'awake');
+  if (resume?.asleep) {
+    // Idle-install relaunch: back to the state the user left him in.
+    brain.setMode('sleep');
+    mainWindow.webContents.send('mode-change', 'sleep');
+  }
 
   // v0.20.0-alpha.7 — follow the OS power state. When the system suspends
   // (lid close, low battery, manual sleep) or locks the screen, Clippy goes
@@ -577,7 +588,7 @@ function launchMainApp(): void {
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
-  startIdleInstall(() => brain?.isBusy() ?? false, isBusyElsewhere); // idle 10 min + nothing in use: install and relaunch
+  startIdleInstall(() => brain?.isBusy() ?? false, isBusyElsewhere, () => brain?.getMode() === 'sleep'); // idle 10 min + nothing in use: install and relaunch
 
   // v0.16.1 — time-based liveliness pings (morning greet, stretch reminder,
   // wrap-up tip). Setinterval-based, gated on brain.getMode() === 'awake'
@@ -587,7 +598,15 @@ function launchMainApp(): void {
   // v0.22 — once after a minor update: what's new (whats-new.ts).
   checkWhatsNew(isProfileSetUp());
 
-  if (!isProfileSetUp()) {
+  if (opts.firstRun) {
+    // First launch: show what Clippy can do (greeting + two chips + hotkey)
+    // instead of asking for a name. The name stays editable in Settings.
+    const win = mainWindow;
+    void whenLoaded(win).then(() => setTimeout(() => {
+      if (!win.isDestroyed()) win.webContents.send('first-win-overlay');
+    }, 1500));
+  } else if (!resume && !isProfileSetUp() && claimNamePrompt()) {
+    // Existing users without a saved name: asked once, never again.
     setTimeout(() => {
       // D9: log direct webContents.send so the audit trail matches what
       // the user actually saw on screen.

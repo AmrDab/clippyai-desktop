@@ -34,6 +34,13 @@ export class TTS {
     this.stopAll();
   }
 
+  /** UI language (en/pt/es/fr). With no voice chosen in Settings, a non-English UI prefers a voice in that language. */
+  setUiLang(lang: string): void {
+    this.uiLang = lang;
+    this.selectVoice();
+  }
+  private uiLang = 'en';
+
   private selectVoice(): void {
     const voices = this.synth.getVoices();
     if (voices.length === 0) return;
@@ -41,6 +48,11 @@ export class TTS {
     if (this.preferredVoiceName) {
       this.voice = voices.find((v) => v.name === this.preferredVoiceName) ?? null;
       if (this.voice) return;
+    }
+
+    if (this.uiLang !== 'en') {
+      const native = voices.find((v) => v.lang.toLowerCase().startsWith(this.uiLang));
+      if (native) { this.voice = native; return; }
     }
 
     this.voice =

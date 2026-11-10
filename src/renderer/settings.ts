@@ -271,7 +271,17 @@ async function loadConfig(): Promise<void> {
   const key = (config.licenseKey as string) || '';
   licenseKeyDisplay.textContent = key ? maskKey(key) : 'No key set';
   const planName = (config.plan as string) || 'Unknown';
-  licensePlanDisplay.textContent = planName;
+  const isTrialKey = config.trial === true;
+  licensePlanDisplay.textContent = isTrialKey ? 'Free trial — no account yet' : planName;
+  // A trial key has no account behind it: sign in / add an email instead of "Change key", no billing portal.
+  const changeBtn = document.getElementById('btn-change-license');
+  if (changeBtn) {
+    changeBtn.textContent = isTrialKey ? 'Add your email or sign in' : 'Change key';
+    changeBtn.classList.toggle('s-button--primary', isTrialKey);
+    changeBtn.dataset.trial = isTrialKey ? '1' : '';
+  }
+  const manageEl = document.getElementById('manage-subscription');
+  if (manageEl) manageEl.style.display = isTrialKey ? 'none' : '';
   showPlanFeatures(planName);
   renderUsageMeter(planName, config);
   renderUpgradeCta(planName);
@@ -288,6 +298,7 @@ async function startUpgrade(plan: 'power' | 'max', link: HTMLElement): Promise<v
     if (r.status === 'error') link.textContent = r.message;
     else if (r.status === 'needs_email') link.textContent = 'Add your email first: the setup window just opened.';
     else if (r.status === 'updating') link.textContent = 'Updating your plan. Clippy will tell you when it is done.';
+    else if (r.status === 'already') link.textContent = `You're already on ${r.plan}.`;
     else link.textContent = 'Checkout opened in your browser.';
   } catch {
     link.textContent = "Couldn't start checkout. Try again in a moment.";
@@ -346,6 +357,18 @@ function renderUpgradeCta(plan: string): void {
   const lower = (plan || '').toLowerCase();
   if (lower === 'max') { el.style.display = 'none'; return; }
   el.style.display = '';
+  // A Free user sees both upgrades (Power used to appear only near the usage cap).
+  const powerLink = el.querySelector<HTMLAnchorElement>('#upgrade-to-power-link');
+  if (powerLink) {
+    powerLink.style.display = lower === 'power' ? 'none' : 'inline';
+    if (!powerLink.dataset.wired) {
+      powerLink.dataset.wired = '1';
+      powerLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        void startUpgrade('power', powerLink);
+      });
+    }
+  }
   const link = el.querySelector<HTMLAnchorElement>('#upgrade-to-max-link');
   if (link && !link.dataset.wired) {
     link.dataset.wired = '1';
@@ -704,8 +727,12 @@ if (btnChangeLicense) {
   // overwrites it once a new key validates, so closing onboarding midway
   // leaves the user on their old (working) key instead of unlicensed.
   btnChangeLicense.addEventListener('click', () => {
-    window.clippy.openOnboarding();
-    window.close();
+    if (btnChangeLicense.dataset.trial === '1') {
+      window.clippy.openSetup(); // email + code screen for the trial key
+    } else {
+      window.clippy.openOnboarding();
+      window.close();
+    }
   });
 }
 
@@ -1533,6 +1560,9 @@ document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
     }
   });
 });
+
+// The plan can change while Settings is open (checkout finished, refreshed from the server).
+window.clippy.onPlanChanged?.(() => { void loadConfig(); });
 
 // Init
 loadConfig();

@@ -3,6 +3,8 @@ import { BubbleController } from './bubble';
 import { TTS } from './tts';
 import { clickAction } from './click-action';
 import { powerOfferLabel, resetLine } from './upgrade-card';
+import { t, isLang, type Key, type Lang } from '../main/i18n';
+import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
 
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 
@@ -79,8 +81,13 @@ async function init(): Promise<void> {
   const clippyCtrl = new ClippyController(canvas, spriteDataUri, agentData, hdSprite);
   const tts = new TTS();
 
+  // UI language for first-run surfaces (chosen once in main from the Windows display languages).
+  let LANG: Lang = 'en';
+  const T = (key: Key, vars?: Record<string, string | number>): string => t(LANG, key, vars);
+
   try {
     const config = await window.clippy.getConfig();
+    if (isLang(config.lang)) { LANG = config.lang; tts.setUiLang(LANG); }
     if (config.ttsVoice) tts.setPreferredVoice(config.ttsVoice as string);
     if (config.speechRate) tts.setRate(config.speechRate as number);
     if (config.ttsEnabled === false) tts.setEnabled(false);
@@ -178,7 +185,17 @@ async function init(): Promise<void> {
   const UPGRADE_PROMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
   let lastUpgradePromptAt = 0;
   window.clippy.onUpgrade?.(({ text, power_pass_available, power_pass_used, reset_date }) => {
-    const upgradeAction = { label: powerOfferLabel(), variant: 'primary' as const, onClick: () => { void window.clippy.upgrade?.('power'); } };
+    const upgradeAction = {
+      label: powerOfferLabel(),
+      variant: 'primary' as const,
+      onClick: () => {
+        // Checkout runs in main; say what happened (needs_email opens the setup window by itself).
+        void window.clippy.upgrade?.('power').then((r) => {
+          if (r.status === 'opened') bubbleCtrl.speak(T('checkout.opened'));
+          else if (r.status === 'error') bubbleCtrl.speakError(T('checkout.error'));
+        }).catch(() => bubbleCtrl.speakError(T('checkout.error')));
+      },
+    };
     const reset = resetLine(reset_date, Date.now());
     const safeText = `${text || "I'm tapped out on free tokens this month."}${reset ? ` ${reset}` : ''}`;
     // A power_pass_used reply ("comes back tomorrow — want Power all the
@@ -212,12 +229,19 @@ async function init(): Promise<void> {
   });
   // Onboarding v3 — a trial key just got its first answer: offer to add the
   // email (main rate-limits this to once a day).
-  window.clippy.onAddEmailOffer?.(({ text }) => {
+  window.clippy.onAddEmailOffer?.(({ text, yes, later }) => {
     bubbleCtrl.speakWithActions(text, [
-      { label: 'Keep me free forever — add your email', variant: 'primary', onClick: () => { window.clippy.openSetup?.(); } },
-      { label: 'Maybe later', variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
+      { label: yes, variant: 'primary', onClick: () => { window.clippy.openSetup?.(); } },
+      { label: later, variant: 'ghost', onClick: () => { bubbleCtrl.hide(); } },
     ]);
   });
+  // Tell main when the user is mid-conversation (draft, open chat, prompt waiting)
+  // so offers and idle update restarts don't land on top of it.
+  let reportedBusy = false;
+  setInterval(() => {
+    const busy = bubbleCtrl.isBusyForPrompt();
+    if (busy !== reportedBusy) { reportedBusy = busy; window.clippy.setBubbleBusy?.(busy); }
+  }, 2000);
   // v0.21 — "⚡ Power" pill while a pass task runs; main clears it at task end.
   const powerPill = document.getElementById('power-pass-pill');
   window.clippy.onPowerPass?.((active) => powerPill?.classList.toggle('hidden', !active));
@@ -481,7 +505,7 @@ async function init(): Promise<void> {
   let firstWinOverlayEl: HTMLElement | null = null;
   async function showFirstWinOverlay(): Promise<void> {
     if (firstWinOverlayEl) return; // already showing — re-trigger is no-op
-    const { firstWinsForPlan } = await import('./app-catalog');
+    const { paidFirstWins } = await import('./app-catalog');
     let plan = '';
     try { plan = String((await window.clippy.getConfig()).plan || ''); } catch { /* free-safe chips */ }
     firstWinOverlayEl = document.createElement('div');
@@ -489,17 +513,23 @@ async function init(): Promise<void> {
     const header = document.createElement('div');
     header.id = 'first-win-overlay-header';
     const headerLabel = document.createElement('span');
-    headerLabel.textContent = 'Want to try one of these?';
+    headerLabel.textContent = T('hello');
     header.appendChild(headerLabel);
     const closeBtn = document.createElement('button');
     closeBtn.id = 'first-win-overlay-close';
     closeBtn.type = 'button';
     closeBtn.textContent = '×';
-    closeBtn.setAttribute('aria-label', 'Dismiss');
+    closeBtn.setAttribute('aria-label', T('close'));
     closeBtn.addEventListener('click', dismissFirstWinOverlay);
     header.appendChild(closeBtn);
     firstWinOverlayEl.appendChild(header);
-    for (const chip of firstWinsForPlan(plan)) {
+    // Two free chips in the user's language (label and prompt, so the answer comes back in it), then Power chips.
+    const chips = [
+      { label: T('chip.screen'), prompt: T('chip.screen.prompt') },
+      { label: T('chip.reply'), prompt: T('chip.reply.prompt') },
+      ...paidFirstWins(plan),
+    ];
+    for (const chip of chips) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'first-win-chip';
@@ -516,9 +546,13 @@ async function init(): Promise<void> {
       });
       firstWinOverlayEl.appendChild(btn);
     }
+    const hint = document.createElement('div');
+    hint.id = 'first-win-overlay-hint';
+    hint.textContent = T('hello.hotkey', { hotkey: acceleratorLabel(VOICE_ACCELERATOR_DEFAULT, (navigator.platform || '').toLowerCase().includes('mac') ? 'mac' : 'win') });
+    firstWinOverlayEl.appendChild(hint);
     document.body.appendChild(firstWinOverlayEl);
     clippyCtrl.playNamed('GetAttention');
-    bubbleCtrl.speak('Want to try one of these?');
+    bubbleCtrl.speak(T('hello'));
   }
   function dismissFirstWinOverlay(): void {
     if (!firstWinOverlayEl) return;
@@ -597,7 +631,15 @@ async function init(): Promise<void> {
     ]);
   });
 
-  window.clippy.onUpdateReady((version) => {
+  window.clippy.onUpdateReady((version, stale) => {
+    if (stale) {
+      // Windows installs by itself; this only fires when an update has waited for days. No voice.
+      bubbleCtrl.speakWithActions(`I have an update ready (v${version}). It takes about 20 seconds.`, [
+        { label: 'Restart now', variant: 'primary', onClick: () => { bubbleCtrl.speak('Installing update, restarting...'); void window.clippy.installUpdate(); } },
+        later(version),
+      ]);
+      return;
+    }
     clippyCtrl.playNamed('GetAttention');
     bubbleCtrl.speakWithActions(`v${version} is ready! 📎`, [
       {

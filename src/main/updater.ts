@@ -4,7 +4,7 @@ import { createLogger, serializeErr } from './logger';
 import * as telemetry from './telemetry';
 import { cleanupTools, restoreTools } from './tools';
 import * as quitState from './quit-state';
-import { cmpVersion, classifyAttempt, shouldIdleInstall } from './update-policy';
+import { cmpVersion, classifyAttempt, shouldIdleInstall, shouldPromptStaleUpdate, resumeStillValid } from './update-policy';
 import fs from 'fs';
 import path from 'path';
 
@@ -60,6 +60,13 @@ interface UpdaterState {
   lastAttemptedAt: string;
   skippedVersions: string[];
   failureCount: Record<string, number>;
+  /** When the pending version finished downloading (ISO) — for the "waited 3 days" mention. */
+  downloadedVersion?: string;
+  downloadedAt?: string;
+  /** Version we already mentioned once because it waited days. */
+  promptedVersion?: string;
+  /** Set just before an idle install: come back in the state the user left. */
+  resume?: { asleep: boolean; at: number };
 }
 
 function cacheDir(): string {
@@ -90,6 +97,10 @@ function readState(): UpdaterState {
       lastAttemptedAt: parsed.lastAttemptedAt ?? '',
       skippedVersions: Array.isArray(parsed.skippedVersions) ? parsed.skippedVersions : [],
       failureCount: parsed.failureCount ?? {},
+      downloadedVersion: parsed.downloadedVersion,
+      downloadedAt: parsed.downloadedAt,
+      promptedVersion: parsed.promptedVersion,
+      resume: parsed.resume,
     };
   } catch {
     return { lastAttemptedVersion: '', lastAttemptedAt: '', skippedVersions: [], failureCount: {} };
@@ -319,7 +330,24 @@ export function initUpdater(win: BrowserWindow): void {
     expectedVersion = info.version;
     telemetry.track('update_downloaded', { to: info.version });
     onStateChange?.();
-    sendToRenderer('update-ready', info.version);
+    if (process.platform !== 'win32') {
+      sendToRenderer('update-ready', info.version);
+    } else {
+      // Windows installs by itself (idle or on Quit): no bubble, no voice. The
+      // tray shows "Restart to update". Only an update that has waited for days is mentioned, once.
+      const st = readState();
+      if (st.downloadedVersion !== info.version) {
+        st.downloadedVersion = info.version;
+        st.downloadedAt = new Date().toISOString();
+        writeState(st);
+      }
+      const at = Date.parse(st.downloadedAt || '');
+      if (shouldPromptStaleUpdate(Number.isFinite(at) ? at : 0, Date.now(), st.promptedVersion === info.version)) {
+        st.promptedVersion = info.version;
+        writeState(st);
+        sendToRenderer('update-ready', info.version, true);
+      }
+    }
   });
 
   autoUpdater.on('error', (err) => {
@@ -540,6 +568,9 @@ function installNotStarted(mode: 'on_quit' | 'idle'): void {
     return;
   }
   quitState.setQuitting(false);
+  const st2 = readState();
+  delete st2.resume;
+  writeState(st2);
   try { restoreTools(); } catch (err) { log.warn('restoreTools error (non-fatal)', serializeErr(err)); }
 }
 
@@ -555,7 +586,7 @@ let idleInstallTried = false;
  * an agent session, a game and a pending approval prompt. Idempotent; one attempt per process, so a
  * silent failure can't loop — the next boot's check counts it.
  */
-export function startIdleInstall(isTaskActive: () => boolean, isBusyElsewhere: () => boolean): void {
+export function startIdleInstall(isTaskActive: () => boolean, isBusyElsewhere: () => boolean, isAsleep: () => boolean = () => false): void {
   if (idleWatcher || process.platform !== 'win32') return;
   idleWatcher = setInterval(() => {
     try {
@@ -570,6 +601,10 @@ export function startIdleInstall(isTaskActive: () => boolean, isBusyElsewhere: (
         alreadyTried: idleInstallTried,
       })) return;
       idleInstallTried = true;
+      // Silent relaunch: remember whether Clippy was asleep so he comes back the same way.
+      const st = readState();
+      st.resume = { asleep: isAsleep(), at: Date.now() };
+      writeState(st);
       void installSilently('idle');
     } catch (err) {
       log.warn('Idle install check failed (non-fatal)', serializeErr(err));
@@ -799,4 +834,14 @@ export async function installUpdate(): Promise<void> {
   // the running exe).
   quitState.setQuitting();
   setTimeout(() => app.quit(), 4000);
+}
+
+/** First launch after an idle-install relaunch: how the user left Clippy (once), or null. */
+export function consumeUpdateResume(): { asleep: boolean } | null {
+  const st = readState();
+  if (!st.resume) return null;
+  const r = st.resume;
+  delete st.resume;
+  writeState(st);
+  return resumeStillValid(r.at, Date.now()) ? { asleep: r.asleep } : null;
 }

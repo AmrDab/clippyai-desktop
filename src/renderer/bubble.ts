@@ -698,6 +698,17 @@ export class BubbleController {
     this.bubbleText.className = 'bubble-step';
   }
 
+  /**
+   * True while the user is mid-conversation: half-typed text, the chat panel
+   * open, or a prompt with buttons waiting. Main reads it (via main.ts) before
+   * interrupting with an offer or an idle update restart.
+   */
+  isBusyForPrompt(): boolean {
+    return this.state === 'expanded'
+      || this.input.value.trim() !== ''
+      || !this.actionsArea.classList.contains('hidden');
+  }
+
   hide(): void {
     this.fireDismiss();
     this.bubble.classList.add('hidden');

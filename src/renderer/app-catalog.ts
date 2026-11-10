@@ -180,6 +180,12 @@ export const FIRST_WINS: { label: string; prompt: string; paid?: boolean }[] = [
   { label: 'Block 90 minutes for deep work tomorrow', prompt: 'Block 90 minutes for deep work tomorrow.', paid: true },
 ];
 
+/** The Power-only chips (labelled), for Power/Max users; the two free chips come localized from i18n. */
+export function paidFirstWins(plan: string): { label: string; prompt: string }[] {
+  if (!/^(power|max)$/i.test(plan || '')) return [];
+  return FIRST_WINS.filter((c) => c.paid).map((c) => ({ label: `${c.label} · Power`, prompt: c.prompt }));
+}
+
 export function firstWinsForPlan(plan: string): { label: string; prompt: string }[] {
   const paid = /^(power|max)$/i.test(plan || '');
   return FIRST_WINS

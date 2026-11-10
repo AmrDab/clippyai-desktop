@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldIdleInstall, classifyAttempt, cmpVersion, IDLE_INSTALL_SECONDS, type IdleInstallInput } from '../src/main/update-policy';
+import { shouldIdleInstall, classifyAttempt, cmpVersion, shouldPromptStaleUpdate, resumeStillValid, STALE_UPDATE_MS, IDLE_INSTALL_SECONDS, type IdleInstallInput } from '../src/main/update-policy';
 
 const ready: IdleInstallInput = {
   platform: 'win32', updateDownloaded: true, failedBefore: false, taskRunning: false, busyElsewhere: false, idleSeconds: IDLE_INSTALL_SECONDS, alreadyTried: false,
@@ -43,6 +43,24 @@ describe('classifyAttempt', () => {
   });
   it('failed when still on an older version, however old the attempt is', () => {
     expect(classifyAttempt('0.24.0', '0.23.4')).toBe('failed');
+  });
+});
+
+describe('shouldPromptStaleUpdate', () => {
+  const now = 10 * STALE_UPDATE_MS;
+  it('stays quiet until the update has waited 3 days, then speaks once', () => {
+    expect(shouldPromptStaleUpdate(now - STALE_UPDATE_MS + 1, now, false)).toBe(false);
+    expect(shouldPromptStaleUpdate(now - STALE_UPDATE_MS, now, false)).toBe(true);
+    expect(shouldPromptStaleUpdate(now - STALE_UPDATE_MS, now, true)).toBe(false);
+    expect(shouldPromptStaleUpdate(0, now, false)).toBe(false);
+  });
+});
+
+describe('resumeStillValid', () => {
+  it('only trusts a recent idle-relaunch record', () => {
+    expect(resumeStillValid(1000, 2000)).toBe(true);
+    expect(resumeStillValid(1000, 1000 + 7 * 60 * 60 * 1000)).toBe(false);
+    expect(resumeStillValid(0, 2000)).toBe(false);
   });
 });
 

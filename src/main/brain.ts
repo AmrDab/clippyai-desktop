@@ -46,6 +46,9 @@ import * as userTakeover from './user-takeover';
 import { getLicenseKey, recordUsage, isTrial, getEmailPromptAt, markEmailPrompted } from './license';
 import { openSetup } from './account';
 import { shouldOfferEmail } from './account-api';
+import { uiLang } from './lang';
+import { t } from './i18n';
+import { isBubbleBusy } from './ui-busy';
 import { getGuidePrompt } from './guides';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
@@ -2807,7 +2810,7 @@ export class Brain {
     }
     const map: Record<string, string> = {
       limit_reached: 'Monthly quota used up! Upgrade for more.',
-      trial_ended: "Your free trial is used up. Add your email to keep going. It's still free. 📎",
+      trial_ended: `${t(uiLang(), 'ended.bubble')} 📎`,
       // No key at all: the setup window opens (see the Turn.error branch).
       invalid_key: getLicenseKey()
         ? "My license key isn't working. Right-click me → Settings → License to enter it again, or add your email to get a new one."
@@ -2825,18 +2828,22 @@ export class Brain {
 
   /**
    * Onboarding v3 — after a trial key's answer, one gentle "add your email"
-   * bubble (a day apart at most). Delayed so it never replaces the answer the
-   * user is still reading; skipped if a new task started meanwhile.
+   * bubble (a day apart at most). Delayed 20 s so it never replaces the answer the
+   * user is still reading; skipped while the user is busy in the bubble.
    */
   private offerEmailSoon(): void {
     if (!shouldOfferEmail(isTrial(), getEmailPromptAt(), Date.now())) return;
-    markEmailPrompted();
     setTimeout(() => {
-      if (this.isExecuting || this.mode === 'sleep') return;
-      const text = "Want to keep me free forever? Add your email so your free account is yours.";
+      // Never on top of something the user is doing: a running task, sleep, half-typed
+      // text, the open chat panel, a prompt waiting. Not marked as prompted, so the
+      // next answer tries again.
+      if (this.isExecuting || this.mode === 'sleep' || isBubbleBusy()) return;
+      if (!shouldOfferEmail(isTrial(), getEmailPromptAt(), Date.now())) return;
+      markEmailPrompted();
+      const lang = uiLang();
       log.info('Clippy.offer', { trigger: 'add_email' });
-      this.emit('clippy-add-email', { text });
-    }, 8000);
+      this.emit('clippy-add-email', { text: t(lang, 'offer.bubble'), yes: t(lang, 'offer.yes'), later: t(lang, 'offer.later') });
+    }, 20_000);
   }
 
   private emit(channel: string, payload?: unknown): void {

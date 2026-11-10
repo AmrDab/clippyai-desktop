@@ -31,6 +31,20 @@ export function shouldIdleInstall(i: IdleInstallInput): boolean {
     && i.idleSeconds >= IDLE_INSTALL_SECONDS;
 }
 
+/** An update nobody installed (PC never idle, never quit) is mentioned once after this long. */
+export const STALE_UPDATE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Windows installs silently; speak up only once, and only when an update has been waiting for days. */
+export function shouldPromptStaleUpdate(downloadedAtMs: number, now: number, alreadyPrompted: boolean): boolean {
+  return !alreadyPrompted && downloadedAtMs > 0 && now - downloadedAtMs >= STALE_UPDATE_MS;
+}
+
+/** After an idle relaunch Clippy comes back as the user left him, silently. Old records are ignored. */
+export const RESUME_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export function resumeStillValid(recordedAtMs: number, now: number): boolean {
+  return recordedAtMs > 0 && now - recordedAtMs <= RESUME_MAX_AGE_MS;
+}
+
 /**
  * Compare semver-ish version strings. Returns negative if a<b, positive if
  * a>b, 0 if equal. Tolerates missing segments ("1.2" == "1.2.0"). We don't

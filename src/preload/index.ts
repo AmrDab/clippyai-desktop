@@ -14,10 +14,15 @@ contextBridge.exposeInMainWorld('clippy', {
   emailDone: () => ipcRenderer.invoke('account:email-done'),
   savePersona: (buddyName: string, ttsVoice: string) => ipcRenderer.invoke('save-persona', buddyName, ttsVoice),
   openSetup: () => ipcRenderer.send('open-setup'),
+  // Bubble reports "user is mid-conversation" (draft, open chat, prompt waiting) so main doesn't interrupt.
+  setBubbleBusy: (busy: boolean) => ipcRenderer.send('bubble-busy', busy),
+  onPlanChanged: (cb: (plan: string) => void) => {
+    ipcRenderer.on('plan-changed', (_e, plan) => cb(plan));
+  },
   // Checkout via main (Bearer key), then main polls /validate and announces the new plan.
   upgrade: (plan: 'power' | 'max') => ipcRenderer.invoke('account:upgrade', plan),
   // After a trial key's first answer: Clippy offers "add your email".
-  onAddEmailOffer: (cb: (payload: { text: string }) => void) => {
+  onAddEmailOffer: (cb: (payload: { text: string; yes: string; later: string }) => void) => {
     ipcRenderer.on('clippy-add-email', (_e, payload) => cb(payload));
   },
 
@@ -378,8 +383,8 @@ contextBridge.exposeInMainWorld('clippy', {
   onUpdateNotAvailable: (cb: () => void) => {
     ipcRenderer.on('update-not-available', () => cb());
   },
-  onUpdateReady: (cb: (version: string) => void) => {
-    ipcRenderer.on('update-ready', (_e, version) => cb(version));
+  onUpdateReady: (cb: (version: string, stale?: boolean) => void) => {
+    ipcRenderer.on('update-ready', (_e, version, stale) => cb(version, stale === true));
   },
   onUpdateFailed: (cb: (payload: { version: string; reason: string; manualUrl: string }) => void) => {
     ipcRenderer.on('update-failed', (_e, payload) => cb(payload));
