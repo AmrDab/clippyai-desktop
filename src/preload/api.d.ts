@@ -77,7 +77,7 @@ interface Window {
     /** Opens the email + code screen. */
     openSetup: () => void;
     /** Upgrade via /v1/checkout in main. 'needs_email' = the email screen was opened first. */
-    upgrade: (plan: 'power' | 'max') => Promise<{ status: 'needs_email' } | { status: 'opened' } | { status: 'updated'; plan: string } | { status: 'error'; message: string }>;
+    upgrade: (plan: 'power' | 'max') => Promise<{ status: 'needs_email' } | { status: 'opened' } | { status: 'updating' } | { status: 'error'; message: string }>;
     onAddEmailOffer: (cb: (payload: { text: string }) => void) => void;
     saveLicense: (key: string, plan: string, buddyName: string, ttsVoice: string) => Promise<boolean>;
     /** Full local reset → relaunch into onboarding. Main shows a native

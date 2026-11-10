@@ -150,11 +150,11 @@ export async function requestCheckout(key: string, plan: CheckoutPlan, fetchFn: 
   return { ok: false, error: r.status === 0 ? 'offline' : 'server' };
 }
 
-/** Only https URLs on Stripe or our own site may be opened for payment. */
+/** Only https URLs on Stripe (checkout / billing portal) or our own site may be opened for payment. */
 export function isSafeCheckoutUrl(raw: string): boolean {
   try {
     const u = new URL(raw);
-    return u.protocol === 'https:' && (u.hostname === 'checkout.stripe.com' || u.hostname === 'clippyai.app' || u.hostname.endsWith('.clippyai.app'));
+    return u.protocol === 'https:' && (u.hostname === 'checkout.stripe.com' || u.hostname === 'billing.stripe.com' || u.hostname === 'clippyai.app' || u.hostname.endsWith('.clippyai.app'));
   } catch { return false; }
 }
 
@@ -184,7 +184,7 @@ export interface PollOptions {
 /** Poll until the plan becomes higher than `fromPlan`. Resolves the new plan, or null on timeout/cancel. */
 export async function pollForUpgrade(opts: PollOptions): Promise<string | null> {
   const interval = opts.intervalMs ?? 5_000;
-  const timeout = opts.timeoutMs ?? 10 * 60_000;
+  const timeout = opts.timeoutMs ?? 30 * 60_000;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   const deadline = now() + timeout;

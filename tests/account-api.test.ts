@@ -130,6 +130,7 @@ describe('requestCheckout', () => {
   it('only opens https Stripe / clippyai.app urls', () => {
     expect(isSafeCheckoutUrl('https://checkout.stripe.com/c/pay/x')).toBe(true);
     expect(isSafeCheckoutUrl('https://clippyai.app/thanks')).toBe(true);
+    expect(isSafeCheckoutUrl('https://billing.stripe.com/p/session/x')).toBe(true);
     expect(isSafeCheckoutUrl('http://checkout.stripe.com/x')).toBe(false);
     expect(isSafeCheckoutUrl('https://evil.com/checkout.stripe.com')).toBe(false);
     expect(isSafeCheckoutUrl('javascript:alert(1)')).toBe(false);
@@ -181,6 +182,16 @@ describe('pollForUpgrade', () => {
     });
     expect(plan).toBeNull();
     expect(calls).toBe(12);
+  });
+  it('keeps polling for 30 minutes by default', async () => {
+    let t = 0;
+    const plan = await pollForUpgrade({
+      fromPlan: 'free',
+      check: async () => (t >= 29 * 60_000 ? { state: 'valid', plan: 'max' } : { state: 'valid', plan: 'free' }),
+      sleep: async (ms) => { t += ms; },
+      now: () => t,
+    });
+    expect(plan).toBe('max');
   });
   it('stops when cancelled', async () => {
     let t = 0;

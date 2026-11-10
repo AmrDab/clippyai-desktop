@@ -2,7 +2,7 @@ import { autoUpdater, UpdateInfo } from 'electron-updater';
 import { app, BrowserWindow, shell, powerMonitor } from 'electron';
 import { createLogger, serializeErr } from './logger';
 import * as telemetry from './telemetry';
-import { cleanupTools } from './tools';
+import { cleanupTools, restoreTools } from './tools';
 import * as quitState from './quit-state';
 import { cmpVersion, classifyAttempt, shouldIdleInstall } from './update-policy';
 import fs from 'fs';
@@ -465,6 +465,11 @@ async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
     downloadedUpdateHelper?: { file?: string };
   }).downloadedUpdateHelper?.file || '';
   log.info(relaunch ? 'PC idle with a downloaded update — installing silently' : 'User quit with a downloaded update — installing silently', { version: expectedVersion, installerPath });
+  if (relaunch && (!installerPath || !fs.existsSync(installerPath))) {
+    log.warn('Idle install skipped — no installer on disk', { version: expectedVersion });
+    telemetry.track('update_failed', { to: expectedVersion, reason: 'install_not_started', mode });
+    return;
+  }
   telemetry.track('update_install_started', { to: expectedVersion, mode });
   telemetry.flushBeforeInstall();
 
@@ -494,25 +499,48 @@ async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
   }
 
   quitState.setQuitting();
+  let started = true;
   try {
-    autoUpdater.quitAndInstall(true, relaunch);
+    // electron-updater 6.x returns false (it does not throw) when it could not start the installer.
+    started = (autoUpdater.quitAndInstall(true, relaunch) as unknown) !== false;
   } catch (err) {
     log.error('quitAndInstall threw', serializeErr(err));
-    if (relaunch) {
-      // Nobody asked to quit: stay up, and forget the attempt so the next boot doesn't count a failure that never ran.
-      quitState.setQuitting(false);
-      const st = readState();
-      st.lastAttemptedVersion = '';
-      st.lastAttemptedAt = '';
-      writeState(st);
-    } else {
-      setTimeout(() => app.quit(), 3000);
-    }
+    started = false;
+  }
+  if (!started) {
+    installNotStarted(mode);
     return;
   }
-  // quitAndInstall only quits when it managed to start the installer. On a
-  // user quit they asked for it either way — make sure we do.
-  if (!relaunch) setTimeout(() => app.quit(), 3000);
+  if (!relaunch) {
+    // quitAndInstall only quits when it managed to start the installer. The
+    // user asked to quit either way — make sure we do.
+    setTimeout(() => app.quit(), 3000);
+  } else {
+    // Belt and braces: a relaunching install quits within moments. Still alive
+    // well after the call means nothing ran — undo the prep and carry on.
+    setTimeout(() => { if (quitState.isQuitting()) installNotStarted(mode); }, 20_000).unref?.();
+  }
+}
+
+/**
+ * The installer hand-off did not start. Forget the recorded attempt (the next
+ * boot must not count a failure that never ran). On an idle install nobody
+ * asked to quit: stay up, make closing the window hide to tray again and give
+ * the PowerShell host back. On a user quit the app still quits.
+ */
+function installNotStarted(mode: 'on_quit' | 'idle'): void {
+  log.error('Install not started', { mode, version: expectedVersion });
+  telemetry.track('update_failed', { to: expectedVersion, reason: 'install_not_started', mode });
+  const st = readState();
+  st.lastAttemptedVersion = '';
+  st.lastAttemptedAt = '';
+  writeState(st);
+  if (mode === 'on_quit') {
+    setTimeout(() => app.quit(), 3000);
+    return;
+  }
+  quitState.setQuitting(false);
+  try { restoreTools(); } catch (err) { log.warn('restoreTools error (non-fatal)', serializeErr(err)); }
 }
 
 // ── v0.24 idle install ────────────────────────────────────────────────
@@ -523,10 +551,11 @@ let idleInstallTried = false;
 /**
  * Once an update is downloaded, install it (with relaunch) when no task is
  * running and the PC has been idle for 10 minutes. `isTaskActive` is the
- * brain's in-flight-task flag. Idempotent; one attempt per process, so a
+ * brain's in-flight-task flag; `isBusyElsewhere` covers open setup/Settings windows,
+ * an agent session, a game and a pending approval prompt. Idempotent; one attempt per process, so a
  * silent failure can't loop — the next boot's check counts it.
  */
-export function startIdleInstall(isTaskActive: () => boolean): void {
+export function startIdleInstall(isTaskActive: () => boolean, isBusyElsewhere: () => boolean): void {
   if (idleWatcher || process.platform !== 'win32') return;
   idleWatcher = setInterval(() => {
     try {
@@ -536,6 +565,7 @@ export function startIdleInstall(isTaskActive: () => boolean): void {
         updateDownloaded,
         failedBefore: (readState().failureCount[expectedVersion] || 0) > 0,
         taskRunning: isTaskActive(),
+        busyElsewhere: isBusyElsewhere(),
         idleSeconds: powerMonitor.getSystemIdleTime(),
         alreadyTried: idleInstallTried,
       })) return;

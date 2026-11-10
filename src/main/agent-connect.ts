@@ -163,6 +163,11 @@ export interface AgentConnectStatus {
   configPath: string;
 }
 
+/** True while an outside agent has an open session (it can drive tools without any user input). */
+export function hasActiveAgentClients(): boolean {
+  return (handle?.clients().length ?? 0) > 0;
+}
+
 export function getAgentConnectStatus(): AgentConnectStatus {
   const c = config();
   let skillMarkdown = '';

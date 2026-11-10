@@ -55,6 +55,11 @@ export function resolveApproval(id: string, approved: boolean): boolean {
   return finish(id, approved ? 'approved' : 'denied');
 }
 
+/** A "Can I …?" prompt is waiting for the user. */
+export function hasPendingApproval(): boolean {
+  return pending.size > 0;
+}
+
 /** Settle every pending prompt as 'cancelled' (task aborted / sleep). */
 export function cancelAllApprovals(): void {
   for (const id of [...pending.keys()]) finish(id, 'cancelled');

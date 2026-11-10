@@ -498,6 +498,11 @@ export function createOnboardingWindow(opts: { mode?: 'email'; reason?: 'trial_e
   return onboardingWindow;
 }
 
+/** Settings window if it is open. */
+export function getSettingsWindow(): BrowserWindow | null {
+  return settingsWindow && !settingsWindow.isDestroyed() ? settingsWindow : null;
+}
+
 /** Onboarding window if it is open (deep-link activation + tutorial signals). */
 export function getOnboardingWindow(): BrowserWindow | null {
   return onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : null;

@@ -11,6 +11,7 @@ import { createLogger } from './logger';
 import * as telemetry from './telemetry';
 import * as api from './account-api';
 import { planLabel } from './activate';
+import * as quitState from './quit-state';
 import { createOnboardingWindow } from './window';
 import { getLicenseKey, getPlan, isTrial, saveTrialLicense, saveLicense, getBuddyName, getTtsVoice, setPlan } from './license';
 
@@ -93,7 +94,7 @@ function say(win: BrowserWindow | null, text: string, animate = 'Congratulate'):
 export type UpgradeOutcome =
   | { status: 'needs_email' }
   | { status: 'opened' }
-  | { status: 'updated'; plan: string }
+  | { status: 'updating' }
   | { status: 'error'; message: string };
 
 export async function startUpgrade(plan: unknown, win: BrowserWindow | null): Promise<UpgradeOutcome> {
@@ -114,23 +115,24 @@ export async function startUpgrade(plan: unknown, win: BrowserWindow | null): Pr
     }
     return { status: 'error', message: r.error === 'offline' ? "Couldn't reach our server. Check your connection and try again." : "Couldn't start checkout. Try again in a moment." };
   }
-  if ('updated' in r) {
-    setPlan(r.plan);
-    say(win, `You're on ${planLabel(r.plan)} now! 📎`);
-    return { status: 'updated', plan: r.plan };
+  // Never announce a plan from the click alone: an in-place change may still
+  // need the user to confirm (Stripe page) or may fail to bill. Only the
+  // /validate poll below says "You're on X now".
+  const updating = 'updated' in r;
+  if (!updating) {
+    if (!api.isSafeCheckoutUrl(r.url)) {
+      log.warn('Checkout.unsafeUrl');
+      return { status: 'error', message: "Couldn't start checkout. Try again in a moment." };
+    }
+    await shell.openExternal(r.url);
+    log.info('Checkout.opened', { plan });
   }
-  if (!api.isSafeCheckoutUrl(r.url)) {
-    log.warn('Checkout.unsafeUrl');
-    return { status: 'error', message: "Couldn't start checkout. Try again in a moment." };
-  }
-  await shell.openExternal(r.url);
-  log.info('Checkout.opened', { plan });
 
   const gen = ++pollGeneration;
   void api.pollForUpgrade({
     fromPlan: before,
     check: () => api.checkPlan(getLicenseKey(), netFetch),
-    cancelled: () => gen !== pollGeneration || getLicenseKey() !== key,
+    cancelled: () => gen !== pollGeneration || getLicenseKey() !== key || quitState.isQuitting(),
   }).then((newPlan) => {
     if (!newPlan) {
       log.info('Checkout.pollEnded', { gen, stale: gen !== pollGeneration });
@@ -140,5 +142,5 @@ export async function startUpgrade(plan: unknown, win: BrowserWindow | null): Pr
     log.info('Checkout.planChanged', { plan: newPlan });
     say(win, `You're on ${planLabel(newPlan)} now! 📎`);
   });
-  return { status: 'opened' };
+  return updating ? { status: 'updating' } : { status: 'opened' };
 }

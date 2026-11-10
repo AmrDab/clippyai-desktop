@@ -5115,6 +5115,17 @@ export async function initTools(): Promise<void> {
 }
 
 /**
+ * v0.24 — undo cleanupTools() when an installer hand-off did not start and the
+ * app keeps running: the PowerShell host is closed for good after shutdown, so
+ * give it a fresh one (it still spawns lazily).
+ */
+export function restoreTools(): void {
+  if (process.platform === 'win32') {
+    configurePsHost({ scriptsDir: getScriptsDir, log: createLogger('PsHost') });
+  }
+}
+
+/**
  * v0.18.1 — tools that synthesize input on the user's desktop. The
  * takeover monitor is told to ignore idle resets in a ~1.5s window
  * around each of these dispatches so Clippy's own clicks don't

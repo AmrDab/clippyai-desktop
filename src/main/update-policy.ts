@@ -13,6 +13,8 @@ export interface IdleInstallInput {
   /** A silent attempt for this version already failed (counted at boot) — leave it to the manual tray path. */
   failedBefore: boolean;
   taskRunning: boolean;
+  /** Anything else that means "someone is using Clippy": setup/Settings window open, agent session, game, approval prompt. */
+  busyElsewhere: boolean;
   idleSeconds: number;
   /** An install is already underway, or the idle install already ran once in this process. */
   alreadyTried: boolean;
@@ -24,6 +26,7 @@ export function shouldIdleInstall(i: IdleInstallInput): boolean {
     && i.updateDownloaded
     && !i.failedBefore
     && !i.taskRunning
+    && !i.busyElsewhere
     && !i.alreadyTried
     && i.idleSeconds >= IDLE_INSTALL_SECONDS;
 }

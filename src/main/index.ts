@@ -87,7 +87,7 @@ if (process.platform === 'win32') {
   bootLog('HW_ACCELERATION_DISABLED');
 }
 
-import { createWindow, createOnboardingWindow, getOnboardingWindow } from './window';
+import { createWindow, createOnboardingWindow, getOnboardingWindow, getSettingsWindow } from './window';
 import { activateFromUrl, findActivateUrl, planLabel } from './activate';
 import { getBuddyName, getTtsVoice, saveLicense, getPlan, isTrial } from './license';
 import { startTrial } from './account';
@@ -115,6 +115,7 @@ import * as gamesMod from './games';
 import { brainSettingsStore } from './brain';
 // v0.21 — static import (same Rollup bundle-anchor rule as window-follow).
 import * as agentConnect from './agent-connect';
+import * as approvalMod from './approval';
 import * as telemetry from './telemetry';
 
 bootLog('IMPORTS_LOADED');
@@ -502,6 +503,14 @@ function wireCloseToSleep(brainRef: Brain, mw: BrowserWindow): void {
   });
 }
 
+/** Something besides a brain task is in use: setup/Settings open, an agent session, a game, an approval prompt. */
+function isBusyElsewhere(): boolean {
+  return !!getOnboardingWindow() || !!getSettingsWindow()
+    || agentConnect.hasActiveAgentClients()
+    || gamesMod.isActive()
+    || approvalMod.hasPendingApproval();
+}
+
 function launchMainApp(): void {
   mainWindow = createWindow();
   brain = new Brain(mainWindow);
@@ -568,7 +577,7 @@ function launchMainApp(): void {
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
-  startIdleInstall(() => brain?.isBusy() ?? false); // idle 10 min + no task: install and relaunch
+  startIdleInstall(() => brain?.isBusy() ?? false, isBusyElsewhere); // idle 10 min + nothing in use: install and relaunch
 
   // v0.16.1 — time-based liveliness pings (morning greet, stretch reminder,
   // wrap-up tip). Setinterval-based, gated on brain.getMode() === 'awake'
@@ -607,7 +616,7 @@ function launchWithOnboarding(): void {
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks();
-  startIdleInstall(() => brain?.isBusy() ?? false);
+  startIdleInstall(() => brain?.isBusy() ?? false, isBusyElsewhere);
 
   createOnboardingWindow();
   telemetry.track('onboarding_step', { step: 'opened' });

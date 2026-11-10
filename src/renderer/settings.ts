@@ -287,7 +287,7 @@ async function startUpgrade(plan: 'power' | 'max', link: HTMLElement): Promise<v
     const r = await window.clippy.upgrade(plan);
     if (r.status === 'error') link.textContent = r.message;
     else if (r.status === 'needs_email') link.textContent = 'Add your email first: the setup window just opened.';
-    else if (r.status === 'updated') link.textContent = `You're on ${r.plan} now.`;
+    else if (r.status === 'updating') link.textContent = 'Updating your plan. Clippy will tell you when it is done.';
     else link.textContent = 'Checkout opened in your browser.';
   } catch {
     link.textContent = "Couldn't start checkout. Try again in a moment.";

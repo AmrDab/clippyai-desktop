@@ -568,7 +568,7 @@ for (const [id, plan] of [['btn-get-power', 'power'], ['btn-get-max', 'max']] as
     try {
       const r = await window.clippy.upgrade(plan);
       if (r.status === 'opened') plansHint.textContent = "Checkout opened in your browser. Once you've paid, Clippy notices by itself.";
-      else if (r.status === 'updated') plansHint.textContent = `You're on ${r.plan} now.`;
+      else if (r.status === 'updating') plansHint.textContent = 'Updating your plan. Clippy will tell you when it is done.';
       else if (r.status === 'needs_email') { plansHint.textContent = 'Add your email above first, then upgrade.'; setupEmail.focus(); }
       else plansHint.textContent = r.message;
     } catch {

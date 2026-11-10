@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { shouldIdleInstall, classifyAttempt, cmpVersion, IDLE_INSTALL_SECONDS, type IdleInstallInput } from '../src/main/update-policy';
 
 const ready: IdleInstallInput = {
-  platform: 'win32', updateDownloaded: true, failedBefore: false, taskRunning: false, idleSeconds: IDLE_INSTALL_SECONDS, alreadyTried: false,
+  platform: 'win32', updateDownloaded: true, failedBefore: false, taskRunning: false, busyElsewhere: false, idleSeconds: IDLE_INSTALL_SECONDS, alreadyTried: false,
 };
 
 describe('shouldIdleInstall', () => {
@@ -15,6 +15,9 @@ describe('shouldIdleInstall', () => {
   });
   it('never interrupts a running task', () => {
     expect(shouldIdleInstall({ ...ready, taskRunning: true })).toBe(false);
+  });
+  it('waits while a setup/Settings window, agent session, game or approval is open', () => {
+    expect(shouldIdleInstall({ ...ready, busyElsewhere: true })).toBe(false);
   });
   it('needs a downloaded update', () => {
     expect(shouldIdleInstall({ ...ready, updateDownloaded: false })).toBe(false);
