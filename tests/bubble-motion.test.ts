@@ -76,4 +76,13 @@ describe('DeferredCollapse', () => {
     expect(run).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
+  it('calls the timer functions unbound (Chromium throws Illegal invocation when this is the instance)', () => {
+    const strict = function (this: unknown): never | number {
+      if (this !== undefined) throw new TypeError('Illegal invocation');
+      return 1;
+    };
+    const c = new DeferredCollapse(vi.fn(), 10, strict as never, strict as never);
+    expect(() => c.schedule()).not.toThrow();
+    expect(() => c.cancel()).not.toThrow();
+  });
 });

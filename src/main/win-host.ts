@@ -174,6 +174,12 @@ export class PsHost {
     });
   }
 
+  /** Start the host now if it is idle and healthy, so the next request is not cold (~2 s). No-op otherwise. */
+  prewarm(): void {
+    if (this.state !== 'idle' || !this.isAvailable()) return;
+    this.start().catch(() => { /* start failure is already counted and logged */ });
+  }
+
   /** Kill the host if it is doing anything and reject everything pending (sleep / cancel). */
   abortAll(): number {
     const n = this.queue.length + (this.inflight ? 1 : 0);
@@ -302,6 +308,9 @@ export class PsHost {
       this.expectedExits.add(child);
       this.countFailure('timeout');
       this.killChild();
+      // Respawn now, not on the next request: a cold start outlasts the next
+      // turn's screen-context window and that turn would get nothing.
+      this.prewarm();
     }, p.timeoutMs);
     try {
       child.stdin?.write(p.line + '\n');

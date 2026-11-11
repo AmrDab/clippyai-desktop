@@ -141,6 +141,40 @@ describe('PsHost lifecycle', () => {
     expect(spawnFn).toHaveBeenCalledTimes(2);
   });
 
+  it('after a timeout a fresh host is spawned with no new request, so the next one is not cold', async () => {
+    const { host, spawnFn } = makeHost((req, f) => { if (req.cmd === 'eval') return; f.reply({ id: req.id, ok: true, exitCode: 0, out: 'x' }); });
+    await expect(host.request({ cmd: 'eval', code: 'hang' }, 50)).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+    expect(host.isReady()).toBe(true);
+  });
+
+  it('does not prewarm while backing off', async () => {
+    const { host, spawnFn } = makeHost((req, f) => { if (req.cmd === 'eval') return; f.reply({ id: req.id, ok: true }); }, { maxConsecutiveFailures: 1, backoffMs: 60_000 });
+    await expect(host.request({ cmd: 'eval', code: 'hang' }, 50)).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(host.isAvailable()).toBe(false);
+    host.prewarm();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('abortAll and shutdown never respawn the host', async () => {
+    const a = makeHost(() => { /* hang */ });
+    const p = a.host.request({ cmd: 'eval', code: 'long' }, 60_000);
+    await new Promise((r) => setTimeout(r, 20));
+    a.host.abortAll();
+    await expect(p).rejects.toMatchObject({ code: 'ABORTED' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(a.spawnFn).toHaveBeenCalledTimes(1);
+
+    const b = makeHost();
+    await b.host.request({ cmd: 'ping' }, 1000);
+    b.host.shutdown();
+    b.host.prewarm();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(b.spawnFn).toHaveBeenCalledTimes(1);
+  });
+
   it('a crash mid-request rejects with HOST_DIED and the host restarts on demand', async () => {
     let calls = 0;
     const { host, spawnFn } = makeHost((req, f) => {

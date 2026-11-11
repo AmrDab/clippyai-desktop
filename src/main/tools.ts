@@ -81,7 +81,7 @@ import * as profileMod from './profile';
 // v0.24 — persistent PowerShell host (plan §2.4). Every win32 PowerShell call
 // below goes through psScript / psCommand: in the long-lived host when it is
 // up, as the old one-shot powershell.exe spawn otherwise.
-import { psScript, psCommand, configurePsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
+import { psScript, psCommand, configurePsHost, getPsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
 import { outlookSendArgs } from './outlook-args';
 
@@ -398,7 +398,7 @@ async function getActiveWindow(params: Record<string, unknown> = {}): Promise<To
   // — callers are the proactive tick, smart_click and the governor (§1.6).
   if (process.platform === 'win32') {
     try {
-      const { stdout } = await psScript('get-foreground-window.ps1', {}, { timeoutMs: scriptTimeoutParam(params, 5000), idempotent: true });
+      const { stdout } = await psScript('get-foreground-window.ps1', { ExcludeProcessId: process.pid }, { timeoutMs: scriptTimeoutParam(params, 5000), idempotent: true });
       return { text: stdout.trim() || '(no active window)' };
     } catch (err) {
       log.warn('get_active_window failed', serializeErr(err));
@@ -1159,7 +1159,7 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
  * coordinate clicks against OCR locally instead of asking the model to
  * pixel-locate from a screenshot — a documented LLM weakness.
  */
-async function captureAndOcr(region: 'foreground' | 'screen' = 'screen'): Promise<OcrLayout | null> {
+async function captureAndOcr(region: 'foreground' | 'screen' = 'screen', timeoutMs = 15000): Promise<OcrLayout | null> {
   // win32-only pipeline — see docstring. On darwin the bridge Vision path
   // handles OCR; reaching here means the bridge is unavailable, in which
   // case the PowerShell spawn would just ENOENT.
@@ -1172,7 +1172,7 @@ async function captureAndOcr(region: 'foreground' | 'screen' = 'screen'): Promis
   let stdout: string;
   try {
     const r = await psScript('ocr-screen.ps1', { Region: region, ExcludeProcessId: process.pid }, {
-      timeoutMs: 15000, maxBuffer: 5 * 1024 * 1024, idempotent: true,
+      timeoutMs, maxBuffer: 5 * 1024 * 1024, idempotent: true,
     });
     stdout = r.stdout;
   } catch (ocrErr) {
@@ -1203,6 +1203,16 @@ async function captureAndOcr(region: 'foreground' | 'screen' = 'screen'): Promis
     return null;
   }
   return layoutFromRegion(parsed);
+}
+
+/**
+ * Plain text of the foreground window (Clippy's own skipped) via OCR, for the
+ * per-turn screen context when the user asks about their screen. UIA names
+ * can't summarize a page; real text needs OCR. '' on any failure.
+ */
+export async function readForegroundText(timeoutMs: number): Promise<string> {
+  const ocr = await captureAndOcr('foreground', timeoutMs);
+  return ocr?.fullText ?? '';
 }
 
 /**
@@ -5116,8 +5126,11 @@ export async function initTools(): Promise<void> {
   // v0.24 — persistent PowerShell host (plan §2.4). Nothing is spawned here:
   // the host starts lazily on the first PowerShell-backed tool call, and
   // callers fall back to one-shot spawns while it warms up or if it fails.
+  // A cold start takes ~2 s, which blew the first turn's 1.2 s screen-context
+  // window, so warm it a few seconds after launch (off the startup path).
   if (process.platform === 'win32') {
     configurePsHost({ scriptsDir: getScriptsDir, log: createLogger('PsHost') });
+    setTimeout(() => getPsHost()?.prewarm(), 3000).unref?.();
   }
 
   initialized = true;

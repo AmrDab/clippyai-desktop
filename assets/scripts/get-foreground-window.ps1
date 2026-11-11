@@ -3,21 +3,43 @@
     Gets the currently focused/foreground window.
 .DESCRIPTION
     Returns JSON with info about the foreground window using Win32 GetForegroundWindow.
+.PARAMETER ExcludeProcessId
+    The caller's own process (Clippy). The user is typing in Clippy's bubble, so
+    it is nearly always the true foreground window; when it is, report the next
+    visible titled window down the Z-order instead (same walk as
+    get-screen-context.ps1) so the model learns what app the user is really on.
 #>
+param([int]$ExcludeProcessId = 0)
 
 try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
 
-    # Add Win32 API for GetForegroundWindow
+    # Unique class name: scripts share one PowerShell host, where a type name
+    # re-registered with a different definition makes Add-Type throw.
     Add-Type @"
     using System;
     using System.Runtime.InteropServices;
-    public class Win32 {
-        [DllImport("user32.dll")]
-        public static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll", SetLastError = true)]
-        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    public class ClippyFgWin {
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll", SetLastError = true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        public static uint PidOf(IntPtr hWnd) { uint pid = 0; GetWindowThreadProcessId(hWnd, out pid); return pid; }
+        // Foreground window, skipping `exclude` by walking down the Z-order to
+        // the next visible, titled window of another process.
+        public static IntPtr Foreground(uint exclude) {
+            IntPtr h = GetForegroundWindow();
+            if (exclude == 0 || h == IntPtr.Zero || PidOf(h) != exclude) return h;
+            int guard = 0;
+            while (h != IntPtr.Zero && guard++ < 200) {
+                uint pid = PidOf(h);
+                if (pid != 0 && pid != exclude && IsWindowVisible(h) && GetWindowTextLength(h) > 0) return h;
+                h = GetWindow(h, 2); // GW_HWNDNEXT
+            }
+            return IntPtr.Zero;
+        }
     }
 "@
 } catch {
@@ -29,7 +51,7 @@ $ErrorActionPreference = 'Stop'
 
 try {
     # Get foreground window handle
-    $fgWindow = [Win32]::GetForegroundWindow()
+    $fgWindow = [ClippyFgWin]::Foreground([uint32]$ExcludeProcessId)
     
     if ($fgWindow -eq [IntPtr]::Zero) {
         [Console]::Out.Write((@{ error = "No foreground window found" } | ConvertTo-Json -Compress))
@@ -38,7 +60,7 @@ try {
 
     # Get process ID
     $processId = 0
-    [void][Win32]::GetWindowThreadProcessId($fgWindow, [ref]$processId)
+    [void][ClippyFgWin]::GetWindowThreadProcessId($fgWindow, [ref]$processId)
 
     # Get process name
     $processName = "unknown"

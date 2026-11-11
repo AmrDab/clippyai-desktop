@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   newCtxState, planCapture, recordOutcome, heavyBudgetMs, windowCallFailed, extractProcessName, raceDeadline,
+  isScreenQuestion, formatScreenDump, formatOcrContext, SCREEN_Q_OCR_MS,
   CTX_CACHE_MS, PAUSE_AFTER_TIMEOUTS, PAUSE_MS, WINDOW_DEADLINE_MS, HEAVY_DEADLINE_MS, TOTAL_BUDGET_MS,
 } from '../src/main/screen-context';
 
@@ -77,5 +78,54 @@ describe('raceDeadline', () => {
   });
   it('propagates a rejection', async () => {
     await expect(raceDeadline(Promise.reject(new Error('x')), 1000)).rejects.toThrow('x');
+  });
+});
+
+describe('isScreenQuestion', () => {
+  it.each([
+    'summarize what I have on my screen', "what's on my screen", 'what am I looking at', 'what app am I on',
+    'which app is this', "can you see my desktop", 'read this page', 'summarize this', 'what does this error mean',
+    'look at this', 'o que tem na minha tela', 'qué hay en mi pantalla', "qu'est-ce qu'il y a sur mon écran",
+  ])('true: %s', (t) => expect(isScreenQuestion(t)).toBe(true));
+  it.each([
+    "what's the weather like today", 'hi', 'lol', 'draw a stickfigure in paint', 'tell me a joke', 'what is the capital of France',
+  ])('false: %s', (t) => expect(isScreenQuestion(t)).toBe(false));
+  it('OCR budget is 3 s', () => expect(SCREEN_Q_OCR_MS).toBe(3000));
+});
+
+describe('formatScreenDump', () => {
+  const dump = {
+    windows: [
+      { handle: 1, title: 'Old', processName: 'notepad', processId: 5, isMinimized: true },
+      { handle: 2, title: 'Inbox - Mail', processName: 'chrome', processId: 7, bounds: { x: 0 }, isMinimized: false },
+    ],
+    focusedProcessId: 7,
+    uiTree: { name: 'Inbox - Mail', children: [{ name: 'Send', children: [{ name: 'a' }, { name: 'Send' }] }, [{ name: 'Compose' }, { name: '' }]] },
+  };
+  it('lists windows (non-minimized first) then the focused app names, deduped, no handles', () => {
+    const out = formatScreenDump(JSON.stringify(dump));
+    expect(out).toBe('Open windows: Inbox - Mail (chrome); Old (notepad)\nIn chrome: Inbox - Mail · Send · Compose');
+    expect(out).not.toContain('handle');
+  });
+  it('accepts an array uiTree, caps windows at 8 and titles at 60 chars', () => {
+    const windows = Array.from({ length: 12 }, (_, i) => ({ title: `${'T'.repeat(80)}${i}`, processName: 'p', processId: i }));
+    const out = formatScreenDump(JSON.stringify({ windows, focusedProcessId: 99, uiTree: [{ name: 'Hello' }] }), 5000);
+    expect(out.split('; ')).toHaveLength(8);
+    expect(out).toContain(`${'T'.repeat(60)} (p)`);
+    expect(out).toContain('In the focused app: Hello');
+  });
+  it('caps the whole result', () => {
+    expect(formatScreenDump(JSON.stringify(dump), 40)).toHaveLength(40);
+  });
+  it('non-JSON is sliced, errors give empty', () => {
+    expect(formatScreenDump('plain text here', 5)).toBe('plain');
+    expect(formatScreenDump('{"error":"boom"}')).toBe('');
+  });
+});
+
+describe('formatOcrContext', () => {
+  it('collapses whitespace and caps', () => {
+    expect(formatOcrContext('chrome', 'a  b\n\nc')).toBe('Screen text (read from chrome): a b c');
+    expect(formatOcrContext('chrome', 'x'.repeat(5000))).toHaveLength(1500);
   });
 });

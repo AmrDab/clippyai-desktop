@@ -18,7 +18,7 @@
  */
 
 import { BrowserWindow, net, app, powerMonitor } from 'electron';
-import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk } from './tools';
+import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk, readForegroundText } from './tools';
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
 import { taskOutcomeFor, type TaskOutcome } from './task-outcome';
@@ -44,7 +44,8 @@ import { languageSample, proactiveMessage } from './tip-language';
 import * as cursorVision from './cursor-vision';
 import {
   newCtxState, planCapture, recordOutcome, heavyBudgetMs, windowCallFailed, extractProcessName, raceDeadline,
-  type CtxState, type ScreenCtxOutcome,
+  isScreenQuestion, formatScreenDump, formatOcrContext, SCREEN_Q_OCR_MS,
+  type CtxState, type ScreenCtxOutcome, type ScreenSource,
 } from './screen-context';
 import * as userTakeover from './user-takeover';
 import { getLicenseKey, getPlan, recordUsage } from './license';
@@ -1274,7 +1275,10 @@ export class Brain {
       let verifiedSteps = 0;
       let lastActionReceipt: ReceiptStatus | undefined;
       const screenContextOk = !!screenContext && !screenContext.startsWith('<screen-context-');
+      const screenQuestion = isScreenQuestion(text);
       log.info('Task.start', {
+        screenQuestion,
+        screenSource: ctx.source,
         hasScreenContext: screenContextOk,
         screenContextLen: screenContext?.length || 0,
         screenContextSentinel: screenContextOk ? null : screenContext || null,
@@ -1311,9 +1315,13 @@ export class Brain {
         }
       } catch { /* registry not ready — first-boot path, fine */ }
 
+      // A Free user has no screen tool, so a blank capture must not turn into "I can't see your screen".
+      const screenMissed = screenQuestion && (!screenContextOk || ctx.source === 'window');
       const initialText = (screenContextOk
         ? `${text}\n\n[Screen context you can reference if useful:\n${screenContext}]`
-        : text) + skillsPreamble;
+        : text)
+        + (screenMissed ? "\n\n[Screen capture didn't come through this time. Tell the user plainly you couldn't catch their screen just now and ask them to try again — don't say you have no way to see the screen.]" : '')
+        + skillsPreamble;
 
       // v0.18.2 — cursor-vision intent. See cursor-vision.ts for design.
       // v0.18.3 — switched from `require('./cursor-vision')` (lazy) to
@@ -2625,7 +2633,7 @@ export class Brain {
   // ========== Helpers ==========
 
   /** Active window + (optional) screen dump + the app guide and any learned-workflow hint, as the model sees it. */
-  private composeScreenContext(activeText: string, screenText: string, userText?: string): string {
+  private composeScreenContext(activeText: string, screenText: string, userText?: string, maxScreenChars = 800): string {
     // v0.11.22 — extract process name from active-window JSON, then
     // append (a) the bundled ClawdCursor app guide and (b) the
     // per-machine learned-workflow hint if one matches the user's ask.
@@ -2657,7 +2665,7 @@ export class Brain {
     // context bloat from 5-10KB to ~3KB. Active window + 800 chars
     // of OCR is enough for "what app/page is this." On the fast
     // path screenText is empty so this is a no-op there.
-    return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, 800)}${extras}`;
+    return `Active: ${activeText || 'unknown'}\nScreen: ${(screenText || '').substring(0, maxScreenChars)}${extras}`;
   }
 
   private ctxState: CtxState = newCtxState();
@@ -2668,12 +2676,14 @@ export class Brain {
    * what is left of a small budget and a short script timeout; whatever is ready
    * goes out. Reused for 3 s; skipped for a minute after repeated timeouts.
    */
-  private async captureTurnContext(userText: string): Promise<{ context: string; outcome: ScreenCtxOutcome; process: string }> {
+  private async captureTurnContext(userText: string): Promise<{ context: string; outcome: ScreenCtxOutcome; process: string; source: ScreenSource }> {
     const started = Date.now();
-    const done = (context: string, outcome: ScreenCtxOutcome, process: string) => ({ context, outcome, process });
-    const plan = planCapture(this.ctxState, started);
-    if (plan.kind === 'cached') return done(plan.cache.text, 'ok', plan.cache.process);
-    if (plan.kind === 'skip') return done('', 'off', '');
+    const done = (context: string, outcome: ScreenCtxOutcome, process: string, source: ScreenSource) => ({ context, outcome, process, source });
+    // A screen question is explicit: no 3 s cache, no timeout pause.
+    const screenQ = isScreenQuestion(userText);
+    const plan = planCapture(this.ctxState, started, screenQ);
+    if (plan.kind === 'cached') return done(plan.cache.text, 'ok', plan.cache.process, plan.cache.source ?? 'none');
+    if (plan.kind === 'skip') return done('', 'off', '', 'none');
     let windowText = '';
     try {
       const w = await raceDeadline(executeTool('get_active_window', { timeoutMs: plan.windowMs }), plan.windowMs + 200);
@@ -2683,22 +2693,35 @@ export class Brain {
     }
     if (windowCallFailed(windowText)) {
       this.ctxState = recordOutcome(this.ctxState, 'timeout', null, Date.now());
-      return done('<screen-context-timeout>', 'timeout', '');
+      return done('<screen-context-timeout>', 'timeout', '', 'none');
     }
     const proc = extractProcessName(windowText);
     let screenText = '';
-    let partial = true;
-    const left = heavyBudgetMs(plan, Date.now() - started);
-    if (left >= 200) {
+    let source: ScreenSource = 'window';
+    let maxScreenChars = 800;
+    // UIA names alone can't summarize a page; when asked, read the real text with OCR.
+    if (screenQ) {
       try {
-        const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left }), left + 150);
-        if (!r.timedOut && r.value.text && !/^\((read_screen )?error/i.test(r.value.text)) { screenText = r.value.text; partial = false; }
-      } catch { /* window-only context */ }
+        const o = await raceDeadline(readForegroundText(SCREEN_Q_OCR_MS), SCREEN_Q_OCR_MS + 150);
+        if (!o.timedOut && o.value.trim()) { screenText = formatOcrContext(proc, o.value); source = 'ocr'; maxScreenChars = 1600; }
+      } catch { /* fall back to the UIA dump */ }
     }
-    const text = this.composeScreenContext(windowText, screenText, userText);
-    const outcome: ScreenCtxOutcome = partial ? 'partial' : 'ok';
-    this.ctxState = recordOutcome(this.ctxState, outcome, { text, process: proc, at: Date.now() }, Date.now());
-    return done(text, outcome, proc);
+    if (!screenText) {
+      const left = screenQ ? plan.heavyMs : heavyBudgetMs(plan, Date.now() - started);
+      if (left >= 200) {
+        try {
+          const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left }), left + 150);
+          if (!r.timedOut && r.value.text && !/^\((read_screen )?error/i.test(r.value.text)) {
+            screenText = formatScreenDump(r.value.text);
+            if (screenText) source = 'uia';
+          }
+        } catch { /* window-only context */ }
+      }
+    }
+    const text = this.composeScreenContext(windowText, screenText, userText, maxScreenChars);
+    const outcome: ScreenCtxOutcome = screenText ? 'ok' : 'partial';
+    this.ctxState = recordOutcome(this.ctxState, outcome, { text, process: proc, at: Date.now(), source }, Date.now());
+    return done(text, outcome, proc, source);
   }
 
   /**

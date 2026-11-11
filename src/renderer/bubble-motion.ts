@@ -46,17 +46,20 @@ export class DeferredCollapse {
   constructor(
     private readonly run: () => void,
     private readonly delayMs: number = EXIT_MS,
-    private readonly setT: (fn: () => void, ms: number) => Timer = setTimeout,
-    private readonly clearT: (t: Timer) => void = clearTimeout,
+    // Wrappers, not bare setTimeout: called as this.setT(...) Chromium's
+    // setTimeout gets `this` = the instance and throws "Illegal invocation".
+    private readonly setT: (fn: () => void, ms: number) => Timer = (fn, ms) => setTimeout(fn, ms),
+    private readonly clearT: (t: Timer) => void = (t) => clearTimeout(t),
   ) {}
 
   schedule(): void {
     this.cancel();
-    this.timer = this.setT(() => { this.timer = null; this.run(); }, this.delayMs);
+    const setT = this.setT; // unbound call — see constructor
+    this.timer = setT(() => { this.timer = null; this.run(); }, this.delayMs);
   }
 
   cancel(): void {
-    if (this.timer !== null) { this.clearT(this.timer); this.timer = null; }
+    if (this.timer !== null) { const clearT = this.clearT; clearT(this.timer); this.timer = null; }
   }
 
   get pending(): boolean {

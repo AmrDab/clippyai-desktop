@@ -29,7 +29,8 @@ export const CTX_CACHE_MS = 3_000;
 export const PAUSE_AFTER_TIMEOUTS = 3;
 export const PAUSE_MS = 60_000;
 
-export interface CtxCache { text: string; process: string; at: number }
+export type ScreenSource = 'ocr' | 'uia' | 'window' | 'none';
+export interface CtxCache { text: string; process: string; at: number; source?: ScreenSource }
 export interface CtxState {
   consecutiveTimeouts: number;
   pausedUntil: number;
@@ -45,7 +46,9 @@ export type CtxPlan =
   | { kind: 'skip' }
   | { kind: 'capture'; windowMs: number; heavyMs: number };
 
-export function planCapture(state: CtxState, now: number): CtxPlan {
+/** `force` (the user asked about their screen) skips the cache and the timeout pause. */
+export function planCapture(state: CtxState, now: number, force = false): CtxPlan {
+  if (force) return { kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS };
   if (state.cache && now - state.cache.at <= CTX_CACHE_MS) return { kind: 'cached', cache: state.cache };
   if (now < state.pausedUntil) return { kind: 'skip' };
   return { kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS };
@@ -95,4 +98,63 @@ export function raceDeadline<T>(p: Promise<T>, ms: number): Promise<Raced<T>> {
       (err) => { clearTimeout(timer); reject(err); },
     );
   });
+}
+
+/** OCR budget when the user asked about their screen (they are waiting on exactly this). */
+export const SCREEN_Q_OCR_MS = 3_000;
+
+// "screen"/"desktop" (+ pt/es/fr), "what app/page am I on", "what am I looking at", "summarize/read/look at this", "what does this ...".
+const SCREEN_WORD_RE = /(?<!\p{L})(?:screen|desktop|tela|pantalla|[eé]cran)(?!\p{L})/iu; // \b is ASCII-only: it would miss 'écran'
+const SCREEN_PHRASE_RE = /\b(?:(?:what|which)\s+(?:app|application|program|window|page|tab|site|website)\b|what\s+am\s+i\s+(?:looking|viewing|reading|seeing)\b|(?:read|summari[sz]e|explain|look\s+at|translate)\s+(?:this|that|these)\b|(?:read|summari[sz]e|look\s+at)\s+the\s+(?:page|article|email|document|error|message|tab)\b|what\s+does\s+(?:this|that)\b)/i;
+
+/** True when the user is asking about what is on their screen / the app they are in. */
+export function isScreenQuestion(text: string): boolean {
+  return SCREEN_WORD_RE.test(text) || SCREEN_PHRASE_RE.test(text);
+}
+
+interface DumpNode { name?: unknown; children?: unknown }
+
+/**
+ * Compact, model-readable form of the read_screen JSON. The raw JSON spends its
+ * whole 800 chars on window handles and bounds, so the focused app's content
+ * never reached the model: list the windows, then the UIA names of the focused one.
+ */
+export function formatScreenDump(raw: string, maxChars = 800): string {
+  let d: { windows?: unknown; focusedProcessId?: unknown; uiTree?: unknown; error?: unknown };
+  try { d = JSON.parse(raw); } catch { return raw.slice(0, maxChars); }
+  if (!d || typeof d !== 'object') return raw.slice(0, maxChars);
+  if (d.error) return '';
+  const wins = (Array.isArray(d.windows) ? d.windows : []) as Array<{ title?: unknown; processName?: unknown; processId?: unknown; isMinimized?: unknown }>;
+  const shown = [...wins.filter((w) => !w.isMinimized), ...wins.filter((w) => w.isMinimized)]
+    .filter((w) => typeof w.title === 'string' && w.title.trim())
+    .slice(0, 8)
+    .map((w) => `${String(w.title).trim().slice(0, 60)} (${String(w.processName ?? '?')})`);
+  const lines: string[] = [];
+  if (shown.length) lines.push(`Open windows: ${shown.join('; ')}`);
+
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const stack: unknown[] = [d.uiTree];
+  let budget = maxChars * 2; // enough to fill the cap; stops a 400-node tree being walked for nothing
+  while (stack.length && budget > 0) {
+    const n = stack.pop();
+    if (Array.isArray(n)) { for (let i = n.length - 1; i >= 0; i--) stack.push(n[i]); continue; }
+    if (!n || typeof n !== 'object') continue;
+    const { name, children } = n as DumpNode;
+    if (typeof name === 'string') {
+      const t = name.trim();
+      if (t.length > 1 && !seen.has(t)) { seen.add(t); names.push(t); budget -= t.length + 3; }
+    }
+    if (children) stack.push(children);
+  }
+  if (names.length) {
+    const fp = wins.find((w) => w.processId === d.focusedProcessId);
+    lines.push(`In ${fp?.processName ? String(fp.processName) : 'the focused app'}: ${names.join(' · ')}`);
+  }
+  return lines.join('\n').slice(0, maxChars);
+}
+
+/** OCR text of the focused window as a single line for the model, whitespace-collapsed and capped. */
+export function formatOcrContext(app: string, fullText: string, maxChars = 1500): string {
+  return `Screen text (read from ${app || 'the focused window'}): ${fullText.replace(/\s+/g, ' ').trim()}`.slice(0, maxChars);
 }
