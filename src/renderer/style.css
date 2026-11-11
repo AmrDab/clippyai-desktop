@@ -994,7 +994,9 @@ body.clippy-window {
   /* Primary sits on the bright accent fill (inline background) — dark ink. */
   #bubble-actions button.is-primary { color: #1c1917; }
   #bubble-pin[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); }
-  .bubble-composer:focus-within { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.10); }
+  /* The composer is focused whenever the user types, so its focus state is its
+     normal look: a near-white border plus a ring read as an error outline. */
+  .bubble-composer:focus-within { border-color: rgba(255, 255, 255, 0.22); box-shadow: none; }
 }
 
 /* === Onboarding Window === */
