@@ -105,7 +105,7 @@ export const SCREEN_Q_OCR_MS = 3_000;
 
 // "screen"/"desktop" (+ pt/es/fr), "what app/page am I on", "what am I looking at", "summarize/read/look at this", "what does this ...".
 const SCREEN_WORD_RE = /(?<!\p{L})(?:screen|desktop|tela|pantalla|[eé]cran)(?!\p{L})/iu; // \b is ASCII-only: it would miss 'écran'
-const SCREEN_PHRASE_RE = /\b(?:(?:what|which)\s+(?:app|application|program|window|page|tab|site|website)\b|what\s+am\s+i\s+(?:looking|viewing|reading|seeing)\b|(?:read|summari[sz]e|explain|look\s+at|translate)\s+(?:this|that|these)\b|(?:read|summari[sz]e|look\s+at)\s+the\s+(?:page|article|email|document|error|message|tab)\b|what\s+does\s+(?:this|that)\b)/i;
+const SCREEN_PHRASE_RE = /\b(?:(?:what|which)\s+(?:app|application|program|window|page|tab|site|website)\s+(?:am\s+i|i'?m|is\s+(?:this|that|open)|are\s+we)\b|what\s+am\s+i\s+(?:looking|viewing|reading|seeing)\b|(?:read|summari[sz]e|explain|look\s+at|translate)\s+(?:this|that|these)\b|(?:read|summari[sz]e|look\s+at)\s+the\s+(?:page|article|email|document|error|message|tab)\b|what\s+does\s+(?:this|that)\b)/i;
 
 /** True when the user is asking about what is on their screen / the app they are in. */
 export function isScreenQuestion(text: string): boolean {
@@ -151,10 +151,15 @@ export function formatScreenDump(raw: string, maxChars = 800): string {
     const fp = wins.find((w) => w.processId === d.focusedProcessId);
     lines.push(`In ${fp?.processName ? String(fp.processName) : 'the focused app'}: ${names.join(' · ')}`);
   }
-  return lines.join('\n').slice(0, maxChars);
+  return noBrackets(lines.join('\n')).slice(0, maxChars);
 }
 
 /** OCR text of the focused window as a single line for the model, whitespace-collapsed and capped. */
 export function formatOcrContext(app: string, fullText: string, maxChars = 1500): string {
-  return `Screen text (read from ${app || 'the focused window'}): ${fullText.replace(/\s+/g, ' ').trim()}`.slice(0, maxChars);
+  return noBrackets(`Screen text (read from ${app || 'the focused window'}): ${fullText.replace(/\s+/g, ' ').trim()}`).slice(0, maxChars);
+}
+
+/** Screen text sits inside a [ ... ] block in the user's turn: square brackets in it must not close that block early. */
+function noBrackets(s: string): string {
+  return s.replace(/\[/g, '(').replace(/\]/g, ')');
 }

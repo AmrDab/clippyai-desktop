@@ -32,6 +32,10 @@ try {
         [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
         [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+        [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hWnd, int attr, out int value, int size);
+        // Suspended UWP apps (Settings, Store...) keep "visible", titled but cloaked windows in the Z-order.
+        public static bool IsCloaked(IntPtr hWnd) { int c; return DwmGetWindowAttribute(hWnd, 14 /*DWMWA_CLOAKED*/, out c, 4) == 0 && c != 0; }
         [DllImport("user32.dll", SetLastError = true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
         public static uint PidOf(IntPtr hWnd) { uint pid = 0; GetWindowThreadProcessId(hWnd, out pid); return pid; }
         // Foreground PID, skipping `exclude` (the caller's own process) by
@@ -41,7 +45,7 @@ try {
             int guard = 0;
             while (h != IntPtr.Zero && guard++ < 200) {
                 uint pid = PidOf(h);
-                if (pid != 0 && pid != exclude && IsWindowVisible(h) && GetWindowTextLength(h) > 0) return pid;
+                if (pid != 0 && pid != exclude && IsWindowVisible(h) && !IsIconic(h) && !IsCloaked(h) && GetWindowTextLength(h) > 0) return pid;
                 h = GetWindow(h, 2); // GW_HWNDNEXT
             }
             return 0;

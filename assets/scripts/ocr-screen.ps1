@@ -50,6 +50,9 @@ public class OcrScreenWin32 {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] static extern int DwmGetWindowAttributeInt(IntPtr h, int attr, out int v, int size);
+    // Suspended UWP apps (Settings, Store...) keep "visible", titled but cloaked windows in the Z-order.
+    static bool IsCloaked(IntPtr h) { int c; return DwmGetWindowAttributeInt(h, 14 /*DWMWA_CLOAKED*/, out c, 4) == 0 && c != 0; }
     public static void PerMonitorV2() { try { SetThreadDpiAwarenessContext(new IntPtr(-4)); } catch { } }
     // Frame of the foreground window, skipping `exclude`'s windows by walking
     // down the Z-order. Returns false when nothing usable is found.
@@ -59,7 +62,7 @@ public class OcrScreenWin32 {
         int guard = 0;
         while (h != IntPtr.Zero && guard++ < 200) {
             uint pid; GetWindowThreadProcessId(h, out pid);
-            if (pid != 0 && pid != exclude && IsWindowVisible(h) && !IsIconic(h) && GetWindowTextLength(h) > 0) {
+            if (pid != 0 && pid != exclude && IsWindowVisible(h) && !IsIconic(h) && !IsCloaked(h) && GetWindowTextLength(h) > 0) {
                 if (DwmGetWindowAttribute(h, 9 /*EXTENDED_FRAME_BOUNDS*/, out r, Marshal.SizeOf(typeof(RECT))) != 0) GetWindowRect(h, out r);
                 return r.Right > r.Left && r.Bottom > r.Top;
             }
