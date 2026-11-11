@@ -12,7 +12,7 @@
  * keyboard shortcut the model already knows how to emit.
  *
  * Path resolution:
- *   Dev (electron-vite): vendor/clawdcursor/guides/*.json
+ *   Dev (electron-vite): assets/guides/*.json
  *   Packaged:            {process.resourcesPath}/clawdcursor-guides/*.json
  *
  * The guides directory is bundled via electron-builder.yml `extraResources`.
@@ -50,7 +50,7 @@ function getGuidesDir(): string {
     return path.join(process.resourcesPath, 'clawdcursor-guides');
   }
   // Dev mode: read straight from the vendored copy
-  return path.join(__dirname, '..', '..', 'vendor', 'clawdcursor', 'guides');
+  return path.join(__dirname, '..', '..', 'assets', 'guides');
 }
 
 function buildIndex(): void {

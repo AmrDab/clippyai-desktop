@@ -11,7 +11,7 @@
 
 import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'crypto';
-import { createLogger } from './logger';
+import { createLogger, redactArgs } from './logger';
 import { TOOL_META, type ActionClass } from './tool-meta';
 
 const log = createLogger('Approval');
@@ -149,7 +149,8 @@ const LABELS: Record<string, Label> = {
   minimize_all_windows: () => 'Minimize all windows',
   show_desktop: () => 'Show the desktop',
   minimize_window: (a) => `Minimize ${s(a.title ?? a.processName ?? 'a window')}`,
-  kill_process: R('name|procPid', (a) => `Kill ${s(a.name ?? a.procPid)}`),
+  // com-kill-process.ps1 kills by PID when one is given and ignores the name.
+  kill_process: R('name|procPid', (a) => (Number(a.procPid) > 0 ? `Kill process with PID ${Number(a.procPid)}` : `Kill ${s(a.name)}`)),
   windows_service_control: R('name', (a) => `${s(a.action ?? 'status')} service ${s(a.name)}`),
   // Clipboard / files
   read_clipboard: () => 'Read your clipboard',
@@ -222,7 +223,7 @@ const LABELS: Record<string, Label> = {
   cdp_click: R('text|selector', (a) => `Click ${q(a.text ?? a.selector)} on the web page`),
   cdp_type: (a) => `Type ${textPhrase(a.text, a.label ?? a.selector)}${into(a.label ?? a.selector)} on the web page`,
   cdp_select_option: R('value', (a) => `Choose ${q(a.value)}${has(a.selector) ? ` in ${q(a.selector)}` : ''} on the web page`),
-  cdp_evaluate: () => 'Run JavaScript in the browser page',
+  cdp_evaluate: (a) => `Run JavaScript in the browser page${has(a.javascript) ? `: ${s(a.javascript, 240)}` : ''}`,
   cdp_wait_for_selector: R('selector', (a) => `Wait for ${q(a.selector)} to appear on the page`),
   cdp_list_tabs: () => 'List your browser tabs',
   cdp_switch_tab: R('target', (a) => `Switch to browser tab ${q(a.target)}`),
@@ -251,7 +252,7 @@ const LABELS: Record<string, Label> = {
   clawd_status: () => "Check the desktop helper's status",
   clawd_task: R('task', (a) => `Hand off desktop task: ${s(a.task)}`),
   find_skill: R('query|intent', (a) => `Search ClawHub for a skill: ${q(a.query ?? a.intent)}`),
-  install_skill: R('slug', (a) => `Install skill ${s(a.slug)}`),
+  install_skill: R('slug', (a) => `Install skill ${s(a.slug)}${has(a.version) ? ` version ${s(a.version)}` : ''}`),
   update_user_profile: (a) => (has(a.field) ? `Remember your ${s(a.field, 30).replace(/_/g, ' ')}` : 'Update your profile'),
   finish_onboarding_chat: () => 'Finish the getting-to-know-you chat',
 };
@@ -275,6 +276,8 @@ export function summarizeArgs(tool: string, args: Record<string, unknown> = {}):
     } catch { /* fall through to the description */ }
   }
   if (/_send_email$/.test(tool) && has(a.to)) return `Email to ${s(a.to)}${has(a.subject) ? `, subject ${s(a.subject)}` : ''}`;
-  if (tool.startsWith('skill__')) return `Run skill ${tool.slice('skill__'.length)}`;
+  if (tool.startsWith('skill__')) {
+    return `Run skill ${tool.slice('skill__'.length)}${Object.keys(a).length ? ` ${s(JSON.stringify(redactArgs(a)), 240)}` : ''}`;
+  }
   return fromDescription(tool) ?? `Use ${tool.replace(/_/g, ' ')}`;
 }
