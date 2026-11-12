@@ -306,11 +306,23 @@ func main() -> Int32 {
     if #available(macOS 14.0, *) {
         // Run the async capture synchronously — this is a one-shot
         // CLI, no event loop needed.
+        //
+        // The Task writes its result into a reference-type box instead of
+        // mutating the captured `var`s above: Swift 5.10 (Xcode 15, the
+        // macos-14 CI image) rejects "mutation of captured var in
+        // concurrently-executing code" as an error. The semaphore orders
+        // the Task's writes before our reads, so @unchecked Sendable is safe.
+        final class SCKResult: @unchecked Sendable {
+            var image: CGImage?
+            var permissionDenied = false
+            var errMsg = ""
+        }
+        let result = SCKResult()
+        let region = args.region
         let sema = DispatchSemaphore(value: 0)
         Task {
             do {
-                let img = try await captureWithSCK(region: args.region)
-                captured = img
+                result.image = try await captureWithSCK(region: region)
             } catch {
                 // SCK reports permission denial as a specific NSError
                 // domain. Anything else is a generic capture failure.
@@ -320,13 +332,16 @@ func main() -> Int32 {
                     || ns.localizedDescription.lowercased().contains("declined")
                     || ns.code == -3801   // SCStreamErrorUserDeclined
                 {
-                    permissionDenied = true
+                    result.permissionDenied = true
                 }
-                captureErrMsg = ns.localizedDescription
+                result.errMsg = ns.localizedDescription
             }
             sema.signal()
         }
         sema.wait()
+        captured = result.image
+        permissionDenied = result.permissionDenied
+        captureErrMsg = result.errMsg
     } else {
         captured = captureWithCG(region: args.region)
         if captured == nil {

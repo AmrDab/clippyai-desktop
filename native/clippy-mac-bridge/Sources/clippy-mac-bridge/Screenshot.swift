@@ -90,9 +90,17 @@ func captureScreenImage(region: CGRect?, displayIndex: Int = 0) throws -> Captur
 private func captureWithSCK(region: CGRect?, displayIndex: Int) throws -> CaptureResult {
     // Bridge the SCK async API into a sync call — we're a one-shot CLI,
     // no event loop, no callers depending on cooperative concurrency.
+    //
+    // The Task writes into a reference-type box rather than mutating captured
+    // `var`s: Swift 5.10 (Xcode 15, the macos-14 CI image) rejects "mutation of
+    // captured var in concurrently-executing code" as an error. The semaphore
+    // orders the Task's writes before our reads, so @unchecked Sendable is safe.
+    final class SCKBox: @unchecked Sendable {
+        var result: CaptureResult?
+        var error: Error?
+    }
+    let box = SCKBox()
     let sema = DispatchSemaphore(value: 0)
-    var result: CaptureResult?
-    var capturedError: Error?
 
     Task {
         do {
@@ -102,7 +110,7 @@ private func captureWithSCK(region: CGRect?, displayIndex: Int) throws -> Captur
             )
             let displays = content.displays
             guard !displays.isEmpty else {
-                capturedError = CaptureError.noDisplays
+                box.error = CaptureError.noDisplays
                 sema.signal()
                 return
             }
@@ -157,7 +165,7 @@ private func captureWithSCK(region: CGRect?, displayIndex: Int) throws -> Captur
                 contentFilter: filter,
                 configuration: config
             )
-            result = CaptureResult(
+            box.result = CaptureResult(
                 image: image,
                 scale: scale,
                 pixelWidth: image.width,
@@ -175,17 +183,17 @@ private func captureWithSCK(region: CGRect?, displayIndex: Int) throws -> Captur
                 || lower.contains("permission")
                 || lower.contains("declined")
                 || lower.contains("not allowed") {
-                capturedError = CaptureError.permissionDenied(msg)
+                box.error = CaptureError.permissionDenied(msg)
             } else {
-                capturedError = CaptureError.captureFailed(msg)
+                box.error = CaptureError.captureFailed(msg)
             }
         }
         sema.signal()
     }
     sema.wait()
 
-    if let err = capturedError { throw err }
-    guard let r = result else {
+    if let err = box.error { throw err }
+    guard let r = box.result else {
         throw CaptureError.captureFailed("SCK returned no image and no error")
     }
     return r
