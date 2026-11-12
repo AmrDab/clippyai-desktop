@@ -486,7 +486,10 @@ let verifying = false;
 
 function showSetupError(msg: string): void { setupError.textContent = msg; }
 function codeDigits(): string { return normalizeCode(setupCode.value); }
-function updateVerifyButton(): void { btnVerify.disabled = verifying || !isCompleteCode(codeDigits()); }
+function updateVerifyButton(): void {
+  btnVerify.disabled = verifying || !isCompleteCode(codeDigits());
+  setupCode.toggleAttribute('data-verifying', verifying); // the border beam runs only while the code is checked
+}
 
 /** Forward enters from the right, back from the left. Only the entering stage moves. */
 function enterStage(el: HTMLElement, dir: 1 | -1): void {

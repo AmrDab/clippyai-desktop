@@ -350,7 +350,7 @@ function renderUpgradeCta(plan: string): void {
   // A Free user sees both upgrades (Power used to appear only near the usage cap).
   const powerLink = el.querySelector<HTMLAnchorElement>('#upgrade-to-power-link');
   if (powerLink) {
-    powerLink.style.display = lower === 'power' ? 'none' : 'inline';
+    powerLink.style.display = lower === 'power' ? 'none' : 'inline-block';
     if (!powerLink.dataset.wired) {
       powerLink.dataset.wired = '1';
       powerLink.addEventListener('click', (e) => {

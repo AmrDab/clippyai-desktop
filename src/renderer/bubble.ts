@@ -33,7 +33,7 @@ const AVOIDANCE_RADIUS_PX = 90;
 const AVOIDANCE_RELEASE_PX = 220; // hysteresis — cursor must leave further than entry
 
 const INPUT_PLACEHOLDER = 'Ask Clippy anything…';
-const TYPING_HTML = '<span class="typing" role="img" aria-label="Clippy is thinking"><i></i><i></i><i></i></span>';
+const TYPING_HTML = '<span class="typing" role="img" aria-label="Clippy is thinking"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>';
 
 export interface SuggestionChip {
   label: string;
@@ -1035,11 +1035,18 @@ export class BubbleController {
           if (this.micLevel) {
             this.micLevel.style.setProperty('--lvl', String(0.4 + level * 1.4));
           }
+          // The composer glow reads the same live level, and only while recording.
+          if (this.micBtn?.classList.contains('recording')) {
+            this.micBtn.closest<HTMLElement>('.bubble-composer')?.style.setProperty('--lvl', String(0.4 + level * 1.4));
+          }
         },
         onStateChange: (s) => {
           if (this.micBtn) {
             this.micBtn.classList.toggle('recording', s === 'recording');
             this.micBtn.classList.toggle('encoding', s === 'encoding');
+            const composer = this.micBtn.closest<HTMLElement>('.bubble-composer');
+            composer?.classList.toggle('is-recording', s === 'recording');
+            if (s !== 'recording') composer?.style.removeProperty('--lvl');
           }
           if (s === 'recording') this.requestAnim('Hearing_1');
           else if (s === 'idle') this.requestAnim('Idle1_1');

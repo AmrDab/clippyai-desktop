@@ -565,19 +565,22 @@ body.clippy-window {
   border-bottom-left-radius: 5px;
 }
 .chat-clippy.chat-thinking { color: var(--bubble-ink-soft); }
-/* Stepped, not eased: three repaints a second, and it matches the pixel-art sprite. */
-.typing { display: inline-flex; align-items: center; gap: 4px; height: 20px; vertical-align: middle; }
+/* Thinking orb: a 3x3 dot grid, a diagonal wave. Stepped, not eased: five repaints a second,
+   and it matches the pixel-art sprite. It only exists (and so only animates) while Clippy thinks. */
+.typing { display: inline-grid; grid-template-columns: repeat(3, 5px); gap: 2px; height: 20px; align-content: center; vertical-align: middle; }
 .typing i {
   width: 5px; height: 5px; border-radius: 50%;
   background: currentColor;
   opacity: 0.25;
-  animation: typing-dot 0.9s step-end infinite;
+  animation: typing-dot 1s step-end infinite;
 }
-.typing i:nth-child(2) { animation-delay: 0.3s; }
-.typing i:nth-child(3) { animation-delay: 0.6s; }
+.typing i:nth-child(2), .typing i:nth-child(4) { animation-delay: 0.2s; }
+.typing i:nth-child(3), .typing i:nth-child(5), .typing i:nth-child(7) { animation-delay: 0.4s; }
+.typing i:nth-child(6), .typing i:nth-child(8) { animation-delay: 0.6s; }
+.typing i:nth-child(9) { animation-delay: 0.8s; }
 @keyframes typing-dot {
   0%   { opacity: 0.9; }
-  33%  { opacity: 0.25; }
+  30%  { opacity: 0.25; }
 }
 @media (prefers-reduced-motion: reduce) {
   .typing i { animation: none; opacity: 0.6; }
@@ -3650,3 +3653,85 @@ body.onboarding-window[data-platform="win"] {
   font-size: 12px;
   opacity: 0.75;
 }
+
+/* ── UI effects: border beam, voice glow, metal ─────────────────────
+   Every effect animates only in its real state (thinking, recording, busy,
+   verifying, a fresh approval) and is still under prefers-reduced-motion. */
+@property --beam-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes beam-spin { to { --beam-angle: 360deg; } }
+
+/* Voice glow: the composer's edge follows the live mic level (--lvl, set in bubble.ts onLevel). */
+.bubble-composer.is-recording {
+  border-color: rgba(244, 67, 54, 0.5);
+  box-shadow: 0 0 calc(var(--lvl, 0.4) * 9px) calc(var(--lvl, 0.4) * 1px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.25));
+  transition: border-color 0.15s ease, box-shadow 0.12s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble-composer.is-recording { box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.2); transition: none; }
+}
+
+/* Border beam on the header status while a task runs. Stepped (16 frames per turn) to keep the retro feel. */
+.bubble-header-status[data-busy="true"] { position: relative; }
+.bubble-header-status[data-busy="true"]::after {
+  content: '';
+  position: absolute;
+  inset: -3px -7px;
+  padding: 1px;
+  border-radius: 999px;
+  background: conic-gradient(from var(--beam-angle), transparent 0 70%, #3b82f6 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+  animation: beam-spin 2.4s steps(16) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble-header-status[data-busy="true"]::after { animation: none; background: rgba(59, 130, 246, 0.5); }
+}
+
+/* A fresh approval card: one beam lap around the buttons, then gone. The countdown row is
+   appended with the card (main.ts), so :has() starts the animation exactly once per prompt. */
+#bubble-actions:has(.approval-countdown) { position: relative; }
+#bubble-actions:has(.approval-countdown)::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  padding: 2px;
+  border-radius: 10px;
+  background: conic-gradient(from var(--beam-angle), transparent 0 75%, var(--tint-accent, #f59e0b) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+  opacity: 0;
+  animation: beam-spin 1.2s steps(16) 1 forwards, beam-fade 1.2s linear 1 forwards;
+}
+@keyframes beam-fade { 0%, 85% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  #bubble-actions:has(.approval-countdown)::after { animation: none; }
+}
+
+/* Onboarding code box while the code is being checked: the border carries the beam. */
+.onboarding-step input.code-input[data-verifying] {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(#fff, #fff) padding-box,
+    conic-gradient(from var(--beam-angle), #ccc 0 70%, #4CAF50 100%) border-box;
+  animation: beam-spin 1.6s steps(16) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-step input.code-input[data-verifying] { animation: none; border-color: #4CAF50; background: #fff; }
+}
+
+/* Upgrade to Power: a static brushed-metal pill. Dark ink on light steel keeps contrast well above 4.5:1. */
+#upgrade-to-power-link {
+  padding: 3px 12px;
+  border: 1px solid #64748b;
+  border-radius: 999px;
+  color: #0f172a;
+  font-weight: 600;
+  background: linear-gradient(180deg, #f8fafc 0%, #cbd5e1 48%, #e2e8f0 52%, #94a3b8 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+#upgrade-to-power-link:hover { text-decoration: none; filter: brightness(1.06); }
+#upgrade-to-power-link:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
