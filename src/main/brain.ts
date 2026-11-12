@@ -618,7 +618,7 @@ interface BrainSettings {
 const settingsStore = new Store<BrainSettings>({
   name: 'brain-settings',
   defaults: {
-    proactiveInterval: 300000, // 5 minutes — was 30s, way too frequent
+    proactiveInterval: 180000, // 3 minutes (was 5, owner 2026-11-12: start conversations a bit more often; 30s was far too frequent)
     proactiveEnabled: true,
     // v0.16.0 — was 600_000 (10 min). Per proactive-silence diagnostic:
     // across 5 reports zero successful proactive utterances reached the

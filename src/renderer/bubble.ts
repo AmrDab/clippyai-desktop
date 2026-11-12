@@ -122,7 +122,7 @@ export class BubbleController {
     this.closeBtn = document.getElementById('bubble-close') as HTMLButtonElement | null;
     this.onSend = onSend;
 
-    // Clippy's reactions (thought bubble / listening halo / working beam) follow what the
+    // Clippy's reactions (listening halo / working beam) follow what the
     // bubble shows, so watch it instead of hooking every place the text is replaced.
     const sync = (): void => this.syncReactions();
     const mo = new MutationObserver(sync);
@@ -672,7 +672,6 @@ export class BubbleController {
     const thinking = !this.bubble.classList.contains('hidden')
       && !!(this.bubbleText.querySelector('.typing') || this.history.querySelector('.chat-thinking'));
     const c = document.getElementById('clippy-container');
-    c?.classList.toggle('is-thinking', thinking);
     c?.classList.toggle('is-working', this.working);
     c?.classList.toggle('is-listening', this.listening);
     this.bubble.querySelector('.bubble-composer')?.classList.toggle('is-busy', thinking || this.working);

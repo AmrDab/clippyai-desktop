@@ -3739,8 +3739,8 @@ body.onboarding-window[data-platform="win"] {
 /* ── Clippy reacts to what he is doing ───────────────────────────────
    Idle: nothing here (the breathing bob stays). All decoration, no pointer events.
    Everything sits inside the 124×93 container's neighbourhood so it fits the 140×110
-   collapsed window; the thought bubble only exists while the speech bubble is up. */
-#clippy-aura, #clippy-thought { position: absolute; pointer-events: none; display: none; }
+   collapsed window. Thinking shows in the speech bubble itself (the dot orb). */
+#clippy-aura { position: absolute; pointer-events: none; display: none; }
 
 /* Feet halo. z-index -1 puts it behind the sprite (the container is its stacking context). */
 #clippy-aura {
@@ -3774,33 +3774,9 @@ body.onboarding-window[data-platform="win"] {
   animation: beam-spin 2s steps(24) infinite;
 }
 
-/* Thinking: a thought bubble left of his head holding the same dot orb. */
-#clippy-thought {
-  left: -32px; top: 4px;
-  width: 42px; height: 34px;
-  border-radius: 50%;
-  background: var(--bubble-bg);
-  border: 1px solid var(--bubble-hairline);
-  color: var(--bubble-ink);
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
-  place-items: center;
-}
-#clippy-thought::before, #clippy-thought::after {
-  content: '';
-  position: absolute;
-  border-radius: 50%;
-  background: var(--bubble-bg);
-  border: 1px solid var(--bubble-hairline);
-}
-#clippy-thought::before { width: 9px; height: 9px; right: -9px; bottom: -3px; }
-#clippy-thought::after  { width: 5px; height: 5px; right: -17px; bottom: -9px; }
-#clippy-container.is-thinking #clippy-thought { display: grid; animation: thought-in 0.22s var(--ease-out) both; }
-@keyframes thought-in { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
-
 @media (prefers-reduced-motion: reduce) {
   #clippy-container.is-listening #clippy-aura { transform: none; transition: none; }
   #clippy-container.is-working:not(.is-listening) #clippy-aura::after { animation: none; }
-  #clippy-container.is-thinking #clippy-thought { animation: none; }
 }
 
 /* ── Text box: beam on focus, busy beam, metal send, voice bars ──────
