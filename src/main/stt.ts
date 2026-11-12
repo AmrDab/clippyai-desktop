@@ -98,7 +98,7 @@ export function isSttReady(): { ready: boolean; reason?: string } {
       reason: 'Voice input needs an OpenAI key on macOS — add one in Settings → Voice (audio is sent to OpenAI; opt-in).',
     };
   }
-  const cli = path.join(whisperDir(), 'whisper-cli');
+  const cli = path.join(whisperDir(), 'whisper-cli.exe');
   const model = modelPath();
   if (!fs.existsSync(cli)) return { ready: false, reason: `whisper-cli not found at ${cli}` };
   if (!fs.existsSync(model)) return { ready: false, reason: `model not found at ${model}` };
@@ -134,7 +134,7 @@ export async function transcribeWav(
   const tmpFile = path.join(os.tmpdir(), `clippy-stt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
   try {
     fs.writeFileSync(tmpFile, wavBuffer);
-    const cliPath = path.join(whisperDir(), 'whisper-cli');
+    const cliPath = path.join(whisperDir(), 'whisper-cli.exe');
     const args = [
       '-m', modelPath(),
       '-f', tmpFile,
