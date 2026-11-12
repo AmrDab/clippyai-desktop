@@ -79,6 +79,8 @@
              again to stop & transcribe, Esc to cancel. (Pre-v0.17.2 was
              hold-to-talk, which felt finicky for clips longer than a few
              seconds.) Hidden when voiceEnabled is false. -->
+        <!-- Live level bars; shown only while recording (.is-recording). -->
+        <span class="voice-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
         <button id="bubble-mic" type="button" title="Click to speak (Ctrl+Shift+Space) · Esc cancels" aria-label="Voice input">
           <!-- SVG mic (was the 🎤 emoji, which rendered in full color at a
                size we couldn't control and clashed with every tint). -->
@@ -121,6 +123,9 @@
   <!-- Clippy character container -->
   <div id="clippy-container">
     <canvas id="clippy-canvas"></canvas>
+    <!-- State reactions (style.css "Clippy reacts"): decorations only, no pointer events. -->
+    <div id="clippy-aura" aria-hidden="true"></div>
+    <div id="clippy-thought" aria-hidden="true"><span class="typing"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div>
   </div>
 
   <script type="module" src="./main.ts"></script>

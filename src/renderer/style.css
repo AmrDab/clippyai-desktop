@@ -275,16 +275,16 @@ body.clippy-window {
   min-height: 70px;
 }
 .bubble[data-state="expanded"] {
-  /* v0.21 — fill the host window to a 5px inset (window.ts sizes it
-   * 500×620 → a 490×610 panel). Pre-fix the 480×600 panel sat in a 540×660
-   * window and the transparent top/left gutter swallowed desktop clicks. */
+  /* The panel sits ABOVE Clippy, like standard mode: window.ts sizes the
+   * expanded window 500×719 (or shorter on a short display), the panel fills it
+   * to a 5px inset on top/left/right and stops 104px above the bottom, which is
+   * Clippy's strip. The tail points down at him. Not clipped (see overflow). */
   width: calc(100vw - 10px);
-  height: calc(100vh - 10px);
-  /* Intentional: the expanded panel fills the window down to the corner and
-   * Clippy peeks over its bottom-right (tail hidden) — see #clippy-container
-   * note + `[data-state="expanded"] #bubble-tail { display:none }`. */
-  bottom: 5px;
+  height: calc(100vh - 104px - 5px);
+  bottom: 104px;
   right: 5px;
+  /* The tail hangs outside the panel; the children keep the rounded corners. */
+  overflow: visible;
   /* The ambient 30px shadow would clip at the 5px inset; use a tight one. */
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22), inset 0 1px 0 var(--bubble-inner-stroke);
   padding: 0;
@@ -370,8 +370,9 @@ body.clippy-window {
   box-shadow: 1px 1px 2px rgba(15, 23, 42, 0.05);
   transform: rotate(-45deg);
 }
-/* Expanded mode snaps to the screen edge; the tail is meaningless then. */
-.bubble[data-state="expanded"] #bubble-tail { display: none; }
+/* Expanded: the panel floats above Clippy, so the tail shows (centred over his head). */
+.bubble[data-state="expanded"] #bubble-tail { right: 54px; }
+.bubble[data-state="expanded"]::before { border-radius: var(--bubble-radius) var(--bubble-radius) 0 0; }
 
 /* v0.20.0-alpha.14 — tail flip. When Clippy is near the top edge, main
  * grows the window DOWNWARD (window.ts emits 'bubble-side' = 'below') and
@@ -772,10 +773,8 @@ body.clippy-window {
 }
 .bubble[data-state="expanded"] #bubble-input-area {
   margin: 0;
-  /* Right padding clears the sprite (#clippy-container, 124px at the
-   * window's bottom-right, z-index 20) — without it Clippy sat on top of
-   * the mic + send buttons and swallowed their clicks. */
-  padding: 10px 122px 12px 14px;
+  padding: 10px 14px 12px;
+  border-radius: 0 0 var(--bubble-radius) var(--bubble-radius);
   border-top: 1px solid var(--bubble-hairline);
   background: rgba(255, 255, 255, 0.4);
   flex-shrink: 0;
@@ -3675,10 +3674,11 @@ body.onboarding-window[data-platform="win"] {
 .bubble-header-status[data-busy="true"]::after {
   content: '';
   position: absolute;
-  inset: -3px -7px;
-  padding: 1px;
+  inset: -4px -8px;
+  padding: 2px;
   border-radius: 999px;
-  background: conic-gradient(from var(--beam-angle), transparent 0 70%, #3b82f6 100%);
+  background: conic-gradient(from var(--beam-angle), rgba(59, 130, 246, 0.18) 0 45%, #3b82f6 80%, #93c5fd 100%);
+  filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.7));
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
@@ -3686,7 +3686,7 @@ body.onboarding-window[data-platform="win"] {
   animation: beam-spin 2.4s steps(16) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .bubble-header-status[data-busy="true"]::after { animation: none; background: rgba(59, 130, 246, 0.5); }
+  .bubble-header-status[data-busy="true"]::after { animation: none; background: rgba(59, 130, 246, 0.6); }
 }
 
 /* A fresh approval card: one beam lap around the buttons, then gone. The countdown row is
@@ -3735,3 +3735,154 @@ body.onboarding-window[data-platform="win"] {
 }
 #upgrade-to-power-link:hover { text-decoration: none; filter: brightness(1.06); }
 #upgrade-to-power-link:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
+
+/* ── Clippy reacts to what he is doing ───────────────────────────────
+   Idle: nothing here (the breathing bob stays). All decoration, no pointer events.
+   Everything sits inside the 124×93 container's neighbourhood so it fits the 140×110
+   collapsed window; the thought bubble only exists while the speech bubble is up. */
+#clippy-aura, #clippy-thought { position: absolute; pointer-events: none; display: none; }
+
+/* Feet halo. z-index -1 puts it behind the sprite (the container is its stacking context). */
+#clippy-aura {
+  z-index: -1;
+  left: 14px; width: 96px;
+  bottom: 7px; height: 22px;
+  border-radius: 50%;
+}
+#clippy-aura::before, #clippy-aura::after { content: ''; position: absolute; inset: 0; border-radius: 50%; }
+
+/* Listening: a red halo that breathes with the live mic level. */
+#clippy-container.is-listening #clippy-aura { display: block; transform: scale(calc(0.94 + var(--lvl, 0.4) * 0.05)); transition: transform 0.12s ease-out; }
+#clippy-container.is-listening #clippy-aura::before {
+  background: radial-gradient(ellipse at center, rgba(244, 67, 54, 0.45) 0%, rgba(244, 67, 54, 0.18) 55%, rgba(244, 67, 54, 0) 72%);
+  border: 2px solid rgba(244, 67, 54, 0.75);
+  box-shadow: 0 0 calc(var(--lvl, 0.4) * 4px) calc(var(--lvl, 0.4) * 1px) rgba(244, 67, 54, 0.55);
+}
+
+/* Working: a blue beam circling a platform under his feet. Stepped like the other beams. */
+#clippy-container.is-working:not(.is-listening) #clippy-aura { display: block; }
+#clippy-container.is-working:not(.is-listening) #clippy-aura::before {
+  background: radial-gradient(ellipse at center, rgba(59, 130, 246, 0.28) 0%, rgba(59, 130, 246, 0) 70%);
+}
+#clippy-container.is-working:not(.is-listening) #clippy-aura::after {
+  padding: 3px;
+  background: conic-gradient(from var(--beam-angle), rgba(59, 130, 246, 0.2) 0 40%, #3b82f6 80%, #bfdbfe 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.8));
+  animation: beam-spin 2s steps(24) infinite;
+}
+
+/* Thinking: a thought bubble left of his head holding the same dot orb. */
+#clippy-thought {
+  left: -32px; top: 4px;
+  width: 42px; height: 34px;
+  border-radius: 50%;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-hairline);
+  color: var(--bubble-ink);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+  place-items: center;
+}
+#clippy-thought::before, #clippy-thought::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  background: var(--bubble-bg);
+  border: 1px solid var(--bubble-hairline);
+}
+#clippy-thought::before { width: 9px; height: 9px; right: -9px; bottom: -3px; }
+#clippy-thought::after  { width: 5px; height: 5px; right: -17px; bottom: -9px; }
+#clippy-container.is-thinking #clippy-thought { display: grid; animation: thought-in 0.22s var(--ease-out) both; }
+@keyframes thought-in { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  #clippy-container.is-listening #clippy-aura { transform: none; transition: none; }
+  #clippy-container.is-working:not(.is-listening) #clippy-aura::after { animation: none; }
+  #clippy-container.is-thinking #clippy-thought { animation: none; }
+}
+
+/* ── Text box: beam on focus, busy beam, metal send, voice bars ──────
+   Focus = one yellow lap, then a steady soft accent border. Thinking or working =
+   a continuous blue beam round the edge. The ring is an overlay, so the border and
+   the recording glow keep working underneath. */
+.bubble-composer { position: relative; }
+.bubble-composer::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--beam-angle), transparent 0 55%, #ffc83d 85%, #fff2b3 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+  opacity: 0;
+}
+.bubble-composer:focus-within {
+  border-color: rgba(229, 169, 18, 0.75);
+  box-shadow: 0 0 0 3px rgba(255, 200, 61, 0.22), inset 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+.bubble-composer:focus-within::after { animation: beam-spin 1s steps(20) 1 forwards, beam-fade 1s linear 1 forwards; }
+.bubble-composer.is-busy::after,
+.bubble-composer.is-busy:focus-within::after {
+  background: conic-gradient(from var(--beam-angle), transparent 0 45%, #3b82f6 85%, #bfdbfe 100%);
+  opacity: 1;
+  animation: beam-spin 1.8s steps(24) infinite;
+}
+/* Recording keeps its red edge; no yellow lap on top of it. */
+.bubble-composer.is-recording::after { display: none; }
+.bubble-composer.is-recording {
+  border-color: rgba(244, 67, 54, 0.8);
+  box-shadow: 0 0 calc(var(--lvl, 0.4) * 12px) calc(var(--lvl, 0.4) * 2px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.35));
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Calm at rest: a dim amber edge, no white ring. */
+  .bubble-composer:focus-within {
+    border-color: rgba(255, 200, 61, 0.45);
+    box-shadow: 0 0 0 2px rgba(255, 200, 61, 0.12);
+  }
+  .bubble-composer.is-recording {
+    border-color: rgba(244, 67, 54, 0.7);
+    box-shadow: 0 0 calc(var(--lvl, 0.4) * 12px) calc(var(--lvl, 0.4) * 2px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.35));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble-composer:focus-within::after { animation: none; opacity: 0; }
+  .bubble-composer.is-busy::after,
+  .bubble-composer.is-busy:focus-within::after { animation: none; opacity: 0.8; background: rgba(59, 130, 246, 0.7); }
+  .bubble-composer.is-recording { box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3); }
+}
+
+/* Send: Clippy-yellow brushed metal with a dark icon once there is text; flat grey when empty. */
+#bubble-send:not(:disabled):not(.is-stop) {
+  background-color: #ffc83d;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 48%, rgba(120, 70, 0, 0.18) 52%, rgba(120, 70, 0, 0.1) 100%),
+    linear-gradient(180deg, #ffe58a 0%, #ffc83d 50%, #f0a800 100%);
+  color: #1c1917;
+  border-color: rgba(120, 70, 0, 0.45);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.8), inset 0 -1px 0 rgba(120, 70, 0, 0.25);
+}
+#bubble-send:not(:disabled):not(.is-stop):hover { filter: brightness(1.07); }
+
+/* Voice level bars inside the composer. Heights follow --lvl. */
+.voice-bars { display: none; align-items: center; gap: 3px; height: 32px; padding: 0 4px; flex-shrink: 0; }
+.bubble-composer.is-recording .voice-bars { display: inline-flex; }
+.voice-bars i {
+  width: 3px; border-radius: 2px;
+  background: rgba(244, 67, 54, 0.85);
+  height: calc(4px + var(--lvl, 0.4) * var(--m, 1) * 7px);
+  transition: height 0.1s ease-out;
+}
+.voice-bars i:nth-child(1) { --m: 0.6; }
+.voice-bars i:nth-child(2) { --m: 1; }
+.voice-bars i:nth-child(3) { --m: 0.8; }
+.voice-bars i:nth-child(4) { --m: 1.2; }
+.voice-bars i:nth-child(5) { --m: 0.7; }
+@media (prefers-reduced-motion: reduce) {
+  .voice-bars i { height: 10px; transition: none; }
+}

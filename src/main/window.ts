@@ -51,12 +51,17 @@ const BUBBLE_COMPACT_WIDTH = 340;
 const BUBBLE_COMPACT_HEIGHT = 200;
 const BUBBLE_STANDARD_WIDTH = 380;
 const BUBBLE_STANDARD_HEIGHT = 420;
-// v0.21 — expanded was 540×660 with the 480×600 panel pinned bottom-right,
-// leaving a ~55px transparent gutter on the top/left that swallowed desktop
-// clicks. The panel now fills the window minus a 5px shadow inset (style.css
-// `.bubble[data-state="expanded"]`), so the window is just panel + inset.
+// Expanded: the 490×610 panel sits ABOVE the sprite like standard mode (style.css
+// `.bubble[data-state="expanded"]`: bottom 104px, 5px top/right inset), tail
+// pointing down at Clippy, who stands below its bottom-right. The window is the
+// old 500×620 plus the 99px sprite strip. The transparent strip left of Clippy
+// is click-through (renderer toggles 'window-ignore-mouse').
 const BUBBLE_EXPANDED_WIDTH = 500;
-const BUBBLE_EXPANDED_HEIGHT = 620;
+const EXPANDED_SPRITE_STRIP = 99;
+const BUBBLE_EXPANDED_HEIGHT = 620 + EXPANDED_SPRITE_STRIP;
+// Smallest expanded window (panel ≈ 250px) used when Clippy sits near the top
+// of the display; below this we fall back to the old clamp-and-shift.
+const BUBBLE_EXPANDED_MIN_HEIGHT = 360;
 // Legacy aliases — kept so existing call sites that expect the old
 // "expanded" semantic (= standard in the new vocabulary) still work.
 const EXPANDED_WIDTH = BUBBLE_STANDARD_WIDTH;
@@ -186,6 +191,8 @@ export function createWindow(): BrowserWindow {
     if (hangTimer) { clearTimeout(hangTimer); hangTimer = null; log.info('Renderer responsive again'); }
   });
 
+  // A reload (crash recovery, HMR) must never inherit a click-through window.
+  win.webContents.on('did-start-loading', () => { if (!win.isDestroyed()) win.setIgnoreMouseEvents(false); });
   win.webContents.on('did-finish-load', () => {
     log.debug('Renderer loaded');
   });
@@ -212,10 +219,14 @@ export function createWindow(): BrowserWindow {
   function resizeTo(state: BubbleSizeState): void {
     if (win.isDestroyed()) return;
     if (state === currentSize) return; // idempotent
-    const { width: newW, height: newH } = dimsFor(state);
+    const dims = dimsFor(state);
+    const newW = dims.width;
+    let newH = dims.height;
     const [x, y] = win.getPosition();
     const [oldW, oldH] = win.getSize();
     const display = displayForWindow(win);
+    // Click-through only ever applies to the expanded window; reset it on every other size.
+    if (state !== 'expanded') win.setIgnoreMouseEvents(false);
 
     if (state === 'collapsed') {
       // Restore the stored pre-expand origin verbatim. Falling back to the
@@ -245,10 +256,19 @@ export function createWindow(): BrowserWindow {
     let newY = anchorBottom - newH; // grow upward by default
     let side: BubbleSide = 'above';
 
-    // If growing upward would clip the top of the work area, flip and grow
-    // downward from Clippy's top edge instead (tail points up).
     const wa = display.workArea;
-    if (newY < wa.y && anchorBottom - oldH + newH <= wa.y + wa.height) {
+    if (state === 'expanded') {
+      // Never push Clippy: shrink the window (hence the panel, which is
+      // 100vh-based) to the room above him, down to a minimum, instead of
+      // letting the clamp shift the whole window down.
+      newH = Math.min(newH, wa.height, Math.max(anchorBottom - wa.y, BUBBLE_EXPANDED_MIN_HEIGHT));
+      newY = anchorBottom - newH;
+    }
+
+    // If growing upward would clip the top of the work area, flip and grow
+    // downward from Clippy's top edge instead (tail points up). Not for
+    // expanded: Clippy is pinned to the window's bottom-right there.
+    if (state !== 'expanded' && newY < wa.y && anchorBottom - oldH + newH <= wa.y + wa.height) {
       newY = anchorBottom - oldH; // keep Clippy's top edge, extend below
       side = 'below';
     }
@@ -278,14 +298,19 @@ export function createWindow(): BrowserWindow {
     resizeTo(state);
   });
 
+  // Click-through for the expanded window's transparent strip: the renderer
+  // asks to ignore the mouse while the pointer is over neither the panel nor
+  // Clippy (forwarded mouse-moves still reach it, so it can turn this back off).
+  ipcMain.on('window-ignore-mouse', (event, ignore: unknown) => {
+    if (win.isDestroyed() || event.sender !== win.webContents) return;
+    if (ignore === true && currentSize === 'expanded') win.setIgnoreMouseEvents(true, { forward: true });
+    else win.setIgnoreMouseEvents(false);
+  });
+
   // Legacy IPC channels — kept for backward compatibility with callers
   // that haven't migrated to the state-keyed channel yet.
   ipcMain.on('expand-window', () => resizeTo('standard'));
   ipcMain.on('collapse-window', () => resizeTo('collapsed'));
-
-  // (v0.21 — the old item #5 "expanded window's transparent top-left gutter
-  // swallows desktop clicks" is resolved by sizing: the expanded panel now
-  // fills the window to a 5px inset, see BUBBLE_EXPANDED_* above.)
 
   // Window drag movement — with bounds checking
   ipcMain.on('move-window', (_event, deltaX: number, deltaY: number) => {

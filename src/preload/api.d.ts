@@ -330,6 +330,7 @@ interface Window {
     collapseWindow: () => void;
     /** v0.19.0 PR-2.1 — state-keyed window resize for bubble v2 (compact/standard/expanded each map to a different window dimension so the bubble doesn't clip) */
     setBubbleWindowSize: (state: 'collapsed' | 'compact' | 'standard' | 'expanded') => void;
+    setWindowIgnoreMouse?: (ignore: boolean) => void;
     /** v0.20.0-alpha.14 — main pushes the side the bubble body grows on
      *  (anchor-aware / multi-display) so the renderer can flip the tail. */
     onBubbleSide?: (cb: (side: 'above' | 'below') => void) => void;

@@ -790,6 +790,24 @@ async function init(): Promise<void> {
     canvas.style.cursor = 'grabbing';
   });
 
+  // Expanded window: the strip left of Clippy is transparent, so let desktop clicks
+  // through it. Forwarded mouse-moves keep arriving while ignoring, which is how we
+  // turn it back off. Never while dragging (the drag starts on the sprite anyway).
+  let clickThrough = false;
+  // main resets click-through on every resize; keep our copy in step.
+  const bubbleEl = document.getElementById('bubble');
+  if (bubbleEl) new MutationObserver(() => { clickThrough = false; }).observe(bubbleEl, { attributes: true, attributeFilter: ['data-state'] });
+  document.addEventListener('mousemove', (e) => {
+    if (isDragging) return;
+    const expandedOpen = document.getElementById('bubble')?.getAttribute('data-state') === 'expanded';
+    const target = e.target as Element | null;
+    const want = expandedOpen && !!target && !target.closest('#bubble, #clippy-container, #power-pass-pill');
+    if (want !== clickThrough) {
+      clickThrough = want;
+      window.clippy.setWindowIgnoreMouse?.(want);
+    }
+  });
+
   document.addEventListener('mousemove', (e) => {
     if (!isDragging) return;
     const dx = e.screenX - dragStartX;

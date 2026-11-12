@@ -293,6 +293,12 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.send('bubble-window-size', state);
   },
 
+  // Expanded window only: click-through while the pointer is over neither the
+  // panel nor Clippy. Main ignores it in every other size.
+  setWindowIgnoreMouse: (ignore: boolean) => {
+    ipcRenderer.send('window-ignore-mouse', ignore);
+  },
+
   // v0.20.0-alpha.14 — main pushes which side of Clippy the bubble body
   // grows on (anchor-aware, multi-display) so the renderer can flip the
   // tail. 'above' = Clippy below the bubble; 'below' = Clippy above it.

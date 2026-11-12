@@ -122,6 +122,14 @@ export class BubbleController {
     this.closeBtn = document.getElementById('bubble-close') as HTMLButtonElement | null;
     this.onSend = onSend;
 
+    // Clippy's reactions (thought bubble / listening halo / working beam) follow what the
+    // bubble shows, so watch it instead of hooking every place the text is replaced.
+    const sync = (): void => this.syncReactions();
+    const mo = new MutationObserver(sync);
+    mo.observe(this.bubbleText, { childList: true });
+    mo.observe(this.history, { childList: true });
+    mo.observe(this.bubble, { attributes: true, attributeFilter: ['class'] });
+
     // Initial state — keep the standard-state default so legacy callers
     // (e.g. update prompts) keep getting the multi-line layout.
     this.setState('standard');
@@ -657,6 +665,19 @@ export class BubbleController {
     if (this.hideTimer !== null) this.resetAutoHide();
   }
 
+  private listening = false;
+
+  /** Classes on #clippy-container (and the composer) that CSS turns into Clippy's reactions. */
+  private syncReactions(): void {
+    const thinking = !this.bubble.classList.contains('hidden')
+      && !!(this.bubbleText.querySelector('.typing') || this.history.querySelector('.chat-thinking'));
+    const c = document.getElementById('clippy-container');
+    c?.classList.toggle('is-thinking', thinking);
+    c?.classList.toggle('is-working', this.working);
+    c?.classList.toggle('is-listening', this.listening);
+    this.bubble.querySelector('.bubble-composer')?.classList.toggle('is-busy', thinking || this.working);
+  }
+
   showThinking(): void {
     this.fireDismiss();
     this.showingHistory = false;
@@ -863,6 +884,7 @@ export class BubbleController {
    *  turns it back into Send (sending overrides the task, as before). */
   setWorking(working: boolean, outcome?: string): void {
     this.working = working;
+    this.syncReactions();
     this.syncComposer();
     if (this.workingTimer) { clearInterval(this.workingTimer); this.workingTimer = null; }
     if (!this.statusEl) return;
@@ -1036,6 +1058,7 @@ export class BubbleController {
             this.micLevel.style.setProperty('--lvl', String(0.4 + level * 1.4));
           }
           // The composer glow reads the same live level, and only while recording.
+          if (this.listening) document.getElementById('clippy-container')?.style.setProperty('--lvl', String(0.4 + level * 1.4));
           if (this.micBtn?.classList.contains('recording')) {
             this.micBtn.closest<HTMLElement>('.bubble-composer')?.style.setProperty('--lvl', String(0.4 + level * 1.4));
           }
@@ -1048,6 +1071,9 @@ export class BubbleController {
             composer?.classList.toggle('is-recording', s === 'recording');
             if (s !== 'recording') composer?.style.removeProperty('--lvl');
           }
+          this.listening = s === 'recording';
+          if (!this.listening) document.getElementById('clippy-container')?.style.removeProperty('--lvl');
+          this.syncReactions();
           if (s === 'recording') this.requestAnim('Hearing_1');
           else if (s === 'idle') this.requestAnim('Idle1_1');
         },
