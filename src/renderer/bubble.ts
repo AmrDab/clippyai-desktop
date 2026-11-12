@@ -61,6 +61,9 @@ export class BubbleController {
   private clearBtn: HTMLButtonElement | null;
   /** v0.21 — a task is running (main's working-start/stop). */
   private working = false;
+  /** v0.21.1 — header status ("Ready" / "Working · 12 s") + its ticker. */
+  private statusEl = document.getElementById('bubble-status');
+  private workingTimer: ReturnType<typeof setInterval> | null = null;
   /** v0.21 — position in sent-message recall (↑/↓); null = not recalling. */
   private recallIdx: number | null = null;
   private micBtn: HTMLButtonElement | null;
@@ -830,6 +833,14 @@ export class BubbleController {
   setWorking(working: boolean): void {
     this.working = working;
     this.syncComposer();
+    if (this.workingTimer) { clearInterval(this.workingTimer); this.workingTimer = null; }
+    if (!this.statusEl) return;
+    this.statusEl.dataset.busy = String(working);
+    if (!working) { this.statusEl.textContent = 'Ready'; return; }
+    const started = Date.now();
+    const tick = () => { this.statusEl!.textContent = `Working · ${Math.round((Date.now() - started) / 1000)} s`; };
+    tick();
+    this.workingTimer = setInterval(tick, 1000);
   }
 
   private showsStop(): boolean {

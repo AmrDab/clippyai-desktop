@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, crashReporter, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, crashReporter, powerMonitor } from 'electron';
 import fs from 'fs';
 import path from 'path';
 
@@ -181,6 +181,24 @@ function whenLoaded(win: BrowserWindow): Promise<void> {
 
 async function handleActivateUrl(url: string): Promise<void> {
   // Never log the URL (it carries the token) — outcome + plan only.
+  // Any web page can open a clippyai:// link (one browser prompt), so an
+  // already-licensed app asks before a link replaces its license — and
+  // before the token is redeemed. Onboarding (no license yet, the user just
+  // requested the email) proceeds without asking.
+  if (!getOnboardingWindow() && isLicensed()) {
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      buttons: ['Use the new license', 'Keep my current license'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'Activate a different ClippyAI license?',
+      detail: 'An activation link was opened. Continue only if you just clicked it in your own ClippyAI email — it replaces the license this computer uses now.',
+    });
+    if (response !== 0) {
+      log.info('Activate.declined');
+      return;
+    }
+  }
   const result = await activateFromUrl(url);
   const onboarding = getOnboardingWindow();
   if (onboarding) await whenLoaded(onboarding);

@@ -7,7 +7,7 @@ copyright: Copyright © 2026 Cloudana · ClippyAI
 # (0.20.0-alpha.24 → 0.20.0.24). For a stable X.Y.Z use X.Y.Z.0.
 # macOS ignores this: CFBundleVersion comes from mac.bundleVersion, which
 # `npm run dist:mac` sets to package.json's X.Y.Z (max 3 parts on macOS).
-buildVersion: 0.21.0.0
+buildVersion: 0.21.1.0
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
