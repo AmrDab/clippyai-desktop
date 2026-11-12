@@ -794,14 +794,19 @@ async function init(): Promise<void> {
   // through it. Forwarded mouse-moves keep arriving while ignoring, which is how we
   // turn it back off. Never while dragging (the drag starts on the sprite anyway).
   let clickThrough = false;
-  // main resets click-through on every resize; keep our copy in step.
+  // Any state change: turn click-through off in main too (not just our copy), so the two
+  // can never disagree while the pointer is parked on the strip.
   const bubbleEl = document.getElementById('bubble');
-  if (bubbleEl) new MutationObserver(() => { clickThrough = false; }).observe(bubbleEl, { attributes: true, attributeFilter: ['data-state'] });
+  if (bubbleEl) new MutationObserver(() => {
+    if (clickThrough) { clickThrough = false; window.clippy.setWindowIgnoreMouse?.(false); }
+  }).observe(bubbleEl, { attributes: true, attributeFilter: ['data-state'] });
   document.addEventListener('mousemove', (e) => {
     if (isDragging) return;
     const expandedOpen = document.getElementById('bubble')?.getAttribute('data-state') === 'expanded';
     const target = e.target as Element | null;
-    const want = expandedOpen && !!target && !target.closest('#bubble, #clippy-container, #power-pass-pill');
+    // Only the bare page (html/body) is the transparent strip; anything drawn on it
+    // (panel, Clippy, the first-run overlay, …) stays clickable.
+    const want = expandedOpen && (target === document.body || target === document.documentElement);
     if (want !== clickThrough) {
       clickThrough = want;
       window.clippy.setWindowIgnoreMouse?.(want);

@@ -368,7 +368,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // the change takes effect immediately (not on next sleep/wake cycle).
     let proactiveChanged = false;
     if (settings.proactiveInterval !== undefined) {
-      const interval = Math.max(5000, Math.min(300000, Number(settings.proactiveInterval) || 300000));
+      const interval = Math.max(5000, Math.min(300000, Number(settings.proactiveInterval) || 180000));
       brainSettingsStore.set('proactiveInterval', interval);
       proactiveChanged = true;
       // v0.18.0 — broadcast on dedicated `proactive-interval` channel

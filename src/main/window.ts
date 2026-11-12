@@ -218,6 +218,8 @@ export function createWindow(): BrowserWindow {
 
   function resizeTo(state: BubbleSizeState): void {
     if (win.isDestroyed()) return;
+    // Click-through only ever applies to the expanded window; reset it on every other size.
+    if (state !== 'expanded') win.setIgnoreMouseEvents(false);
     if (state === currentSize) return; // idempotent
     const dims = dimsFor(state);
     const newW = dims.width;
@@ -225,8 +227,6 @@ export function createWindow(): BrowserWindow {
     const [x, y] = win.getPosition();
     const [oldW, oldH] = win.getSize();
     const display = displayForWindow(win);
-    // Click-through only ever applies to the expanded window; reset it on every other size.
-    if (state !== 'expanded') win.setIgnoreMouseEvents(false);
 
     if (state === 'collapsed') {
       // Restore the stored pre-expand origin verbatim. Falling back to the
@@ -309,7 +309,9 @@ export function createWindow(): BrowserWindow {
 
   // Legacy IPC channels — kept for backward compatibility with callers
   // that haven't migrated to the state-keyed channel yet.
-  ipcMain.on('expand-window', () => resizeTo('standard'));
+  // bubble.show() sends this on every show, including right after setState('expanded');
+  // it must not shrink an expanded window back to standard (it did, ~10 ms after every expand).
+  ipcMain.on('expand-window', () => { if (currentSize !== 'expanded') resizeTo('standard'); });
   ipcMain.on('collapse-window', () => resizeTo('collapsed'));
 
   // Window drag movement — with bounds checking

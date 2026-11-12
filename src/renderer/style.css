@@ -3659,16 +3659,6 @@ body.onboarding-window[data-platform="win"] {
 @property --beam-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 @keyframes beam-spin { to { --beam-angle: 360deg; } }
 
-/* Voice glow: the composer's edge follows the live mic level (--lvl, set in bubble.ts onLevel). */
-.bubble-composer.is-recording {
-  border-color: rgba(244, 67, 54, 0.5);
-  box-shadow: 0 0 calc(var(--lvl, 0.4) * 9px) calc(var(--lvl, 0.4) * 1px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.25));
-  transition: border-color 0.15s ease, box-shadow 0.12s ease-out;
-}
-@media (prefers-reduced-motion: reduce) {
-  .bubble-composer.is-recording { box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.2); transition: none; }
-}
-
 /* Border beam on the header status while a task runs. Stepped (16 frames per turn) to keep the retro feel. */
 .bubble-header-status[data-busy="true"] { position: relative; }
 .bubble-header-status[data-busy="true"]::after {
@@ -3808,11 +3798,13 @@ body.onboarding-window[data-platform="win"] {
   opacity: 1;
   animation: beam-spin 1.8s steps(24) infinite;
 }
-/* Recording keeps its red edge; no yellow lap on top of it. */
+/* Voice glow: recording keeps a red edge that follows the live mic level (--lvl, set in
+   bubble.ts onLevel); no yellow lap on top of it. */
 .bubble-composer.is-recording::after { display: none; }
 .bubble-composer.is-recording {
   border-color: rgba(244, 67, 54, 0.8);
   box-shadow: 0 0 calc(var(--lvl, 0.4) * 12px) calc(var(--lvl, 0.4) * 2px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.35));
+  transition: border-color 0.15s ease, box-shadow 0.12s ease-out;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -3830,8 +3822,12 @@ body.onboarding-window[data-platform="win"] {
   .bubble-composer:focus-within::after { animation: none; opacity: 0; }
   .bubble-composer.is-busy::after,
   .bubble-composer.is-busy:focus-within::after { animation: none; opacity: 0.8; background: rgba(59, 130, 246, 0.7); }
-  .bubble-composer.is-recording { box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3); }
+  .bubble-composer.is-recording { box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3); transition: none; }
 }
+
+/* A closed bubble keeps its markup (busy status, a leftover orb): freeze every animation
+   in it so nothing runs while Clippy sits idle on screen. */
+.bubble.hidden *, .bubble.hidden *::before, .bubble.hidden *::after { animation-play-state: paused; }
 
 /* Send: Clippy-yellow brushed metal with a dark icon once there is text; flat grey when empty. */
 #bubble-send:not(:disabled):not(.is-stop) {
