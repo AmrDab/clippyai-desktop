@@ -432,6 +432,37 @@ export function a11ySelectedText(): Promise<AxSelectedTextResult> {
   return invoke<AxSelectedTextResult>(['a11y-selected-text'], { timeoutMs: 5000 });
 }
 
+// ── Speech ───────────────────────────────────────────────────────────
+
+export interface TranscribeResult {
+  text: string;
+  confidence: number;
+  onDevice: boolean;
+}
+
+/**
+ * On-device speech-to-text via Apple's Speech framework (Speech.swift).
+ * Free, offline, no API key — replaces the macOS dependency on a cloud
+ * OpenAI key for voice input. The WAV must be the renderer recorder's
+ * 16 kHz mono PCM (≤30 s). First call triggers the Speech Recognition TCC
+ * dialog; a denial surfaces as BridgeError kind='permission' (exit code 1).
+ */
+export function transcribe(opts: {
+  audioPath: string;
+  locale?: string;
+  /** Vocabulary bias — proper nouns likely in this user's commands. */
+  contextualStrings?: string[];
+}): Promise<TranscribeResult> {
+  const args = ['transcribe', '--audio', opts.audioPath];
+  if (opts.locale) args.push('--locale', opts.locale);
+  if (opts.contextualStrings && opts.contextualStrings.length > 0) {
+    args.push('--context', opts.contextualStrings.join(','));
+  }
+  // 65s — Speech.swift's own ceiling is 60s; give the process a buffer so
+  // the Swift-side timeout (structured JSON error) wins over a SIGKILL.
+  return invoke<TranscribeResult>(args, { timeoutMs: 65_000 });
+}
+
 export function a11yPress(opts: { pid: number; path: number[] }): Promise<{ ok: true }> {
   return invoke(
     ['a11y-press', '--pid', String(opts.pid), '--path', opts.path.join(',')],

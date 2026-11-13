@@ -1165,16 +1165,21 @@ function layer1() {
     fail('v0.15.0: Web tab', `html=${hasWebTab}, ipc=${hasWebIpc}, preload=${hasWebPreload}`);
   }
 
-  // submitClawdTask delegates via the MCP submit_task tool (clawdcursor
-  // v1.5.x removed POST /task; returnPartial went with it)
+  // clawdcursor v1.5 MCP contract (clippyai-macos#22): submitClawdTask
+  // submits over POST /mcp (tools/call submit_task, fire-and-accept) and polls
+  // agent_status; the dead v0.x REST routes (/task, /execute/<name>) must not
+  // come back — v1.x serves them as silent 404s while /mcp still answers.
   const clawdSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'clawd-fallback.ts'), 'utf8');
   const hasSubmitTask = /export async function submitClawdTask/.test(clawdSrc);
   const callsMcpEndpoint = /path:\s*['"]\/mcp['"]/.test(clawdSrc);
-  const usesSubmitTaskTool = /name:\s*['"]submit_task['"]/.test(clawdSrc);
-  if (hasSubmitTask && callsMcpEndpoint && usesSubmitTaskTool) {
-    pass('v0.13.0: submitClawdTask calls MCP submit_task via POST /mcp');
+  const usesSubmitTaskTool = /'submit_task'/.test(clawdSrc);
+  const pollsStatus = /'agent_status'/.test(clawdSrc);
+  const honoursIsError = /isError/.test(clawdSrc);
+  const deadRoute = /path:\s*['"`]\/(task|execute\/)/.test(clawdSrc);
+  if (hasSubmitTask && callsMcpEndpoint && usesSubmitTaskTool && pollsStatus && honoursIsError && !deadRoute) {
+    pass('clawd v1.5: submit_task + agent_status over POST /mcp, isError honoured, dead REST routes absent');
   } else {
-    fail('v0.13.0: clawd submit_task wrapper', `submit=${hasSubmitTask}, mcp=${callsMcpEndpoint}, tool=${usesSubmitTaskTool}`);
+    fail('clawd v1.5: MCP contract', `submit=${hasSubmitTask}, mcp=${callsMcpEndpoint}, tool=${usesSubmitTaskTool}, poll=${pollsStatus}, isError=${honoursIsError}, deadRoute=${deadRoute}`);
   }
 
   // proactiveCooldownMs is a setting (not hardcoded 600_000)
@@ -1451,13 +1456,14 @@ function layer1() {
     fail('v0.19.0 PR-2.5: build-native script', `value=${pkgJson.scripts && pkgJson.scripts['build-native']}`);
   }
 
-  // 5. dist script chains build-native BEFORE electron-builder
-  const distScript = (pkgJson.scripts && pkgJson.scripts.dist) || '';
-  const distOK = distScript.includes('build-native') && distScript.indexOf('build-native') < distScript.indexOf('electron-builder');
+  // 5. dist:mac chains build-native BEFORE electron-builder ("npm run " prefix
+  // so "rebuild-natives" can't satisfy it).
+  const distScript = (pkgJson.scripts && pkgJson.scripts['dist:mac']) || '';
+  const distOK = distScript.includes('npm run build-native') && distScript.indexOf('npm run build-native') < distScript.indexOf('electron-builder');
   if (!isDarwin) {
     skip('v0.19.0 PR-2.5: dist chain', MAC_ONLY);
   } else if (distOK) {
-    pass('v0.19.0 PR-2.5: dist script runs build-native before electron-builder');
+    pass('v0.19.0 PR-2.5: dist:mac script runs build-native before electron-builder');
   } else {
     fail('v0.19.0 PR-2.5: dist chain', `dist=${distScript}`);
   }
@@ -1472,7 +1478,7 @@ function layer1() {
   } else if (fs.existsSync(cursorVisionPath)) {
     const cursorVisionSrc = fs.readFileSync(cursorVisionPath, 'utf8');
     const importsHelper = /from\s+['"]\.\/screenshot-helper['"]/.test(cursorVisionSrc);
-    const callsHelper = /captureViaHelper\(/.test(cursorVisionSrc);
+    const callsHelper = /captureViaHelper\(|captureScreen\(/.test(cursorVisionSrc);
     const keepsFallback = /\/usr\/sbin\/screencapture/.test(cursorVisionSrc);
     if (importsHelper && callsHelper && keepsFallback) {
       pass('v0.19.0 PR-2.5: cursor-vision.ts imports + calls captureViaHelper, keeps /usr/sbin/screencapture fallback');
@@ -1486,10 +1492,10 @@ function layer1() {
   // 7. tools.ts imports + calls captureViaHelper from desktop_screenshot
   const toolsSrcPR25 = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tools.ts'), 'utf8');
   const toolsImportsHelper = /from\s+['"]\.\/screenshot-helper['"]/.test(toolsSrcPR25);
-  const toolsCallsHelper = /captureViaHelper\(/.test(toolsSrcPR25);
+  const toolsCallsHelper = /captureViaHelper\(|captureScreen\(/.test(toolsSrcPR25);
   // Locate the desktopScreenshot function body and verify it contains the helper call.
   const dsBodyMatch = toolsSrcPR25.match(/async function desktopScreenshot\([^)]*\)[\s\S]*?\n\}\n/);
-  const desktopShotUsesHelper = dsBodyMatch && /captureViaHelper\(/.test(dsBodyMatch[0]);
+  const desktopShotUsesHelper = dsBodyMatch && /captureViaHelper\(|captureScreen\(/.test(dsBodyMatch[0]);
   if (!isDarwin) {
     skip('v0.19.0 PR-2.5: tools.ts wiring', MAC_ONLY);
   } else if (toolsImportsHelper && toolsCallsHelper && desktopShotUsesHelper) {

@@ -140,6 +140,9 @@ async function loadConfig(): Promise<void> {
   // value is never sent here; we only learn whether one is stored.
   const engineSel = document.getElementById('setting-tts-engine') as HTMLSelectElement | null;
   if (engineSel) engineSel.value = config.ttsEngine === 'openai' ? 'openai' : 'system';
+  // Voice INPUT engine — 'apple' (on-device, default) vs 'openai' (cloud).
+  const sttSel = document.getElementById('setting-stt-engine') as HTMLSelectElement | null;
+  if (sttSel) sttSel.value = (config as { sttEngine?: string }).sttEngine === 'openai' ? 'openai' : 'apple';
   openAiKeyPresent = config.openaiKeyPresent === true;
   renderOpenAiKeyStatus();
   // v0.17.0 — voice input enabled toggle + STT-ready status panel
@@ -239,6 +242,15 @@ async function loadConfig(): Promise<void> {
     waEl.checked = config.writingAssistEnabled !== false; // default true
     waEl.addEventListener('change', () => {
       window.clippy.updateSettings({ writingAssistEnabled: waEl.checked });
+    });
+  }
+
+  // Typing awareness (macOS) — opt-in, default OFF.
+  const iaEl = document.getElementById('setting-input-awareness') as HTMLInputElement | null;
+  if (iaEl) {
+    iaEl.checked = config.inputAwarenessEnabled === true;
+    iaEl.addEventListener('change', () => {
+      window.clippy.updateSettings({ inputAwarenessEnabled: iaEl.checked });
     });
   }
 
@@ -447,6 +459,24 @@ if (ttsEngineSelect) {
     const engine = ttsEngineSelect.value === 'openai' ? 'openai' : 'system';
     window.clippy.updateSettings({ ttsEngine: engine });
     renderOpenAiKeyStatus();
+  });
+}
+
+// Voice INPUT (STT) engine picker. Same autosave pattern as the TTS engine;
+// stt.ts reads the stored value live on every transcription.
+const sttEngineSelect = document.getElementById('setting-stt-engine') as HTMLSelectElement | null;
+if (sttEngineSelect) {
+  sttEngineSelect.addEventListener('change', () => {
+    const engine = sttEngineSelect.value === 'openai' ? 'openai' : 'apple';
+    window.clippy.updateSettings({ sttEngine: engine });
+    const help = document.getElementById('stt-engine-help');
+    if (help) {
+      help.textContent = engine === 'openai'
+        ? (openAiKeyPresent
+          ? 'Cloud engine selected — audio is sent to OpenAI for transcription.'
+          : 'OpenAI selected but no key saved — voice input will stay on-device until you save a key in the Voice card above.')
+        : 'On-device transcription never uploads audio. The cloud engine is opt-in and requires an OpenAI key (Voice card above).';
+    }
   });
 }
 

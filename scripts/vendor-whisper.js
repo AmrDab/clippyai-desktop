@@ -1,7 +1,11 @@
 /**
- * vendor-whisper.js — download whisper.cpp Windows binaries + quantized
- * base.en model into ./vendor/whisper/ so electron-builder can bundle
- * them into the installer.
+ * vendor-whisper.js — download whisper.cpp Windows binaries (win32) or
+ * build whisper.cpp from source as a universal arm64+x86_64 binary
+ * (darwin), plus the quantized base.en model, into ./vendor/whisper/ so
+ * electron-builder can bundle them into the installer / DMG.
+ *
+ * macOS needs Xcode Command Line Tools and cmake on PATH: whisper.cpp's
+ * release archives only ship Windows binaries.
  *
  * Runs as part of `npm run vendor`. Idempotent: skips downloads when
  * the destination files already exist. Run with `--force` to redownload.
@@ -27,10 +31,13 @@ const { execSync } = require('child_process');
 // Pinned versions — bump intentionally to upgrade.
 const WHISPER_VERSION = 'v1.8.4';
 const WHISPER_URL = `https://github.com/ggml-org/whisper.cpp/releases/download/${WHISPER_VERSION}/whisper-bin-x64.zip`;
+const WHISPER_REPO = 'https://github.com/ggml-org/whisper.cpp.git';
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin?download=true';
 
 const VENDOR_DIR = path.resolve(__dirname, '..', 'vendor', 'whisper');
 const BIN_DIR = path.join(VENDOR_DIR, 'bin');
+const SRC_DIR = path.join(VENDOR_DIR, '_src');
+const MAC_DIR = path.join(VENDOR_DIR, 'macos');
 const MODELS_DIR = path.join(VENDOR_DIR, 'models');
 const MODEL_PATH = path.join(MODELS_DIR, 'ggml-base.en-q5_1.bin');
 // Only these five binaries from the whisper.cpp release are needed at
@@ -108,6 +115,56 @@ async function fetchWhisperBinaries() {
   fs.rmSync(zipPath, { force: true });
 }
 
+function buildWhisperMac() {
+  if (!force && fs.existsSync(path.join(MAC_DIR, 'whisper-cli'))) {
+    log('whisper-cli already present, skipping (use --force to rebuild)');
+    return;
+  }
+  ensureDir(VENDOR_DIR);
+
+  if (!fs.existsSync(SRC_DIR)) {
+    log(`cloning whisper.cpp ${WHISPER_VERSION}…`);
+    execSync(`git clone --depth=1 --branch=${WHISPER_VERSION} ${WHISPER_REPO} "${SRC_DIR}"`, { stdio: 'inherit' });
+  }
+
+  const buildDir = path.join(SRC_DIR, 'build');
+  ensureDir(buildDir);
+
+  // Build a universal (arm64+x86_64) release with Metal backend.
+  // -DWHISPER_BUILD_TESTS=OFF / -DWHISPER_BUILD_EXAMPLES=ON ensures the
+  // `whisper-cli` example binary is produced.
+  log('configuring cmake (universal arm64+x86_64, Metal backend)');
+  execSync([
+    'cmake', '-S', SRC_DIR, '-B', buildDir,
+    '-DCMAKE_BUILD_TYPE=Release',
+    '-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"',
+    '-DBUILD_SHARED_LIBS=OFF',
+    '-DWHISPER_BUILD_EXAMPLES=ON',
+    '-DWHISPER_BUILD_TESTS=OFF',
+  ].join(' '), { stdio: 'inherit' });
+
+  log('compiling…');
+  execSync(`cmake --build "${buildDir}" --config Release -j`, { stdio: 'inherit' });
+
+  ensureDir(MAC_DIR);
+  // The whisper-cli example lands at build/bin/whisper-cli (or
+  // build/bin/Release/whisper-cli depending on generator).
+  const candidates = [
+    path.join(buildDir, 'bin', 'whisper-cli'),
+    path.join(buildDir, 'bin', 'Release', 'whisper-cli'),
+  ];
+  const cli = candidates.find((p) => fs.existsSync(p));
+  if (!cli) throw new Error(`whisper-cli not found in build output; checked: ${candidates.join(', ')}`);
+  fs.copyFileSync(cli, path.join(MAC_DIR, 'whisper-cli'));
+  fs.chmodSync(path.join(MAC_DIR, 'whisper-cli'), 0o755);
+  log(`copied whisper-cli → ${MAC_DIR}`);
+
+  // Strip debug symbols to shrink the bundle and let codesign succeed
+  // without complaining about unsigned dwarf segments.
+  try { execSync(`strip -x "${path.join(MAC_DIR, 'whisper-cli')}"`, { stdio: 'inherit' }); }
+  catch (e) { log(`strip failed (non-fatal): ${e.message}`); }
+}
+
 async function fetchModel() {
   if (!force && fs.existsSync(MODEL_PATH)) {
     const sizeMb = (fs.statSync(MODEL_PATH).size / 1048576).toFixed(1);
@@ -122,8 +179,9 @@ async function fetchModel() {
 }
 
 async function main() {
-  log('starting vendor');
-  await fetchWhisperBinaries();
+  log(`starting vendor (${process.platform})`);
+  if (process.platform === 'darwin') buildWhisperMac();
+  else await fetchWhisperBinaries();
   await fetchModel();
   log('done');
 }
