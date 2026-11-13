@@ -288,6 +288,10 @@ async function init(): Promise<void> {
     clippyCtrl.playNamed('GetAttention');
   });
 
+  // Closing the bubble with its X means "stop": end any speech still playing too.
+  // (Report a0280c48: he kept talking after the user closed him.)
+  document.getElementById('bubble-close')?.addEventListener('click', () => tts.stop());
+
   window.clippy.onModeChange((mode) => {
     if (mode === 'sleep') {
       bubbleCtrl.hide();
