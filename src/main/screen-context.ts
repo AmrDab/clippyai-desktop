@@ -44,19 +44,32 @@ export function newCtxState(): CtxState {
 export type CtxPlan =
   | { kind: 'cached'; cache: CtxCache }
   | { kind: 'skip' }
-  | { kind: 'capture'; windowMs: number; heavyMs: number };
+  | { kind: 'capture'; windowMs: number; heavyMs: number; totalMs?: number };
+
+/**
+ * macOS: every bridge call is a fresh process (no resident host like Windows),
+ * and the first run after install is slower (Gatekeeper / TCC). The Windows
+ * deadlines would time most captures out there.
+ */
+export const MAC_DEADLINES = { windowMs: 3_000, heavyMs: 3_000, totalMs: 5_500 } as const;
+
+function capturePlan(platform: string): CtxPlan {
+  return platform === 'darwin'
+    ? { kind: 'capture', ...MAC_DEADLINES }
+    : { kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS };
+}
 
 /** `force` (the user asked about their screen) skips the cache and the timeout pause. */
-export function planCapture(state: CtxState, now: number, force = false): CtxPlan {
-  if (force) return { kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS };
+export function planCapture(state: CtxState, now: number, force = false, platform = 'win32'): CtxPlan {
+  if (force) return capturePlan(platform);
   if (state.cache && now - state.cache.at <= CTX_CACHE_MS) return { kind: 'cached', cache: state.cache };
   if (now < state.pausedUntil) return { kind: 'skip' };
-  return { kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS };
+  return capturePlan(platform);
 }
 
 /** Remaining time for the heavy dump given how long the window call took. */
-export function heavyBudgetMs(plan: { heavyMs: number }, windowElapsedMs: number): number {
-  return Math.max(0, Math.min(plan.heavyMs, TOTAL_BUDGET_MS - windowElapsedMs));
+export function heavyBudgetMs(plan: { heavyMs: number; totalMs?: number }, windowElapsedMs: number): number {
+  return Math.max(0, Math.min(plan.heavyMs, (plan.totalMs ?? TOTAL_BUDGET_MS) - windowElapsedMs));
 }
 
 export function recordOutcome(state: CtxState, outcome: ScreenCtxOutcome, cache: CtxCache | null, now: number): CtxState {
@@ -112,7 +125,7 @@ export function isScreenQuestion(text: string): boolean {
   return SCREEN_WORD_RE.test(text) || SCREEN_PHRASE_RE.test(text);
 }
 
-interface DumpNode { name?: unknown; children?: unknown }
+interface DumpNode { name?: unknown; title?: unknown; value?: unknown; children?: unknown; elements?: unknown }
 
 /**
  * Compact, model-readable form of the read_screen JSON. The raw JSON spends its
@@ -120,36 +133,41 @@ interface DumpNode { name?: unknown; children?: unknown }
  * never reached the model: list the windows, then the UIA names of the focused one.
  */
 export function formatScreenDump(raw: string, maxChars = 800): string {
-  let d: { windows?: unknown; focusedProcessId?: unknown; uiTree?: unknown; error?: unknown };
+  let d: { windows?: unknown; focusedProcessId?: unknown; uiTree?: unknown; error?: unknown; app?: unknown };
   try { d = JSON.parse(raw); } catch { return raw.slice(0, maxChars); }
   if (!d || typeof d !== 'object') return raw.slice(0, maxChars);
   if (d.error) return '';
-  const wins = (Array.isArray(d.windows) ? d.windows : []) as Array<{ title?: unknown; processName?: unknown; processId?: unknown; isMinimized?: unknown }>;
+  const wins = (Array.isArray(d.windows) ? d.windows : []) as Array<{ title?: unknown; processName?: unknown; processId?: unknown; isMinimized?: unknown; elements?: unknown }>;
+  // macOS bridge a11y-tree: {app, pid, windows:[{title, elements:[{title, value, children}]}]} — one app, no uiTree.
+  const macApp = typeof d.app === 'string' ? d.app : '';
   const shown = [...wins.filter((w) => !w.isMinimized), ...wins.filter((w) => w.isMinimized)]
     .filter((w) => typeof w.title === 'string' && w.title.trim())
     .slice(0, 8)
-    .map((w) => `${String(w.title).trim().slice(0, 60)} (${String(w.processName ?? '?')})`);
+    .map((w) => `${String(w.title).trim().slice(0, 60)} (${String(w.processName ?? (macApp || '?'))})`);
   const lines: string[] = [];
   if (shown.length) lines.push(`Open windows: ${shown.join('; ')}`);
 
   const names: string[] = [];
   const seen = new Set<string>();
   const stack: unknown[] = [d.uiTree];
+  if (macApp) for (let i = wins.length - 1; i >= 0; i--) stack.push(wins[i].elements);
   let budget = maxChars * 2; // enough to fill the cap; stops a 400-node tree being walked for nothing
   while (stack.length && budget > 0) {
     const n = stack.pop();
     if (Array.isArray(n)) { for (let i = n.length - 1; i >= 0; i--) stack.push(n[i]); continue; }
     if (!n || typeof n !== 'object') continue;
-    const { name, children } = n as DumpNode;
-    if (typeof name === 'string') {
-      const t = name.trim();
+    const { name, title, value, children } = n as DumpNode;
+    // UIA nodes carry `name`; AX nodes carry `title` and (text fields, documents) `value`.
+    for (const raw of [name, title, typeof value === 'string' ? value.slice(0, 300) : undefined]) {
+      if (typeof raw !== 'string') continue;
+      const t = raw.trim();
       if (t.length > 1 && !seen.has(t)) { seen.add(t); names.push(t); budget -= t.length + 3; }
     }
     if (children) stack.push(children);
   }
   if (names.length) {
     const fp = wins.find((w) => w.processId === d.focusedProcessId);
-    lines.push(`In ${fp?.processName ? String(fp.processName) : 'the focused app'}: ${names.join(' · ')}`);
+    lines.push(`In ${fp?.processName ? String(fp.processName) : (macApp || 'the focused app')}: ${names.join(' · ')}`);
   }
   return noBrackets(lines.join('\n')).slice(0, maxChars);
 }
@@ -162,4 +180,52 @@ export function formatOcrContext(app: string, fullText: string, maxChars = 1500)
 /** Screen text sits inside a [ ... ] block in the user's turn: square brackets in it must not close that block early. */
 function noBrackets(s: string): string {
   return s.replace(/\[/g, '(').replace(/\]/g, ')');
+}
+
+// ── macOS (Swift bridge) helpers ─────────────────────────────────────────
+// On Windows the foreground scripts take ExcludeProcessId so Clippy's own
+// chat window is never "the screen". The bridge's active-window / a11y-tree
+// target the frontmost app, which IS Clippy while the user types in the chat,
+// so the context read "ClippyAI" with an empty title and nothing else.
+
+export interface MacWindowLike {
+  pid: number;
+  app: string;
+  title: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  layer?: number;
+  alpha?: number;
+  minimized?: boolean;
+}
+
+/**
+ * The window the user is really looking at: the bridge's active window unless
+ * that is Clippy itself, then the topmost on-screen normal window of another
+ * app (the bridge lists windows front-to-back).
+ */
+export function pickForegroundMacWindow<T extends MacWindowLike>(active: T, windows: T[], ownPid: number): T {
+  if (active.pid !== ownPid) return active;
+  const other = windows.find((w) =>
+    w.pid !== ownPid && (w.layer ?? 0) === 0 && !w.minimized && (w.alpha ?? 1) > 0
+    && w.bounds.width >= 120 && w.bounds.height >= 80);
+  return other ?? active;
+}
+
+/**
+ * Text of one window from a whole-screen Vision OCR result: keep the elements
+ * whose centre lies inside the window's bounds (both are top-left-origin
+ * points in the same global space; matchOcrTarget relies on the same fact).
+ * Reading order = bridge order. Clippy's own bubble only leaks in where it
+ * overlaps the window.
+ */
+export function ocrTextInBounds(
+  elements: Array<{ text: string; x: number; y: number; width: number; height: number }>,
+  bounds: { x: number; y: number; width: number; height: number },
+): string {
+  const inside = elements.filter((e) => {
+    const cx = e.x + e.width / 2;
+    const cy = e.y + e.height / 2;
+    return cx >= bounds.x && cx <= bounds.x + bounds.width && cy >= bounds.y && cy <= bounds.y + bounds.height;
+  });
+  return inside.map((e) => e.text).join(' ').replace(/\s+/g, ' ').trim();
 }

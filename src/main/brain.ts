@@ -2784,7 +2784,7 @@ ${typingLine}`;
     const done = (context: string, outcome: ScreenCtxOutcome, process: string, source: ScreenSource) => ({ context, outcome, process, source });
     // A screen question is explicit: no 3 s cache, no timeout pause.
     const screenQ = isScreenQuestion(userText);
-    const plan = planCapture(this.ctxState, started, screenQ);
+    const plan = planCapture(this.ctxState, started, screenQ, process.platform);
     if (plan.kind === 'cached') return done(plan.cache.text, 'ok', plan.cache.process, plan.cache.source ?? 'none');
     if (plan.kind === 'skip') return done('', 'off', '', 'none');
     let windowText = '';
@@ -2805,7 +2805,9 @@ ${typingLine}`;
     // UIA names alone can't summarize a page; when asked, read the real text with OCR.
     if (screenQ) {
       try {
-        const o = await raceDeadline(readForegroundText(SCREEN_Q_OCR_MS), SCREEN_Q_OCR_MS + 150);
+        // macOS: Vision OCR runs in a fresh bridge process (capture + recognise), slower than Windows' resident host.
+        const ocrMs = process.platform === 'darwin' ? 8_000 : SCREEN_Q_OCR_MS;
+        const o = await raceDeadline(readForegroundText(ocrMs), ocrMs + 150);
         if (!o.timedOut && o.value.trim()) { screenText = formatOcrContext(proc, o.value); source = 'ocr'; maxScreenChars = 1600; }
       } catch { /* fall back to the UIA dump */ }
     }

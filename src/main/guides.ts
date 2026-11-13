@@ -84,6 +84,12 @@ function buildIndex(): void {
   }
 }
 
+/** macOS app names that differ from the Windows process names the guides are keyed by. */
+const MAC_APP_ALIASES: Record<string, string> = {
+  'microsoft excel': 'excel',
+  'microsoft outlook': 'outlook', // the cross-platform (mod+) guide; olk.json is Windows "new Outlook" only
+};
+
 export function loadGuide(processName: string): AppGuide | null {
   buildIndex();
   if (!processName) return null;
@@ -93,6 +99,8 @@ export function loadGuide(processName: string): AppGuide | null {
   // Also accept matches by filename (e.g. "EXCEL.exe" → "EXCEL")
   const stripped = norm.replace(/\.exe$/, '');
   if (guideCache.has(stripped)) return guideCache.get(stripped) || null;
+  const alias = MAC_APP_ALIASES[norm];
+  if (alias && guideCache.has(alias)) return guideCache.get(alias) || null;
   return null;
 }
 
@@ -145,13 +153,25 @@ export function formatGuideForPrompt(guide: AppGuide): string {
 }
 
 /**
+ * The guides were written for Windows (Ctrl/Alt, "mod+"). On macOS the model
+ * must be told Cmd/Option or it sends Ctrl+Enter and nothing happens.
+ */
+export function macifyKeys(text: string): string {
+  return text
+    .replace(/\bmod\+/gi, 'Cmd+')
+    .replace(/\bCtrl(?=\+|\b)/g, 'Cmd')
+    .replace(/\bAlt(?=\+|\b)/g, 'Option');
+}
+
+/**
  * One-shot helper. Returns the formatted guide text for a process, ready
  * for prompt injection. Empty string if no guide matches.
  */
 export function getGuidePrompt(processName: string): string {
   const guide = loadGuide(processName);
   if (!guide) return '';
-  return formatGuideForPrompt(guide);
+  const text = formatGuideForPrompt(guide);
+  return process.platform === 'darwin' ? macifyKeys(text) : text;
 }
 
 /** List process names that have a guide (debug + settings UI). */

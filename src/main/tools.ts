@@ -84,6 +84,7 @@ import * as profileMod from './profile';
 import { psScript, psCommand, configurePsHost, getPsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
 import { outlookSendArgs } from './outlook-args';
+import { pickForegroundMacWindow, ocrTextInBounds } from './screen-context';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -254,6 +255,22 @@ function scriptTimeoutParam(params: Record<string, unknown>, fallbackMs: number)
   return Number.isFinite(t) && t >= 200 && t < fallbackMs ? Math.floor(t) : fallbackMs;
 }
 
+/**
+ * macOS: the window the user is really on. The bridge's active-window targets
+ * the frontmost app, which is Clippy itself while the user types in his chat
+ * (the Windows scripts take ExcludeProcessId for the same reason).
+ */
+async function macForegroundWindow(): Promise<macBridge.WindowInfo & { titlesGated?: boolean }> {
+  const active = await macBridge.activeWindow();
+  if (active.pid !== process.pid) return active;
+  try {
+    const list = await macBridge.listWindows({ onScreenOnly: true });
+    return pickForegroundMacWindow(active, list.windows, process.pid);
+  } catch {
+    return active;
+  }
+}
+
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
   const mode = String(params.mode || 'accessibility');
 
@@ -269,7 +286,8 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
         const result = await macBridge.ocrScreen({});
         return { text: JSON.stringify({ elements: result.elements, fullText: result.fullText }) };
       }
-      const tree = await macBridge.a11yTree({ maxDepth: 6 });
+      const target = await macForegroundWindow();
+      const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 6 });
       const filtered = stripOwnWindowFromScreen(JSON.stringify(tree));
       return { text: filtered || '(empty screen context)' };
     } catch (err) {
@@ -376,7 +394,7 @@ async function getActiveWindow(params: Record<string, unknown> = {}): Promise<To
   // legacy AppleScript so dev builds without `swift build` still work.
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
-      const result = await macBridge.activeWindow();
+      const result = await macForegroundWindow();
       return { text: JSON.stringify(result) };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
@@ -1211,6 +1229,18 @@ async function captureAndOcr(region: 'foreground' | 'screen' = 'screen', timeout
  * can't summarize a page; real text needs OCR. '' on any failure.
  */
 export async function readForegroundText(timeoutMs: number): Promise<string> {
+  // macOS: Vision OCR of the screen through the bridge, cropped to the window
+  // the user is on (never Clippy's own). '' on any failure (permission, bridge).
+  if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
+    try {
+      const [target, ocr] = await Promise.all([macForegroundWindow(), macBridge.ocrScreen({})]);
+      const b = target.bounds;
+      return b && b.width > 0 && b.height > 0 ? ocrTextInBounds(ocr.elements, b) : (ocr.fullText ?? '');
+    } catch (err) {
+      log.warn('readForegroundText (darwin) failed', serializeErr(err));
+      return '';
+    }
+  }
   const ocr = await captureAndOcr('foreground', timeoutMs);
   return ocr?.fullText ?? '';
 }

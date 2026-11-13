@@ -3,6 +3,7 @@ import {
   newCtxState, planCapture, recordOutcome, heavyBudgetMs, windowCallFailed, extractProcessName, raceDeadline,
   isScreenQuestion, formatScreenDump, formatOcrContext, SCREEN_Q_OCR_MS,
   CTX_CACHE_MS, PAUSE_AFTER_TIMEOUTS, PAUSE_MS, WINDOW_DEADLINE_MS, HEAVY_DEADLINE_MS, TOTAL_BUDGET_MS,
+  pickForegroundMacWindow, ocrTextInBounds, MAC_DEADLINES, type MacWindowLike,
 } from '../src/main/screen-context';
 
 describe('planCapture', () => {
@@ -133,5 +134,70 @@ describe('formatOcrContext', () => {
   it('collapses whitespace and caps', () => {
     expect(formatOcrContext('chrome', 'a  b\n\nc')).toBe('Screen text (read from chrome): a b c');
     expect(formatOcrContext('chrome', 'x'.repeat(5000))).toHaveLength(1500);
+  });
+});
+
+describe('macOS screen context (Swift bridge shapes)', () => {
+  const win = (o: Partial<MacWindowLike>): MacWindowLike => ({
+    pid: 10, app: 'Safari', title: 'Page', bounds: { x: 0, y: 0, width: 1200, height: 800 }, layer: 0, alpha: 1, minimized: false, ...o,
+  });
+
+  it('keeps the active window when it is not Clippy', () => {
+    const a = win({ pid: 10 });
+    expect(pickForegroundMacWindow(a, [win({ pid: 11 })], 99)).toBe(a);
+  });
+
+  it('when Clippy is frontmost, picks the topmost real window of another app', () => {
+    const self = win({ pid: 99, app: 'ClippyAI', title: '' });
+    const list = [
+      win({ pid: 99, app: 'ClippyAI' }),
+      win({ pid: 12, app: 'Dock', bounds: { x: 0, y: 0, width: 40, height: 40 } }),
+      win({ pid: 13, app: 'Mail', title: 'Inbox', minimized: true }),
+      win({ pid: 14, app: 'Notes', title: 'Groceries' }),
+      win({ pid: 15, app: 'Safari' }),
+    ];
+    expect(pickForegroundMacWindow(self, list, 99).app).toBe('Notes');
+  });
+
+  it('falls back to the active window when nothing else is open', () => {
+    const self = win({ pid: 99, app: 'ClippyAI' });
+    expect(pickForegroundMacWindow(self, [self], 99)).toBe(self);
+  });
+
+  it('formatScreenDump reads the bridge a11y-tree shape (titles + values, no uiTree)', () => {
+    const tree = {
+      app: 'Safari', pid: 10,
+      windows: [{ title: 'Swift docs', role: 'AXWindow', bounds: {}, elements: [
+        { role: 'AXGroup', title: '', value: null, children: [
+          { role: 'AXStaticText', title: '', value: 'Structured concurrency lets you reason about tasks' },
+          { role: 'AXButton', title: 'Share', value: null },
+        ] },
+      ] }],
+    };
+    const out = formatScreenDump(JSON.stringify(tree));
+    expect(out).toContain('Open windows: Swift docs (Safari)');
+    expect(out).toContain('In Safari: ');
+    expect(out).toContain('Structured concurrency lets you reason about tasks');
+    expect(out).toContain('Share');
+  });
+
+  it('extractProcessName accepts the bridge {app} shape', () => {
+    expect(extractProcessName('{"app":"Safari","pid":10,"title":"x"}')).toBe('Safari');
+  });
+
+  it('ocrTextInBounds keeps only text inside the window', () => {
+    const els = [
+      { text: 'Hello', x: 100, y: 100, width: 40, height: 10 },
+      { text: 'world', x: 150, y: 100, width: 40, height: 10 },
+      { text: 'Clippy says hi', x: 1500, y: 900, width: 100, height: 10 },
+    ];
+    expect(ocrTextInBounds(els, { x: 0, y: 0, width: 1200, height: 800 })).toBe('Hello world');
+  });
+
+  it('darwin gets looser deadlines than Windows; Windows plan is unchanged', () => {
+    const mac = planCapture(newCtxState(), 1000, false, 'darwin');
+    expect(mac).toMatchObject({ kind: 'capture', windowMs: MAC_DEADLINES.windowMs, totalMs: MAC_DEADLINES.totalMs });
+    expect(planCapture(newCtxState(), 1000, true)).toEqual({ kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS });
+    if (mac.kind === 'capture') expect(heavyBudgetMs(mac, 1000)).toBe(MAC_DEADLINES.heavyMs);
   });
 });
