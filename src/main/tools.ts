@@ -2248,7 +2248,7 @@ async function getFocusedElement(): Promise<ToolResult> {
   // expects JSON — we serialize the result directly.
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
-      const result = await macBridge.a11yFocused();
+      const result = await macBridge.a11yFocused({ pid: await macTargetPid() });
       return { text: JSON.stringify(result) };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
@@ -2327,7 +2327,7 @@ async function getSelection(): Promise<ToolResult> {
   // the brain can read this every turn for selection awareness. Read-only.
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
-      const result = await macBridge.a11ySelectedText();
+      const result = await macBridge.a11ySelectedText({ pid: await macTargetPid() });
       return { text: JSON.stringify(result) };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
@@ -5076,7 +5076,7 @@ async function replaceFocusedText(params: { text?: unknown; value?: unknown }): 
   }
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
-      const result = await macBridge.a11yFocusedSetValue({ value: v });
+      const result = await macBridge.a11yFocusedSetValue({ value: v, pid: await macTargetPid() });
       return { text: JSON.stringify({ ok: true, strategy: result.strategy ?? 'value' }) };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {

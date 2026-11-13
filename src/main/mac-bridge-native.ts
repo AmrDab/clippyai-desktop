@@ -392,8 +392,13 @@ export function a11yFind(opts: { text: string; role?: string; pid?: number; all?
   return invoke<AxFindResult>(args, { timeoutMs: 8000 });
 }
 
-export function a11yFocused(): Promise<AxFocusedResult> {
-  return invoke<AxFocusedResult>(['a11y-focused'], { timeoutMs: 5000 });
+/** argv for the focused-element subcommands; `--pid` reads that app's focused element instead of the system-wide one. */
+export function focusedArgs(sub: string, pid?: number, extra: string[] = []): string[] {
+  return [sub, ...extra, ...(pid != null ? ['--pid', String(pid)] : [])];
+}
+
+export function a11yFocused(opts: { pid?: number } = {}): Promise<AxFocusedResult> {
+  return invoke<AxFocusedResult>(focusedArgs('a11y-focused', opts.pid), { timeoutMs: 5000 });
 }
 
 export function a11yClick(opts: { pid: number; path: number[] }): Promise<{ ok: true }> {
@@ -416,9 +421,9 @@ export function a11ySetValue(opts: { pid: number; path: number[]; value: string 
  * writes the same live AXFocusedUIElement, so there's no stale path between a
  * separate read and write. Returns the `previous` text for undo.
  */
-export function a11yFocusedSetValue(opts: { value: string }): Promise<{ ok: true; strategy?: string; previous?: string }> {
+export function a11yFocusedSetValue(opts: { value: string; pid?: number }): Promise<{ ok: true; strategy?: string; previous?: string }> {
   return invoke(
-    ['a11y-focused-set-value', '--value', opts.value],
+    focusedArgs('a11y-focused-set-value', opts.pid, ['--value', opts.value]),
     { timeoutMs: 6000 },
   );
 }
@@ -428,8 +433,8 @@ export function a11yFocusedSetValue(opts: { value: string }): Promise<{ ok: true
  * system-wide focused element (any app, via Accessibility). "Nothing
  * selected" is a clean result, not an error: hasSelection=false, selectedText="".
  */
-export function a11ySelectedText(): Promise<AxSelectedTextResult> {
-  return invoke<AxSelectedTextResult>(['a11y-selected-text'], { timeoutMs: 5000 });
+export function a11ySelectedText(opts: { pid?: number } = {}): Promise<AxSelectedTextResult> {
+  return invoke<AxSelectedTextResult>(focusedArgs('a11y-selected-text', opts.pid), { timeoutMs: 5000 });
 }
 
 // ── Speech ───────────────────────────────────────────────────────────

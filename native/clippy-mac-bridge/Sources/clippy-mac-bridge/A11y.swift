@@ -621,15 +621,28 @@ func runA11yFind() {
 
 // MARK: - Subcommand: a11y-focused
 
+/// AXFocusedUIElement for a11y-focused / a11y-selected-text / a11y-focused-set-value.
+/// With `--pid <n>` it is that app's focused element (AXUIElementCreateApplication),
+/// otherwise the system-wide one. Needed because the system-wide focus is
+/// ClippyAI's own chat field while the user types there.
+private func copyFocusedElement(_ out: inout CFTypeRef?) -> AXError {
+    let target: AXUIElement
+    if let s = argValue(name: "--pid"), let n = Int32(s) {
+        target = AXUIElementCreateApplication(pid_t(n))
+    } else {
+        target = AXUIElementCreateSystemWide()
+    }
+    return AXUIElementCopyAttributeValue(target, attrFocusedUIElem, &out)
+}
+
 /// Find the currently-focused element across the whole system. The owning
 /// app is resolved directly via AXUIElementGetPid on the focused element
 /// (no parent walk needed).
 func runA11yFocused() {
     ensureAXOrExit()
 
-    let systemWide = AXUIElementCreateSystemWide()
     var focusedRef: CFTypeRef?
-    let err = AXUIElementCopyAttributeValue(systemWide, attrFocusedUIElem, &focusedRef)
+    let err = copyFocusedElement(&focusedRef)
     if err != .success {
         if err == .noValue || err == .attributeUnsupported {
             // No focus right now (e.g. user is on the desktop). Not an
@@ -816,9 +829,8 @@ func runA11yFocusedSetValue() {
         emitError("--value is required", code: 2)
     }
 
-    let systemWide = AXUIElementCreateSystemWide()
     var focusedRef: CFTypeRef?
-    let err = AXUIElementCopyAttributeValue(systemWide, attrFocusedUIElem, &focusedRef)
+    let err = copyFocusedElement(&focusedRef)
     if err != .success {
         emitAXError(err, context: "focused-set-value/focus")
     }
@@ -881,9 +893,8 @@ func runA11yFocusedSetValue() {
 func runA11ySelectedText() {
     ensureAXOrExit()
 
-    let systemWide = AXUIElementCreateSystemWide()
     var focusedRef: CFTypeRef?
-    let err = AXUIElementCopyAttributeValue(systemWide, attrFocusedUIElem, &focusedRef)
+    let err = copyFocusedElement(&focusedRef)
     if err != .success {
         if err == .noValue || err == .attributeUnsupported {
             // No focus right now (e.g. user is on the desktop). Clean "none".
