@@ -239,3 +239,11 @@ export function ocrTextInBounds(
 export function macTargetPidFor(picked: { pid: number }, ownPid: number): number | undefined {
   return picked.pid !== ownPid ? picked.pid : undefined;
 }
+
+/** "Microsoft Excel" vs "Excel", case-insensitive: does the frontmost app's name match the one we asked for? */
+export function appNameMatches(frontmost: string, wanted: string): boolean {
+  const a = frontmost.trim().toLowerCase();
+  const b = wanted.trim().toLowerCase().replace(/\.app$/, '');
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}

@@ -84,8 +84,9 @@ import * as profileMod from './profile';
 import { psScript, psCommand, configurePsHost, getPsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
 import { outlookSendArgs } from './outlook-args';
+
 import { runMacSecurityScan, parseMacSections } from './mac-security-scan';
-import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor } from './screen-context';
+import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, appNameMatches } from './screen-context';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -519,6 +520,26 @@ async function getWindows(): Promise<ToolResult> {
   return readScreen({ mode: 'accessibility' });
 }
 
+/**
+ * macOS: poll the bridge until the frontmost app is the one we asked for
+ * (v0.23 "honest results": activate() returning is not proof). null = the
+ * bridge is unavailable, so nothing could be checked.
+ */
+async function macWaitFrontmost(name: string, timeoutMs = 2000): Promise<{ ok: boolean; app: string } | null> {
+  if (!macBridge.isBridgeAvailable()) return null;
+  const deadline = Date.now() + timeoutMs;
+  let app = '';
+  try {
+    for (;;) {
+      const w = await macBridge.activeWindow();
+      app = w.app || '';
+      if (appNameMatches(app, name)) return { ok: true, app };
+      if (Date.now() >= deadline) return { ok: false, app };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  } catch { return null; }
+}
+
 async function focusWindow(params: Record<string, unknown>): Promise<ToolResult> {
   const { processName, processId, title } = params;
   if (!processName && !processId && !title) {
@@ -643,8 +664,24 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
     end run
   `;
   const r = await runApplescript(activate, { args: [targetName], timeoutMs: 5000 });
-  if (!r.ok) return { text: `(focus_window error: ${r.error ?? r.stderr})` };
-  return { text: r.stdout.trim() || `Focused ${targetName}` };
+  if (!r.ok) return { text: `(error:FOCUS_FAILED) focus_window: ${r.error ?? r.stderr}`, receipt: makeReceipt('focus_window', 'error', null, { reason: r.error ?? r.stderr }, 'applescript') };
+  const said = r.stdout.trim();
+  if (said.startsWith('(error')) {
+    return { text: `(error:FOCUS_FAILED) focus_window: ${said}`, receipt: makeReceipt('focus_window', 'error', true, { target: targetName, reason: said }, 'applescript') };
+  }
+  // v0.23 parity: verify the app really is frontmost now.
+  const fg = await macWaitFrontmost(targetName);
+  const evidence = { target: targetName, foregroundApp: fg?.app ?? null };
+  if (fg?.ok) {
+    return { text: `Focused ${fg.app} (verified in foreground)`, receipt: makeReceipt('focus_window', 'verified', true, evidence, 'applescript') };
+  }
+  if (fg) {
+    return {
+      text: `(error:FOCUS_FAILED) focus_window: asked for ${targetName} but ${fg.app || 'another app'} is still in front`,
+      receipt: makeReceipt('focus_window', 'error', true, evidence, 'applescript'),
+    };
+  }
+  return { text: said || `Focused ${targetName} (unverified)`, receipt: makeReceipt('focus_window', 'unverified', true, evidence, 'applescript') };
 }
 
 /**
@@ -705,13 +742,35 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
 
   const existingPid = await getAppPidByName(name);
   if (existingPid > 0) {
-    await focusWindow({ processName: name });
-    return { text: `Focused existing ${name} (pid ${existingPid})` };
+    const focused = await focusWindow({ processName: name });
+    if (focused.receipt?.status === 'verified') {
+      return { text: `Focused existing ${name} (pid ${existingPid})`, receipt: makeReceipt('open_app', 'verified', true, { pid: existingPid, via: 'focus_window' }) };
+    }
+    return {
+      text: `${name} is already running (pid ${existingPid}) but could not be confirmed in front: ${focused.text.substring(0, 160)}`,
+      receipt: makeReceipt('open_app', 'unverified', true, { pid: existingPid, focus: focused.text.substring(0, 120) }),
+    };
   }
 
   const r = await runCli('open', ['-a', name], { timeoutMs: 10_000 });
-  if (!r.ok) return { text: `(could not open ${name}: ${r.error ?? r.stderr.trim()})` };
-  return { text: `Launched ${name}` };
+  if (!r.ok) {
+    const why = r.error ?? r.stderr.trim();
+    return { text: `(could not open ${name}: ${why})`, receipt: makeReceipt('open_app', 'error', null, { reason: why }) };
+  }
+  // v0.23 parity: "Launched" is a claim only once the app is running and in front.
+  let pid = 0;
+  for (let i = 0; i < 12 && pid === 0; i++) {
+    pid = await getAppPidByName(name);
+    if (pid === 0) await new Promise((res) => setTimeout(res, 250));
+  }
+  const fg = pid > 0 ? await macWaitFrontmost(name, 1500) : null;
+  if (pid > 0 && fg?.ok) {
+    return { text: `Launched ${name} (pid ${pid}, in front)`, receipt: makeReceipt('open_app', 'verified', true, { pid }) };
+  }
+  return {
+    text: `Launched ${name}: ${pid > 0 ? 'running, but not confirmed in front' : 'no running process seen within 3 s'} (unverified; it may still be starting, or run under a different name)`,
+    receipt: makeReceipt('open_app', 'unverified', true, { pid: pid || null }),
+  };
 }
 
 async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
@@ -724,9 +783,31 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
   // in-this-app failure modes. Bridge handles surrogate pairs + emoji + RTL.
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
+      // v0.23 parity: never type into Clippy's own chat by accident.
+      const front = await macBridge.activeWindow().catch(() => null);
+      if (front && front.pid === process.pid) {
+        return {
+          text: "(error:FOCUS_FAILED) type_text refused: the focused window is Clippy's own bubble, so the text would land in the chat, not the app. Call focus_window on the target app first.",
+          receipt: makeReceipt('type_text', 'error', false, { reason: 'own_window', foregroundProcessId: front.pid }, 'cgevent'),
+        };
+      }
       const result = await macBridge.typeText({ text });
       const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-      return { text: `Typed ${result.chars} chars: "${preview}"` };
+      // Read the focused field back (AX value) so the receipt can say 'verified'.
+      await new Promise((r) => setTimeout(r, 200));
+      const rb = await macBridge.a11yFocused().catch(() => null);
+      const readback = rb && typeof rb.value === 'string' ? rb.value : null;
+      const evidence = { chars: result.chars, app: front?.app ?? '' };
+      if (typedTextLanded(text, readback)) {
+        return {
+          text: `Typed ${result.chars} chars: "${preview}" (verified: the field reads back what was typed)`,
+          receipt: makeReceipt('type_text', 'verified', true, { ...evidence, readback: 'match' }, 'cgevent'),
+        };
+      }
+      return {
+        text: `Typed ${result.chars} chars: "${preview}" (NOT verified: the field could not be read back; check the screen before telling the user it's done)`,
+        receipt: makeReceipt('type_text', 'unverified', true, { ...evidence, readback: readback === null ? 'unavailable' : 'mismatch' }, 'cgevent'),
+      };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
         if (err.kind === 'permission') {
