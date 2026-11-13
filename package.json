@@ -18,8 +18,12 @@
     "start": "electron-vite preview",
     "vendor": "node scripts/vendor-clawdcursor.js && node scripts/vendor-whisper.js",
     "rebuild-natives": "electron-rebuild -f -w keytar",
+    "rebuild-natives:mac": "electron-rebuild -f -w keytar --arch=arm64 && electron-rebuild -f -w keytar --arch=x64",
+    "build-native": "node scripts/build-native.js",
     "pack": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder --dir",
     "dist": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder",
+    "dist:win": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder --win",
+    "dist:mac": "npm run vendor && npm run rebuild-natives:mac && npm run build-native && npm run build && electron-builder --mac -c.mac.bundleVersion=${npm_package_version%%-*}",
     "postinstall": "node scripts/copy-assets.js",
     "smoke": "node scripts/smoke.js",
     "smoke:1": "node scripts/smoke.js --layer=1",
@@ -44,6 +48,7 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@electron/rebuild": "^3.7.2",
     "@types/node": "^20.0.0",
     "@types/qrcode": "^1.5.5",

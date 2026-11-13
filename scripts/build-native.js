@@ -46,6 +46,10 @@ const ROOT = path.resolve(__dirname, '..');
 const PKGS = [
   { name: 'screenshot-helper', dir: path.join(ROOT, 'native', 'screenshot-helper') },
   { name: 'clippy-mac-bridge', dir: path.join(ROOT, 'native', 'clippy-mac-bridge') },
+  // Long-running listen-only keyboard monitor (opt-in typing awareness).
+  // Separate executable because it holds a CGEventTap + CFRunLoop, unlike
+  // the spawn-per-call bridge. src/main/input-monitor.ts spawns + controls it.
+  { name: 'clippy-input-monitor', dir: path.join(ROOT, 'native', 'clippy-input-monitor') },
 ];
 
 const force = process.argv.includes('--force');
@@ -192,21 +196,18 @@ function buildPackage(pkg) {
   if (!tryMultiArchBuild(pkg)) {
     lipoFallback(pkg);
   } else {
-    // Single-pass universal build outputs under a custom triple dir
-    // (e.g. apple/Products/Release/<name>), but the release symlink
-    // at .build/release should also point at it. If it's missing,
-    // copy from the universal triple.
-    const releaseBin = path.join(pkg.dir, '.build', 'release', pkg.name);
-    if (!fs.existsSync(releaseBin)) {
-      const candidates = [
-        path.join(pkg.dir, '.build', 'apple', 'Products', 'Release', pkg.name),
-        path.join(pkg.dir, '.build', 'release', pkg.name),
-      ];
-      const found = candidates.find((p) => fs.existsSync(p));
-      if (!found) fail(`(${pkg.name}) universal binary not found at any of: ${candidates.join(', ')}`);
-      fs.mkdirSync(path.dirname(releaseBin), { recursive: true });
-      fs.copyFileSync(found, releaseBin);
-    }
+    // Single-pass universal build outputs under apple/Products/Release/<name>.
+    // electron-builder bundles .build/release/<name>, so always refresh it from
+    // the universal output. A plain `swift build` (single arch) leaves
+    // .build/release as a symlink to arm64-apple-macosx/release with an
+    // arm64-only binary; if we kept that, the x64 DMG would ship a bridge
+    // that can't run on Intel. Replace the symlink with a real directory.
+    const universalBin = path.join(pkg.dir, '.build', 'apple', 'Products', 'Release', pkg.name);
+    if (!fs.existsSync(universalBin)) fail(`(${pkg.name}) universal binary not found at ${universalBin}`);
+    const releaseDir = path.join(pkg.dir, '.build', 'release');
+    if (fs.existsSync(releaseDir) && fs.lstatSync(releaseDir).isSymbolicLink()) fs.unlinkSync(releaseDir);
+    fs.mkdirSync(releaseDir, { recursive: true });
+    fs.copyFileSync(universalBin, path.join(releaseDir, pkg.name));
   }
 
   verify(pkg);

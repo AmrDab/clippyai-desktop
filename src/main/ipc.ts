@@ -30,6 +30,8 @@ import {
   setOpenAiKeyPresence,
   getTtsEngine,
   setTtsEngine,
+  getSttEngine,
+  setSttEngine,
   getUsage,
   store as licenseStore,
 } from './license';
@@ -330,6 +332,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       speechVolume: licenseStore.get('speechVolume', 0.9),
       // v0.17.0 — voice input (offline whisper.cpp)
       voiceEnabled: licenseStore.get('voiceEnabled', true),
+      // Voice INPUT engine: 'apple' = on-device Speech via the Swift bridge
+      // (free/offline, default); 'openai' = cloud transcribe (key, opt-in).
+      sttEngine: getSttEngine(),
       // v0.17.2 — wake-word preference (UI works now, runtime stub until
       // we ship the on-device wake-word model)
       wakeWordEnabled: licenseStore.get('wakeWordEnabled', false),
@@ -341,6 +346,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       followEasing: brainSettingsStore.get('followEasing'),
       // v0.20.0-alpha.11 — focused-window follow toggle
       windowFollowEnabled: brainSettingsStore.get('windowFollowEnabled'),
+      inputAwarenessEnabled: brainSettingsStore.get('inputAwarenessEnabled') === true,
       // v0.20.0 (Beta) — ⌥G writing-assistant toggle
       writingAssistEnabled: brainSettingsStore.get('writingAssistEnabled'),
       telemetryEnabled: telemetry.isTelemetryEnabled(),
@@ -423,6 +429,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       setTtsEngine(engine);
       mainWindow.webContents.send('tts-engine', engine);
     }
+    // Voice INPUT engine: 'apple' (on-device Speech bridge, free/offline,
+    // default) vs 'openai' (cloud transcribe, key required). Read live by
+    // stt.ts on every transcription — no broadcast needed.
+    if (settings.sttEngine !== undefined) {
+      setSttEngine(String(settings.sttEngine) === 'openai' ? 'openai' : 'apple');
+    }
     if (settings.speechRate !== undefined) {
       const rate = Math.max(0.5, Math.min(2.0, Number(settings.speechRate) || 1.1));
       licenseStore.set('speechRate', rate);
@@ -483,6 +495,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // v0.20.0-alpha.11 — focused-window follow toggle. Live-applies: when
     // turned off we stop the poll interval immediately; when re-enabled we
     // restart with the existing brain/window references.
+    // Typing awareness (macOS, opt-in) — persists + live-applies in Brain.
+    if (settings.inputAwarenessEnabled !== undefined) {
+      brain.setInputAwareness(Boolean(settings.inputAwarenessEnabled));
+    }
     if (settings.windowFollowEnabled !== undefined) {
       const enabled = Boolean(settings.windowFollowEnabled);
       brainSettingsStore.set('windowFollowEnabled', enabled);
