@@ -191,7 +191,7 @@ const LABELS: Record<string, Label> = {
   wait: (a) => `Wait ${plural(Number(a.seconds) || 1, 'second')}`,
   plan: () => 'Note down a plan',
   detect_webview_apps: () => 'Check which apps allow browser automation',
-  security_sweep: () => 'Run a read-only security check of your PC',
+  security_sweep: () => `Run a read-only security check of your ${process.platform === 'darwin' ? 'Mac' : 'PC'}`,
   get_current_time_tz: (a) => `Check the time${has(a.timezone ?? a.tz) ? ` in ${s(a.timezone ?? a.tz, 40)}` : ''}`,
   weather_current: (a) => `Check the weather${has(a.location) ? ` in ${s(a.location, 40)}` : ''}`,
   create_reminder: (a) => `Create a reminder${has(a.title) ? ` ${q(a.title)}` : ''}${has(a.datetime) ? ` for ${s(a.datetime, 40)}` : ''}`,

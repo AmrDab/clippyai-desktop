@@ -513,7 +513,7 @@ function labelForTool(tool: string): string {
     outlook_send_email: 'Sending email…', outlook_read_inbox: 'Reading inbox…',
     outlook_create_event: 'Creating event…', create_reminder: 'Setting reminder…',
     submit_task: 'Delegating task…', agent_status: 'Checking progress…',
-    plan: 'Planning…', security_sweep: 'Checking your PC…',
+    plan: 'Planning…', security_sweep: process.platform === 'darwin' ? 'Checking your Mac…' : 'Checking your PC…',
   };
   return MAP[tool] ?? `Running ${tool.replace(/_/g, ' ')}…`;
 }

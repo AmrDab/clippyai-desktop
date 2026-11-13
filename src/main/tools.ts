@@ -84,6 +84,7 @@ import * as profileMod from './profile';
 import { psScript, psCommand, configurePsHost, getPsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
 import { outlookSendArgs } from './outlook-args';
+import { runMacSecurityScan, parseMacSections } from './mac-security-scan';
 import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor } from './screen-context';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
@@ -4240,6 +4241,24 @@ async function hashFile(params: Record<string, unknown>): Promise<ToolResult> {
 async function securitySweep(params: Record<string, unknown>): Promise<ToolResult> {
   const quick = !(params.quick === false || params.quick === 'false');
   const includeTrusted = params.includeTrusted === true || params.includeTrusted === 'true';
+  // macOS: same read-only review through execFile (no PowerShell) — mac-security-scan.ts.
+  if (process.platform === 'darwin') {
+    try {
+      const r = await runMacSecurityScan(parseMacSections(quick ? 'autoruns,system' : 'autoruns,tasks,services,processes,system'));
+      telemetry.track('security_check', { quick, ok: true });
+      const { trusted, findings, ...rest } = r;
+      return {
+        text: JSON.stringify({
+          ...rest,
+          findings: findings.map((f) => ({ ...f, signals: f.signals.map((s) => s.code) })),
+          ...(includeTrusted ? { trusted } : {}),
+        }),
+      };
+    } catch (err) {
+      telemetry.track('security_check', { quick, ok: false });
+      return { text: `(security_sweep error: ${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
   const args = ['-sections', quick ? 'autoruns,system,defender' : 'autoruns,tasks,services,processes,system,defender'];
   if (includeTrusted) args.push('-includeTrusted', 'true');
   const result = await runComScriptStructured('security-scan.ps1', args, quick ? 60_000 : 180_000);
