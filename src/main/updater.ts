@@ -473,7 +473,8 @@ export function installOnUserQuit(): boolean {
   // strip Mark-of-the-Web first. If a silent attempt for this version already
   // failed, the boot-time check counted it — don't retry silently; the user
   // keeps the manual tray path.
-  if (process.platform === 'win32') {
+  // macOS (v0.24 parity): same, through Squirrel.Mac — the swap happens as the app quits.
+  if (process.platform === 'win32' || process.platform === 'darwin') {
     if (installMethodFor(readState().failureCount[expectedVersion] || 0) !== 'silent') return false;
     void installSilently('on_quit');
     return true;
@@ -492,13 +493,14 @@ export function installOnUserQuit(): boolean {
  * version. A silent failure is caught on the next boot by detectSilentFailure().
  */
 async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
-  if (process.platform !== 'win32') return; // NSIS + PowerShell path; macOS uses installUpdate()
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
+  const mac = process.platform === 'darwin';
   const relaunch = mode === 'idle';
   const installerPath = (autoUpdater as unknown as {
     downloadedUpdateHelper?: { file?: string };
   }).downloadedUpdateHelper?.file || '';
   log.info(relaunch ? 'PC idle with a downloaded update — installing silently' : 'User quit with a downloaded update — installing silently', { version: expectedVersion, installerPath });
-  if (relaunch && (!installerPath || !fs.existsSync(installerPath))) {
+  if (!mac && relaunch && (!installerPath || !fs.existsSync(installerPath))) {
     log.warn('Idle install skipped — no installer on disk', { version: expectedVersion });
     telemetry.track('update_failed', { to: expectedVersion, reason: 'install_not_started', mode });
     return;
@@ -512,13 +514,13 @@ async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
   writeState(state);
 
   try { cleanupTools(); } catch (err) { log.warn('cleanupTools error (non-fatal)', serializeErr(err)); }
-  try {
+  if (process.platform === 'win32') try {
     const staleInstaller = path.join(cacheDir(), 'installer.exe');
     if (fs.existsSync(staleInstaller)) fs.unlinkSync(staleInstaller);
   } catch (err) {
     log.warn('Install.cacheClean failed (non-fatal)', serializeErr(err));
   }
-  if (installerPath && fs.existsSync(installerPath)) {
+  if (process.platform === 'win32' && installerPath && fs.existsSync(installerPath)) {
     try {
       const { execFile } = await import('child_process');
       const { promisify } = await import('util');
@@ -532,6 +534,10 @@ async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
   }
 
   quitState.setQuitting();
+  // macOS (Squirrel.Mac via electron-updater): relaunch iff autoRunAppAfterInstall; otherwise
+  // it just quits and the swap happens on the way out. Squirrel fetches its copy of the update
+  // now, so the app can take a while to quit — hence the longer timers below.
+  if (mac) autoUpdater.autoRunAppAfterInstall = relaunch;
   let started = true;
   try {
     // electron-updater 6.x returns false (it does not throw) when it could not start the installer.
@@ -547,11 +553,11 @@ async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
   if (!relaunch) {
     // quitAndInstall only quits when it managed to start the installer. The
     // user asked to quit either way — make sure we do.
-    setTimeout(() => app.quit(), 3000);
+    setTimeout(() => app.quit(), mac ? 60_000 : 3000);
   } else {
     // Belt and braces: a relaunching install quits within moments. Still alive
     // well after the call means nothing ran — undo the prep and carry on.
-    setTimeout(() => { if (quitState.isQuitting()) installNotStarted(mode); }, 20_000).unref?.();
+    setTimeout(() => { if (quitState.isQuitting()) installNotStarted(mode); }, mac ? 120_000 : 20_000).unref?.();
   }
 }
 
@@ -592,7 +598,7 @@ let idleInstallTried = false;
  * silent failure can't loop — the next boot's check counts it.
  */
 export function startIdleInstall(isTaskActive: () => boolean, isBusyElsewhere: () => boolean, isAsleep: () => boolean = () => false): void {
-  if (idleWatcher || process.platform !== 'win32') return;
+  if (idleWatcher || (process.platform !== 'win32' && process.platform !== 'darwin')) return;
   idleWatcher = setInterval(() => {
     try {
       if (!updateDownloaded) return;

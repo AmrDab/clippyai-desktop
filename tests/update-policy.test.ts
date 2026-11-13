@@ -28,8 +28,18 @@ describe('shouldIdleInstall', () => {
   it('tries only once per run', () => {
     expect(shouldIdleInstall({ ...ready, alreadyTried: true })).toBe(false);
   });
-  it('is Windows-only', () => {
-    expect(shouldIdleInstall({ ...ready, platform: 'darwin' })).toBe(false);
+  it('runs on Windows and macOS only', () => {
+    expect(shouldIdleInstall({ ...ready, platform: 'linux' })).toBe(false);
+  });
+  it('macOS installs under the same guards as Windows', () => {
+    const mac = { ...ready, platform: 'darwin' };
+    expect(shouldIdleInstall(mac)).toBe(true);
+    expect(shouldIdleInstall({ ...mac, idleSeconds: IDLE_INSTALL_SECONDS - 1 })).toBe(false);
+    expect(shouldIdleInstall({ ...mac, taskRunning: true })).toBe(false);
+    expect(shouldIdleInstall({ ...mac, busyElsewhere: true })).toBe(false);
+    expect(shouldIdleInstall({ ...mac, failedBefore: true })).toBe(false);
+    expect(shouldIdleInstall({ ...mac, alreadyTried: true })).toBe(false);
+    expect(shouldIdleInstall({ ...mac, updateDownloaded: false })).toBe(false);
   });
 });
 

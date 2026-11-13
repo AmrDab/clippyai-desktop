@@ -20,9 +20,9 @@ export interface IdleInstallInput {
   alreadyTried: boolean;
 }
 
-/** Windows only (the NSIS silent path); never mid-task, never for a version that already failed. */
+/** Windows (NSIS silent) and macOS (Squirrel); never mid-task, never for a version that already failed. */
 export function shouldIdleInstall(i: IdleInstallInput): boolean {
-  return i.platform === 'win32'
+  return (i.platform === 'win32' || i.platform === 'darwin')
     && i.updateDownloaded
     && !i.failedBefore
     && !i.taskRunning
