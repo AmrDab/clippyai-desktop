@@ -15,6 +15,7 @@
 import { execFile } from 'child_process';
 import fs from 'fs';
 import os from 'os';
+import { redactSecrets } from './input-triggers'; // the app's existing secret masker (keys, long digit/hex runs)
 import pathMod from 'path';
 const path = pathMod.posix; // macOS paths, whatever the host running the unit tests
 
@@ -65,6 +66,25 @@ export interface MacFacts {
   sections: MacSection[];
 }
 
+/**
+ * Command text only ever leaves this scanner redacted: URL userinfo and
+ * query/fragment, Authorization headers and Bearer tokens, NAME=value
+ * assignments and --token style flags, then the app's shared masker, then any
+ * long high-entropy token. Only high-severity findings (curl|sh) quote any
+ * command text at all.
+ */
+export function redactCommand(text: string): string {
+  const s = text
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@"']*@/gi, '$1')            // user:pass@host -> host
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#"']*)[?#][^\s"']*/gi, '$1')  // ?query / #fragment
+    .replace(/authorization\s*:\s*[^"'\n]*/gi, 'Authorization: [redacted]')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/(--?[\w-]*(?:token|secret|key|pass|pwd|auth|cookie)[\w-]*)(?:=|\s+)(?!-)\S+/gi, '$1=[redacted]')
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, '$1=[redacted]');
+  return redactSecrets(s)
+    .replace(/(?<![\w/.~-])(?=[A-Za-z0-9_+=-]*\d)(?=[A-Za-z0-9_+=-]*[A-Za-z])[A-Za-z0-9_+=-]{24,}(?![\w/-])/g, '[redacted-token]');
+}
+
 const HOME_RE = (home: string) => new RegExp('^' + home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 
 const INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'python', 'python3', 'perl', 'ruby', 'osascript', 'curl', 'wget', 'node', 'nc', 'ncat']);
@@ -89,10 +109,10 @@ function launcherNote(e: Entry): { code: string; why: string } | null {
   if (!INTERPRETERS.has(prog)) return null;
   const joined = (e.args ?? []).join(' ');
   if (/(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba|z)?sh\b/.test(joined)) {
-    return { code: 'launcher_download_and_run', why: `It starts through ${prog} and downloads a script straight into a shell: "${joined.slice(0, 120)}".` };
+    return { code: 'launcher_download_and_run', why: `It starts through ${prog} and downloads a script straight into a shell: "${redactCommand(joined).slice(0, 120)}".` };
   }
   if (/(^|\s)-(c|e)\b/.test(joined) || /base64\s+(-d|--decode)/.test(joined)) {
-    return { code: 'launcher_inline_command', why: `It runs an inline ${prog} command rather than an installed program: "${joined.slice(0, 120)}".` };
+    return { code: 'launcher_inline_command', why: `It runs an inline ${prog} command rather than an installed program.` };
   }
   return null;
 }
@@ -167,8 +187,12 @@ export function analyzeMac(facts: MacFacts, home: string = os.homedir(), maxFind
       bump('medium');
     }
     if (e.source === 'Cron') {
-      signals.push({ code: 'cron_entry', why: `Your crontab runs "${(e.args ?? []).join(' ').slice(0, 120)}" on a schedule. Few people use cron on a Mac today, so it is worth knowing it is there.` });
-      bump(/(curl|wget)\b[^|;]*\|\s*(ba|z)?sh\b/.test((e.args ?? []).join(' ')) ? 'high' : 'low');
+      const cronText = (e.args ?? []).join(' ');
+      const cronHigh = /(curl|wget)\b[^|;]*\|\s*(ba|z)?sh\b/.test(cronText);
+      signals.push({ code: 'cron_entry', why: cronHigh
+        ? `Your crontab downloads and runs code on a schedule: "${redactCommand(cronText).slice(0, 120)}".`
+        : `Your crontab runs "${e.name}" on a schedule. Few people use cron on a Mac today, so it is worth knowing it is there.` });
+      bump(cronHigh ? 'high' : 'low');
     }
     if (e.source === 'LoginItem' && prog && !isStandardLocation(prog, home) && !sig) {
       signals.push({ code: 'login_item_unusual_path', why: `A login item starts from "${prog}", outside the usual app folders.` });
@@ -223,8 +247,8 @@ export function analyzeMac(facts: MacFacts, home: string = os.homedir(), maxFind
         severity: 'high',
         title: 'A shell startup file downloads and runs code',
         name: path.basename(rc.file), source: 'ShellStartup', location: rc.file,
-        plainEnglish: `${rc.file} runs downloaded code every time Terminal opens: "${hits[0].trim().slice(0, 140)}". Some installers add lines like this on purpose, but it is a common way for malware to persist.`,
-        signals: [{ code: 'rc_download_and_run', why: hits[0].trim().slice(0, 200) }],
+        plainEnglish: `${rc.file} runs downloaded code every time Terminal opens: "${redactCommand(hits[0].trim()).slice(0, 140)}". Some installers add lines like this on purpose, but it is a common way for malware to persist.`,
+        signals: [{ code: 'rc_download_and_run', why: redactCommand(hits[0].trim()).slice(0, 200) }],
         recommendation: 'If you did not add the line yourself or through a tool you trust, look at it before opening Terminal again. Clippy has not changed the file.',
       });
     }
@@ -334,6 +358,13 @@ export function parseCodesign(text: string): SigInfo {
   return { status: 'signed', signer: auth[0], apple };
 }
 
+/** The program a crontab line runs (basename of its first command word), for display. */
+export function cronProgramName(line: string): string {
+  const fields = line.trim().startsWith('@') ? line.trim().split(/\s+/).slice(1) : line.trim().split(/\s+/).slice(5);
+  const cmd = fields.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? '';
+  return path.basename(cmd.replace(/^["']|["']$/g, '')) || 'scheduled command';
+}
+
 export async function collectMac(sections: MacSection[], deps: CollectDeps = realDeps): Promise<MacFacts> {
   const notes: string[] = [];
   const entries: Entry[] = [];
@@ -362,7 +393,7 @@ export async function collectMac(sections: MacSection[], deps: CollectDeps = rea
     try {
       const { stdout } = await deps.run('/usr/bin/crontab', ['-l'], 4000);
       for (const l of stdout.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#'))) {
-        entries.push({ source: 'Cron', location: 'crontab', name: l.slice(0, 60), args: [l] });
+        entries.push({ source: 'Cron', location: 'crontab', name: cronProgramName(l), args: [l] });
       }
     } catch { /* "no crontab for user" exits 1 — nothing scheduled */ }
   }

