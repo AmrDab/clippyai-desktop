@@ -2717,11 +2717,11 @@ export class Brain {
       // while the AppleScript fallback returns `{processName}`. Accept
       // either shape or this hint injection silently never fires on
       // macOS (proc undefined → no guide/workflow hint).
-      const parsedActive = JSON.parse(activeText) as { processName?: string; app?: string };
+      const parsedActive = JSON.parse(activeText) as { processName?: string; app?: string; title?: string };
       const proc = parsedActive.processName || parsedActive.app;
       if (proc) {
         activeProc = proc;
-        const guide = getGuidePrompt(proc);
+        const guide = getGuidePrompt(proc, parsedActive.title);
         if (guide) extras += guide;
         if (userText && memoryEnabled()) {
           const hint = formatWorkflowHint(proc, userText);

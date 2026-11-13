@@ -167,8 +167,26 @@ export function macifyKeys(text: string): string {
  * One-shot helper. Returns the formatted guide text for a process, ready
  * for prompt injection. Empty string if no guide matches.
  */
-export function getGuidePrompt(processName: string): string {
-  const guide = loadGuide(processName);
+/** macOS browsers whose tab title says which web app (Gmail, YouTube) the user is in. */
+const MAC_BROWSERS = new Set(['google chrome', 'safari', 'arc', 'microsoft edge', 'brave browser', 'firefox', 'chromium', 'opera']);
+
+/**
+ * Which guide applies. By app name everywhere (with Mac aliases). On macOS, a
+ * browser showing Gmail or YouTube gets that web app's guide (the title is how
+ * the bridge tells us; the guides' domainHints are URLs, which we do not have).
+ * Windows keeps matching by process name only.
+ */
+export function guideNameFor(processName: string, title: string | undefined, platform: string = process.platform): string | null {
+  if (platform === 'darwin' && title && MAC_BROWSERS.has(processName.trim().toLowerCase())) {
+    if (/\bgmail\b|mail\.google\.com/i.test(title)) return 'gmail';
+    if (/\byoutube\b/i.test(title)) return 'youtube';
+  }
+  return null;
+}
+
+export function getGuidePrompt(processName: string, title?: string): string {
+  const web = guideNameFor(processName, title);
+  const guide = (web ? loadGuide(web) : null) ?? loadGuide(processName);
   if (!guide) return '';
   const text = formatGuideForPrompt(guide);
   return process.platform === 'darwin' ? macifyKeys(text) : text;

@@ -24,3 +24,27 @@ describe('guides on macOS', () => {
     if (process.platform !== 'darwin') expect(getGuidePrompt('olk')).toContain('Ctrl+Enter');
   });
 });
+
+import { guideNameFor } from '../src/main/guides';
+
+describe('web-app guides on macOS browsers', () => {
+  it('Gmail and YouTube tabs in Chrome/Safari get their guide (darwin only)', () => {
+    expect(guideNameFor('Google Chrome', 'Inbox (3) - amy@example.com - Gmail', 'darwin')).toBe('gmail');
+    expect(guideNameFor('Safari', 'Funny cats - YouTube', 'darwin')).toBe('youtube');
+    expect(guideNameFor('Arc', 'mail.google.com', 'darwin')).toBe('gmail');
+  });
+  it('other tabs, other apps and Windows are untouched', () => {
+    expect(guideNameFor('Google Chrome', 'Wikipedia', 'darwin')).toBeNull();
+    expect(guideNameFor('Slack', 'Gmail notes', 'darwin')).toBeNull();
+    expect(guideNameFor('chrome', 'Inbox - Gmail', 'win32')).toBeNull();
+  });
+  it('the guides they point at exist and get Cmd keys in the prompt', () => {
+    expect(loadGuide('gmail')).not.toBeNull();
+    expect(loadGuide('youtube')).not.toBeNull();
+    expect(macifyKeys('send=mod+Return')).toBe('send=Cmd+Return');
+  });
+  it('maps every Mac app name the bridge reports for the shipped native guides', () => {
+    for (const n of ['Slack', 'Discord', 'Spotify', 'Figma', 'Microsoft Excel', 'Microsoft Outlook']) expect(loadGuide(n), n).not.toBeNull();
+    expect(loadGuide('Microsoft Paint')).toBeNull();
+  });
+});

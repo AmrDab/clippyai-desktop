@@ -214,3 +214,14 @@ describe('macTargetPidFor', () => {
     expect(macTargetPidFor(pickForegroundMacWindow(w(99), [w(99)], 99), 99)).toBeUndefined();
   });
 });
+
+import { appNameMatches } from '../src/main/screen-context';
+
+describe('appNameMatches', () => {
+  it('matches the frontmost app to the requested name loosely, case-insensitively', () => {
+    expect(appNameMatches('Microsoft Excel', 'excel')).toBe(true);
+    expect(appNameMatches('Safari', 'Safari.app')).toBe(true);
+    expect(appNameMatches('Google Chrome', 'Safari')).toBe(false);
+    expect(appNameMatches('', 'Safari')).toBe(false);
+  });
+});
