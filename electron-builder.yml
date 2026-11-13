@@ -125,6 +125,9 @@ mac:
     - "**/node_modules/onnxruntime-node/**"
   # macOS-only resources (merged with the top-level extraResources).
   extraResources:
+    # Tray icon (nativeImage can't be relied on to read icon.ico on macOS) — src/main/app-icon.ts.
+    - from: build/icon-256.png
+      to: icon.png
     # whisper.cpp universal binary built by scripts/vendor-whisper.js.
     - from: vendor/whisper/macos
       to: whisper
