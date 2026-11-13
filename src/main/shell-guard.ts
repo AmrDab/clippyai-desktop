@@ -48,6 +48,15 @@ export const SHELL_BLOCKLIST: BlockRule[] = [
   { what: 'mkfs', re: /\bmkfs(\.[a-z0-9]+)?\s+/ },
   { what: 'forkbomb', re: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/ },
 
+  // ── macOS ──
+  { what: 'recursive delete of a macOS system folder or home root',
+    re: /\brm\s+(?:-[a-zA-Z-]+\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(?:-[a-zA-Z-]+\s+)*["']?\/(?:System|Library|Applications|private|usr|bin|sbin|etc|var|opt|Volumes|Users(?:\/[^/\s"';&|*]+)?)\/?\*?["']?(?=$|[\s;&|)])/ },
+  { what: 'erasing or repartitioning a disk (diskutil)',
+    re: rx(String.raw`\bdiskutil\b${STMT}\b(?:erase\w*|zero\w*|random\w*|secure\w*|partitiondisk|reformat|apfs\s+deletecontainer|apfs\s+deletevolume)\b`) },
+  { what: 'disabling System Integrity Protection', re: rx(String.raw`\bcsrutil\s+(?:disable|authenticated-root\s+disable)\b`) },
+  { what: 'disabling Gatekeeper', re: rx(String.raw`\bspctl\b${STMT}--(?:global-disable|master-disable)\b`) },
+  { what: 'tampering with Time Machine backups', re: rx(String.raw`\btmutil\s+(?:delete|deletelocalsnapshots|disable)\b`) },
+
   // ── Windows ──
   { what: 'formatting a drive', re: rx(CS + String.raw`format(?:\.com)?\s+["']?[a-z]:`) },
   { what: 'formatting a drive', re: rx(String.raw`\b(?:format-volume|clear-disk)\b`) },

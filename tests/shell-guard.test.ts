@@ -5,6 +5,12 @@ import { shellBlockReason, isProtectedShellCwd } from '../src/main/shell-guard';
 const BLOCKED: string[] = [
   // Unix (pre-existing)
   'rm -rf /', 'rm -rf ~', 'dd if=/dev/zero of=/dev/sda', 'mkfs.ext4 /dev/sdb1', ':(){ :|:& };:',
+  // macOS
+  'sudo rm -rf /System', 'rm -rf /Library', 'rm -rf /Applications', 'rm -rf /Users', 'rm -rf /Users/amr', 'rm -rf /Users/amr/',
+  'rm -fr /usr', 'rm -rf "/Applications"', 'rm -rf /Users/amr/*', 'ls; rm -rf /etc',
+  'diskutil eraseDisk APFS Foo disk2', 'diskutil eraseVolume HFS+ x /Volumes/x', 'diskutil secureErase 0 disk3',
+  'diskutil apfs deleteContainer disk1', 'diskutil zeroDisk disk2', 'csrutil disable', 'csrutil authenticated-root disable',
+  'sudo spctl --master-disable', 'spctl --global-disable', 'tmutil deletelocalsnapshots 2024', 'tmutil delete /Volumes/B/x',
   // format
   'format C:', 'format d: /q /y', 'format.com E: /FS:NTFS', 'cmd /c format c: /q',
   'powershell -Command Format-Volume -DriveLetter D', 'Clear-Disk -Number 1 -RemoveData',
@@ -59,6 +65,9 @@ const ALLOWED: string[] = [
   'Set-NetFirewallProfile -Enabled True', 'schtasks /query /fo LIST', 'schtasks /create /tn backup /tr C:\\b.cmd /sc daily',
   'schtasks /run /tn SYSTEMcheck', 'Register-ScheduledTask -TaskName x -Action $a -User amr_d',
   'takeown /f C:\\Users\\amr_d\\locked.txt', 'takeown /f D:\\data\\folder /r /d y', 'icacls C:\\Users\\amr_d\\x',
+  'rm -rf /Users/amr/project/build', 'rm -rf /tmp/clippy', 'rm -rf /var/tmp/x', 'rm -rf /usr/local/share/foo',
+  'rm -rf ~/Downloads/old', 'rm file.txt', 'diskutil list', 'diskutil info disk1', 'diskutil mount disk2',
+  'csrutil status', 'spctl --status', 'spctl --assess -v app.app', 'tmutil listbackups', 'tmutil latestbackup',
   'echo formatted output', 'python -c "print(1)"', 'curl https://example.com',
 ];
 
