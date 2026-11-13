@@ -3,7 +3,7 @@ import {
   newCtxState, planCapture, recordOutcome, heavyBudgetMs, windowCallFailed, extractProcessName, raceDeadline,
   isScreenQuestion, formatScreenDump, formatOcrContext, SCREEN_Q_OCR_MS,
   CTX_CACHE_MS, PAUSE_AFTER_TIMEOUTS, PAUSE_MS, WINDOW_DEADLINE_MS, HEAVY_DEADLINE_MS, TOTAL_BUDGET_MS,
-  pickForegroundMacWindow, ocrTextInBounds, MAC_DEADLINES, type MacWindowLike,
+  pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, MAC_DEADLINES, type MacWindowLike,
 } from '../src/main/screen-context';
 
 describe('planCapture', () => {
@@ -199,5 +199,18 @@ describe('macOS screen context (Swift bridge shapes)', () => {
     expect(mac).toMatchObject({ kind: 'capture', windowMs: MAC_DEADLINES.windowMs, totalMs: MAC_DEADLINES.totalMs });
     expect(planCapture(newCtxState(), 1000, true)).toEqual({ kind: 'capture', windowMs: WINDOW_DEADLINE_MS, heavyMs: HEAVY_DEADLINE_MS });
     if (mac.kind === 'capture') expect(heavyBudgetMs(mac, 1000)).toBe(MAC_DEADLINES.heavyMs);
+  });
+});
+
+describe('macTargetPidFor', () => {
+  const w = (pid: number, app = 'X') => ({ pid, app, title: '', bounds: { x: 0, y: 0, width: 900, height: 600 }, layer: 0 });
+  it('keeps the frontmost user app (e.g. the window focus_window just raised)', () => {
+    expect(macTargetPidFor(pickForegroundMacWindow(w(10), [w(11)], 99), 99)).toBe(10);
+  });
+  it('is the real app pid when Clippy is frontmost', () => {
+    expect(macTargetPidFor(pickForegroundMacWindow(w(99, 'ClippyAI'), [w(99), w(14, 'Notes')], 99), 99)).toBe(14);
+  });
+  it('is undefined when only Clippy has windows', () => {
+    expect(macTargetPidFor(pickForegroundMacWindow(w(99), [w(99)], 99), 99)).toBeUndefined();
   });
 });

@@ -229,3 +229,13 @@ export function ocrTextInBounds(
   });
   return inside.map((e) => e.text).join(' ').replace(/\s+/g, ' ').trim();
 }
+
+/**
+ * pid of the user's app for bridge calls that default to the frontmost app
+ * (which is Clippy while the user types in his chat). A window the model just
+ * focused via focus_window / open_app is frontmost, so it wins naturally.
+ * undefined only when no other app has a window (leave the bridge default).
+ */
+export function macTargetPidFor(picked: { pid: number }, ownPid: number): number | undefined {
+  return picked.pid !== ownPid ? picked.pid : undefined;
+}

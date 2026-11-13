@@ -84,7 +84,7 @@ import * as profileMod from './profile';
 import { psScript, psCommand, configurePsHost, getPsHost, setPsScriptsDir, abortPsWork, shutdownPsHost } from './win-host';
 import { layoutFromRegion, matchOcrTarget, type OcrLayout, type RawOcrRegion } from './ocr-match';
 import { outlookSendArgs } from './outlook-args';
-import { pickForegroundMacWindow, ocrTextInBounds } from './screen-context';
+import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor } from './screen-context';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -269,6 +269,19 @@ async function macForegroundWindow(): Promise<macBridge.WindowInfo & { titlesGat
   } catch {
     return active;
   }
+}
+
+/**
+ * pid for bridge calls that default to the frontmost app (a11y-find, ...): the
+ * user's app when Clippy itself is frontmost, else undefined (the default is
+ * already right — and covers a window the model just focused via focus_window /
+ * open_app, which is then frontmost).
+ */
+async function macTargetPid(): Promise<number | undefined> {
+  try {
+    const w = await macForegroundWindow();
+    return macTargetPidFor(w, process.pid);
+  } catch { return undefined; }
 }
 
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
@@ -1300,7 +1313,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
       // Stage 1 — AX-find
-      const ax = await macBridge.a11yFind({ text: target });
+      const ax = await macBridge.a11yFind({ text: target, pid: await macTargetPid() });
       if (ax.matches.length > 0) {
         const m = ax.matches[0];
         try {
@@ -1320,7 +1333,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       // Resolve foreground window bounds for the OCR fuzzy-match filter
       let fgBounds: { x: number; y: number; width: number; height: number } | undefined;
       try {
-        const aw = await macBridge.activeWindow();
+        const aw = await macForegroundWindow();
         if (aw && aw.bounds) fgBounds = aw.bounds;
       } catch { /* best effort */ }
 
@@ -1523,7 +1536,7 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
   if (process.platform === 'darwin' && macBridge.isBridgeAvailable()) {
     try {
       // Stage 1 — AX-find then AXSetValue (preferred — atomic)
-      const ax = await macBridge.a11yFind({ text: target });
+      const ax = await macBridge.a11yFind({ text: target, pid: await macTargetPid() });
       if (ax.matches.length > 0) {
         const m = ax.matches[0];
         try {
