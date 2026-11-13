@@ -23,7 +23,13 @@ import path from 'path';
  */
 
 const MAIN = path.join(__dirname, '..', 'src', 'main');
-const PS_RE = /['"]powershell\.exe['"]/g;
+// v0.24 moved most spawns into win-host.ts (persistent PowerShell host), so a
+// call into win-host is the spawn site everywhere else: psScript(...),
+// psCommand(...), and anything that creates/reaches the host.
+const PS_RE = /['"]powershell\.exe['"]|\b(?:psScript|psCommand|getPsHost|configurePsHost)\(|\bnew PsHost\(/g;
+const WIN_HOST = 'win-host.ts';
+// win-host.ts entry points: each must call assertWin32() before doing anything.
+const WIN_HOST_ENTRY = ['oneShot', 'psScript', 'psCommand', 'configurePsHost'];
 const FN_RE = /^(export )?(?:async )?function (\w+)\s*\(/gm;
 const WIN_IF_RE = /if \(process\.platform === 'win32'[^{]*\{/g;
 const DARWIN_IF_RE = /if \(process\.platform === 'darwin'\) \{/g;
@@ -112,11 +118,26 @@ describe('no darwin-reachable code spawns powershell.exe', () => {
   for (const file of files(MAIN)) {
     const src = stripComments(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n'));
     const fns = splitFunctions(src);
+    const rel = path.relative(MAIN, file).replace(/\\/g, '/');
+    if (rel === WIN_HOST) {
+      // win-host is Windows-only by construction: its literal spawns must sit
+      // right behind assertWin32(), and every entry point must call it first.
+      for (const m of src.matchAll(/['"]powershell\.exe['"]/g)) {
+        sites++;
+        const before = src.slice(0, m.index!).split('\n').slice(-12).join('\n');
+        if (!/assertWin32\(/.test(before)) offenders.push(`${rel}: powershell.exe @${m.index} lacks assertWin32`);
+      }
+      for (const name of WIN_HOST_ENTRY) {
+        sites++;
+        const fn = fns.find((f) => f.name === name);
+        if (!fn || !/assertWin32\(/.test(src.slice(fn.start, fn.start + 400))) offenders.push(`${rel}: ${name} lacks assertWin32`);
+      }
+      continue;
+    }
     for (const m of src.matchAll(PS_RE)) {
       sites++;
       const at = m.index!;
       const fn = fns.find((f) => at > f.start && at < f.end);
-      const rel = path.relative(MAIN, file).replace(/\\/g, '/');
       if (!fn) { offenders.push(`${rel}: top-level powershell.exe`); continue; }
       if (guardedAt(src, fn, at) || onWin32TernaryArm(src, at) || callerGated(src, fns, fn, new Map())) continue;
       offenders.push(`${rel}: ${fn.name}`);
@@ -124,7 +145,10 @@ describe('no darwin-reachable code spawns powershell.exe', () => {
   }
 
   it('finds the powershell.exe spawn sites', () => {
-    expect(sites).toBeGreaterThan(30);
+    // Post-v0.24 architecture: a handful of literal spawns outside win-host,
+    // ~35 psScript/psCommand call sites in tools.ts, plus win-host's own spawns
+    // and entry points.
+    expect(sites).toBeGreaterThan(40);
   });
 
   it('every powershell.exe spawn is unreachable on darwin', () => {

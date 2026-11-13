@@ -99,6 +99,17 @@ export interface PsHostOptions {
   now?: () => number;
 }
 
+/**
+ * Belt and braces: PowerShell does not exist on macOS/Linux. Every entry point
+ * that can reach a `powershell.exe` spawn calls this first, so a missed
+ * platform gate in a caller fails fast with a clear error instead of an ENOENT.
+ */
+export function assertWin32(what = 'PowerShell'): void {
+  if (process.platform !== 'win32') {
+    throw new Error(`${what} is Windows-only (platform: ${process.platform})`);
+  }
+}
+
 export const HOST_ARGS = ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass'];
 
 export class PsHost {
@@ -215,6 +226,7 @@ export class PsHost {
     this.ready.catch(() => { /* observed by request(); avoid unhandled rejection */ });
     let child: ChildProcess;
     try {
+      if (!this.opts.spawnFn) assertWin32('PowerShell host'); // injected spawnFn = unit-test seam
       const spawnFn = this.opts.spawnFn ?? spawn;
       child = spawnFn('powershell.exe', [...HOST_ARGS, '-File', this.opts.bridgePath(), '-ScriptsDir', this.opts.scriptsDir()], {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -456,6 +468,7 @@ export const psStats = { host: 0, spawn: 0, fallbacks: 0 };
  * exactly as before v0.24.
  */
 export function configurePsHost(opts: { scriptsDir: () => string; log?: MiniLog; host?: PsHost }): PsHost {
+  if (!opts.host) assertWin32('PowerShell host');
   scriptsDirFn = opts.scriptsDir;
   hostLog = opts.log ?? NOOP_LOG;
   host?.shutdown();
@@ -479,6 +492,7 @@ function resolveScript(script: string): string {
 }
 
 async function oneShot(args: string[], opts: PsCallOptions): Promise<PsCallResult> {
+  assertWin32('PowerShell one-shot');
   const ac = new AbortController();
   oneShotAborts.add(ac);
   const t0 = Date.now();
@@ -531,6 +545,7 @@ async function viaHost(
 
 /** Run a bundled .ps1 (by file name) — in the host when possible. */
 export async function psScript(script: string, args: PsArgs, opts: PsCallOptions): Promise<PsCallResult> {
+  assertWin32('PowerShell script');
   const scriptPath = resolveScript(script);
   const clean: Record<string, PsArgValue> = {};
   for (const [k, v] of Object.entries(args)) if (v !== undefined) clean[k] = v;
@@ -538,7 +553,8 @@ export async function psScript(script: string, args: PsArgs, opts: PsCallOptions
 }
 
 /** Run an inline PowerShell command — in the host when possible. */
-export function psCommand(code: string, opts: PsCallOptions): Promise<PsCallResult> {
+export async function psCommand(code: string, opts: PsCallOptions): Promise<PsCallResult> {
+  assertWin32('PowerShell command');
   return viaHost({ cmd: 'eval', code }, 'inline command', ['-NoProfile', '-NonInteractive', '-Command', code], opts);
 }
 

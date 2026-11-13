@@ -3,7 +3,7 @@
  * process stands in for powershell.exe, so framing, ids, timeouts, restart,
  * back-off and one-shot fallback are exercised without spawning anything.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough, Writable } from 'stream';
 import os from 'os';
@@ -65,6 +65,11 @@ function makeHost(handler: Handler = echo, opts: Partial<ConstructorParameters<t
   const host = new PsHost({ bridgePath: () => 'C:\\s\\ps-bridge.ps1', scriptsDir: () => 'C:\\s', spawnFn, readyTimeoutMs: 200, warmWaitMs: 500, ...opts });
   return { host, children, spawnFn };
 }
+
+// The host refuses to run off Windows (assertWin32); these tests fake the child, so pose as win32.
+const originalPlatform = process.platform;
+beforeAll(() => { Object.defineProperty(process, 'platform', { value: 'win32' }); });
+afterAll(() => { Object.defineProperty(process, 'platform', { value: originalPlatform }); });
 
 beforeEach(() => { execFileMock.mockClear(); });
 afterEach(() => { vi.useRealTimers(); });
@@ -331,5 +336,18 @@ describe('psScript / psCommand (caller helpers)', () => {
 
   it('rejects script names with path separators', async () => {
     await expect(psScript('..\\evil.ps1', {}, { timeoutMs: 100 })).rejects.toThrow(/invalid script name/);
+  });
+});
+
+describe('non-Windows guard', () => {
+  it('psScript / psCommand / oneShot refuse on darwin without spawning', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      await expect(psScript('focus-window.ps1', {}, { timeoutMs: 1000 })).rejects.toThrow(/Windows-only/);
+      await expect(psCommand('Get-Thing', { timeoutMs: 1000 })).rejects.toThrow(/Windows-only/);
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+    }
   });
 });

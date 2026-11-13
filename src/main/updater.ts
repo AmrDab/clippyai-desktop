@@ -492,6 +492,7 @@ export function installOnUserQuit(): boolean {
  * version. A silent failure is caught on the next boot by detectSilentFailure().
  */
 async function installSilently(mode: 'on_quit' | 'idle'): Promise<void> {
+  if (process.platform !== 'win32') return; // NSIS + PowerShell path; macOS uses installUpdate()
   const relaunch = mode === 'idle';
   const installerPath = (autoUpdater as unknown as {
     downloadedUpdateHelper?: { file?: string };
