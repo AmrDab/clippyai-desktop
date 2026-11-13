@@ -185,8 +185,8 @@ function buildSuggestionContext(screenContext: string): import('./contextual-sug
     ? screenContext.substring(activePrefix.length, screenBreak)
     : screenContext.substring(activePrefix.length);
   try {
-    const parsed = JSON.parse(activeRaw) as { processName?: string; title?: string };
-    app = parsed.processName ?? '';
+    const parsed = JSON.parse(activeRaw) as { processName?: string; app?: string; title?: string };
+    app = parsed.processName ?? parsed.app ?? ''; // {app} = macOS bridge shape
     windowTitle = parsed.title ?? '';
   } catch {
     // activeRaw not JSON (e.g. "(no active window)") — leave app/title empty

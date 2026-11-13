@@ -29,12 +29,21 @@ const NOTES: Record<string, string[]> = {
   ],
 };
 
+// macOS does not install by itself (it asks "Restart to update / Later"): don't promise otherwise.
+const NOTES_MAC: Record<string, string[]> = {
+  '0.24': [
+    "Updates download quietly by themselves. I'll ask you when one is **ready to install**.",
+    ...NOTES['0.24'].slice(1),
+  ],
+};
+
 const minor = (v: string) => v.split('.').slice(0, 2).join('.');
 
-export function whatsNewToShow(lastVersion: string | undefined, current: string, existingUser: boolean): string[] | null {
+export function whatsNewToShow(lastVersion: string | undefined, current: string, existingUser: boolean, platform = 'win32'): string[] | null {
   if (!lastVersion && !existingUser) return null;           // fresh install
   if (lastVersion && minor(lastVersion) === minor(current)) return null; // same or patch
-  return NOTES[minor(current)] ?? null;
+  const m = minor(current);
+  return (platform === 'darwin' ? NOTES_MAC[m] : undefined) ?? NOTES[m] ?? null;
 }
 
 const store = new Store<{ lastRunVersion?: string }>({ name: 'app-state' });
@@ -43,7 +52,7 @@ let pending: { version: string; notes: string[] } | null = null;
 /** At launch: decide once, and remember this version. */
 export function checkWhatsNew(existingUser: boolean): void {
   const current = app.getVersion();
-  const notes = whatsNewToShow(store.get('lastRunVersion'), current, existingUser);
+  const notes = whatsNewToShow(store.get('lastRunVersion'), current, existingUser, process.platform);
   store.set('lastRunVersion', current);
   if (notes) pending = { version: current, notes };
 }

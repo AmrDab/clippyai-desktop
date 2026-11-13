@@ -2,6 +2,7 @@ import { Recorder } from './recorder';
 import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
 import { typeTotalMs, typedText, hasMarkdown, DeferredCollapse } from './bubble-motion';
 import { reducedMotion } from './motion';
+import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
 
 // v0.12.3 — auto-hide is now configurable via Settings.bubbleAutoHideMs.
 // 0 = "Manual" (never auto-hide). Default 30000 (was 20000 — 20s stole long
@@ -114,6 +115,10 @@ export class BubbleController {
     this.sendBtn = document.getElementById('bubble-send') as HTMLButtonElement;
     this.clearBtn = document.getElementById('bubble-clear') as HTMLButtonElement | null;
     this.micBtn = document.getElementById('bubble-mic') as HTMLButtonElement | null;
+    // index.html hardcodes the Windows label; the macOS default is ⌘⇧Space.
+    if (this.micBtn && (navigator.platform || '').toLowerCase().includes('mac')) {
+      this.micBtn.title = `Click to speak (${acceleratorLabel(VOICE_ACCELERATOR_DEFAULT, 'mac')}) · Esc cancels`;
+    }
     this.micLevel = this.micBtn ? this.micBtn.querySelector('.mic-level') : null;
     this.expandHandle = document.getElementById('bubble-expand-handle') as HTMLButtonElement | null;
     this.header = document.getElementById('bubble-header')!;

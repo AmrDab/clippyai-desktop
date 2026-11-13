@@ -43,3 +43,13 @@ describe("v0.24 notes", () => {
     expect(whatsNewToShow("0.24.0", "0.24.1", true)).toBeNull();
   });
 });
+
+describe('whatsNewToShow on macOS', () => {
+  it("does not promise silent installs on darwin; keeps the other 0.24 notes", () => {
+    const win = whatsNewToShow('0.23.2', '0.24.2', true)!;
+    const mac = whatsNewToShow('0.23.2', '0.24.2', true, 'darwin')!;
+    expect(win[0]).toMatch(/install \*\*quietly/);
+    expect(mac[0]).not.toMatch(/install \*\*quietly/);
+    expect(mac.slice(1)).toEqual(win.slice(1));
+  });
+});
