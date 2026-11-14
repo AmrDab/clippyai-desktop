@@ -30,6 +30,18 @@ describe('analyzeMac', () => {
     expect(r.verdict).toMatch(/need a closer look/);
   });
 
+  it('a running program from a hidden folder is medium, not an auto-start; from /tmp it stays high', () => {
+    const dev = analyzeMac(base({
+      entries: [{ source: 'Process', location: 'pid 42', name: 'python3', program: `${HOME}/.pyenv/versions/3.12/bin/python3` }],
+    }), HOME);
+    expect(dev.findings[0].severity).toBe('medium');
+    expect(dev.findings[0].title).toBe('Program running from an unusual place');
+    const tmp = analyzeMac(base({
+      entries: [{ source: 'Process', location: 'pid 43', name: 'payload', program: '/private/tmp/payload' }],
+    }), HOME);
+    expect(tmp.findings[0].severity).toBe('high');
+  });
+
   it('flags Apple-looking labels installed outside /System', () => {
     const r = analyzeMac(base({
       entries: [{ source: 'LaunchDaemon', location: '/Library/LaunchDaemons/com.apple.update.plist', name: 'com.apple.update', program: '/Library/Application Support/x/helper' }],

@@ -170,8 +170,14 @@ export function analyzeMac(facts: MacFacts, home: string = os.homedir(), maxFind
     }
     const odd = prog ? oddLocation(prog, home) : null;
     if (odd) {
-      signals.push({ code: 'unusual_location', why: `It starts automatically from ${odd} (${prog}). Installed software does not normally auto-start from there.` });
-      bump('high');
+      // A running program is not an auto-start item. From a hidden folder it is
+      // usually a developer tool (~/.nvm, ~/.pyenv, ~/.cargo), so medium there;
+      // temp/Downloads stay high (Mac test report, item 11).
+      const proc = e.source === 'Process';
+      signals.push({ code: 'unusual_location', why: proc
+        ? `It is running from ${odd} (${prog}). Developer tools often live in hidden folders; other software rarely runs from there.`
+        : `It starts automatically from ${odd} (${prog}). Installed software does not normally auto-start from there.` });
+      bump(proc && odd === 'a hidden folder' ? 'medium' : 'high');
     }
     const launcher = launcherNote(e);
     if (launcher) {
@@ -206,6 +212,7 @@ export function analyzeMac(facts: MacFacts, home: string = os.homedir(), maxFind
     const title = signals[0].code === 'name_mimics_apple' ? 'Pretends to be part of macOS'
       : signals[0].code === 'target_missing' ? 'Leftover start-up entry'
       : signals[0].code === 'cron_entry' ? 'Scheduled command in your crontab'
+      : e.source === 'Process' ? 'Program running from an unusual place'
       : 'Unusual item that starts by itself';
     findings.push(makeFinding(e, severity, title, signals, sig, REC_CHECK));
   }
