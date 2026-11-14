@@ -721,9 +721,15 @@ export class BubbleController {
    * interrupting with an offer or an idle update restart.
    */
   isBusyForPrompt(): boolean {
-    return this.state === 'expanded'
+    // hide() (X, sleep, auto-hide) keeps `state` and the action chips as they
+    // were, so only a shown bubble counts. Otherwise the macOS "vX is ready!
+    // [Restart to update] [Later]" prompt, auto-hidden or slept through, read
+    // as busy forever and the idle install never ran. A half-typed draft
+    // still counts.
+    const shown = !this.bubble.classList.contains('hidden');
+    return (shown && this.state === 'expanded')
       || this.input.value.trim() !== ''
-      || !this.actionsArea.classList.contains('hidden');
+      || (shown && !this.actionsArea.classList.contains('hidden'));
   }
 
   /** First-run name question: swap the input's placeholder (null restores the default) and focus it. */

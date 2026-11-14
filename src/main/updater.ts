@@ -741,6 +741,20 @@ export async function installUpdate(): Promise<void> {
         : `Installing v${expectedVersion} on the way out. See you on the new version next time! 📎`,
       animate: 'GetAttention',
     });
+    // Squirrel.Mac can refuse the bundle (code-signature mismatch, unwritable
+    // /Applications) after we flagged the quit and released the tools. The
+    // 'error' handler already shows the "isn't working" prompt; without this the
+    // app stayed "quitting", so closing Clippy destroyed his window instead of
+    // hiding it, and the tools stayed torn down until a manual restart.
+    const notInstalled = (): void => {
+      if (!quitState.isQuitting()) return;
+      log.warn('Install.notCompleted — staying up', { version: expectedVersion, relaunch });
+      if (!relaunch) { app.quit(); return; } // the user asked to quit: still quit
+      quitState.setQuitting(false);
+      try { restoreTools(); } catch (err) { log.warn('restoreTools error (non-fatal)', serializeErr(err)); }
+    };
+    autoUpdater.once('error', notInstalled);
+    setTimeout(notInstalled, 120_000).unref?.();
     // Small delay so the message paints before the app quits to swap itself.
     setTimeout(() => autoUpdater.quitAndInstall(false, relaunch), 1200);
     return;
