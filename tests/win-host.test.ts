@@ -303,7 +303,8 @@ describe('psScript / psCommand (caller helpers)', () => {
     const before = psStats.fallbacks;
     const r = await psScript('get-foreground-window.ps1', {}, { timeoutMs: 1000, idempotent: true });
     expect(r.via).toBe('spawn');
-    expect(r.stdout).toContain('-File C:\\s\\get-foreground-window.ps1');
+    // path.join uses the host separator, so a POSIX test host yields C:\s/...; production is win32-only.
+    expect(r.stdout).toMatch(/-File C:\\s[\\/]get-foreground-window\.ps1/);
     expect(psStats.fallbacks).toBe(before + 1);
   });
 

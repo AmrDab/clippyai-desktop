@@ -37,7 +37,16 @@ export function setTrayAgentStatus(clientName: string | null): void {
 
 function createTrayIcon(_awake: boolean): Electron.NativeImage {
   // Use the actual paperclip app icon for the system tray
-  return nativeImage.createFromPath(appIconPath()).resize({ width: 16, height: 16 });
+  const src = nativeImage.createFromPath(appIconPath());
+  if (process.platform !== 'darwin') return src.resize({ width: 16, height: 16 });
+  // macOS menu bar: a plain 16px resize is a 1x-only bitmap that Retina
+  // displays upscale (blurry). Give it a 32px @2x representation as well.
+  const img = nativeImage.createEmpty();
+  for (const scaleFactor of [1, 2]) {
+    const px = 16 * scaleFactor;
+    img.addRepresentation({ scaleFactor, width: px, height: px, buffer: src.resize({ width: px, height: px, quality: 'best' }).toPNG() });
+  }
+  return img;
 }
 
 export function setupTray(win: BrowserWindow, brain: Brain): Tray {

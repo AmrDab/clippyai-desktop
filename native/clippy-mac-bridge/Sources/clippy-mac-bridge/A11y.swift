@@ -626,13 +626,20 @@ func runA11yFind() {
 /// otherwise the system-wide one. Needed because the system-wide focus is
 /// ClippyAI's own chat field while the user types there.
 private func copyFocusedElement(_ out: inout CFTypeRef?) -> AXError {
-    let target: AXUIElement
     if let s = argValue(name: "--pid"), let n = Int32(s) {
-        target = AXUIElementCreateApplication(pid_t(n))
-    } else {
-        target = AXUIElementCreateSystemWide()
+        return AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid_t(n)), attrFocusedUIElem, &out)
     }
-    return AXUIElementCopyAttributeValue(target, attrFocusedUIElem, &out)
+    let err = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), attrFocusedUIElem, &out)
+    if err != .cannotComplete && err != .failure { return err }
+    // macOS 26.5 (M1): the system-wide element answers kAXErrorCannotComplete
+    // instantly, even for AXFocusedApplication, while the frontmost app's own
+    // element works. System focus lives in the frontmost app, so ask it directly.
+    guard let app = NSWorkspace.shared.frontmostApplication else { return err }
+    var alt: CFTypeRef?
+    let err2 = AXUIElementCopyAttributeValue(
+        AXUIElementCreateApplication(app.processIdentifier), attrFocusedUIElem, &alt)
+    if err2 == .success { out = alt }
+    return err2 == .success ? err2 : err
 }
 
 /// Find the currently-focused element across the whole system. The owning

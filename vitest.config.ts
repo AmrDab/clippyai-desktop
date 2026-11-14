@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import os from 'os';
 import path from 'path';
 
@@ -8,5 +8,10 @@ import path from 'path';
 const testHome = path.join(os.tmpdir(), 'clippy-test-home');
 
 export default defineConfig({
-  test: { env: { HOME: testHome, USERPROFILE: testHome } },
+  test: {
+    env: { HOME: testHome, USERPROFILE: testHome },
+    // vendor/ holds third-party build inputs (on macOS a whisper.cpp source
+    // checkout with its own *.spec.js) and release/ the packaged app.
+    exclude: [...configDefaults.exclude, 'vendor/**', 'release/**'],
+  },
 });
