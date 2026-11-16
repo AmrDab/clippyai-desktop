@@ -125,6 +125,17 @@ bootLog('IMPORTS_LOADED');
 
 const log = createLogger('App');
 
+// ── Debug switches are refused in a packaged build ───────────────
+// `ClippyAI --remote-debugging-port=9222` would open DevTools (CDP) on every
+// renderer, and from there the preload APIs reach the main-process tools; no
+// Electron 29 fuse covers it. Clippy never launches itself with these (the
+// cdp-spawn/tools uses pass them to Edge/Chrome, not to ClippyAI). Chromium
+// also takes `-switch` and, on Windows, `/switch` and any letter case.
+if (app.isPackaged && process.argv.slice(1).some((a) => /^(--?|\/)(remote-debugging-(port|pipe|address)|inspect(-brk|-port)?|js-flags|remote-allow-origins)\b/i.test(a))) {
+  log.warn('Refusing to start with a debugging switch');
+  app.exit(1);
+}
+
 // ── Single instance lock ─────────────────────────────────────────
 // BUG FIX: `app.quit()` is async — it queues a quit for the next tick but
 // execution continues. If we didn't early-return here, the rest of this file

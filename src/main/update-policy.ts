@@ -7,12 +7,13 @@
 /**
  * An update check that failed only because the PC had no usable network
  * (asleep, offline, DNS down, Wi-Fi switching). Not an updater bug.
- * Certificate/SSL errors stay real failures: they can mean a broken feed or
- * an intercepting proxy.
+ * Only the codes listed here count. Every other net::ERR_ (bad response,
+ * redirect loop, proxy, blocked) and every certificate/SSL error stays a real
+ * failure: they can mean a broken feed or an intercepting proxy.
  */
 export function isOfflineUpdateError(message: string): boolean {
-  if (/ERR_CERT_|ERR_SSL_/.test(message)) return false;
-  return /net::ERR_|\b(ERR_NETWORK_IO_SUSPENDED|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)\b/.test(message);
+  if (/ERR_[A-Z_]*(CERT|SSL)/.test(message)) return false;
+  return /\b(ERR_NETWORK_IO_SUSPENDED|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ERR_NETWORK_CHANGED|ERR_CONNECTION_TIMED_OUT|ERR_CONNECTION_RESET|ERR_CONNECTION_REFUSED|ERR_CONNECTION_CLOSED|ERR_ADDRESS_UNREACHABLE|ERR_NETWORK_ACCESS_DENIED|ERR_TIMED_OUT|ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)\b/.test(message);
 }
 
 /** update_check_offline is sent at most once per this window per install. */

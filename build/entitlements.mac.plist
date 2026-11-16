@@ -6,17 +6,20 @@
     Hardened runtime exceptions required by Electron itself:
       - JIT: V8 generates code at runtime.
       - unsigned-executable-memory: V8 also writes-then-executes pages.
-      - allow-dyld-environment-variables: Electron's framework loader uses them.
-      - disable-library-validation: required so we can load whisper-cli and
-        its bundled .dylib helpers that aren't signed with our team ID.
+    Deliberately absent:
+      - allow-dyld-environment-variables: with it, DYLD_INSERT_LIBRARIES could
+        load any dylib into the signed app with its TCC grants. Electron 29
+        doesn't need DYLD_* variables.
+      - disable-library-validation: electron-builder signs every Mach-O in the
+        bundle (whisper-cli and its .dylibs, the onnxruntime/keytar .node
+        addons, the Swift helpers) with our team ID, and notarization only
+        accepts the build if it did, so library validation passes. If a signed
+        build ever fails to load one of them, add this key back only in a
+        separate entitlementsInherit plist for that helper, never for the app.
   -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-  <true/>
-  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
-  <true/>
-  <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 
   <!-- whisper.cpp STT: microphone capture -->
