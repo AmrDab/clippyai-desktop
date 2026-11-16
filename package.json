@@ -1,8 +1,8 @@
 {
   "name": "clippyai",
-  "version": "0.24.2",
+  "version": "0.24.3",
   "productName": "ClippyAI",
-  "description": "ClippyAI \u2014 Your AI desktop buddy",
+  "description": "ClippyAI — Your AI desktop buddy",
   "homepage": "https://clippyai.app",
   "main": "out/main/index.js",
   "author": {
@@ -48,6 +48,7 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@electron/fuses": "1.8.0",
     "@electron/notarize": "^2.5.0",
     "@electron/rebuild": "^3.7.2",
     "@types/node": "^20.0.0",
@@ -58,8 +59,8 @@
     "electron-builder": "^24.0.0",
     "electron-vite": "^2.0.0",
     "pngjs": "^7.0.0",
+    "rcedit": "^5.0.2",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.8",
-    "rcedit": "^5.0.2"
+    "vitest": "^4.1.8"
   }
 }

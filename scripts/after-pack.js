@@ -1,35 +1,43 @@
 /**
- * afterPack: DISABLED since v0.11.10.
+ * afterPack: flip Electron fuses (v0.24.3). Runs before code signing, so the
+ * signature covers the flipped binary on both platforms.
  *
- * History:
- * - v0.9.3: used rcedit to rewrite icon + VERSIONINFO (ProductName=ClippyAI,
- *   CompanyName=Cloudana). Windows SmartScreen saw a zero-reputation binary
- *   and silently blocked it on some configs. "Clippy refuses to open after
- *   update."
- * - v0.9.4: narrowed rcedit to icon-only on the theory that icon replacement
- *   doesn't affect reputation. Worked on most configs.
- * - v0.11.9: on Windows 11 25H2 machines with hardened security (Smart App
- *   Control, AppLocker, Defender ASR, or WDAC), users hit "This app can't
- *   run on your PC — contact the software publisher." Icon replacement
- *   DOES change the exe's hash, and fresh-hash unsigned binaries start with
- *   zero SmartScreen reputation. Aggressive security policies block them.
- * - v0.11.10 (this file): drop the post-build PE modification entirely.
- *   The stock Electron binary has established reputation across millions of
- *   Electron apps. Not touching it keeps that trust.
+ * Why: the Mac hardware run (docs/mac-test-report.md) showed a local process
+ * could open a Node inspector inside the signed app (SIGUSR1, --inspect,
+ * NODE_OPTIONS=--inspect) and so borrow Clippy's Accessibility / Screen
+ * Recording grants. These two fuses close that:
+ *   EnableNodeCliInspectArguments       → off (--inspect*, SIGUSR1)
+ *   EnableNodeOptionsEnvironmentVariable → off (NODE_OPTIONS)
  *
- * What the user sees without rcedit:
- * - Clippy's animated sprite in the window: UNCHANGED (renderer-drawn)
- * - Installer's icon (NSIS header + uninstall dialog): UNCHANGED (set via
- *   electron-builder.yml `nsis.installerIcon`, separate from the exe)
- * - Start menu + desktop shortcuts: UNCHANGED (NSIS sets them with Clippy
- *   icon via `shortcutName` and default shortcut behaviour)
- * - Taskbar + Alt-Tab: the default Electron icon, not Clippy. Cosmetic
- *   downgrade — trade for reliable launches on hardened Windows configs.
+ * Left ON on purpose:
+ *   RunAsNode — "Connect an agent" runs `ELECTRON_RUN_AS_NODE=1 <ClippyAI> clippy-mcp-bridge.js`
+ *     (agent-config.ts, agent-connect.ts) and ClawHub skills run under process.execPath
+ *     (clawhub.ts), because the packaged app ships no separate node. Turning it off breaks both.
+ *   Asar integrity / OnlyLoadAppFromAsar — not supported on Windows in Electron 29; revisit on upgrade.
  *
- * When code signing with an EV certificate is in place, reputation applies
- * to (hash, signer) instead of hash alone, and we can re-enable rcedit
- * safely — see the git history of this file for the old implementation.
+ * History: until v0.24.2 this hook was a no-op. Before v0.11.10 it ran rcedit
+ * on the UNSIGNED exe, and the changed hash with no signature tripped hardened
+ * Windows configs ("This app can't run on your PC"). Builds are signed now
+ * (Azure Trusted Signing, after this hook), so reputation follows the signer.
  */
-exports.default = async function afterPack(_context) {
-  console.log('[afterPack] no-op (rcedit disabled — see comment for rationale)');
+const path = require('path');
+const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
+
+exports.default = async function afterPack(context) {
+  const { electronPlatformName, appOutDir, packager, arch } = context;
+  const name = packager.appInfo.productFilename;
+  const target = electronPlatformName === 'darwin'
+    ? path.join(appOutDir, `${name}.app`)
+    : electronPlatformName === 'win32'
+      ? path.join(appOutDir, `${name}.exe`)
+      : path.join(appOutDir, packager.executableName || name);
+  await flipFuses(target, {
+    version: FuseVersion.V1,
+    // electron-builder re-signs afterwards; this keeps an unsigned arm64 dev pack launchable.
+    resetAdHocDarwinSignature: electronPlatformName === 'darwin' && arch === 3 /* Arch.arm64 */,
+    [FuseV1Options.EnableNodeCliInspectArguments]: false,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+    [FuseV1Options.RunAsNode]: true,
+  });
+  console.log(`[afterPack] fuses flipped on ${path.basename(target)}: inspect args off, NODE_OPTIONS off, RunAsNode kept`);
 };
