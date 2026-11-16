@@ -155,6 +155,9 @@ mac:
 
 dmg:
   title: ClippyAI ${version}
+  # Sign the DMG container with the Developer ID identity so it can be
+  # notarized and stapled (build/signing/notarize-dmg.js).
+  sign: true
   icon: build/icon.icns
   contents:
     - x: 130
@@ -255,6 +258,9 @@ extraResources:
 afterPack: scripts/after-pack.js
 # Apple notarization + stapling (no-op on non-darwin and without APPLE_* env).
 afterSign: build/signing/notarize.js
+# DMGs: notarize + staple each signed .dmg, refresh its blockmap and its
+# latest-mac.yml entry (no-op on non-darwin and without APPLE_* env).
+afterAllArtifactBuild: build/signing/notarize-dmg.js
 
 directories:
   output: release

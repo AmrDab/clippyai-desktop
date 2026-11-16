@@ -23,6 +23,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { stapleWithRetry } = require('./staple');
 
 exports.default = async function notarizeMac(context) {
   const { electronPlatformName, appOutDir } = context;
@@ -66,12 +67,19 @@ exports.default = async function notarizeMac(context) {
 
   console.log(`[notarize] submitting ${appPath} to Apple…`);
   const t0 = Date.now();
-  await notarize(opts);
+  try {
+    await notarize(opts);
+  } catch (err) {
+    // notarize() staples the .app itself but retries only for a few seconds.
+    // Apple has accepted the app by then; a staple failure (exit 68) is
+    // usually a dropped CloudKit connection, so retry for longer before
+    // failing the build. Anything else (rejection, auth) still fails here.
+    if (!/Failed to staple/i.test(String(err && err.message))) throw err;
+    console.warn(`[notarize] accepted, but stapling failed (${err.message}); retrying`);
+    await stapleWithRetry(appPath);
+  }
   console.log(`[notarize] success in ${Math.round((Date.now() - t0) / 1000)}s`);
 
-  // notarize() already calls `xcrun stapler staple` internally for the .app
-  // bundle. We do NOT need to staple the DMG separately — electron-builder
-  // mounts the .app inside the DMG after this hook, and Gatekeeper accepts
-  // the embedded ticket. (Stapling the DMG itself is optional belt-and-
-  // suspenders; revisit in M7 if any users hit "cannot verify" prompts.)
+  // The DMG container is signed by electron-builder (dmg.sign) and notarized +
+  // stapled separately in build/signing/notarize-dmg.js (afterAllArtifactBuild).
 };
