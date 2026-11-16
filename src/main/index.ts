@@ -136,6 +136,11 @@ if (app.isPackaged && process.argv.slice(1).some((a) => /^(--?|\/)(remote-debugg
   app.exit(1);
 }
 
+// With the inspect fuse off (scripts/after-pack.js) Node installs no SIGUSR1
+// handler, so the default action ended the app: any same-user process could
+// kill Clippy with `kill -USR1`. Ignore it (Mac test report, 0.24.3 check d).
+if (process.platform !== 'win32') process.on('SIGUSR1', () => log.warn('Ignored SIGUSR1'));
+
 // ── Single instance lock ─────────────────────────────────────────
 // BUG FIX: `app.quit()` is async — it queues a quit for the next tick but
 // execution continues. If we didn't early-return here, the rest of this file

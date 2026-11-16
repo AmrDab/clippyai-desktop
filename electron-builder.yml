@@ -7,7 +7,7 @@ copyright: Copyright © 2026 Cloudana · ClippyAI
 # (0.20.0-alpha.24 → 0.20.0.24). For a stable X.Y.Z use X.Y.Z.0.
 # macOS ignores this: CFBundleVersion comes from mac.bundleVersion, which
 # `npm run dist:mac` sets to package.json's X.Y.Z (max 3 parts on macOS).
-buildVersion: 0.24.3.0
+buildVersion: 0.24.4.0
 extraMetadata:
   description: ClippyAI — Your AI desktop buddy
   author:
@@ -123,6 +123,12 @@ mac:
   asarUnpack:
     - "**/node_modules/harper.js/**"
     - "**/node_modules/onnxruntime-node/**"
+    # Native modules must sit outside the asar so electron-builder signs them with
+    # our Developer ID; with library validation on (no disable-library-validation
+    # entitlement) a .node extracted from the asar keeps its upstream signature and
+    # dlopen refuses it ("different Team IDs"). Mac test 0.24.3 check c.
+    - "**/node_modules/keytar/**"
+    - "**/node_modules/@img/**"
   # macOS-only resources (merged with the top-level extraResources).
   extraResources:
     # Tray icon (nativeImage can't be relied on to read icon.ico on macOS) — src/main/app-icon.ts.
