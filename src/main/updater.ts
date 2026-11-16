@@ -4,7 +4,7 @@ import { createLogger, serializeErr } from './logger';
 import * as telemetry from './telemetry';
 import { cleanupTools, restoreTools } from './tools';
 import * as quitState from './quit-state';
-import { cmpVersion, classifyAttempt, shouldIdleInstall, shouldPromptStaleUpdate, resumeStillValid } from './update-policy';
+import { cmpVersion, classifyAttempt, shouldIdleInstall, shouldPromptStaleUpdate, resumeStillValid, isOfflineUpdateError, shouldReportOffline } from './update-policy';
 import { installMethodFor } from './update-install-method';
 import fs from 'fs';
 import path from 'path';
@@ -70,6 +70,8 @@ interface UpdaterState {
   promptedVersion?: string;
   /** Set just before an idle install: come back in the state the user left. */
   resume?: { asleep: boolean; at: number };
+  /** Last time update_check_offline was sent (ms) — once a day at most. */
+  offlineReportedAt?: number;
 }
 
 function cacheDir(): string {
@@ -104,6 +106,7 @@ function readState(): UpdaterState {
       downloadedAt: parsed.downloadedAt,
       promptedVersion: parsed.promptedVersion,
       resume: parsed.resume,
+      offlineReportedAt: parsed.offlineReportedAt,
     };
   } catch {
     return { lastAttemptedVersion: '', lastAttemptedAt: '', skippedVersions: [], failureCount: {} };
@@ -375,6 +378,19 @@ export function initUpdater(win: BrowserWindow): void {
         installed: app.getVersion(),
         feedError: msg.substring(0, 200),
       });
+      return;
+    }
+
+    // A check that failed only because the PC was offline/asleep is not an
+    // updater failure: report it as a low-noise event, once a day at most.
+    if (!expectedVersion && isOfflineUpdateError(msg)) {
+      log.info('Update check skipped — no network', { error: telemetry.errorCode(msg) });
+      const st = readState();
+      if (shouldReportOffline(st.offlineReportedAt, Date.now())) {
+        st.offlineReportedAt = Date.now();
+        writeState(st);
+        telemetry.track('update_check_offline', { error: telemetry.errorCode(msg) });
+      }
       return;
     }
 

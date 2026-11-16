@@ -4,6 +4,23 @@
  * and how a recorded install attempt is judged on the next boot.
  */
 
+/**
+ * An update check that failed only because the PC had no usable network
+ * (asleep, offline, DNS down, Wi-Fi switching). Not an updater bug.
+ * Certificate/SSL errors stay real failures: they can mean a broken feed or
+ * an intercepting proxy.
+ */
+export function isOfflineUpdateError(message: string): boolean {
+  if (/ERR_CERT_|ERR_SSL_/.test(message)) return false;
+  return /net::ERR_|\b(ERR_NETWORK_IO_SUSPENDED|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)\b/.test(message);
+}
+
+/** update_check_offline is sent at most once per this window per install. */
+export const OFFLINE_REPORT_MS = 24 * 60 * 60 * 1000;
+export function shouldReportOffline(lastReportedMs: number | undefined, now: number): boolean {
+  return !lastReportedMs || now - lastReportedMs >= OFFLINE_REPORT_MS || now < lastReportedMs;
+}
+
 /** How long the PC must be untouched before a downloaded update installs by itself. */
 export const IDLE_INSTALL_SECONDS = 600;
 

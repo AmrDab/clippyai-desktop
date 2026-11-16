@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldIdleInstall, classifyAttempt, cmpVersion, shouldPromptStaleUpdate, resumeStillValid, STALE_UPDATE_MS, IDLE_INSTALL_SECONDS, type IdleInstallInput } from '../src/main/update-policy';
+import { shouldIdleInstall, classifyAttempt, cmpVersion, shouldPromptStaleUpdate, resumeStillValid, isOfflineUpdateError, shouldReportOffline, OFFLINE_REPORT_MS, STALE_UPDATE_MS, IDLE_INSTALL_SECONDS, type IdleInstallInput } from '../src/main/update-policy';
 
 const ready: IdleInstallInput = {
   platform: 'win32', updateDownloaded: true, failedBefore: false, taskRunning: false, busyElsewhere: false, idleSeconds: IDLE_INSTALL_SECONDS, alreadyTried: false,
@@ -78,5 +78,47 @@ describe('cmpVersion', () => {
   it('tolerates missing segments', () => {
     expect(cmpVersion('1.2', '1.2.0')).toBe(0);
     expect(cmpVersion('0.24.0', '0.23.9')).toBeGreaterThan(0);
+  });
+});
+
+describe('isOfflineUpdateError', () => {
+  it('treats sleep/offline/DNS/reset errors as offline', () => {
+    for (const m of [
+      'net::ERR_NETWORK_IO_SUSPENDED',
+      'Error: net::ERR_INTERNET_DISCONNECTED',
+      'net::ERR_NAME_NOT_RESOLVED',
+      'net::ERR_NETWORK_CHANGED',
+      'net::ERR_CONNECTION_TIMED_OUT',
+      'getaddrinfo ENOTFOUND download.clippyai.app',
+      'connect ETIMEDOUT 1.2.3.4:443',
+      'read ECONNRESET',
+      'getaddrinfo EAI_AGAIN github.com',
+    ]) expect(isOfflineUpdateError(m), m).toBe(true);
+  });
+  it('keeps real check errors as failures', () => {
+    for (const m of [
+      "ENOENT: no such file or directory, open 'app-update.yml'",
+      'HttpError: 404 Not Found',
+      'sha512 checksum mismatch',
+      'net::ERR_CERT_AUTHORITY_INVALID',
+      'net::ERR_SSL_PROTOCOL_ERROR',
+      '',
+    ]) expect(isOfflineUpdateError(m), m).toBe(false);
+  });
+});
+
+describe('shouldReportOffline', () => {
+  const now = 1_800_000_000_000;
+  it('reports the first time', () => {
+    expect(shouldReportOffline(undefined, now)).toBe(true);
+  });
+  it('stays quiet within a day', () => {
+    expect(shouldReportOffline(now - OFFLINE_REPORT_MS + 1, now)).toBe(false);
+  });
+  it('reports again after a day', () => {
+    expect(shouldReportOffline(now - OFFLINE_REPORT_MS, now)).toBe(true);
+  });
+  it('reports if the clock went backwards', () => {
+    expect(shouldReportOffline(now + 60_000, now)).toBe(true);
   });
 });
