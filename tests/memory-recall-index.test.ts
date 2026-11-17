@@ -36,9 +36,15 @@ describe('migration detection', () => {
     expect(m.needsMigration()).toBe(true);
   });
   it('does not flag an initialised store', async () => {
-    disk.data = { schemaVersion: 1, modelId: 'Xenova/all-MiniLM-L6-v2', dim: 384, entries: [] };
+    disk.data = { schemaVersion: 2, modelId: 'Xenova/all-MiniLM-L6-v2', dim: 384, entries: [] };
     const m = await load();
     expect(m.needsMigration()).toBe(false);
+  });
+  it('purges a schema-1 index once (it may hold the template examples) and flags a reindex', async () => {
+    disk.data = { schemaVersion: 1, modelId: 'Xenova/all-MiniLM-L6-v2', dim: 384, entries: [{ id: 'x', text: 'User prefers Apple Mail', vector: [0], ts: 1, lastRecalled: 0 }] };
+    const m = await load();
+    expect(m.needsMigration()).toBe(true);
+    expect(m.indexSize()).toBe(0);
   });
 });
 

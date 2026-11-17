@@ -45,7 +45,9 @@ import { createLogger } from './logger';
 
 const log = createLogger('MemoryRecall');
 
-const SCHEMA_VERSION = 1;
+// 2: indexes built before 0.24.9 may hold the MEMORY.md template's example bullets
+// (parsed out of <!-- --> comments) and fp32 vectors: purge and reindex once.
+const SCHEMA_VERSION = 2;
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 const EMBED_DIM = 384;
 /** Cosine above this between two entry vectors ⇒ treat as duplicate on index. */
@@ -112,7 +114,10 @@ let firstRunNeedsMigration = false;
     store.set('entries', []);
     firstRunNeedsMigration = true;
   } else if (onDiskVersion < SCHEMA_VERSION) {
+    log.info('Vector index schema bumped — purging for a clean reindex', { from: onDiskVersion, to: SCHEMA_VERSION });
     store.set('schemaVersion', SCHEMA_VERSION);
+    store.set('entries', []);
+    firstRunNeedsMigration = true;
   }
 }
 
@@ -164,13 +169,10 @@ function getPipeline(): Promise<any> {
           const { app } = require('electron') as typeof import('electron');
           if (app?.getPath) transformers.env.cacheDir = path.join(app.getPath('userData'), 'models');
         } catch { /* not in Electron (tests): keep the library default */ }
-        // quantized:true keeps the model ~23MB instead of ~90MB.
+        // dtype q8 keeps the model ~23MB instead of the 90MB fp32 file. transformers.js
+        // v3+ ignores the old `quantized: true` (Mac test, 0.24.8, downloaded fp32).
         // TODO: bundle model offline as extraResource + allowRemoteModels=false (privacy)
-        const pipe = await transformers.pipeline('feature-extraction', MODEL_ID, {
-          // @ts-expect-error — `quantized` is honoured by transformers.js but
-          // isn't in the public option type for every backend variant.
-          quantized: true,
-        });
+        const pipe = await transformers.pipeline('feature-extraction', MODEL_ID, { dtype: 'q8' });
         pipelineReady = true;
         log.info('Embedding pipeline ready', { model: MODEL_ID });
         return pipe;

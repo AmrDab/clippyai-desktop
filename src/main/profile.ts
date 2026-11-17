@@ -313,6 +313,11 @@ function maybeKickBackgroundReindex(): void {
  * Pulls the trailing `_(YYYY-MM-DD)_` date written by appendMemory() into
  * `ts` (falling back to now), and strips it from `text`.
  */
+/** Remove <!-- ... --> blocks (multi-line, and an unclosed one runs to the end). */
+export function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+}
+
 function parseMemoryBullets(): Array<{ text: string; ts: number }> {
   const p = getProfileFilePath('MEMORY.md');
   if (!fs.existsSync(p)) return [];
@@ -323,6 +328,9 @@ function parseMemoryBullets(): Array<{ text: string; ts: number }> {
     return [];
   }
   const out: Array<{ text: string; ts: number }> = [];
+  // The MEMORY.md template ships its example bullets inside <!-- ... --> blocks;
+  // they are not the user's memories (Mac test, 0.24.8: all 7 examples were indexed).
+  body = stripHtmlComments(body);
   for (const rawLine of body.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line.startsWith('- ')) continue;
