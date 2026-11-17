@@ -325,6 +325,35 @@ export function gateInjectionVerdict(text: string, scan: ScanResult): GateDecisi
   };
 }
 
+/**
+ * Index of the first dangerous bidi control, or -1. macOS wraps app names in
+ * balanced isolates (U+2068 name U+2069) in ordinary UI text, so a short,
+ * single-line, non-nested, balanced isolate pair is benign. Overrides and
+ * embeddings (U+202A..U+202E), stray/unclosed/nested isolates, and long or
+ * multi-line isolated spans (room to hide instructions) are still flagged.
+ */
+const BIDI_OVERRIDE_RE = /[‪-‮]/;
+const ISOLATE_MAX_SPAN = 64;
+function suspiciousBidiIndex(text: string): number {
+  if (!BIDI_RE.test(text)) return -1;
+  const ov = BIDI_OVERRIDE_RE.exec(text);
+  if (ov) return ov.index;
+  let open = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0x2066 && c <= 0x2068) {
+      if (open >= 0) return i; // nested isolate
+      open = i;
+    } else if (c === 0x2069) {
+      if (open < 0) return i; // stray PDI
+      const span = text.slice(open + 1, i);
+      if (span.length > ISOLATE_MAX_SPAN || /[\r\n]/.test(span)) return open;
+      open = -1;
+    }
+  }
+  return open; // unclosed isolate (-1 when balanced)
+}
+
 export function scanForInjection(text: string): ScanResult {
   const findings: InjectionFinding[] = [];
   if (!text || typeof text !== 'string') {
@@ -332,13 +361,13 @@ export function scanForInjection(text: string): ScanResult {
   }
 
   // 1. Bidi
-  const bidiMatch = BIDI_RE.exec(text);
-  if (bidiMatch) {
+  const bidiPos = suspiciousBidiIndex(text);
+  if (bidiPos >= 0) {
     findings.push({
       kind: 'bidi',
       confidence: 'high',
-      excerpt: excerptAt(text, bidiMatch.index),
-      pos: bidiMatch.index,
+      excerpt: excerptAt(text, bidiPos),
+      pos: bidiPos,
     });
   }
 
