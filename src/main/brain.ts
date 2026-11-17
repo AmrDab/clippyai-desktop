@@ -116,6 +116,14 @@ import * as toolUndoMod from './tool-undo';
 // Direct namespace imports here force Rollup to keep both modules alive.
 import * as windowMod from './window';
 import * as followMeMod from './follow-me';
+// Bundle-anchor class, 5th recurrence (0.24.7 Mac live test): a lazy require('./x')
+// of a module that is also imported statically elsewhere points at a chunk Rollup
+// never emits. Import statically; scripts/check-bundle-requires.js now fails the build.
+import * as skillRegistryMod from './skill-registry';
+import * as clawdFallbackMod from './clawd-fallback';
+import * as macBridgeMod from './mac-bridge-native';
+import * as mcpChromeMod from './mcp-chrome';
+import * as mailEnvMod from './mail-env';
 import { taskFollow } from './task-follow';
 import * as approvalPolicy from './approval-policy';
 import * as gamesMod from './games';
@@ -1400,7 +1408,7 @@ export class Brain {
       let skillsPreamble = '';
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const reg = require('./skill-registry') as typeof import('./skill-registry');
+        const reg = skillRegistryMod;
         const skills = reg.getInstalledSkillsForPrompt();
         if (Array.isArray(skills) && skills.length > 0) {
           // Compact form: "name (purpose) · name (purpose)". Keep this
@@ -3225,9 +3233,9 @@ ${typingLine}`;
   /** Runtime capability report — see the comment at the /v1/turn call site. */
   private currentCaps(): Record<string, boolean> {
     try {
-      const cf = require('./clawd-fallback') as typeof import('./clawd-fallback');
-      const mb = require('./mac-bridge-native') as typeof import('./mac-bridge-native');
-      const m = require('./mcp-chrome') as typeof import('./mcp-chrome');
+      const cf = clawdFallbackMod;
+      const mb = macBridgeMod;
+      const m = mcpChromeMod;
       return { clawd: cf.isClawdReady(), bridge: mb.isBridgeAvailable(), mcp_chrome: !!m.getMcpChromeStatus()?.ready };
     } catch { return {}; }
   }
@@ -3297,7 +3305,7 @@ ${typingLine}`;
       try {
         // Lazy import — keeps brain.ts startup decoupled from mail-env.
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getCachedMailEnvironment, probeMailEnvironment } = require('./mail-env') as typeof import('./mail-env');
+        const { getCachedMailEnvironment, probeMailEnvironment } = mailEnvMod;
         mail_env = getCachedMailEnvironment() || undefined;
         // v0.21 containment — the probe no longer runs at boot. Kick it off
         // on the first user turn (non-blocking: this turn goes without it,
@@ -3313,7 +3321,7 @@ ${typingLine}`;
       let installed_skills: unknown = undefined;
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const reg = require('./skill-registry') as typeof import('./skill-registry');
+        const reg = skillRegistryMod;
         const list = reg.getInstalledSkillsForPrompt();
         if (list.length > 0) installed_skills = list;
       } catch { /* registry not ready yet — first-boot path */ }
@@ -3328,7 +3336,7 @@ ${typingLine}`;
       let mcp_chrome: unknown = undefined;
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const m = require('./mcp-chrome') as typeof import('./mcp-chrome');
+        const m = mcpChromeMod;
         const s = m.getMcpChromeStatus();
         if (s) mcp_chrome = { ready: !!s.ready, tool_count: s.tool_count || 0 };
       } catch { /* probe may not have run yet */ }
@@ -3341,8 +3349,8 @@ ${typingLine}`;
       // Lazy-require mirrors the mcp_chrome probe above and avoids import cycles.
       let caps: Record<string, boolean> = {};
       try {
-        const cf = require('./clawd-fallback') as typeof import('./clawd-fallback');
-        const mb = require('./mac-bridge-native') as typeof import('./mac-bridge-native');
+        const cf = clawdFallbackMod;
+        const mb = macBridgeMod;
         caps = {
           clawd: cf.isClawdReady(),
           bridge: mb.isBridgeAvailable(),

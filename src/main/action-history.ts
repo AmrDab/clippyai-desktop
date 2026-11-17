@@ -16,6 +16,10 @@ import path from 'path';
 import type { ActionClass } from './tool-meta';
 import type { Receipt } from './receipt';
 import { redactArgs } from './logger';
+// Bundle-anchor class, 5th recurrence (0.24.7 Mac live test): a lazy require('./x')
+// of a module that is also imported statically elsewhere points at a chunk Rollup
+// never emits. Import statically; scripts/check-bundle-requires.js now fails the build.
+import * as toolMetaMod from './tool-meta';
 
 /** All recognised inverse-action kinds. */
 export type InverseAction =
@@ -113,7 +117,7 @@ export function record(opts: {
   let tier = 2;
   let actionClass: ActionClass | null = null;
   try {
-    const meta = require('./tool-meta') as typeof import('./tool-meta');
+    const meta = toolMetaMod;
     const m = meta.TOOL_META[opts.tool];
     if (m) {
       tier = m.tier;

@@ -1,6 +1,6 @@
 {
   "name": "clippyai",
-  "version": "0.24.7",
+  "version": "0.24.8",
   "productName": "ClippyAI",
   "description": "ClippyAI — Your AI desktop buddy",
   "homepage": "https://clippyai.app",
@@ -14,7 +14,7 @@
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node scripts/check-bundle-requires.js",
     "start": "electron-vite preview",
     "vendor": "node scripts/vendor-clawdcursor.js && node scripts/vendor-whisper.js",
     "rebuild-natives": "electron-rebuild -f -w keytar",

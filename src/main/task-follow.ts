@@ -17,6 +17,11 @@
  * the lifecycle takes injected deps so it is unit-tested with fakes.
  */
 
+// Static on purpose: electron-vite inlines follow-me into index.js (brain.ts imports it
+// statically), so a lazy require('./follow-me') points at a chunk that is never emitted
+// and threw 'Cannot find module' in the packaged app (Mac live test, 0.24.7).
+import * as followMe from './follow-me';
+
 export interface Pt { x: number; y: number }
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -158,7 +163,7 @@ export const taskFollow = createTaskFollow({
   cursor: () => (require('electron') as typeof import('electron')).screen.getCursorScreenPoint(),
   workAreaNear: (p) => (require('electron') as typeof import('electron')).screen.getDisplayNearestPoint(p).workArea,
   platform: process.platform,
-  followMeActive: () => (require('./follow-me') as typeof import('./follow-me')).isActive(),
-  followMeStop: () => (require('./follow-me') as typeof import('./follow-me')).stop('task'),
-  followMeResume: (w) => (require('./follow-me') as typeof import('./follow-me')).start(w as unknown as import('electron').BrowserWindow, undefined, 'task-end'),
+  followMeActive: () => followMe.isActive(),
+  followMeStop: () => followMe.stop('task'),
+  followMeResume: (w) => followMe.start(w as unknown as import('electron').BrowserWindow, undefined, 'task-end'),
 });

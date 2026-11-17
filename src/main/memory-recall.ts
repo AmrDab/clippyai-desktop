@@ -32,6 +32,7 @@
  */
 
 import Store from 'electron-store';
+import path from 'path';
 import { createLogger } from './logger';
 // LAZY import — loaded only inside getPipeline() on first recall (warmed in
 // the background), never at module load. transformers.js is CJS-clean (it has
@@ -155,6 +156,14 @@ function getPipeline(): Promise<any> {
         // Lazy-load transformers.js here (never at module import). Has a CJS
         // `require` condition so this resolves in the CommonJS main.
         const transformers = await import('@huggingface/transformers');
+        // Its default model cache is inside node_modules, i.e. inside app.asar in a
+        // packaged build: mkdir fails (ENOTDIR) and recall never loads (Mac live
+        // test, 0.24.7). Keep downloaded models in the user's app data instead.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { app } = require('electron') as typeof import('electron');
+          if (app?.getPath) transformers.env.cacheDir = path.join(app.getPath('userData'), 'models');
+        } catch { /* not in Electron (tests): keep the library default */ }
         // quantized:true keeps the model ~23MB instead of ~90MB.
         // TODO: bundle model offline as extraResource + allowRemoteModels=false (privacy)
         const pipe = await transformers.pipeline('feature-extraction', MODEL_ID, {
@@ -404,12 +413,20 @@ export function renderRecallBlock(matches: Array<{ text: string; ts: number }>):
  * (MiniLM is fast and MEMORY.md is small) and persists the result. Skips
  * entries that fail to embed; never throws.
  */
+/** After a failed reindex, wait this long before trying again (it runs at task start). */
+const REINDEX_RETRY_MS = 30 * 60_000;
+let lastReindexFailAt = 0;
+
 export async function reindexAll(entries: Array<{ text: string; ts: number }>): Promise<void> {
+  if (lastReindexFailAt && Date.now() - lastReindexFailAt < REINDEX_RETRY_MS) return;
   try {
     const fresh: VectorEntry[] = [];
     for (const e of entries) {
       if (!e || !e.text || !e.text.trim()) continue;
       const vec = await embedText(e.text);
+      // The model didn't load: every other entry would fail the same way. Stop
+      // here and back off instead of retrying the pipeline once per entry.
+      if (!vec && !isReady()) { lastReindexFailAt = Date.now(); return; }
       if (!vec) continue;
       const vecArr = Array.from(vec);
       // Dedupe within the batch too.

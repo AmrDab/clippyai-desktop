@@ -41,6 +41,11 @@ import * as macBridge from './mac-bridge-native';
 import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
+// Bundle-anchor class, 5th recurrence (0.24.7 Mac live test): a lazy require('./x')
+// of a module that is also imported statically elsewhere points at a chunk Rollup
+// never emits. Import statically; scripts/check-bundle-requires.js now fails the build.
+import * as skillRegistryMod from './skill-registry';
+import * as followMe from './follow-me'; // static: see task-follow.ts
 import { screenshotHint } from './screenshot-hint';
 import * as telemetry from './telemetry';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
@@ -3935,7 +3940,7 @@ async function findSkillTool(params: Record<string, unknown>): Promise<ToolResul
   // already installed, immediately callable, and almost always more
   // relevant than whatever the remote search returns.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const reg = require('./skill-registry') as typeof import('./skill-registry');
+  const reg = skillRegistryMod;
   const localMatches = scoreLocalSkills(query, reg.getInstalledSkillsForPrompt());
 
   try {
@@ -5222,7 +5227,7 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
 async function followMeTool(): Promise<ToolResult> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fm = require('./follow-me') as typeof import('./follow-me');
+    const fm = followMe;
     fm.start();
     return { text: 'Started following the cursor. Say "stop following" or press Esc when you want me to stay put.' };
   } catch (err) {
@@ -5234,7 +5239,7 @@ async function followMeTool(): Promise<ToolResult> {
 async function stopFollowingTool(): Promise<ToolResult> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fm = require('./follow-me') as typeof import('./follow-me');
+    const fm = followMe;
     fm.stop('manual');
     return { text: 'Okay, staying here.' };
   } catch (err) {
