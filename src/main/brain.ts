@@ -69,7 +69,8 @@ import { ToolLoopDetector } from './tool-loop-detection';
 import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
 import Store from 'electron-store';
-import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
+import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
+import { offerReply } from './offer-reply';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -802,6 +803,8 @@ export class Brain {
   private passTurns = 0;
   private passActions = 0;
   private lastUserRequest: string | null = null;
+  /** The last Power offer card, so a typed "yes" can act like tapping it (offer-reply.ts). */
+  private lastOffer: { at: number; passAvailable: boolean } | null = null;
   // v0.22 — how the current task ended; sent with 'working-stop' so the
   // bubble shows Done / Stopped / Stuck / Step limit instead of one look.
   private taskOutcome: TaskOutcome = 'done';
@@ -1118,6 +1121,26 @@ export class Brain {
       const d = decideFirstRun(this.firstRun, text);
       this.firstRun = d.next;
       if (d.decision.action !== 'model') return this.answerFirstRun(text, d.decision);
+    }
+
+    // A typed "yes" to the Power offer card: same as tapping it.
+    {
+      const offer = this.lastOffer;
+      this.lastOffer = null;
+      const reply = this.powerPassActive ? null : offerReply(offer, text, Date.now());
+      if (reply === 'use_pass' && this.lastUserRequest) {
+        log.info('Upsell.affirmed', { action: 'use_pass', task_id });
+        return this.retryLastWithPowerPass();
+      }
+      if (reply === 'open_upgrade') {
+        log.info('Upsell.affirmed', { action: 'open_upgrade', task_id });
+        const line = "Great! I'm opening the Power checkout. Finish there and my hands are back. 📎";
+        this.emit('clippy-speak', { text: line, animate: 'Congratulate' });
+        void import('./account')
+          .then((m) => m.startUpgrade('power', this.win))
+          .catch((err) => log.warn('startUpgrade from a typed yes failed', serializeErr(err)));
+        return line;
+      }
     }
 
     // v0.20.0 — RESUME after a takeover stop. If a task was just interrupted
@@ -1590,6 +1613,7 @@ export class Brain {
           // v0.21 — pass fields are additive: absent → the renderer behaves
           // exactly as before. A power_pass_used reply never carries
           // power_pass_available, so it renders text + the normal CTA.
+          this.lastOffer = { at: Date.now(), passAvailable: okResp.power_pass_available === true };
           this.emit('clippy-upgrade', {
             text: capLine,
             cta: 'power',
