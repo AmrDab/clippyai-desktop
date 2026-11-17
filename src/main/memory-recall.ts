@@ -70,10 +70,10 @@ interface VectorFile {
 
 const store = new Store<VectorFile>({
   name: 'clippy-memory-vectors',
+  // schemaVersion/modelId/dim are deliberately NOT defaulted: electron-store
+  // would report the default for a missing key, so the migration check below
+  // could never tell a fresh install from an initialised store.
   defaults: {
-    schemaVersion: SCHEMA_VERSION,
-    modelId: MODEL_ID,
-    dim: EMBED_DIM,
     entries: [],
   },
 });
@@ -279,6 +279,30 @@ export function needsMigration(): boolean {
 /** Clear the migration flag once the background reindex has been kicked off. */
 export function clearMigrationFlag(): void {
   firstRunNeedsMigration = false;
+}
+
+/**
+ * Should MEMORY.md be (re)indexed in the background? Pure so it can be tested.
+ * Yes when there are bullets AND either the store was flagged (fresh install /
+ * model change) or the index is empty (stores that were initialised with
+ * defaults by older builds but never filled). Never on unsupported platforms.
+ */
+export function shouldReindex(opts: { flagged: boolean; indexSize: number; bulletCount: number; supported?: boolean }): boolean {
+  if (opts.supported === false) return false;
+  return opts.bulletCount > 0 && (opts.flagged || opts.indexSize === 0);
+}
+
+/**
+ * Index a newly added memory without ever blocking or throwing into the
+ * caller. Skipped where recall is unsupported (Intel Macs).
+ */
+export function indexMemoryBestEffort(entry: { text: string; ts: number }): void {
+  try {
+    if (!recallSupported()) return;
+    void indexMemory(entry).catch((err) => log.warn('indexMemory failed (non-fatal)', err));
+  } catch (err) {
+    log.warn('indexMemory dispatch threw (non-fatal)', err);
+  }
 }
 
 /** Number of indexed vectors — handy for logs/debug. */

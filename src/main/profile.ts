@@ -289,10 +289,15 @@ function maybeKickBackgroundReindex(): void {
   if (backgroundReindexStarted) return;
   backgroundReindexStarted = true;
   try {
-    if (!memoryRecall.needsMigration()) return;
+    const flagged = memoryRecall.needsMigration();
     memoryRecall.clearMigrationFlag();
     const entries = parseMemoryBullets();
-    if (entries.length === 0) return;
+    if (!memoryRecall.shouldReindex({
+      flagged,
+      indexSize: memoryRecall.indexSize(),
+      bulletCount: entries.length,
+      supported: memoryRecall.recallSupported(),
+    })) return;
     // Detach: we never await this from the turn path.
     void memoryRecall
       .reindexAll(entries)
@@ -359,13 +364,7 @@ export function appendMemory(note: string): void {
   // v0.20.0 Phase 1 — keep the vector index in sync with the file.
   // Fire-and-forget: embedding is best-effort and must never block (or
   // break) the write path. Errors are swallowed inside indexMemory + here.
-  try {
-    void memoryRecall
-      .indexMemory({ text: note, ts: Date.now() })
-      .catch((err) => log.warn('indexMemory failed (non-fatal)', err));
-  } catch (err) {
-    log.warn('indexMemory dispatch threw (non-fatal)', err);
-  }
+  memoryRecall.indexMemoryBestEffort({ text: note, ts: Date.now() });
 }
 
 /**
