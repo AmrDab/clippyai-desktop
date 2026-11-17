@@ -318,6 +318,9 @@ async function parseSkillMd(skillDir: string, slug: string, capability_tags: str
  * boot to repopulate the runtime registry — every installed skill is
  * a candidate for promotion to a first-class tool (L1).
  */
+/** Folders already warned about this session (the list refreshes several times a minute). */
+const warnedMalformedSkills = new Set<string>();
+
 export async function listInstalledSkills(): Promise<SkillManifest[]> {
   try {
     if (!fs.existsSync(SKILLS_DIR)) return [];
@@ -338,7 +341,10 @@ export async function listInstalledSkills(): Promise<SkillManifest[]> {
         if (origin.installedAt) m.installedAt = origin.installedAt;
         manifests.push(m);
       } catch (err) {
-        log.warn('Skipping malformed skill', { dir: ent.name, err: serializeErr(err) });
+        if (!warnedMalformedSkills.has(ent.name)) {
+          warnedMalformedSkills.add(ent.name);
+          log.warn('Skipping malformed skill', { dir: ent.name, reason: err instanceof Error ? err.message : String(err) });
+        }
       }
     }
     return manifests;

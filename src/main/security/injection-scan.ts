@@ -325,6 +325,48 @@ export function gateInjectionVerdict(text: string, scan: ScanResult): GateDecisi
   };
 }
 
+/**
+ * Index of the first dangerous bidi control, or -1. macOS wraps app names in
+ * balanced FSI..PDI pairs (U+2068 name U+2069) in ordinary UI text, so up to
+ * a few short, single-line, label-like, non-nested pairs are benign. LRI/RLI are not exempt. Overrides and
+ * embeddings (U+202A..U+202E), stray/unclosed/nested isolates, and long or
+ * multi-line isolated spans (room to hide instructions) are still flagged.
+ */
+const BIDI_OVERRIDE_RE = /[‪-‮]/;
+const ISOLATE_MAX_SPAN = 40;
+const ISOLATE_MAX_EXEMPT = 3;
+function suspiciousBidiIndex(text: string): number {
+  if (!BIDI_RE.test(text)) return -1;
+  const ov = BIDI_OVERRIDE_RE.exec(text);
+  if (ov) return ov.index;
+  let open = -1;
+  let exempt = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0x2066 && c <= 0x2068) {
+      if (open >= 0) return i; // nested isolate
+      if (c !== 0x2068) return i; // LRI/RLI: not what macOS emits
+      open = i;
+    } else if (c === 0x2069) {
+      if (open < 0) return i; // stray PDI
+      const span = text.slice(open + 1, i);
+      if (!looksLikeUiLabel(span)) return open;
+      if (++exempt > ISOLATE_MAX_EXEMPT) return open;
+      open = -1;
+    }
+  }
+  return open; // unclosed isolate (-1 when balanced)
+}
+
+/** A short, single-line span with no colon and no instruction-like content. */
+function looksLikeUiLabel(span: string): boolean {
+  if (span.length > ISOLATE_MAX_SPAN) return false;
+  if (/[\r\n:]/.test(span)) return false;
+  if (OVERRIDE_PATTERNS.some(({ re }) => re.test(span))) return false;
+  if (MARKDOWN_INSTRUCTION_LABEL_RE.test(span)) return false;
+  return true;
+}
+
 export function scanForInjection(text: string): ScanResult {
   const findings: InjectionFinding[] = [];
   if (!text || typeof text !== 'string') {
@@ -332,13 +374,13 @@ export function scanForInjection(text: string): ScanResult {
   }
 
   // 1. Bidi
-  const bidiMatch = BIDI_RE.exec(text);
-  if (bidiMatch) {
+  const bidiPos = suspiciousBidiIndex(text);
+  if (bidiPos >= 0) {
     findings.push({
       kind: 'bidi',
       confidence: 'high',
-      excerpt: excerptAt(text, bidiMatch.index),
-      pos: bidiMatch.index,
+      excerpt: excerptAt(text, bidiPos),
+      pos: bidiPos,
     });
   }
 
