@@ -117,6 +117,18 @@ let firstRunNeedsMigration = false;
 
 // ── Embedding pipeline (lazy singleton) ──────────────────────────────────
 
+/**
+ * Intel Macs: the x64 build carries only arm64 builds of sharp and
+ * onnxruntime-node (onnxruntime-node ships no darwin-x64 binary), so loading
+ * transformers.js always fails there. Recall stays off for good instead of
+ * retrying the failing import on every turn; callers already fall back to the
+ * whole MEMORY.md. (Mac hardware test, 0.24.4.)
+ */
+export function recallSupported(platform: string = process.platform, arch: string = process.arch): boolean {
+  return !(platform === 'darwin' && arch === 'x64');
+}
+let unsupportedLogged = false;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let pipelinePromise: Promise<any> | null = null;
 let pipelineReady = false;
@@ -133,6 +145,10 @@ let pipelineReady = false;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getPipeline(): Promise<any> {
+  if (!recallSupported()) {
+    if (!unsupportedLogged) { unsupportedLogged = true; log.info('Semantic recall is not available on Intel Macs; using the whole memory file'); }
+    return Promise.reject(new Error('recall_unsupported_platform'));
+  }
   if (!pipelinePromise) {
     pipelinePromise = (async () => {
       try {

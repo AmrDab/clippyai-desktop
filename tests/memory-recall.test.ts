@@ -96,3 +96,12 @@ describe('topKByCosine', () => {
     expect(res.map((r) => r.entry.id)).toEqual(['good']);
   });
 });
+
+describe('recallSupported', () => {
+  it('is off on Intel Macs (no darwin-x64 onnxruntime), on everywhere else', async () => {
+    const { recallSupported } = await import('../src/main/memory-recall');
+    expect(recallSupported('darwin', 'x64')).toBe(false);
+    expect(recallSupported('darwin', 'arm64')).toBe(true);
+    expect(recallSupported('win32', 'x64')).toBe(true);
+  });
+});
