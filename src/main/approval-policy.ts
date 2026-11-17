@@ -73,6 +73,11 @@ const RISKY: Rule[] = [
   { why: 'upload / send over the network', re: rx(String.raw`\|\s*(?:curl|wget|nc|ncat|netcat|iwr|irm|invoke-webrequest|invoke-restmethod)\b`) },
   { why: 'sends a message', re: rx(String.raw`\b(?:imessage|messages|mail|outlook|slack|teams|whatsapp|telegram|signal)\b[^\r\n]*\b(?:send|post|reply|forward)\b|\bsend\s+(?:message|email|mail)\b|mailto:|\bsms:|imessage:`) },
   { why: 'AppleScript UI scripting / shell / edits', re: rx(String.raw`\b(?:keystroke|key\s+code|key\s+down|click|perform\s+action|do\s+shell\s+script|make\s+new|delete|move|duplicate|empty|restart|shut\s+down|log\s+out|paste|open\s+location|set\s+(?:the\s+)?(?:value|contents?|volume|text|name|password)|press|select\s+menu)\b`) },
+  // Inline code through an interpreter can do anything (python -c "shutil.rmtree(...)"),
+  // so the deny-list above can't vouch for it.
+  { why: 'runs inline code', re: rx(CS + String.raw`(?:python[0-9.]*|py|node|deno|bun|ruby|perl|php|lua|Rscript|osascript\s+-l\s+JavaScript)\b[^\r\n]*(?:\s-(?:c|e|-eval|p|-print|r)\b|\s<<|\s-\s*$)`) },
+  { why: 'runs a script file', re: rx(CS + String.raw`(?:python[0-9.]*|py|node|deno|bun|ruby|perl|php|bash|sh|zsh|fish|source|\.|osascript)\s+(?:-\S+\s+)*[^\s-][^\s]*\.(?:py|js|mjs|cjs|ts|rb|pl|php|sh|zsh|bash|command|scpt|applescript)\b`) },
+  { why: 'changes a git repository', re: rx(String.raw`\bgit\s+(?:-\S+\s+)*(?:reset|clean|checkout|restore|rm|mv|rebase|merge|commit|stash|branch\s+-[dD]|tag\s+-d|push|pull|apply|am|cherry-pick|revert|switch|filter-branch|gc|prune|reflog\s+expire|update-ref)\b`) },
   { why: 'writes a file', re: rx(String.raw`(?<![0-9&<>=-])>>?(?![&>=])\s*(?!\/dev\/null\b|nul\b|\$null\b)["']?[^\s|;&)"']`) },
 ];
 

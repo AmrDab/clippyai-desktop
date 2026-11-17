@@ -119,3 +119,31 @@ describe('needsApproval — other tools are not relaxed', () => {
     expect(needsApproval(tool, { command: 'ls' }, { ...base, actionClass })).toBe(true);
   });
 });
+
+describe('classifyShellCommand: interpreters and git', () => {
+  it.each([
+    `python3 -c "import shutil; shutil.rmtree('/Users/x/Documents')"`,
+    `python -c 'import os; os.remove("a")'`,
+    `node -e "require('fs').rmSync('x',{recursive:true})"`,
+    `osascript -l JavaScript -e 'Application("Finder").delete()'`,
+    `ruby -e 'File.delete("a")'`,
+    `perl -e 'unlink "a"'`,
+    `bash ./setup.sh`,
+    `python3 script.py`,
+    `git reset --hard HEAD~3`,
+    `git clean -fdx`,
+    `git checkout .`,
+    `cd repo && git push origin main`,
+  ])('asks: %s', (cmd) => {
+    expect(classifyShellCommand(cmd)).not.toBeNull();
+  });
+  it.each([
+    `python3 --version`,
+    `node --version`,
+    `git status`,
+    `git log --oneline -5`,
+    `osascript -e 'tell application "Claude" to activate'`,
+  ])('no prompt: %s', (cmd) => {
+    expect(classifyShellCommand(cmd)).toBeNull();
+  });
+});
