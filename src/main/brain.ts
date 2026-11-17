@@ -115,6 +115,7 @@ import * as toolUndoMod from './tool-undo';
 // Direct namespace imports here force Rollup to keep both modules alive.
 import * as windowMod from './window';
 import * as followMeMod from './follow-me';
+import { taskFollow } from './task-follow';
 import * as gamesMod from './games';
 import * as profileMod from './profile';
 // v0.20.0-alpha.13 — prompt-injection scanner for tool results. STATIC
@@ -245,6 +246,7 @@ const DESTRUCTIVE_TOOLS = new Set([
   'cdp_evaluate',  // arbitrary JS execution
   'cdp_type',      // typing into a form field — Send/Submit reachable via key_press
   'http_request',  // POST/DELETE etc.
+  'shell_exec',    // destructive_exec class; was missing, so Task.end under-counted
   // v0.12.3 — per security audit finding #5: hallucination guard ledger
   // previously excluded these, so the model could ghost-claim "Sent!" after
   // keyboard-driving a mail client via type_text + key_press without any
@@ -1313,6 +1315,12 @@ export class Brain {
       // we emit 'working-stop' in the finally block. Replaces the prior
       // one-shot 'Thinking' which left Clippy frozen during long tasks.
       this.emit('working-start');
+      // Owner report: Clippy was left behind while the agent worked in other
+      // apps. For the task's duration he stays in front and travels with the
+      // cursor (task-follow.ts); stopped in finally{} below.
+      try { taskFollow.begin(this.win, { easing: settingsStore.get('followEasing') }); } catch (err) {
+        log.warn('task-follow begin failed (non-fatal)', serializeErr(err));
+      }
       this.taskOutcome = 'done';
 
       // Build initial user message — add screen context if we can grab it
@@ -2270,6 +2278,7 @@ export class Brain {
       setCurrentTaskId(undefined);
       // v0.16.0 — stop the renderer's working-animation loop.
       this.emit('working-stop', { outcome: this.taskOutcome });
+      try { taskFollow.end(); } catch { /* non-fatal */ }
 
       // v0.18.1 — stop the takeover monitor and, if user activity drove
       // this cancellation, speak a context-appropriate message so the

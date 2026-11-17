@@ -115,6 +115,22 @@ function displayForWindow(win: BrowserWindow): Display {
   return screen.getDisplayNearestPoint({ x: Math.round(x + w / 2), y: Math.round(y + h / 2) });
 }
 
+/**
+ * macOS: alwaysOnTop('screen-saver') does not cross Spaces, so when the agent
+ * opens an app that lives in its own native full-screen Space, Clippy stayed
+ * behind on the old desktop. Join every Space, including full-screen ones.
+ * skipTransformProcessType: the default transform turns the app into a
+ * UIElement app and drops its Dock icon and menu bar — we keep both.
+ */
+export function pinToAllSpaces(win: BrowserWindow): void {
+  if (process.platform !== 'darwin') return;
+  try {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  } catch (err) {
+    log.warn('setVisibleOnAllWorkspaces failed (non-fatal)', { err: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export function createWindow(): BrowserWindow {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
 
@@ -147,6 +163,7 @@ export function createWindow(): BrowserWindow {
   });
 
   win.setAlwaysOnTop(true, 'screen-saver');
+  pinToAllSpaces(win);
   // NO click-through — window always receives mouse events
   // Window is small enough that it only covers Clippy
   win.setIgnoreMouseEvents(false);
@@ -628,6 +645,7 @@ export function createWritingCardWindow(
   });
 
   writingCardWindow.setAlwaysOnTop(true, 'screen-saver');
+  pinToAllSpaces(writingCardWindow);
 
   if (process.env.ELECTRON_RENDERER_URL) {
     writingCardWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/writing-card.html`);
@@ -704,6 +722,7 @@ export function createWritingBadgeWindow(
     },
   });
   writingBadgeWindow.setAlwaysOnTop(true, 'screen-saver');
+  pinToAllSpaces(writingBadgeWindow);
 
   const w = writingBadgeWindow;
   const onReady = () => { if (!w.isDestroyed()) sendBadgeCount(w, count); };
