@@ -41,6 +41,7 @@ import * as macBridge from './mac-bridge-native';
 import http from 'http';
 import { shell, app } from 'electron';
 import { createLogger, serializeErr } from './logger';
+import { screenshotHint } from './screenshot-hint';
 import * as telemetry from './telemetry';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 import { docxFromBlocks } from './skills/generate/docx-from-blocks';
@@ -1864,14 +1865,13 @@ async function desktopScreenshot(): Promise<ToolResult> {
     const base64 = finalImg.toPNG().toString('base64');
     try { fs.unlinkSync(tmpPng); } catch {}
 
-    const downscaled = finalW < nativeW;
-    const scale = downscaled ? nativeW / finalW : 1;
-
-    const text = downscaled
-      ? `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
-        `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
-        `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`
-      : `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+    // darwin clicks take POINTS, not native pixels (Retina capture = 2x points).
+    let pointW: number | undefined;
+    try {
+      const { screen } = require('electron') as typeof import('electron');
+      pointW = screen.getPrimaryDisplay().size.width;
+    } catch { /* hint falls back to native pixels */ }
+    const text = screenshotHint({ platform: process.platform, nativeW, nativeH, finalW, finalH, pointW });
 
     return { text, image: { data: base64, mimeType: 'image/png' } };
   } catch (err) {
