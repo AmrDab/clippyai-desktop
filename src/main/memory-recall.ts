@@ -68,7 +68,7 @@ interface VectorFile {
   entries: VectorEntry[];
 }
 
-const store = new Store<VectorFile>({
+const store = new Store<Pick<VectorFile, 'entries'> & Partial<VectorFile>>({
   name: 'clippy-memory-vectors',
   // schemaVersion/modelId/dim are deliberately NOT defaulted: electron-store
   // would report the default for a missing key, so the migration check below
