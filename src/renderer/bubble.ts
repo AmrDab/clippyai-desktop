@@ -146,6 +146,11 @@ export class BubbleController {
     surface.observe(this.bubbleText, { childList: true, attributes: true, attributeFilter: ['class'] });
     surface.observe(this.inputArea, { attributes: true, attributeFilter: ['class'] });
     surface.observe(this.actionsArea, { attributes: true, attributeFilter: ['class'] });
+    // The surface itself never scrolls; its history and text do. The panel opens
+    // while the window is still the collapsed size, the content overflows for a
+    // moment and focusing the field scrolled the whole surface, which stayed
+    // scrolled after the window grew: the header (minimize, close) sat above the top.
+    this.bubble.addEventListener('scroll', () => { if (this.bubble.scrollTop !== 0) this.bubble.scrollTop = 0; });
 
     // Initial state — keep the standard-state default so legacy callers
     // (e.g. update prompts) keep getting the multi-line layout.
