@@ -19,9 +19,10 @@
  * designcenter" asked three times, then failed): quitting THE APP THE USER
  * NAMED in this task's request runs unasked (isNamedAppQuit). kill_process is
  * resolved to the processes it would end before this is called; it must be one
- * app, not a protected process, and its process name, window title or exe
- * description must contain a word of the request. A PID or name the user did
- * not name, or a match across several apps, still asks.
+ * app, not a protected process, and its process name or exe description must
+ * contain a word of the request (never its window title: that's content). A PID
+ * or name the user did not name, a match across several apps, or a resolve that
+ * found nothing or failed, still asks.
  *
  * Pure + dependency-light so each branch is unit-tested (tests/approval-policy.test.ts).
  */
@@ -152,7 +153,9 @@ function namedInRequest(appWords: Set<string>, label: string | undefined): boole
 
 /**
  * The exception: every target is the same, unprotected app, and the user
- * named it (by process name, window title or exe description).
+ * named it by process name or exe description ("Designcenter NX" for ugraf).
+ * Not by window title: a title is content (a browser tab, a document name), so
+ * "quit designcenter" must not end Chrome showing a "Designcenter" page.
  */
 export function isNamedAppQuit(requestText: string | undefined, targets: KillTarget[] | null | undefined): boolean {
   if (!requestText || !targets || targets.length === 0) return false;
@@ -161,11 +164,25 @@ export function isNamedAppQuit(requestText: string | undefined, targets: KillTar
   const [name] = names;
   if (!name || PROTECTED_PROCESSES.has(name)) return false;
   const appWords = requestAppWords(requestText);
-  return targets.some((t) => namedInRequest(appWords, stripExe(t.name))
-    || namedInRequest(appWords, t.window) || namedInRequest(appWords, t.description));
+  return targets.some((t) => namedInRequest(appWords, stripExe(t.name)) || namedInRequest(appWords, t.description));
 }
 
-const APP = String.raw`["']?([\p{L}\p{N}][\p{L}\p{N} ._+-]*?)(?:\.exe)?["']?`;
+/**
+ * A shell quit by name: the whole typed name (not one word of it) is named in
+ * the request, and no word of it is a protected process.
+ */
+function shellQuitNamed(requestText: string | undefined, app: string): boolean {
+  if (!requestText) return false;
+  const ws = wordsOf(stripExe(app));
+  if (ws.length === 0 || ws.some((w) => PROTECTED_PROCESSES.has(w))) return false;
+  // Vendor words don't count ("Google Chrome" is named by "chrome").
+  const core = ws.filter((w) => !NOT_AN_APP.has(w)).join('');
+  return !!core && requestAppWords(requestText).has(core);
+}
+
+// One argument: a quoted name (spaces allowed inside the quotes only) or a single
+// bare token. A bare token can't hold a space, so "killall foo Finder" never parses.
+const APP = String.raw`(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([\p{L}\p{N}][\p{L}\p{N}._+-]*))`;
 const PS_OPTS = String.raw`(?:\s+-force|\s+-erroraction\s+\w+|\s+-confirm:\$false)*`;
 const QUIT_FORMS = [
   String.raw`(?:stop-process|spps)${PS_OPTS}\s+-name\s+${APP}${PS_OPTS}`,
@@ -187,7 +204,7 @@ export function parseQuitCommand(command: string): string | null {
   if (wrapped) cmd = wrapped[1].trim();
   for (const re of QUIT_FORMS) {
     const m = cmd.match(re);
-    const app = m && (m[1] ?? m[2] ?? m[3])?.trim();
+    const app = m?.slice(1).find((g) => g !== undefined)?.trim();
     if (app) return app;
   }
   return null;
@@ -208,14 +225,12 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   if (ctx.mode === 'cautious' || ctx.classForcedApprove) return true; // the user asked to see everything
   if (ctx.actionClass !== 'destructive_exec') return true;
   if (tool === 'kill_process') {
-    // Nothing would be ended (the tool reports "not running" or lists the
-    // candidates): there is nothing to approve.
-    if (ctx.killTargets && ctx.killTargets.length === 0) return false;
+    // An empty or failed resolve asks (fail closed): what runs could differ from what was resolved.
     return !isNamedAppQuit(ctx.requestText, ctx.killTargets);
   }
   if (tool !== 'shell_exec') return true;
   const command = String(args?.command ?? '');
   const app = parseQuitCommand(command);
-  if (app && !shellBlockReason(command) && isNamedAppQuit(ctx.requestText, [{ name: app }])) return false;
+  if (app && !shellBlockReason(command) && shellQuitNamed(ctx.requestText, app)) return false;
   return classifyShellCommand(command) !== null;
 }

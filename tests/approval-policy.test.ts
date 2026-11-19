@@ -181,12 +181,12 @@ describe('classifyShellCommand: a command keyword ends at a hyphen (Format-Table
 });
 
 describe('needsApproval — quitting the app the user named', () => {
-  const nx = { name: 'ugraf', window: 'Designcenter Modeling', description: 'NX (Siemens NX)' };
+  const nx = { name: 'ugraf', window: 'Designcenter Modeling', description: 'Designcenter NX' };
   const kill = (args: Record<string, unknown>, over: Partial<ApprovalCtx>) =>
     needsApproval('kill_process', args, { ...base, ...over });
   const req = 'force quit designcenter app';
 
-  it('the named app runs unasked: by window title, by process name, by description', () => {
+  it('the named app runs unasked: by process name or exe description', () => {
     expect(kill({ window: 'designcenter' }, { requestText: req, killTargets: [nx] })).toBe(false);
     expect(kill({ procPid: 4242 }, { requestText: req, killTargets: [nx] })).toBe(false);
     expect(kill({ name: 'ugraf' }, { requestText: 'kill ugraf', killTargets: [nx] })).toBe(false);
@@ -204,6 +204,10 @@ describe('needsApproval — quitting the app the user named', () => {
     expect(kill({ name: 'chrome' }, { requestText: 'close the google tab', killTargets: [{ name: 'chrome', description: 'Google Chrome' }] })).toBe(true);
     expect(kill({ name: 'notepad' }, { requestText: 'quit spotify and save the note', killTargets: [{ name: 'notepad' }] })).toBe(true);
   });
+  it('a window title is content, not a name: a browser tab never names the app', () => {
+    const tab = [{ name: 'chrome', window: 'Designcenter docs - Google Chrome', description: 'Google Chrome' }];
+    expect(kill({ window: 'designcenter' }, { requestText: req, killTargets: tab })).toBe(true);
+  });
   it('a match across more than one app still asks', () => {
     const two = [{ name: 'WINWORD', window: 'report.docx - Word' }, { name: 'EXCEL', window: 'report.xlsx - Excel' }];
     expect(kill({ window: 'report' }, { requestText: 'close the report', killTargets: two })).toBe(true);
@@ -213,11 +217,11 @@ describe('needsApproval — quitting the app the user named', () => {
     expect(kill({ name: 'lsass' }, { requestText: 'kill lsass', killTargets: [{ name: 'lsass' }] })).toBe(true);
     expect(isNamedAppQuit('quit finder', [{ name: 'Finder' }])).toBe(false);
   });
-  it('unresolved targets or no request text ask; a call that ends nothing does not', () => {
+  it('unresolved or empty targets, or no request text, ask', () => {
     expect(kill({ name: 'ugraf' }, { requestText: 'kill ugraf' })).toBe(true);
     expect(kill({ name: 'ugraf' }, { requestText: 'kill ugraf', killTargets: null })).toBe(true);
     expect(kill({ name: 'ugraf' }, { killTargets: [nx] })).toBe(true);
-    expect(kill({ name: 'designcenter' }, { requestText: req, killTargets: [] })).toBe(false);
+    expect(kill({ name: 'designcenter' }, { requestText: req, killTargets: [] })).toBe(true); // fail closed
   });
   it('injection, a non-user task, Cautious mode, a forced class and escalation still ask', () => {
     const ok = { requestText: req, killTargets: [nx] };
@@ -236,6 +240,7 @@ describe('needsApproval — quitting the app the user named', () => {
     expect(sh('killall Safari', 'quit safari')).toBe(false);
     expect(sh('pkill -x Slack', 'quit slack')).toBe(false);
     expect(sh(`osascript -e 'tell application "Google Chrome" to quit'`, 'quit chrome')).toBe(false);
+    expect(sh('killall "Google Chrome"', 'quit chrome')).toBe(false);
   });
   it('shell: anything else about quitting still asks', () => {
     expect(sh('Stop-Process -Name notepad -Force', 'force quit designcenter')).toBe(true); // not named
@@ -247,5 +252,10 @@ describe('needsApproval — quitting the app the user named', () => {
     expect(sh('killall Finder', 'quit finder')).toBe(true);                                // protected
     expect(sh('Stop-Process -Name notepad -Force', '')).toBe(true);
     expect(parseQuitCommand('Get-Process | Stop-Process')).toBeNull();
+    // One argument only: a second bare name (killall takes several) never parses.
+    expect(sh('killall designcenter Finder', 'force quit designcenter')).toBe(true);
+    expect(sh('taskkill /F /IM designcenter.exe /IM explorer.exe', 'force quit designcenter')).toBe(true);
+    // The whole typed name must be named, not one word of it.
+    expect(sh('killall "Spotify Helper"', 'quit spotify')).toBe(true);
   });
 });
