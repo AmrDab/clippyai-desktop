@@ -77,6 +77,7 @@ import * as approval from './approval';
 import { captureScreen, HelperError } from './screenshot-helper';
 import { isMcpChromeReady, callMcpChromeTool, getMcpChromeStatus, MCP_CHROME_TOOLS } from './mcp-chrome';
 import type { ToolResult } from './types/tool-result';
+import type { KillTarget } from './approval-policy';
 import { GOVERNED_TOOLS, classifyRisk, type RiskVerdict } from './governor';
 import { makeReceipt, statusFromOutcome, verifyWrittenFile } from './receipt';
 import { typedTextLanded } from './tool-verdict';
@@ -2813,7 +2814,13 @@ async function systemInfo(params: Record<string, unknown>): Promise<ToolResult> 
 async function listProcesses(params: Record<string, unknown>): Promise<ToolResult> {
   const sortBy = String(params.sortBy || 'ram');
   const top = String(Number(params.top) || 10);
-  const result = await runComScript('com-list-processes.ps1', ['-sortBy', sortBy, '-top', top], 8000);
+  const args = ['-sortBy', sortBy, '-top', top];
+  // query: every process whose name, window title or exe description matches
+  // (no top-N cut). base64 keeps spaces/quotes away from the PS tokenizer.
+  const query = String(params.query ?? '').trim().substring(0, 100);
+  if (query) args.push('-queryB64', Buffer.from(query, 'utf8').toString('base64'));
+  // 20 s: Get-Process alone took >8 s on a loaded PC (owner log, 2026-11-19).
+  const result = await runComScript('com-list-processes.ps1', args, 20000);
   return result;
 }
 
@@ -4775,12 +4782,37 @@ Write-Output ('OK:' + $procs.Count)
   }
 }
 
-async function killProcess(params: Record<string, unknown>): Promise<ToolResult> {
+function killProcessArgs(params: Record<string, unknown>): string[] {
   const args: string[] = [];
   if (params.procPid !== undefined) args.push('-procPid', String(Number(params.procPid) || 0));
   if (params.name) args.push('-name', String(params.name));
-  if (args.length === 0) return { text: 'Error: procPid or name is required' };
-  return await runComScript('com-kill-process.ps1', args, 8000);
+  // window: a window-title substring, resolved to the owning process by the script.
+  const window = String(params.window ?? '').trim().substring(0, 100);
+  if (window) args.push('-windowB64', Buffer.from(window, 'utf8').toString('base64'));
+  return args;
+}
+
+async function killProcess(params: Record<string, unknown>): Promise<ToolResult> {
+  const args = killProcessArgs(params);
+  if (args.length === 0) return { text: 'Error: procPid, name or window is required' };
+  return await runComScript('com-kill-process.ps1', args, 20000);
+}
+
+/**
+ * The processes a kill_process call would end, without ending them (the
+ * script's -resolveOnly). Empty = it would end nothing (no match, protected,
+ * or several apps match a window). null = could not tell. Read by brain.ts
+ * for approval-policy's named-app exception.
+ */
+export async function resolveKillTargets(params: Record<string, unknown>): Promise<KillTarget[] | null> {
+  const args = killProcessArgs(params);
+  if (args.length === 0) return null;
+  const r = await runComScriptStructured('com-kill-process.ps1', [...args, '-resolveOnly'], 20000);
+  const targets = r.ok ? (r.data as { targets?: unknown } | undefined)?.targets : undefined;
+  if (!Array.isArray(targets)) return null;
+  return targets.map((t) => ({
+    name: String(t?.name ?? ''), window: String(t?.window ?? ''), description: String(t?.description ?? ''),
+  }));
 }
 
 // ── Browser CDP tools (Tier 0) ───────────────────────────────────

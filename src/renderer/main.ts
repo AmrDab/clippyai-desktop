@@ -365,9 +365,9 @@ async function init(): Promise<void> {
     clippyCtrl.playNamed('GetAttention');
   });
 
-  // Step ticker: update bubble text with a brief label while each tool runs
-  // so the user sees "Clicking…" / "Reading screen…" instead of static "…".
-  window.clippy.onTaskStep?.(({ label }) => bubbleCtrl.showStep(label));
+  // No step ticker (owner, 2026-11-19: "no pill for when hes working"): the
+  // sprite's working loop above is the only busy signal; main's task:step
+  // events are not shown.
 
   // v0.17.0 — voice input wiring. Bubble owns the Recorder; main wires
   // the sprite animation hook (so Hearing_1 plays while we record) and
@@ -894,10 +894,19 @@ async function init(): Promise<void> {
       const wasSpeaking = tts.isSpeaking();
       tts.stop();
 
-      const action = clickAction({ activeGame, wasSpeaking });
+      const action = clickAction({ activeGame, wasSpeaking, working: bubbleCtrl.isWorking(), bubbleOpen: bubbleCtrl.isOpen() });
       if (action === 'game-found') {
         // v0.21 — hide-and-seek: clicking him = found. Don't open the chat.
         void window.clippy.gameAction?.('found');
+      } else if (action === 'stop') {
+        // Mid-task: the click is Stop (same path as the composer's Stop
+        // button). minimize() first so a pending approval is answered Deny.
+        bubbleCtrl.minimize();
+        void window.clippy.stopTask?.().catch(() => { /* non-fatal — task ends on its own */ });
+      } else if (action === 'close') {
+        // The text box is open: it recoils into him. Draft and history stay;
+        // a prompt still waiting counts as dismissed.
+        bubbleCtrl.minimize();
       } else if (action === 'engage') {
         // Interrupted mid-speech: yield to the user. Keep the reply text
         // visible and just open the input — don't talk over them with a

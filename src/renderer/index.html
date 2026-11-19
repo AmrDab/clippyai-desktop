@@ -6,35 +6,33 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body class="clippy-window">
-  <!-- ── Speech bubble v2 (v0.19.0 PR-2) ───────────────────────────────
-       Three-state adaptive bubble with six contextual tints. Replaces the
-       single fixed-size bubble. The `data-state` attribute is the source
-       of truth for which mount points are visible; CSS drives all layout
-       off it (no class soup). The `data-tint` attribute drives the
-       color wash + the one-shot hint animation.
+  <!-- ── Clippy's surfaces ─────────────────────────────────────────────
+       One element that looks like part of the desktop (Windows 11 or
+       macOS, light or dark). `data-state` sizes the host window;
+       BubbleController.syncSurface() derives `data-surface` from the state
+       and the content, and CSS drives all layout off the two:
 
-       States:
-         compact   — ~280×60   one-line ambient tip, no input
-         standard  — ~340×auto multi-line + actions + compact input row
-         expanded  — ~480×600  full chat panel with history + chips
+         pill    — status pill: compact one-liners, the working status and
+                   the task outcome. An icon and one line, no input.
+         flyout  — standard: the reply and a text field.
+         banner  — notification banner: prompts with action buttons
+                   (approvals, offers, updates).
+         panel   — expanded: the chat window (history, chips, text field).
 
-       Tints (10–15% wash):
-         default | info | warning | busy | error | success
+       `data-tint` (default | info | warning | busy | error | success)
+       colours a thin left accent (flyout, panel) or the icon (pill, banner).
        ──────────────────────────────────────────────────────────────── -->
-  <div id="bubble" class="bubble hidden" data-state="standard" data-tint="default">
-    <!-- Expanded-only header — minimize / pin / close. Hidden in compact
-         + standard by CSS via [data-state]. Buttons are wired in
-         BubbleController; they remain in the DOM so the user can hover
-         them before the state transition finishes. -->
+  <div id="bubble" class="bubble hidden" data-state="standard" data-surface="flyout" data-tint="default">
+    <!-- Title row of the flyout and the panel. The flyout shows the name and
+         the window controls (minimize, close); the panel adds the status, pin
+         and clear. Hidden in the pill and the banner by CSS. Buttons are wired
+         in BubbleController. -->
     <div id="bubble-header">
       <span class="bubble-header-title">Clippy<span class="bubble-header-status" id="bubble-status" aria-live="polite">Ready</span></span>
       <div class="bubble-header-controls">
         <!-- Inline SVG glyphs (was &minus; / &#9776; / &times; text glyphs —
              they rendered at inconsistent optical sizes and the hamburger
              read as a menu, not a pin). Stroke-based, inherit currentColor. -->
-        <button id="bubble-minimize" type="button" title="Minimize to compact" aria-label="Minimize">
-          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 8h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        </button>
         <button id="bubble-pin" type="button" title="Pin bubble (stay open across messages)" aria-label="Pin" aria-pressed="false">
           <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M9.6 1.7a1 1 0 0 1 1.4 0l3.3 3.3a1 1 0 0 1 0 1.4l-.9.9a1 1 0 0 1-1 .25l-.4-.12-2.3 2.3.3 1.8a1 1 0 0 1-.28.88l-.5.5a.75.75 0 0 1-1.06 0L5.9 10.6l-3.36 3.37a.75.75 0 0 1-1.06-1.06L4.84 9.5 2.6 7.26a.75.75 0 0 1 0-1.06l.5-.5a1 1 0 0 1 .88-.28l1.8.3 2.3-2.3-.12-.4a1 1 0 0 1 .25-1l.9-.9Z"/></svg>
         </button>
@@ -43,14 +41,37 @@
         <button id="bubble-clear" type="button" title="Clear conversation" aria-label="Clear conversation">
           <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 4.5h10M6.5 2.5h3M4.5 4.5l.6 8a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8M6.8 7v4M9.2 7v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
         </button>
-        <button id="bubble-close" type="button" title="Close (Esc)" aria-label="Close">
-          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </div>
+      <!-- Window controls, drawn like the OS's own (style.css): Windows
+           caption glyphs at the right, macOS traffic lights at the left.
+           Minimize tucks the surface into Clippy (draft and history kept);
+           Close dismisses it. -->
+      <div class="bubble-window-controls">
+        <button id="bubble-minimize" type="button" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M0.5 5h9" stroke="currentColor" stroke-width="1"/></svg>
+        </button>
+        <button id="bubble-close" type="button" title="Close" aria-label="Close">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="m0.5 0.5 9 9m0-9-9 9" stroke="currentColor" stroke-width="1"/></svg>
         </button>
       </div>
     </div>
 
-    <!-- Primary text — single line in compact, multi-paragraph in
-         standard, full markdown-rendered in expanded. -->
+    <!-- Banner-only header row, like a notification's: glyph, app name, time. -->
+    <div id="bubble-banner-head" aria-hidden="true">
+      <svg class="ico-clip" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10.6 4.3 5.5 9.4a1.45 1.45 0 0 0 2.05 2.05l5.2-5.2a2.9 2.9 0 0 0-4.1-4.1L3.3 7.5a4.35 4.35 0 0 0 6.15 6.15l4.3-4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <span>Clippy</span><span class="banner-now">now</span>
+    </div>
+
+    <!-- Pill-only icon; #bubble[data-icon] (bubble.ts syncSurface) picks one. -->
+    <span id="bubble-icon" aria-hidden="true">
+      <svg class="ico-clip" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10.6 4.3 5.5 9.4a1.45 1.45 0 0 0 2.05 2.05l5.2-5.2a2.9 2.9 0 0 0-4.1-4.1L3.3 7.5a4.35 4.35 0 0 0 6.15 6.15l4.3-4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <svg class="ico-check" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <svg class="ico-x" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </span>
+
+    <!-- Primary text — one line in the pill (where it is a live status
+         region), the reply in the flyout, title + body in the banner.
+         Hidden in expanded, which uses #bubble-history. -->
     <div id="bubble-text"></div>
 
     <!-- v0.17.7 — action row (e.g. "Update now"). Hidden by default;
@@ -66,7 +87,7 @@
     <div id="bubble-chips" class="hidden"></div>
 
     <div id="bubble-input-area" class="hidden">
-      <!-- v0.21 — composer: one pill holding a growing textarea (Enter
+      <!-- v0.21 — composer: one text field holding a growing textarea (Enter
            sends, Shift+Enter newline, up to 4 lines then scrolls) with the
            mic + send icon buttons inside it. Send is disabled while empty.
            File-attach button removed for the public launch: the upload
@@ -113,8 +134,6 @@
         <path fill="currentColor" d="M3 13h3v1H2v-4h1v3Zm10-10h-3V2h4v4h-1V3Z"/>
       </svg>
     </button>
-
-    <div id="bubble-tail"></div>
   </div>
 
   <!-- v0.21 — shown while a task runs on the free daily Power pass -->

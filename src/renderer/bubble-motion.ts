@@ -10,6 +10,32 @@ export const TYPE_MAX_MS = 600;
 /** The bubble's exit transition (--dur-fast); the OS window shrinks only after it. */
 export const EXIT_MS = 150;
 
+/** The recoil into Clippy (click on him, minimize, idle): a little longer than the plain exit. */
+export const RECOIL_MS = 180;
+
+export interface IdleState {
+  /** ms since the last pointer / key activity on the surface, or since it last changed. */
+  idleMs: number;
+  /** Settings → bubbleAutoHideMs; 0 = manual (never). */
+  autoHideMs: number;
+  pinned: boolean;
+  hover: boolean;
+  /** The text field has the caret and the window has focus. */
+  fieldFocused: boolean;
+  draft: string;
+  /** A task is running, or the mic is recording. */
+  busy: boolean;
+  /** A prompt that waits for the user (approval, an agent's question). */
+  waitingForUser: boolean;
+}
+
+/** An open surface minimizes itself only when nothing shows the user is using it. */
+export function shouldAutoMinimize(s: IdleState): boolean {
+  if (s.autoHideMs <= 0 || s.pinned) return false;
+  if (s.hover || s.fieldFocused || s.draft.trim() !== '' || s.busy || s.waitingForUser) return false;
+  return s.idleMs >= s.autoHideMs;
+}
+
 /** Total time a reply takes to type out, in ms. Counts code points, so an emoji is one character. */
 export function typeTotalMs(text: string): number {
   return Math.min(TYPE_MAX_MS, Array.from(text).length * TYPE_MS_PER_CHAR);
@@ -31,6 +57,22 @@ export function typedText(text: string, elapsedMs: number): string {
 /** Replies with markdown render whole through renderMarkdown (the chat panel shows them that way too); plain lines type. */
 export function hasMarkdown(text: string): boolean {
   return /\*\*|`|^\s*[-*]\s/m.test(text);
+}
+
+/**
+ * A prompt with buttons shows as a notification banner: a bold title line and a
+ * body line. The title is the first line, or else the first sentence when it is
+ * short. Never splits inside **bold** or `code`, or leaves a body with no words.
+ */
+export function splitBanner(text: string): { title: string; body: string } {
+  const t = text.trim();
+  const nl = t.indexOf('\n');
+  const m = nl > 0 ? [t, t.slice(0, nl).trim(), t.slice(nl + 1).trim()] : t.match(/^(.{1,80}?[.!?])\s+(\S[\s\S]*)$/);
+  if (!m) return { title: t, body: '' };
+  const [, title, body] = m;
+  const unclosed = (s: string, mark: string): boolean => s.split(mark).length % 2 === 0;
+  if (unclosed(title, '**') || unclosed(title, '`') || !/[\p{L}\p{N}]/u.test(body)) return { title: t, body: '' };
+  return { title, body };
 }
 
 type Timer = ReturnType<typeof setTimeout>;

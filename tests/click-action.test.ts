@@ -19,3 +19,21 @@ describe('clickAction — a click on Clippy never installs or downloads an updat
     }
   });
 });
+
+describe('clickAction: stop a running task, else close the open text box', () => {
+  it('a click during a task stops it, whatever is showing', () => {
+    expect(clickAction({ activeGame: null, wasSpeaking: false, working: true })).toBe('stop');
+    expect(clickAction({ activeGame: null, wasSpeaking: true, working: true, bubbleOpen: true })).toBe('stop');
+  });
+  it('a click with the text box open closes it (also mid-speech)', () => {
+    expect(clickAction({ activeGame: null, wasSpeaking: false, bubbleOpen: true })).toBe('close');
+    expect(clickAction({ activeGame: null, wasSpeaking: true, bubbleOpen: true })).toBe('close');
+  });
+  it('with nothing open it opens as before', () => {
+    expect(clickAction({ activeGame: null, wasSpeaking: false, working: false, bubbleOpen: false })).toBe('chat');
+    expect(clickAction({ activeGame: null, wasSpeaking: true, working: false, bubbleOpen: false })).toBe('engage');
+  });
+  it('hide-and-seek still wins', () => {
+    expect(clickAction({ activeGame: 'hide', wasSpeaking: false, working: true, bubbleOpen: true })).toBe('game-found');
+  });
+});

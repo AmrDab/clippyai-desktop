@@ -19,7 +19,7 @@
 
 import { BrowserWindow, net, app, powerMonitor } from 'electron';
 import { watchReachability, REACH_PROBE_TIMEOUT_MS } from './turn-reachability';
-import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk, readForegroundText } from './tools';
+import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk, readForegroundText, resolveKillTargets } from './tools';
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
 import { taskOutcomeFor, type TaskOutcome } from './task-outcome';
@@ -1834,6 +1834,11 @@ export class Brain {
           // purchases, sends, installs, uploads, deletes, injection-tainted tasks do.
           if (decision === 'approve') {
             const pol = policy.getPolicy();
+            // Quitting the app the user named runs unasked; what the call
+            // would end is resolved first (no kill) so the policy can tell.
+            const killTargets = call.name === 'kill_process'
+              ? await resolveKillTargets(call.args ?? {}).catch(() => null)
+              : undefined;
             const ask = approvalPolicy.needsApproval(call.name, call.args, {
               origin: 'user', // brain only runs user chat messages; agent-connect has its own gate (agent-tools.ts)
               injectionSeen: this.injectionFiredInTask,
@@ -1842,6 +1847,8 @@ export class Brain {
               escalated: !!risk,
               mode: pol.mode,
               classForcedApprove: pol.classOverrides[actionClass] === 'approve',
+              requestText: this.lastUserRequest ?? undefined,
+              killTargets,
             });
             if (!ask) {
               log.info('Tool.auto_approved', { step: step + 1, tool: call.name, class: actionClass, reason: 'user_task' });

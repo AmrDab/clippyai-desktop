@@ -1,6 +1,6 @@
 import { Recorder } from './recorder';
 import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
-import { typeTotalMs, typedText, hasMarkdown, DeferredCollapse } from './bubble-motion';
+import { typeTotalMs, typedText, hasMarkdown, splitBanner, DeferredCollapse, RECOIL_MS, shouldAutoMinimize } from './bubble-motion';
 import { reducedMotion } from './motion';
 import { VOICE_ACCELERATOR_DEFAULT, acceleratorLabel } from '../main/hotkey-defs';
 
@@ -15,6 +15,10 @@ const DEFAULT_AUTO_HIDE_MS = 30000;
 export type BubbleState = 'compact' | 'standard' | 'expanded';
 export type BubbleTint  = 'default' | 'info' | 'warning' | 'busy' | 'error' | 'success';
 export type DefaultBubbleState = 'compact' | 'standard';
+/** What #bubble looks like (style.css [data-surface]), derived from the state
+ *  and what it holds: a status pill, a flyout with the text field, a
+ *  notification banner (action buttons), or the chat panel (expanded). */
+export type BubbleSurface = 'pill' | 'flyout' | 'banner' | 'panel';
 
 // v0.22 — header status after a task ends (main's TaskOutcome values).
 const OUTCOME_LABELS: Record<string, string> = {
@@ -80,7 +84,10 @@ export class BubbleController {
   private closeBtn: HTMLButtonElement | null;
   private onSend: (text: string) => void;
   private typeTimer: number | null = null;
-  private hideTimer: number | null = null;
+  /** Auto-minimize (bubble-motion.ts shouldAutoMinimize): when the surface was last used or changed. */
+  private lastActivity = Date.now();
+  /** The current prompt waits for the user (approval, agent question): never auto-minimized. */
+  private sticky = false;
   private hintTimer: number | null = null;
   // Phase 3 — fires once if a speakWithActions prompt is replaced or hidden
   // before the user picked a button (approval prompt → treat as "no").
@@ -134,6 +141,11 @@ export class BubbleController {
     mo.observe(this.bubbleText, { childList: true });
     mo.observe(this.history, { childList: true });
     mo.observe(this.bubble, { attributes: true, attributeFilter: ['class'] });
+    // The surface (pill / flyout / banner / panel) follows the same content.
+    const surface = new MutationObserver(() => this.syncSurface());
+    surface.observe(this.bubbleText, { childList: true, attributes: true, attributeFilter: ['class'] });
+    surface.observe(this.inputArea, { attributes: true, attributeFilter: ['class'] });
+    surface.observe(this.actionsArea, { attributes: true, attributeFilter: ['class'] });
 
     // Initial state — keep the standard-state default so legacy callers
     // (e.g. update prompts) keep getting the multi-line layout.
@@ -238,11 +250,11 @@ export class BubbleController {
         this.setState('expanded');
       });
     }
-    // ── Expanded header controls ────────────────────────────────────
+    // ── Title-row controls (flyout + panel) ─────────────────────────
     if (this.minimizeBtn) {
       this.minimizeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.setState('compact');
+        this.minimize();
       });
     }
     if (this.pinBtn) {
@@ -300,6 +312,27 @@ export class BubbleController {
       this.input.setSelectionRange(this.input.value.length, this.input.value.length);
       this.syncComposer();
     });
+
+    // ── Auto-minimize ───────────────────────────────────────────────
+    // After bubbleAutoHideMs with no sign of use: no hover, no caret in the
+    // field, no draft, no task, no prompt waiting for an answer.
+    const touch = (): void => { this.lastActivity = Date.now(); };
+    for (const ev of ['pointermove', 'pointerdown', 'wheel', 'keydown', 'input'] as const) {
+      this.bubble.addEventListener(ev, touch, { passive: true });
+    }
+    window.setInterval(() => {
+      if (this.bubble.classList.contains('hidden')) return;
+      if (shouldAutoMinimize({
+        idleMs: Date.now() - this.lastActivity,
+        autoHideMs: this.autoHideMs,
+        pinned: this.pinned,
+        hover: this.bubble.matches(':hover'),
+        fieldFocused: document.hasFocus() && document.activeElement === this.input,
+        draft: this.input.value,
+        busy: this.working || this.isRecording() || this.recorder?.getState() === 'encoding',
+        waitingForUser: this.sticky,
+      })) this.minimize();
+    }, 1000);
 
     // Right-click bubble → context menu (unchanged)
     this.bubble.addEventListener('contextmenu', (e) => {
@@ -359,7 +392,6 @@ export class BubbleController {
     if (state === 'expanded') {
       this.inputArea.classList.remove('hidden');
       this.input.focus();
-      this.clearAutoHide();
     } else if (state === 'standard') {
       // Live-test 2026-06-11: this branch didn't exist, so compact→standard
       // left the input area .hidden and never focused it — the bubble said
@@ -374,7 +406,42 @@ export class BubbleController {
       this.inputArea.classList.add('hidden');
     }
 
+    this.syncSurface();
     // Recompute cached rect for avoidance calculations.
+    requestAnimationFrame(() => { this.bubbleRect = this.bubble.getBoundingClientRect(); });
+  }
+
+  /**
+   * Pick the surface and the pill's icon from what the bubble holds now.
+   * Runs on every state or tint change and (MutationObserver, constructor)
+   * whenever the text, the action row or the input row changes, so no caller
+   * has to set it.
+   */
+  private syncSurface(): void {
+    const t = this.bubbleText;
+    let surface: BubbleSurface;
+    if (this.state === 'expanded') surface = 'panel';
+    else if (!this.actionsArea.classList.contains('hidden')) surface = 'banner';
+    // The pill is only the compact ambient one-liner. Thinking, working and
+    // steps show no surface at all: Clippy's own animation says he is busy.
+    else if (this.state === 'compact') surface = 'pill';
+    else surface = 'flyout';
+
+    const icon = this.tint === 'success' ? 'check' : this.tint === 'error' ? 'x' : 'clip';
+    this.bubble.setAttribute('data-icon', icon);
+    // The compact pill has no input; the tooltip says how to reply.
+    this.bubble.title = this.state === 'compact' ? 'Click or just start typing' : '';
+
+    if (this.bubble.getAttribute('data-surface') === surface) return;
+    this.bubble.setAttribute('data-surface', surface);
+    // The pill is a live status region; a reply typing out is not.
+    if (surface === 'pill') {
+      t.setAttribute('role', 'status');
+      t.setAttribute('aria-live', 'polite');
+    } else {
+      t.removeAttribute('role');
+      t.removeAttribute('aria-live');
+    }
     requestAnimationFrame(() => { this.bubbleRect = this.bubble.getBoundingClientRect(); });
   }
 
@@ -387,6 +454,7 @@ export class BubbleController {
   setTint(tint: BubbleTint, opts: { hint?: boolean } = {}): void {
     this.tint = tint;
     this.bubble.setAttribute('data-tint', tint);
+    this.syncSurface();
     if (opts.hint === false) return;
     // Re-add the hint class so the keyframes restart even if the user
     // re-triggered the same tint. forced reflow via void offsetWidth is
@@ -395,8 +463,7 @@ export class BubbleController {
     void this.bubble.offsetWidth;
     this.bubble.classList.add('bubble--tint-hint');
     if (this.hintTimer !== null) clearTimeout(this.hintTimer);
-    // Strip the class after the longest hint animation finishes (1.6s
-    // info-blink). Past that, idle visuals take over.
+    // Strip the class once the hint animation has finished.
     this.hintTimer = window.setTimeout(() => {
       this.bubble.classList.remove('bubble--tint-hint');
       this.hintTimer = null;
@@ -493,10 +560,15 @@ export class BubbleController {
   speakWithActions(text: string, actions: BubbleActionButton[], opts: { sticky?: boolean; onDismiss?: () => void; tint?: BubbleTint } = {}): void {
     // Amber means "approve this risky action"; offers and notices pass tint 'default' (brand yellow).
     this.speak(text, { autoState: 'standard', tint: opts.tint ?? 'warning', sticky: opts.sticky });
-    if (opts.sticky && this.state !== 'expanded') {
-      // Prompt the user is waiting on: show it whole (bold rendered), no typewriter.
+    if (this.state !== 'expanded') {
+      // Notification banner: a bold title line and a body line, shown whole
+      // (no typewriter), and no text field unless a draft is in it. Typing
+      // still opens the field (type-to-reply).
       this.clearTypeTimer();
-      this.bubbleText.innerHTML = this.renderMarkdown(text);
+      const { title, body } = splitBanner(text);
+      this.bubbleText.innerHTML = `<div class="banner-title">${this.renderMarkdown(title)}</div>`
+        + (body ? `<div class="banner-body">${this.renderMarkdown(body)}</div>` : '');
+      if (this.input.value.trim() === '') this.inputArea.classList.add('hidden');
     }
     this.pendingDismiss = opts.onDismiss ?? null;
     this.actionsArea.innerHTML = '';
@@ -505,7 +577,7 @@ export class BubbleController {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = a.label;
-      if (a.variant === 'primary') { btn.style.background = 'var(--tint-accent)'; btn.classList.add('is-primary'); }
+      if (a.variant === 'primary') btn.classList.add('is-primary');
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.pendingDismiss = null; // a button was chosen — not a dismissal
@@ -534,7 +606,7 @@ export class BubbleController {
 
   /** v0.20.0-alpha.14 — main (window.ts) decides whether the bubble body
    *  grows above or below Clippy based on which screen edge he's near, and
-   *  pushes the chosen side here so the tail flips to keep pointing at him.
+   *  pushes the chosen side here so the surface stays next to him.
    *  'above' = Clippy below the bubble (default); 'below' = Clippy above it. */
   setSide(side: 'above' | 'below'): void {
     this.bubble.classList.toggle('bubble--below', side === 'below');
@@ -551,6 +623,7 @@ export class BubbleController {
     this.actionsArea.innerHTML = '';
     this.setState('expanded');
     this.setTint('default', { hint: false });
+    this.sticky = false;
     this.show();
     this.renderHistoryPanel();
   }
@@ -613,9 +686,8 @@ export class BubbleController {
       if (hasMarkdown(text)) this.bubbleText.innerHTML = this.renderMarkdown(text); // same rendering as the chat panel
       else this.typeOut(text);
     }
-    // sticky = wait for the user (approval prompt); never auto-hide.
-    if (opts.sticky) this.clearAutoHide();
-    else this.resetAutoHide();
+    // sticky = wait for the user (approval prompt); never auto-minimized.
+    this.sticky = !!opts.sticky;
   }
 
   private fireDismiss(): void {
@@ -662,12 +734,11 @@ export class BubbleController {
         this.bubbleText.appendChild(btn);
       }
     }
-    this.resetAutoHide();
+    this.sticky = false;
   }
 
   setAutoHideMs(ms: number): void {
     this.autoHideMs = Math.max(0, ms | 0);
-    if (this.hideTimer !== null) this.resetAutoHide();
   }
 
   private listening = false;
@@ -682,37 +753,38 @@ export class BubbleController {
     this.bubble.querySelector('.bubble-composer')?.classList.toggle('is-busy', thinking || this.working);
   }
 
+  /**
+   * Clippy is thinking / working. No status pill (owner, 2026-11-19): outside
+   * the chat panel the surface recoils into Clippy and his own animation shows
+   * he is busy; the reply or the error opens the flyout again. The chat panel
+   * stays open and shows the ellipsis as a Clippy row.
+   */
   showThinking(): void {
+    if (this.state !== 'expanded') { this.minimize(); return; }
     this.fireDismiss();
     this.showingHistory = false;
-    if (this.state === 'compact') this.setState('standard');
+    this.sticky = false;
     this.setTint('busy');
     this.show();
-    this.bubbleText.innerHTML = TYPING_HTML;
-    this.bubbleText.className = '';
-    if (this.state === 'expanded' && !this.history.querySelector('.chat-thinking')) {
-      // #bubble-text is hidden in expanded — show the ellipsis as a Clippy row.
+    this.actionsArea.classList.add('hidden');
+    this.actionsArea.innerHTML = '';
+    if (!this.history.querySelector('.chat-thinking')) {
       const row = document.createElement('div');
       row.className = 'chat-msg chat-clippy chat-thinking';
       row.innerHTML = TYPING_HTML;
       this.history.appendChild(row);
       this.history.scrollTop = this.history.scrollHeight;
     }
-    this.clearAutoHide();
   }
 
-  /**
-   * Update the bubble's text inline with a step label during task execution.
-   * Called per tool-call by the task:step IPC event. No typewriter, no TTS,
-   * no state transition — just a live status ticker while Clippy is working.
-   * Silently no-ops when the bubble is hidden (task was backgrounded).
-   */
-  showStep(label: string): void {
-    if (this.bubble.classList.contains('hidden')) return;
-    if (this.state === 'compact') this.setState('standard');
-    this.clearTypeTimer();
-    this.bubbleText.textContent = label;
-    this.bubbleText.className = 'bubble-step';
+  /** A task is running (main's working-start / working-stop). */
+  isWorking(): boolean {
+    return this.working;
+  }
+
+  /** The text box, a reply or a prompt is showing (not the compact pill). */
+  isOpen(): boolean {
+    return !this.bubble.classList.contains('hidden') && this.state !== 'compact';
   }
 
   /**
@@ -744,15 +816,36 @@ export class BubbleController {
 
   /** Let the exit fade play, then shrink the OS window; any show() in between cancels it. */
   private collapse = new DeferredCollapse(() => window.clippy.collapseWindow());
+  /** Same, for the longer recoil of minimize(). */
+  private recoil = new DeferredCollapse(() => window.clippy.collapseWindow(), RECOIL_MS);
 
+  /** Close: dismiss the surface and drop the draft. */
   hide(): void {
     this.fireDismiss();
+    this.bubble.classList.remove('bubble--recoil');
     this.bubble.classList.add('hidden');
     this.hideInput();
     this.showingHistory = false;
-    this.clearAutoHide();
+    this.sticky = false;
     this.clearTypeTimer();
+    this.recoil.cancel();
     this.collapse.schedule();
+  }
+
+  /**
+   * Minimize: the surface recoils into Clippy (style.css .bubble--recoil) and
+   * hides. The draft and the conversation stay, so the next open has them. A
+   * prompt still waiting for an answer counts as dismissed.
+   */
+  minimize(): void {
+    this.fireDismiss();
+    if (this.bubble.classList.contains('hidden')) return;
+    this.bubble.classList.add('bubble--recoil', 'hidden');
+    this.showingHistory = false;
+    this.sticky = false;
+    this.clearTypeTimer();
+    this.collapse.cancel();
+    this.recoil.schedule();
   }
 
   // Public so smoke tests + main.ts can call it directly.
@@ -761,7 +854,6 @@ export class BubbleController {
     if (hidden) {
       this.inputArea.classList.remove('hidden');
       this.input.focus();
-      this.clearAutoHide();
     } else {
       this.hideInput();
     }
@@ -770,7 +862,7 @@ export class BubbleController {
   /** Barge-in engage: the user clicked Clippy mid-speech (report 2026-06-15).
    *  Keep whatever text is already shown — don't overwrite their reply with a
    *  canned prompt — but make sure we're visible with the input open + focused
-   *  and cancel auto-hide so the bubble waits for them. The TTS audio is
+   *  (the caret in the field keeps it from auto-minimizing). The TTS audio is
    *  stopped by the caller. */
   engageForReply(): void {
     this.show();
@@ -779,7 +871,6 @@ export class BubbleController {
       this.inputArea.classList.remove('hidden');
     }
     this.input.focus();
-    this.clearAutoHide();
   }
 
   // ───────────────────────────────────────────────────────────────────
@@ -800,6 +891,9 @@ export class BubbleController {
   /** `instant`: opened from the keyboard (voice hotkey), so no fade. */
   private show(instant = false): void {
     this.collapse.cancel();
+    this.recoil.cancel();
+    this.bubble.classList.remove('bubble--recoil');
+    this.lastActivity = Date.now();
     if (instant) {
       this.bubble.setAttribute('data-instant', '');
       requestAnimationFrame(() => this.bubble.removeAttribute('data-instant'));
@@ -812,7 +906,7 @@ export class BubbleController {
 
   private showChatHistory(): void {
     this.showingHistory = true;
-    this.clearAutoHide();
+    this.lastActivity = Date.now();
     this.bubbleText.className = 'chat-history';
     if (this.chatHistory.length === 0) {
       this.bubbleText.innerHTML = '<div class="chat-empty">No messages yet. Click to chat!</div>';
@@ -910,7 +1004,9 @@ export class BubbleController {
       return;
     }
     const started = Date.now();
-    const tick = () => { this.statusEl!.textContent = `Working · ${Math.round((Date.now() - started) / 1000)} s`; };
+    const tick = () => {
+      this.statusEl!.textContent = `Working · ${Math.round((Date.now() - started) / 1000)} s`;
+    };
     tick();
     this.workingTimer = setInterval(tick, 1000);
   }
@@ -956,23 +1052,6 @@ export class BubbleController {
     if (this.state !== 'expanded') this.hideInput();
     this.showThinking();
     this.onSend(text);
-  }
-
-  private resetAutoHide(): void {
-    this.clearAutoHide();
-    if (this.pinned) return; // pinned = never auto-hide
-    if (this.state === 'expanded') return; // explicit user open
-    if (this.autoHideMs <= 0) return;
-    this.hideTimer = window.setTimeout(() => {
-      if (!this.showingHistory) this.hide();
-    }, this.autoHideMs);
-  }
-
-  private clearAutoHide(): void {
-    if (this.hideTimer !== null) {
-      clearTimeout(this.hideTimer);
-      this.hideTimer = null;
-    }
   }
 
   /** Reveal text at a constant rate, capped (bubble-motion.ts). Whole code points, so an emoji is never split. */

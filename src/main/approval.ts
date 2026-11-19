@@ -150,7 +150,7 @@ const LABELS: Record<string, Label> = {
   show_desktop: () => 'Show the desktop',
   minimize_window: (a) => `Minimize ${s(a.title ?? a.processName ?? 'a window')}`,
   // com-kill-process.ps1 kills by PID when one is given and ignores the name.
-  kill_process: R('name|procPid', (a) => (Number(a.procPid) > 0 ? `Kill process with PID ${Number(a.procPid)}` : `Kill ${s(a.name)}`)),
+  kill_process: R('name|procPid|window', (a) => (Number(a.procPid) > 0 ? `Kill process with PID ${Number(a.procPid)}` : has(a.name) ? `Kill ${s(a.name)}` : `Kill the app with a "${s(a.window)}" window`)),
   windows_service_control: R('name', (a) => `${s(a.action ?? 'status')} service ${s(a.name)}`),
   // Clipboard / files
   read_clipboard: () => 'Read your clipboard',

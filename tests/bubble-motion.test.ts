@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { typeTotalMs, typedText, hasMarkdown, DeferredCollapse, TYPE_MAX_MS, EXIT_MS } from '../src/renderer/bubble-motion';
+import { typeTotalMs, typedText, hasMarkdown, splitBanner, DeferredCollapse, shouldAutoMinimize, TYPE_MAX_MS, EXIT_MS, RECOIL_MS } from '../src/renderer/bubble-motion';
 
 describe('typewriter', () => {
   it('types a short line at 18 ms per character', () => {
@@ -35,6 +35,25 @@ describe('hasMarkdown', () => {
     expect(hasMarkdown('intro\n- one\n- two')).toBe(true);
     expect(hasMarkdown('plain sentence - with a dash')).toBe(false);
     expect(hasMarkdown('Sent!')).toBe(false);
+  });
+});
+
+describe('splitBanner', () => {
+  it('takes the first line as the title', () => {
+    expect(splitBanner('I just updated to **v1.2**! What is new:\n- one\n- two'))
+      .toEqual({ title: 'I just updated to **v1.2**! What is new:', body: '- one\n- two' });
+  });
+  it('else the first short sentence', () => {
+    expect(splitBanner('I have an update ready (v1.2). It takes about 20 seconds.'))
+      .toEqual({ title: 'I have an update ready (v1.2).', body: 'It takes about 20 seconds.' });
+  });
+  it('keeps an approval question whole, even with a full stop inside the bold part', () => {
+    expect(splitBanner('Can I **open notes.txt**?')).toEqual({ title: 'Can I **open notes.txt**?', body: '' });
+    expect(splitBanner('Can I **email Dr. Smith the file**?')).toEqual({ title: 'Can I **email Dr. Smith the file**?', body: '' });
+    expect(splitBanner('Can I **run `a. b` now**?').body).toBe('');
+  });
+  it('never leaves a body with no words', () => {
+    expect(splitBanner('v1.2 is ready! 📎')).toEqual({ title: 'v1.2 is ready! 📎', body: '' });
   });
 });
 
@@ -84,5 +103,33 @@ describe('DeferredCollapse', () => {
     const c = new DeferredCollapse(vi.fn(), 10, strict as never, strict as never);
     expect(() => c.schedule()).not.toThrow();
     expect(() => c.cancel()).not.toThrow();
+  });
+});
+
+describe('auto-minimize (shouldAutoMinimize)', () => {
+  const idle = { idleMs: 30_000, autoHideMs: 30_000, pinned: false, hover: false, fieldFocused: false, draft: '', busy: false, waitingForUser: false };
+  it('minimizes after the auto-hide setting of idle', () => {
+    expect(shouldAutoMinimize(idle)).toBe(true);
+    expect(shouldAutoMinimize({ ...idle, idleMs: 29_999 })).toBe(false);
+  });
+  it('0 = manual: never', () => {
+    expect(shouldAutoMinimize({ ...idle, autoHideMs: 0, idleMs: 9e9 })).toBe(false);
+  });
+  it.each([
+    ['hover', { hover: true }],
+    ['the caret in the field', { fieldFocused: true }],
+    ['a draft', { draft: 'half a thought' }],
+    ['a running task', { busy: true }],
+    ['a pending approval', { waitingForUser: true }],
+    ['a pinned bubble', { pinned: true }],
+  ])('%s keeps it open', (_what, over) => {
+    expect(shouldAutoMinimize({ ...idle, idleMs: 9e9, ...over })).toBe(false);
+  });
+  it('a whitespace-only draft is not a draft', () => {
+    expect(shouldAutoMinimize({ ...idle, draft: '  \n' })).toBe(true);
+  });
+  it('the recoil outlasts the plain exit, so the window shrinks after it', () => {
+    expect(RECOIL_MS).toBeGreaterThan(EXIT_MS);
+    expect(RECOIL_MS).toBeLessThanOrEqual(200);
   });
 });

@@ -11,9 +11,17 @@
  * (classifyShellCommand), or something in the task looks like prompt injection,
  * or the task did not come from the user, or the user picked Cautious / an
  * explicit "approve" for the class. The hard blocklist (shell-guard.ts) still
- * refuses at execution whatever this says. Only shell_exec is relaxed: skill
- * installs, purchases, sends, payments, http_request, clawd_task, kill_process
- * and every governor-escalated click keep asking exactly as before.
+ * refuses at execution whatever this says. Skill installs, purchases, sends,
+ * payments, http_request, clawd_task and every governor-escalated click keep
+ * asking exactly as before.
+ *
+ * One deliberate exception besides shell_exec (owner report: "force quit
+ * designcenter" asked three times, then failed): quitting THE APP THE USER
+ * NAMED in this task's request runs unasked (isNamedAppQuit). kill_process is
+ * resolved to the processes it would end before this is called; it must be one
+ * app, not a protected process, and its process name, window title or exe
+ * description must contain a word of the request. A PID or name the user did
+ * not name, or a match across several apps, still asks.
  *
  * Pure + dependency-light so each branch is unit-tested (tests/approval-policy.test.ts).
  */
@@ -37,27 +45,39 @@ export interface ApprovalCtx {
   mode: 'cautious' | 'standard' | 'trusted';
   /** The user explicitly set this class to 'approve' in Settings → Guardrails. */
   classForcedApprove: boolean;
+  /** The user's request text for this task (named-app quit exception). */
+  requestText?: string;
+  /** kill_process only: the processes the call would end, resolved live
+   *  (tools.ts resolveKillTargets). null/undefined = could not resolve → ask.
+   *  Empty = the call ends nothing (no match, refused, or several apps match
+   *  and the tool returns the list instead). */
+  killTargets?: KillTarget[] | null;
 }
+
+export interface KillTarget { name: string; window?: string; description?: string }
 
 const BT = '`';
 // Command position: start, after a separator / opening paren / quote / backtick
 // / `$(`, or after `cmd /c`; optional `env VAR=x` prefix. Same idea as shell-guard.
 const CS = String.raw`(?:^|[;&|({\r\n"']|` + BT + String.raw`|\$\(|\s/[ck]\s|\s-c(?:ommand)?\s)\s*(?:env\s+(?:\w+=\S+\s+)*)?`;
 const rx = (src: string) => new RegExp(src, 'i');
+// End of a command keyword. Not `\b`: that also ends `format` in the read-only
+// `Format-Table` / `Format-List`, and `del`, `rd`, `mi` before any hyphen.
+const END = String.raw`(?![\w-])`;
 
 interface Rule { why: string; re: RegExp }
 
 const RISKY: Rule[] = [
   { why: 'elevated privileges', re: rx(CS + String.raw`(?:sudo|doas|su|runas)\b`) },
   { why: 'administrator privileges', re: rx(String.raw`with\s+administrator\s+privileges|-verb\s+runas`) },
-  { why: 'deletes files', re: rx(CS + String.raw`(?:rm|rmdir|unlink|shred|trash|del|erase|rd|remove-item|ri|srm)\b`) },
+  { why: 'deletes files', re: rx(CS + String.raw`(?:rm|rmdir|unlink|shred|trash|del|erase|rd|remove-item|ri|srm|clear-recyclebin)${END}`) },
   { why: 'deletes files', re: rx(String.raw`(?:\s-delete\b|\bxargs\s+(?:-\S+\s+)*(?:rm|mv|kill)\b|-exec\s+(?:rm|mv)\b)`) },
-  { why: 'moves/overwrites files', re: rx(CS + String.raw`(?:mv|move|ren|rename|cp|copy|xcopy|robocopy|ditto|rsync|move-item|copy-item|mi|ci|rename-item|dd|truncate|ln)\b`) },
+  { why: 'moves/overwrites files', re: rx(CS + String.raw`(?:mv|move|ren|rename|cp|copy|xcopy|robocopy|ditto|rsync|move-item|copy-item|mi|ci|rename-item|dd|truncate|ln)${END}`) },
   { why: 'edits files in place', re: rx(String.raw`\b(?:sed|perl)\s+(?:-\S+\s+)*-i\b|\btee\b|\bset-content\b|\badd-content\b|\bout-file\b|\bclear-content\b`) },
   { why: 'changes permissions/ownership', re: rx(CS + String.raw`(?:chmod|chown|chgrp|chflags|xattr|icacls|takeown|attrib|setfacl)\b`) },
   { why: 'kills or quits apps/processes', re: rx(CS + String.raw`(?:kill|pkill|killall|taskkill|stop-process|spps|shutdown|reboot|halt|poweroff)\b`) },
   { why: 'quits or closes an app', re: rx(String.raw`\b(?:quit|close|terminate)\b`) },
-  { why: 'system or security settings', re: rx(CS + String.raw`(?:defaults\s+(?:write|delete|import)|spctl|csrutil|tccutil|security|systemsetup|pmset|networksetup|scutil|launchctl|crontab|schtasks|at|reg(?:\.exe)?\s+(?:add|delete|import|load)|set-executionpolicy|set-mppreference|netsh|bcdedit|sc(?:\.exe)?\s+(?:stop|config|delete|create)|set-service|new-service|dscl|sysadminctl|diskutil|hdiutil|mount|umount|eject|fdisk|format)\b`) },
+  { why: 'system or security settings', re: rx(CS + String.raw`(?:defaults\s+(?:write|delete|import)|spctl|csrutil|tccutil|security|systemsetup|pmset|networksetup|scutil|launchctl|crontab|schtasks|at|reg(?:\.exe)?\s+(?:add|delete|import|load)|set-executionpolicy|set-mppreference|netsh|bcdedit|sc(?:\.exe)?\s+(?:stop|config|delete|create)|set-service|new-service|dscl|sysadminctl|diskutil|hdiutil|mount|umount|eject|fdisk|format|format-volume|clear-disk|initialize-disk|remove-partition|mount-diskimage|dismount-diskimage|(?:set|new|remove|clear)-itemproperty)${END}`) },
   { why: 'installs software', re: rx(CS + String.raw`(?:brew|port|apt|apt-get|dpkg|dnf|yum|rpm|pacman|snap|apk|flatpak|winget|choco|scoop|installer|softwareupdate|msiexec|pkgutil|npx|pnpx|bunx)\b`) },
   { why: 'installs software', re: rx(CS + String.raw`(?:npm|pnpm|yarn|bun|pip3?|pipx|uv|gem|cargo|go|composer|dotnet|conda|mamba|code)\s+(?:\S+\s+)*?(?:install|i|add|ci|global|-g|upgrade|update|uninstall|remove|publish|tool|--install-extension|--uninstall-extension)\b`) },
   { why: 'installs software', re: rx(String.raw`-m\s+pip\s+(?:install|uninstall)\b|\binstall-(?:module|package|script|windowsfeature)\b|\benable-windowsoptionalfeature\b`) },
@@ -94,9 +114,89 @@ export function classifyShellCommand(command: string): string | null {
   return null;
 }
 
+// Same list as com-kill-process.ps1's blocklist, plus the macOS equivalents.
+const PROTECTED_PROCESSES = new Set([
+  'system', 'smss', 'csrss', 'wininit', 'services', 'lsass', 'winlogon', 'dwm', 'explorer', 'svchost',
+  'clippyai', 'clippy', 'electron',
+  'finder', 'dock', 'loginwindow', 'windowserver', 'launchd', 'kernel_task', 'systemuiserver',
+]);
+// Request words that never name an app (verbs, filler, vendor names).
+const NOT_AN_APP = new Set([
+  'force', 'quit', 'close', 'kill', 'stop', 'exit', 'terminate', 'end', 'shut', 'down', 'please', 'the',
+  'app', 'apps', 'application', 'program', 'process', 'window', 'windows', 'task', 'and', 'now', 'for',
+  'all', 'running', 'open', 'with', 'from', 'that', 'this', 'can', 'you', 'could', 'would', 'its',
+  'just', 'not', 'responding', 'frozen', 'hung', 'stuck', 'microsoft', 'google', 'apple', 'adobe',
+]);
+const wordsOf = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+const stripExe = (s: string) => s.replace(/\.exe$/i, '');
+
+/** App words in the request: each word of 3+ letters, plus adjacent pairs joined ("design center"). */
+function requestAppWords(requestText: string): Set<string> {
+  const all = wordsOf(requestText);
+  const out = new Set<string>();
+  all.forEach((w, i) => {
+    if (NOT_AN_APP.has(w)) return;
+    if (w.length >= 3) out.add(w);
+    const next = all[i + 1];
+    if (next && !NOT_AN_APP.has(next)) out.add(w + next);
+  });
+  return out;
+}
+
+/** True when a word of the request equals the label, or one word of it. */
+function namedInRequest(appWords: Set<string>, label: string | undefined): boolean {
+  if (!label) return false;
+  const ws = wordsOf(label);
+  return appWords.has(ws.join('')) || ws.some((w) => w.length >= 3 && appWords.has(w));
+}
+
+/**
+ * The exception: every target is the same, unprotected app, and the user
+ * named it (by process name, window title or exe description).
+ */
+export function isNamedAppQuit(requestText: string | undefined, targets: KillTarget[] | null | undefined): boolean {
+  if (!requestText || !targets || targets.length === 0) return false;
+  const names = new Set(targets.map((t) => stripExe(String(t.name ?? '')).toLowerCase()));
+  if (names.size !== 1) return false;
+  const [name] = names;
+  if (!name || PROTECTED_PROCESSES.has(name)) return false;
+  const appWords = requestAppWords(requestText);
+  return targets.some((t) => namedInRequest(appWords, stripExe(t.name))
+    || namedInRequest(appWords, t.window) || namedInRequest(appWords, t.description));
+}
+
+const APP = String.raw`["']?([\p{L}\p{N}][\p{L}\p{N} ._+-]*?)(?:\.exe)?["']?`;
+const PS_OPTS = String.raw`(?:\s+-force|\s+-erroraction\s+\w+|\s+-confirm:\$false)*`;
+const QUIT_FORMS = [
+  String.raw`(?:stop-process|spps)${PS_OPTS}\s+-name\s+${APP}${PS_OPTS}`,
+  String.raw`get-process\s+(?:-name\s+)?${APP}${PS_OPTS}\s*\|\s*stop-process${PS_OPTS}`,
+  String.raw`taskkill(?:\s+/[ft])*\s+/im\s+${APP}(?:\s+/[ft])*`,
+  String.raw`killall(?:\s+-(?:9|kill|term))?\s+${APP}`,
+  String.raw`pkill(?:\s+-(?:9|kill|term))?\s+-x\s+${APP}`,
+  String.raw`osascript\s+-e\s+'(?:tell\s+app(?:lication)?\s+"([^"*?]+)"\s+to\s+quit|quit\s+app(?:lication)?\s+"([^"*?]+)")'`,
+].map((src) => new RegExp(`^${src}$`, 'iu'));
+
+/**
+ * The app name when the WHOLE command is one plain "quit this one app by exact
+ * name" form (no second statement, no pipe to anything else, no wildcard, no
+ * PID). Anything else is null and goes through classifyShellCommand.
+ */
+export function parseQuitCommand(command: string): string | null {
+  let cmd = String(command ?? '').trim();
+  const wrapped = cmd.match(/^(?:powershell|pwsh)(?:\.exe)?(?:\s+-noprofile|\s+-noninteractive|\s+-nologo)*\s+-c(?:ommand)?\s+"([^"]+)"$/i);
+  if (wrapped) cmd = wrapped[1].trim();
+  for (const re of QUIT_FORMS) {
+    const m = cmd.match(re);
+    const app = m && (m[1] ?? m[2] ?? m[3])?.trim();
+    if (app) return app;
+  }
+  return null;
+}
+
 /**
  * True when the user must be asked. Anything that is not an eligible
- * user-started shell command defers to permission-policy's own decision.
+ * user-started shell command or named-app quit defers to permission-policy's
+ * own decision.
  */
 export function needsApproval(tool: string, args: Record<string, unknown> | undefined, ctx: ApprovalCtx): boolean {
   if (ctx.decision === 'allow') return false;
@@ -106,6 +206,16 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   if (ctx.origin !== 'user') return true;         // remote agent or proactive tip
   if (ctx.injectionSeen) return true;             // untrusted content in play
   if (ctx.mode === 'cautious' || ctx.classForcedApprove) return true; // the user asked to see everything
-  if (tool !== 'shell_exec' || ctx.actionClass !== 'destructive_exec') return true;
-  return classifyShellCommand(String(args?.command ?? '')) !== null;
+  if (ctx.actionClass !== 'destructive_exec') return true;
+  if (tool === 'kill_process') {
+    // Nothing would be ended (the tool reports "not running" or lists the
+    // candidates): there is nothing to approve.
+    if (ctx.killTargets && ctx.killTargets.length === 0) return false;
+    return !isNamedAppQuit(ctx.requestText, ctx.killTargets);
+  }
+  if (tool !== 'shell_exec') return true;
+  const command = String(args?.command ?? '');
+  const app = parseQuitCommand(command);
+  if (app && !shellBlockReason(command) && isNamedAppQuit(ctx.requestText, [{ name: app }])) return false;
+  return classifyShellCommand(command) !== null;
 }

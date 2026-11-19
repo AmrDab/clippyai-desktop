@@ -1297,7 +1297,7 @@ function layer1() {
   //    still be present after the v2 rewrite).
   const requiredIds = [
     'bubble', 'bubble-text', 'bubble-actions', 'bubble-input-area',
-    'bubble-input', 'bubble-mic', 'bubble-send', 'bubble-tail',
+    'bubble-input', 'bubble-mic', 'bubble-send',
     'bubble-header', 'bubble-history', 'bubble-chips', 'bubble-expand-handle',
   ];
   const missingIds = requiredIds.filter((id) => !new RegExp(`id="${id}"`).test(indexHtml));

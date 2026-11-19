@@ -165,6 +165,7 @@ describe('summarizeArgs', () => {
     // The PID is what gets killed when both are given, not the name.
     expect(summarizeArgs('kill_process', { name: 'notepad.exe', procPid: 4242 })).toBe('Kill process with PID 4242');
     expect(summarizeArgs('kill_process', { name: 'notepad.exe' })).toBe('Kill notepad.exe');
+    expect(summarizeArgs('kill_process', { window: 'designcenter' })).toBe('Kill the app with a "designcenter" window');
     expect(summarizeArgs('install_skill', { slug: 'foo', version: '0.0.1-evil' })).toBe('Install skill foo version 0.0.1-evil');
   });
 });

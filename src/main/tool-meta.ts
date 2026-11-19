@@ -147,11 +147,11 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // TODO(track2-phase3): add darwin impls (native fs/os for sysinfo +
   // process list; `say` already covers TTS) and re-tag cross-platform.
   system_info:        { tier: 2, cost: 'cheap',     description: 'Get OS / hardware / disk info', platforms: ['win32'], actionClass: 'read_only' },
-  list_processes:     { tier: 2, cost: 'cheap',     description: 'List running processes', platforms: ['win32'], actionClass: 'read_only' },
+  list_processes:     { tier: 2, cost: 'cheap',     description: 'List running processes, or find one by name / window title / description (query)', platforms: ['win32'], actionClass: 'read_only' },
   // TODO(track2-phase3): kill_process dispatches com-kill-process.ps1 with
   // no darwin path / bridge verb; gated win32-only. macOS users can use
   // shell_exec (`kill`/`pkill`) until a native impl lands.
-  kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name or PID', platforms: ['win32'], actionClass: 'destructive_exec' },
+  kill_process:       { tier: 2, cost: 'cheap',     description: 'Kill a process by name, window title or PID', platforms: ['win32'], actionClass: 'destructive_exec' },
   ping_host:          { tier: 2, cost: 'medium',    description: 'Ping a network host', platforms: ['win32'], actionClass: 'read_only' },
   http_request:       { tier: 2, cost: 'medium',    description: 'Make an HTTP request to an arbitrary URL', actionClass: 'destructive_web' },
   // v0.20.0 — generic shell. destructive_exec actionClass triggers a

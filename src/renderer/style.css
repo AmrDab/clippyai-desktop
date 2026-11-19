@@ -73,28 +73,30 @@ body.clippy-window {
   #clippy-ghost.fading { animation: none; }
 }
 
-/* ── Bubble v2 — adaptive three-state with six tints (v0.19.0 PR-2) ══════
-   Replaces the single fixed-size bubble with a state machine driven by
-   `data-state` on #bubble: `compact` | `standard` | `expanded`. A second
-   axis, `data-tint`, paints a soft contextual wash + plays a one-shot
-   hint animation on transition. Visual goals:
+/* ── Clippy's surfaces — native to the desktop ═══════════════════════════
+   #bubble is one element that takes one of four surfaces. `data-state`
+   (compact | standard | expanded) sizes the host window; BubbleController
+   .syncSurface() derives `data-surface` from the state and the content:
 
-   - keep the brand: Clippy yellow lives as an inner-glow accent in the
-     `default` tint, not as a flat fill. Tahoma fallback kept for short
-     tips so the retro feel survives; Inter for chat history.
-   - frosted glass (16px backdrop-blur) + 1px ink hairline + soft drop
-     shadow — replaces the v0.11.24 fill + hard shadow combo.
-   - everything CSS-driven from data attributes. No class soup, no JS
-     animation library.
+     pill    compact ambient one-liners only. An icon and one line, no
+             input. Thinking / working / steps show NO surface: Clippy's own
+             animation is the busy signal.
+     flyout  standard: a slim title row (name, minimize, close), the reply
+             and a text field.
+     banner  notification banner: prompts with action buttons (approvals,
+             offers, updates). Header row, bold title, body, button grid.
+     panel   expanded: the chat window (title row, history, chips, field).
 
-   Layout footprint per state:
-     compact   ≈ 280×60   (single-line tip, no input, no header, no chips)
-     standard  ≈ 340×auto (multi-line + actions + compact input row)
-     expanded  ≈ 480×600  (header + history + chips + larger input)
+   Flat solid surface, a 1px stroke, the OS radius and font, a soft shadow.
+   No tail: the surface sits next to Clippy (above him, or below with
+   .bubble--below). `data-tint` colours a thin left accent (flyout, panel)
+   or the icon (pill, banner); the surface itself is never tinted.
+
+   Windows 11 tokens are the default; [data-platform="mac"] (set in main.ts)
+   swaps in the macOS ones. Both follow the OS light/dark setting.
+   Everything is CSS-driven from the data attributes.
    ════════════════════════════════════════════════════════════════════ */
 
-/* Tint palette — CSS custom properties so JS only flips data-tint and
-   CSS picks up the right accent (a 3px status strip + button borders). */
 :root {
   /* Motion tokens (design audit). Curves are Emil Kowalski's; durations stay
    * inside his budget. transform + opacity only: hardware acceleration is OFF
@@ -105,58 +107,111 @@ body.clippy-window {
   --dur-fast: 150ms;
   --dur-base: 200ms;
   --dur-celebrate: 400ms;
-  --bubble-radius: 16px;
-  /* v0.21.1 — near-opaque paper. The Windows build runs with hardware
-   * acceleration off, so backdrop-filter is dropped and a 0.92 bg let the
-   * window behind read straight through the bubble. */
-  --bubble-bg:        rgba(255, 253, 247, 0.98);
-  --bubble-ink:       rgba(15, 23, 42, 0.92);
-  --bubble-ink-soft:  rgba(15, 23, 42, 0.70);
-  /* v0.19.0 RC-6 — harmonized with Settings v2 hairline (0.08) so the
-   * bubble border reads as the same family of slate-ink strokes used
-   * everywhere else in the app. Pre-fix the bubble's 0.10 alpha looked
-   * subtly heavier than the settings cards next to it. */
-  --bubble-hairline:  rgba(15, 23, 42, 0.08);
-  --bubble-inner-stroke: rgba(255, 255, 255, 0.65);
-  --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.18);
 
-  /* default — Clippy brand yellow inner glow */
-  --tint-default-accent: #FFD400;
+  /* Windows 11, light. Solid fills: the Windows build runs with hardware
+   * acceleration off, so there is no backdrop blur to lean on. */
+  --bubble-font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --bubble-radius: 8px;
+  --bubble-btn-radius: 4px;
+  --bubble-stroke: 1px;
+  --bubble-bg:        #f9f9f9;
+  --bubble-hairline:  #e5e5e5;
+  --bubble-ink:       #1b1b1b;
+  --bubble-ink-soft:  #616161;
+  --bubble-accent:      #005fb8;
+  --bubble-accent-fill: #005fb8;
+  --bubble-on-accent:   #ffffff;
+  --bubble-subtle:       rgba(0, 0, 0, 0.04);   /* buttons, Clippy's chat rows */
+  --bubble-subtle-hover: rgba(0, 0, 0, 0.08);
+  --bubble-scroll:       rgba(0, 0, 0, 0.28);
+  --bubble-field-bg:     #ffffff;
+  /* Text field: a darker bottom edge at rest, a 2px accent one on focus. */
+  --bubble-field-rest:   inset 0 -1px 0 #868686;
+  --bubble-field-focus:  inset 0 -2px 0 var(--bubble-accent);
+  --bubble-shadow:    0 8px 16px rgba(0, 0, 0, 0.28);
+
+  /* Tints: the left accent / icon colour (-accent). Light values here, dark
+   * ones below; each keeps 3:1 or better against the surface. */
+  --tint-default-accent: var(--bubble-accent);
   --tint-default-text:   #1c1917;
 
-  /* info — neutral white-frost; user can reply */
-  --tint-info-accent: #94a3b8;
+  /* info — neutral; user can reply */
+  --tint-info-accent: #616161;
   --tint-info-text:   #0f172a;
 
-  /* warning — warm amber; approval needed */
-  --tint-warning-accent: #f59e0b;
+  /* warning — amber; approval needed */
+  --tint-warning-accent: #9d5d00;
   --tint-warning-text:   #78350f;
 
-  /* busy — cool blue; acting / working */
-  --tint-busy-accent: #3b82f6;
+  /* busy — the accent; acting / working */
+  --tint-busy-accent: var(--bubble-accent);
   --tint-busy-text:   #1e3a8a;
 
-  /* error — rose-red; blocked or failed */
-  --tint-error-accent: #f43f5e;
+  /* error — red; blocked or failed */
+  --tint-error-accent: #c42b1c;
   --tint-error-text:   #881337;
 
-  /* success — mint; recent completion */
-  --tint-success-accent: #10b981;
+  /* success — green; recent completion */
+  --tint-success-accent: #0f7b0f;
   --tint-success-text:   #064e3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bubble-bg:        #2c2c2c;
+    --bubble-hairline:  #3d3d3d;
+    --bubble-ink:       #f3f3f3;
+    --bubble-ink-soft:  #a6a6a6;
+    --bubble-accent:      #60cdff;
+    --bubble-accent-fill: #60cdff;
+    --bubble-on-accent:   #000000;
+    --bubble-subtle:       rgba(255, 255, 255, 0.06);
+    --bubble-subtle-hover: rgba(255, 255, 255, 0.10);
+    --bubble-scroll:       rgba(255, 255, 255, 0.28);
+    --bubble-field-bg:     rgba(255, 255, 255, 0.05);
+    --bubble-field-rest:   inset 0 -1px 0 #9a9a9a;
+    --tint-info-accent:    #a6a6a6;
+    --tint-warning-accent: #fce100;
+    --tint-error-accent:   #ff99a4;
+    --tint-success-accent: #6ccb5f;
+  }
+}
+/* macOS: popover / notification look. */
+:root[data-platform="mac"] {
+  --bubble-font: -apple-system, "SF Pro Text", BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --bubble-radius: 12px;
+  --bubble-btn-radius: 6px;
+  --bubble-stroke: 0.5px;
+  --bubble-bg:        #f6f6f6;
+  --bubble-hairline:  rgba(0, 0, 0, 0.18);
+  --bubble-ink:       #1d1d1f;
+  --bubble-ink-soft:  #636366;
+  --bubble-accent:      #007aff;
+  /* White text needs 4.5:1, which the system blue does not give; fills use a deeper blue. */
+  --bubble-accent-fill: #0071e3;
+  --bubble-on-accent:   #ffffff;
+  --bubble-field-rest:   none;
+  --bubble-field-focus:  0 0 0 3px rgba(0, 122, 255, 0.4);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-platform="mac"] {
+    --bubble-bg:        #2a2a2c;
+    --bubble-hairline:  rgba(255, 255, 255, 0.2);
+    --bubble-ink:       #f5f5f7;
+    --bubble-ink-soft:  #a6a6ab;
+    --bubble-accent:      #0a84ff;
+    --bubble-accent-fill: #0071e3;
+    --bubble-on-accent:   #ffffff;
+    --bubble-field-rest:   none;
+    --bubble-field-focus:  0 0 0 3px rgba(10, 132, 255, 0.5);
+  }
 }
 
 .bubble {
   position: fixed;
   /* The host Electron window is sized + positioned anchor-aware by main
    * (window.ts), with Clippy pinned to the window's bottom-right (124×93).
-   * The bubble must sit ABOVE the sprite so it doesn't cover Clippy or the
-   * reply text — anchor its bottom just above Clippy's height (~96px) so the
-   * tail points down AT him (classic Office-Assistant arrangement).
-   * v0.20.0-alpha.18 — alpha.14 changed this to `bottom: 5px`, which put the
-   * bubble in the SAME bottom-right corner as the sprite; Clippy then painted
-   * on top of the bubble and hid the last words of every reply. Expanded mode
-   * overrides this back to 5px on purpose (Clippy peeks over the corner, tail
-   * hidden). */
+   * The surface sits ABOVE the sprite so it doesn't cover Clippy or the
+   * reply text — its bottom edge is just above Clippy's height (~96px). */
   bottom: 104px;
   right: 5px;
   width: 340px;
@@ -164,53 +219,43 @@ body.clippy-window {
   max-width: calc(100vw - 10px);
   min-height: 64px;
   background: var(--bubble-bg);
-  border: 1px solid var(--bubble-hairline);
+  border: var(--bubble-stroke) solid var(--bubble-hairline);
   border-radius: var(--bubble-radius);
   padding: 12px 14px;
-  /* System SF stack — Tahoma led this stack through alpha.22 and read
-     dated/aliased on retina next to the glass treatment ("looks low
-     quality" — founder, 2026-06-11). The retro flavor stays in the sprite
-     and tints; the type itself is native-modern. */
-  font-family: -apple-system, BlinkMacSystemFont, Inter, "SF Pro Text",
-    "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  font-family: var(--bubble-font);
   font-size: 13px;
   line-height: 1.5;
   color: var(--bubble-ink);
-  letter-spacing: -0.01em;
   text-wrap: pretty;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* Layered: ambient drop shadow + 1px white inner stroke on top edge.
-     Inner stroke is what makes it read as "glass" instead of "card". */
-  box-shadow:
-    var(--bubble-shadow),
-    inset 0 1px 0 var(--bubble-inner-stroke);
-  /* Grows from and shrinks to the tail (right: 28px + half its 11px width). */
-  transform-origin: calc(100% - 34px) 100%;
+  box-shadow: var(--bubble-shadow);
   transition:
     opacity var(--dur-base) var(--ease-out),
     transform var(--dur-base) var(--ease-out);
   -webkit-app-region: no-drag;
   cursor: default;
   z-index: 10;
-  /* The status strip (::before) sits under the content. */
+  /* The tint accent (::before) sits under the content. */
   isolation: isolate;
   overflow: hidden;
 }
 
-/* v0.21.1 — status strip: a 3px band on the top edge in the tint's accent
-   (warning / busy / error / success). The paper itself stays one colour;
-   recolouring the whole bubble per state turned dark mode khaki/maroon. */
+/* Tint accent: a 3px band down the left edge in the tint's colour (warning /
+   busy / error / success). The surface itself stays one colour. The pill and
+   the banner colour their icon instead. */
 .bubble::before {
   content: '';
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 3px;
+  inset: 0 auto 0 0;
+  width: 3px;
   background: var(--tint-strip, transparent);
   pointer-events: none;
   z-index: -1;
   transition: background 0.25s ease;
 }
+.bubble[data-surface="pill"]::before,
+.bubble[data-surface="banner"]::before { display: none; }
 
 /* Per-tint custom-property forwarding. Each tint binds the generic
    --tint-strip / --tint-accent / --tint-text vars so the bubble doesn't
@@ -244,90 +289,75 @@ body.clippy-window {
   --tint-text:   var(--tint-success-text);
 }
 
-/* ── State-specific sizing ─────────────────────────────────────────── */
-.bubble[data-state="compact"] {
-  width: 280px;
-  min-height: 60px;
-  padding: 10px 14px;
-  font-size: 13px;
-  cursor: pointer; /* click anywhere → standard */
+/* ── Status pill ───────────────────────────────────────────────────── */
+/* One line, like the Windows 11 volume flyout or a macOS HUD: icon + text. */
+.bubble[data-surface="pill"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-width: 0;
+  max-width: min(330px, calc(100vw - 10px));
+  min-height: 36px;
+  padding: 0 14px 0 11px;
+  border-radius: 999px;
 }
-/* Compact affordance — the live-test failure mode was a compact bubble
- * that LOOKED like a dead notification. Pair the type-to-reply handler
- * (bubble.ts) with a quiet hint so the path out of compact is
- * discoverable without stealing attention (fades in late, stays soft). */
-.bubble[data-state="compact"]::after {
-  content: 'click or just start typing…';
-  display: block;
-  margin-top: 6px;
-  font-size: 10.5px;
-  letter-spacing: 0.01em;
-  color: var(--bubble-ink-soft);
-  opacity: 0;
-  animation: compact-hint-in 0.4s ease 1.1s forwards;
-}
-@keyframes compact-hint-in { to { opacity: 0.72; } }
-@media (prefers-reduced-motion: reduce) {
-  .bubble[data-state="compact"]::after { animation: none; opacity: 0.72; }
-}
-.bubble[data-state="standard"] {
-  width: 340px;
-  min-height: 70px;
-}
+.bubble[data-state="compact"] { cursor: pointer; } /* click anywhere → standard */
+
+#bubble-icon { display: none; flex-shrink: 0; width: 14px; height: 14px; color: var(--tint-strip, var(--bubble-ink-soft)); }
+.bubble[data-surface="pill"] #bubble-icon { display: inline-flex; }
+#bubble-icon > * { display: none; }
+.bubble[data-icon="clip"] #bubble-icon .ico-clip,
+.bubble[data-icon="check"] #bubble-icon .ico-check,
+.bubble[data-icon="x"] #bubble-icon .ico-x { display: block; }
+@keyframes bubble-spin { to { transform: rotate(360deg); } }
+
 .bubble[data-state="expanded"] {
   /* The panel sits ABOVE Clippy, like standard mode: window.ts sizes the
    * expanded window 500×719 (or shorter on a short display), the panel fills it
    * to a 5px inset on top/left/right and stops 104px above the bottom, which is
-   * Clippy's strip. The tail points down at him. Not clipped (see overflow). */
+   * Clippy's strip. */
   width: calc(100vw - 10px);
   height: calc(100vh - 104px - 5px);
   bottom: 104px;
   right: 5px;
-  /* The tail hangs outside the panel; the children keep the rounded corners. */
-  overflow: visible;
-  /* The ambient 30px shadow would clip at the 5px inset; use a tight one. */
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22), inset 0 1px 0 var(--bubble-inner-stroke);
+  /* The ambient shadow would clip at the 5px inset; use a tight one. */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
   padding: 0;
   display: flex;
   flex-direction: column;
-  transform-origin: 100% 100%;
 }
 
 /* ── Enter / exit ─────────────────────────────────────────────────── */
-/* Enter: .bubble's own 200ms. Exit: faster, the same path back to the tail. */
+/* A short fade and a 6px slide, like a native flyout. Enter: .bubble's own
+   200ms. Exit: faster, the same path back. */
 .bubble.hidden {
   opacity: 0;
-  transform: translateY(4px) scale(0.97);
+  transform: translateY(6px);
   pointer-events: none;
   transition-duration: var(--dur-fast);
+}
+/* Recoil (bubble.ts minimize(): a click on Clippy, the minimize button, idle):
+   the surface shrinks back into Clippy's corner instead of sliding away. */
+.bubble--recoil { transform-origin: 100% 100%; }
+.bubble--recoil.bubble--below { transform-origin: 100% 0; }
+.bubble.hidden.bubble--recoil {
+  transform: scale(0.6);
+  transition-duration: 180ms; /* bubble-motion.ts RECOIL_MS */
 }
 /* Opened from the keyboard (voice hotkey): no animation. */
 .bubble[data-instant] { transition: none; }
 
-/* ── Hint animations per tint (run once on data-tint change) ──────── */
+/* ── Hint animation (runs once on data-tint change) ──────────────── */
 /* The .bubble--tint-hint class is toggled by JS for one animation cycle.
-   Only the two with a purpose stay: the error shake and the success check. */
+   Only the error shake has a purpose. */
 .bubble[data-tint="error"].bubble--tint-hint { animation: tint-error-shake 320ms var(--ease-out); }
-.bubble[data-tint="success"].bubble--tint-hint::after {
-  content: '\2713';
-  position: absolute;
-  top: 8px;
-  right: 12px;
-  color: var(--tint-success-accent);
-  font-size: 16px;
-  font-weight: 700;
-  animation: tint-success-check var(--dur-celebrate) var(--ease-out) both;
-}
 @keyframes tint-error-shake {
   0%, 100% { transform: translateX(0); }
   20%      { transform: translateX(-4px); }
   40%      { transform: translateX(4px); }
   60%      { transform: translateX(-2px); }
   80%      { transform: translateX(2px); }
-}
-@keyframes tint-success-check {
-  from { opacity: 0; transform: scale(0.9); }
-  to   { opacity: 1; transform: scale(1); }
 }
 
 /* ── Avoidance translate (cursor approaches → slide 120px away) ──── */
@@ -336,108 +366,127 @@ body.clippy-window {
 .bubble[data-avoid="up"]    { transform: translateY(-120px); }
 .bubble[data-avoid="down"]  { transform: translateY(120px); }
 
-/* ── Tail — rounded connector dot, points toward Clippy ──────────── */
-#bubble-tail {
-  /* Slimmer connector (was 14px — read chunky against the 1px hairline
-     chrome). 11px diamond + tighter radius keeps the hairline visually
-     continuous around the corner. */
-  position: absolute;
-  bottom: -7px;
-  right: 28px;
-  width: 11px;
-  height: 11px;
-  background: var(--bubble-bg);
-  border: 1px solid var(--bubble-hairline);
-  border-top: none;
-  border-left: none;
-  border-radius: 0 0 3.5px 0;
-  transform: rotate(45deg);
-  transform-origin: center;
-  box-shadow: 1.5px 1.5px 3px rgba(15, 23, 42, 0.04);
-  z-index: -1;
-}
-#bubble-tail::before {
-  /* iMessage-style "echo dot" closer to Clippy. */
-  content: '';
-  position: absolute;
-  width: 4px;
-  height: 4px;
-  background: var(--bubble-bg);
-  border: 1px solid var(--bubble-hairline);
-  border-radius: 50%;
-  bottom: -14px;
-  right: -14px;
-  box-shadow: 1px 1px 2px rgba(15, 23, 42, 0.05);
-  transform: rotate(-45deg);
-}
-/* Expanded: the panel floats above Clippy, so the tail shows (centred over his head). */
-.bubble[data-state="expanded"] #bubble-tail { right: 54px; }
-.bubble[data-state="expanded"]::before { border-radius: var(--bubble-radius) var(--bubble-radius) 0 0; }
-
-/* v0.20.0-alpha.14 — tail flip. When Clippy is near the top edge, main
+/* v0.20.0-alpha.14 — side flip. When Clippy is near the top edge, main
  * grows the window DOWNWARD (window.ts emits 'bubble-side' = 'below') and
- * the renderer toggles .bubble--below. Clippy then sits ABOVE the bubble,
- * so the bubble pins to the window top and the tail points UP toward him.
- * Mirror the connector geometry to the top edge. */
+ * the renderer toggles .bubble--below. Clippy then sits ABOVE the surface,
+ * so it pins to the window top. */
 .bubble--below {
   bottom: auto;
   top: 5px;
-  transform-origin: calc(100% - 34px) 0;
 }
-.bubble--below.hidden { transform: translateY(-4px) scale(0.97); }
-.bubble--below #bubble-tail {
-  bottom: auto;
-  top: -8px;
-  border-top: 1px solid var(--bubble-hairline);
-  border-bottom: none;
-  border-right: none;
-  border-left: 1px solid var(--bubble-hairline);
-  border-radius: 6px 0 0 0;
-}
-.bubble--below #bubble-tail::before {
-  bottom: auto;
-  top: -16px;
-}
+.bubble--below.hidden { transform: translateY(-6px); }
 
-/* ── Header (expanded-only) ──────────────────────────────────────── */
+/* ── Title row (flyout + panel), like a native window's ──────────── */
 #bubble-header {
   display: none;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--bubble-hairline);
+  min-height: 36px;
+  padding: 0 6px 0 14px;
+  border-bottom: var(--bubble-stroke) solid var(--bubble-hairline);
   flex-shrink: 0;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 12px;
   font-weight: 600;
   color: var(--bubble-ink-soft);
 }
 .bubble[data-state="expanded"] #bubble-header { display: flex; }
+/* Flyout: a slim row with the name and the window controls only. It sits in
+   the surface's padding (12px 14px) so the controls reach the top-right corner. */
+.bubble[data-surface="flyout"] #bubble-header {
+  display: flex;
+  min-height: 28px;
+  margin: -12px -14px 4px 0;
+  padding: 0;
+  border-bottom: 0;
+}
+.bubble[data-surface="flyout"] .bubble-header-status,
+.bubble[data-surface="flyout"] .bubble-header-controls { display: none; }
 
-.bubble-header-title { color: var(--bubble-ink); font-size: 13px; }
-.bubble-header-status { font-weight: 500; color: var(--bubble-ink-soft); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.bubble-header-title { color: var(--bubble-ink); }
+.bubble-header-status { font-weight: 400; color: var(--bubble-ink-soft); margin-left: 10px; font-variant-numeric: tabular-nums; }
 .bubble-header-status::before {
   content: '';
   display: inline-block;
-  width: 6px; height: 6px;
+  box-sizing: border-box;
+  width: 8px; height: 8px;
   margin-right: 5px;
   border-radius: 50%;
-  vertical-align: 1px;
-  background: #22c55e;
+  vertical-align: -0.5px;
+  background: var(--tint-success-accent);
 }
-.bubble-header-status[data-busy="true"]::before { background: #3b82f6; }
+/* A task is running: the dot becomes a small spinner. */
+.bubble-header-status[data-busy="true"]::before {
+  background: none;
+  border: 1.5px solid var(--bubble-subtle-hover);
+  border-top-color: var(--bubble-accent);
+  animation: bubble-spin 0.8s linear infinite;
+}
 /* v0.22 — run-end states (bubble.ts OUTCOME_LABELS) */
-.bubble-header-status[data-outcome="stopped"]::before { background: #a8a29e; }
+.bubble-header-status[data-outcome="stopped"]::before { background: var(--bubble-ink-soft); }
 .bubble-header-status[data-outcome="stuck"]::before,
 .bubble-header-status[data-outcome="step_limit"]::before,
-.bubble-header-status[data-outcome="unconfirmed"]::before { background: #f59e0b; }
-.bubble-header-status[data-outcome="failed"]::before { background: #ef4444; }
-.bubble-header-controls { display: flex; gap: 4px; }
-.bubble-header-controls button {
-  width: 22px; height: 22px;
+.bubble-header-status[data-outcome="unconfirmed"]::before { background: var(--tint-warning-accent); }
+.bubble-header-status[data-outcome="failed"]::before { background: var(--tint-error-accent); }
+.bubble-header-controls { display: flex; gap: 2px; margin-left: auto; }
+
+/* Window controls. Windows: caption buttons flush with the top-right corner,
+   thin glyphs, the close button turns red on hover. */
+.bubble-window-controls { display: flex; align-self: stretch; margin-left: 4px; }
+.bubble[data-surface="flyout"] .bubble-window-controls { margin-left: auto; }
+.bubble[data-state="expanded"] .bubble-window-controls { margin-right: -6px; }
+.bubble-window-controls button {
+  width: 40px;
+  min-height: 28px;
+  padding: 0;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  color: var(--bubble-ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur-fast) ease, color var(--dur-fast) ease;
+  -webkit-app-region: no-drag;
+}
+.bubble-window-controls button:hover { background: var(--bubble-subtle-hover); }
+.bubble-window-controls button:active { background: var(--bubble-subtle); }
+#bubble-close:hover { background: #c42b1c; color: #ffffff; }
+#bubble-close:active { background: #b3271a; color: #ffffff; }
+.bubble-window-controls button:focus-visible { outline: 2px solid var(--bubble-ink); outline-offset: -2px; }
+
+/* macOS: traffic lights at the left, close first; the glyph shows on hover or focus. */
+[data-platform="mac"] .bubble-window-controls {
+  order: -1;
+  flex-direction: row-reverse;
+  align-self: center;
+  gap: 8px;
+  margin: 0 10px 0 0;
+}
+[data-platform="mac"] .bubble[data-surface="flyout"] #bubble-header { margin: -4px 0 4px -2px; min-height: 20px; justify-content: flex-start; }
+[data-platform="mac"] .bubble[data-surface="flyout"] .bubble-window-controls { margin-left: 0; }
+[data-platform="mac"] .bubble[data-state="expanded"] .bubble-window-controls { margin-right: 10px; }
+[data-platform="mac"] .bubble-window-controls button {
+  width: 12px; height: 12px; min-height: 0;
+  border-radius: 50%;
+  color: rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+[data-platform="mac"] #bubble-close,
+[data-platform="mac"] #bubble-close:hover,
+[data-platform="mac"] #bubble-close:active { background: #ff5f57; color: rgba(0, 0, 0, 0.6); }
+[data-platform="mac"] #bubble-minimize,
+[data-platform="mac"] #bubble-minimize:hover,
+[data-platform="mac"] #bubble-minimize:active { background: #febc2e; }
+[data-platform="mac"] .bubble-window-controls button:active { filter: brightness(0.85); }
+[data-platform="mac"] .bubble-window-controls svg { width: 6px; height: 6px; opacity: 0; }
+[data-platform="mac"] .bubble-window-controls:hover svg,
+[data-platform="mac"] .bubble-window-controls button:focus-visible svg { opacity: 1; }
+[data-platform="mac"] .bubble-window-controls button:focus-visible { outline: 2px solid var(--bubble-accent); outline-offset: 1px; }
+.bubble-header-controls button {
+  width: 30px; height: 26px;
+  background: transparent;
+  border: none;
+  border-radius: var(--bubble-btn-radius);
   color: var(--bubble-ink-soft);
   cursor: pointer;
   font-size: 14px;
@@ -450,13 +499,40 @@ body.clippy-window {
 }
 .bubble-header-controls button:active { transform: scale(0.95); }
 .bubble-header-controls button:hover {
-  background: rgba(15, 23, 42, 0.06);
+  background: var(--bubble-subtle-hover);
   color: var(--bubble-ink);
+}
+.bubble-header-controls button:focus-visible,
+#bubble-actions button:focus-visible,
+.bubble-chip:focus-visible,
+.bubble-retry-btn:focus-visible,
+#bubble-expand-handle:focus-visible {
+  outline: 2px solid var(--bubble-ink);
+  outline-offset: 1px;
 }
 #bubble-pin[aria-pressed="true"] {
-  background: rgba(15, 23, 42, 0.08);
-  color: var(--bubble-ink);
+  background: var(--bubble-subtle-hover);
+  color: var(--bubble-accent);
 }
+
+/* ── Notification banner header (banner-only) ────────────────────── */
+#bubble-banner-head {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--bubble-ink-soft);
+}
+.bubble[data-surface="banner"] #bubble-banner-head { display: flex; }
+/* The glyph carries the tint (amber for an approval). */
+#bubble-banner-head svg { flex-shrink: 0; color: var(--tint-strip, var(--bubble-ink-soft)); }
+#bubble-banner-head .banner-now { margin-left: auto; font-size: 11px; }
+.banner-title { font-size: 14px; font-weight: 600; line-height: 1.4; }
+.banner-title strong { font-weight: inherit; }
+.banner-body { margin-top: 2px; }
+.banner-body ul { margin: 2px 0 0 18px; padding: 0; }
 
 /* ── Primary text region ─────────────────────────────────────────── */
 #bubble-text {
@@ -467,75 +543,62 @@ body.clippy-window {
   max-height: 240px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+  scrollbar-color: var(--bubble-scroll) transparent;
   padding-right: 4px;
 }
-.bubble[data-state="compact"] #bubble-text {
-  max-height: 40px;
+.bubble[data-surface="pill"] #bubble-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-height: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: Tahoma, "Segoe UI", system-ui, sans-serif;
   margin-bottom: 0;
   padding-right: 0;
+  cursor: inherit;
 }
 .bubble[data-state="expanded"] #bubble-text {
   display: none; /* expanded uses #bubble-history instead */
 }
 #bubble-text::-webkit-scrollbar { width: 6px; }
-#bubble-text::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
+#bubble-text::-webkit-scrollbar-thumb { background: var(--bubble-scroll); border-radius: 3px; }
 #bubble-text::-webkit-scrollbar-track { background: transparent; }
+#bubble-text strong { font-weight: 600; }
 
-/* v0.12.5 → mapped to data-tint="error" in v0.19.0. Kept for back-compat
-   with speakError() which still toggles the legacy class. */
-#bubble-text.bubble-error {
-  border-left: 3px solid var(--tint-error-accent);
-  background: rgba(244, 63, 94, 0.05);
-  padding-left: 10px;
-  border-radius: 3px;
-}
-/* Step ticker — shown while a tool is running. Muted so it reads as status,
-   not conversation. Italic + lighter opacity distinguishes it from replies. */
-#bubble-text.bubble-step {
-  font-style: italic;
-  opacity: 0.75;
-  letter-spacing: 0.01em;
-}
 .bubble-retry-btn {
   display: inline-block;
   margin-top: 8px;
   padding: 4px 12px;
+  font: inherit;
   font-size: 12px;
-  font-weight: 500;
-  color: var(--tint-error-text);
-  background: rgba(244, 63, 94, 0.08);
-  border: 1px solid rgba(244, 63, 94, 0.30);
-  border-radius: 6px;
+  color: var(--bubble-ink);
+  background: var(--bubble-subtle);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: var(--bubble-btn-radius);
   cursor: pointer;
 }
-.bubble-retry-btn:hover { background: rgba(244, 63, 94, 0.15); }
+.bubble-retry-btn:hover { background: var(--bubble-subtle-hover); }
 .bubble-retry-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* ── History (expanded-only) — Inter-flavored chat panel ─────────── */
+/* ── History (expanded-only) ─────────────────────────────────────── */
 #bubble-history {
   display: none;
   flex: 1;
   overflow-y: auto;
   padding: 14px 16px;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.55;
   scrollbar-width: thin;
-  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+  scrollbar-color: var(--bubble-scroll) transparent;
 }
 .bubble[data-state="expanded"] #bubble-history { display: flex; }
 #bubble-history::-webkit-scrollbar { width: 6px; }
-#bubble-history::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); border-radius: 3px; }
+#bubble-history::-webkit-scrollbar-thumb { background: var(--bubble-scroll); border-radius: 3px; }
 #bubble-history::-webkit-scrollbar-track { background: transparent; }
 
-/* v0.21 — chat rows are bubbles: user right in the brand yellow, Clippy
-   left on a soft slate wash. #bubble-history and the standard-state
-   .chat-history view are flex columns so align-self can pick the side.
+/* v0.21 — chat rows: user right on the accent fill, Clippy left on a
+   subtle fill. #bubble-history and the standard-state .chat-history view
+   are flex columns so align-self can pick the side.
    No `display` here: #bubble-history is shown only in expanded (above) —
    setting it here kept the panel visible after minimize, overflowing and
    clipping the compact bubble. */
@@ -546,24 +609,21 @@ body.clippy-window {
 #bubble-text.chat-history { display: flex; }
 .chat-msg {
   max-width: 86%;
-  padding: 7px 12px;
-  border-radius: 14px;
+  padding: 6px 11px;
+  border-radius: var(--bubble-radius);
   overflow-wrap: anywhere;
   user-select: text;
 }
 .chat-user {
   align-self: flex-end;
-  background-color: #FFD400;
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0) 100%);
-  color: #1c1917;
-  border-bottom-right-radius: 5px;
+  background: var(--bubble-accent-fill);
+  color: var(--bubble-on-accent);
   white-space: pre-wrap;
 }
 .chat-clippy {
   align-self: flex-start;
-  background: rgba(15, 23, 42, 0.06);
-  color: #1e293b;
-  border-bottom-left-radius: 5px;
+  background: var(--bubble-subtle);
+  color: var(--bubble-ink);
 }
 .chat-clippy.chat-thinking { color: var(--bubble-ink-soft); }
 /* Thinking orb: a 3x3 dot grid, a diagonal wave. Stepped, not eased: five repaints a second,
@@ -604,25 +664,20 @@ body.clippy-window {
   font-size: 12.5px;
   color: var(--bubble-ink-soft);
   border: 1px solid var(--bubble-hairline);
-  border-radius: 10px;
+  border-radius: var(--bubble-radius);
 }
 .chat-clear-confirm button {
   padding: 3px 10px;
   font: inherit;
-  font-weight: 500;
   color: var(--bubble-ink);
-  background: rgba(15, 23, 42, 0.06);
+  background: var(--bubble-subtle-hover);
   border: none;
-  border-radius: 7px;
+  border-radius: var(--bubble-btn-radius);
   cursor: pointer;
 }
-.chat-clear-confirm button.is-danger {
-  color: var(--tint-error-text);
-  background: rgba(244, 63, 94, 0.12);
-}
+.chat-clear-confirm button.is-danger { color: var(--tint-error-accent); }
 .chat-empty {
-  color: rgba(15, 23, 42, 0.4);
-  font-style: italic;
+  color: var(--bubble-ink-soft);
   text-align: center;
   padding: 16px 0;
   font-size: 12.5px;
@@ -635,17 +690,16 @@ body.clippy-window {
   font-size: 12px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(15, 23, 42, 0.06);
-  color: #b91c1c;
+  background: var(--bubble-subtle-hover);
 }
 .chat-msg pre {
   font-family: ui-monospace, SFMono-Regular, "Menlo", "Cascadia Code", monospace;
   font-size: 12px;
   padding: 8px 10px;
   margin: 6px 0;
-  background: rgba(15, 23, 42, 0.05);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 6px;
+  background: var(--bubble-subtle);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: var(--bubble-btn-radius);
   overflow-x: auto;
   line-height: 1.5;
 }
@@ -653,53 +707,58 @@ body.clippy-window {
 .chat-msg ul { margin: 4px 0 4px 18px; padding: 0; }
 .chat-msg li { margin: 2px 0; }
 
-/* ── Action row (existing — populated by speakWithActions) ──────── */
+/* ── Action row (populated by speakWithActions) ─────────────────── */
+/* Native buttons in equal-width columns, as on a notification. */
 #bubble-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 8px;
+  margin-top: 12px;
 }
+.bubble[data-state="expanded"] #bubble-actions { margin: 12px 14px 0; }
 #bubble-actions.hidden { display: none; }
-/* v0.19.0 RC-6 — action pills harmonized with `.bubble-chip` (also a
- * pill, 999px) and Settings v2 micro-controls. Pre-fix the 8px radius
- * made the action row read as "old MS buttons" while the chips above it
- * read as modern pills — clashing pair. Same padding bump (5→6px
- * vertical, 12→14px horizontal) gives the touch target a tiny bit more
- * room, matching the chip footprint. */
 #bubble-actions button {
-  padding: 6px 14px;
-  font-size: 12.5px;
-  font-weight: 500;
-  border-radius: 999px;
-  border: 1px solid var(--tint-accent, var(--bubble-hairline));
-  background: rgba(255, 255, 255, 0.6);
-  color: var(--tint-text, var(--bubble-ink));
+  flex: 1 1 96px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 12px;
+  font: inherit;
+  border-radius: var(--bubble-btn-radius);
+  border: 1px solid var(--bubble-hairline);
+  background: var(--bubble-subtle);
+  color: var(--bubble-ink);
   cursor: pointer;
-  transition: transform var(--dur-press) var(--ease-out), background-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+  transition: transform var(--dur-press) var(--ease-out), background-color var(--dur-fast) ease, filter var(--dur-fast) ease;
   -webkit-app-region: no-drag;
 }
-#bubble-actions button:hover {
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
-}
+#bubble-actions button:hover { background: var(--bubble-subtle-hover); }
 #bubble-actions button:active { transform: scale(0.97); }
+/* Primary: the accent fill. */
+#bubble-actions button.is-primary {
+  background: var(--bubble-accent-fill);
+  border-color: transparent;
+  color: var(--bubble-on-accent);
+}
+#bubble-actions button.is-primary:hover { filter: brightness(1.1); }
 #bubble-actions button:disabled { opacity: 0.6; cursor: default; }
-/* Approval prompt auto-deny countdown (renderer/main.ts). */
+/* Approval prompt auto-deny countdown (renderer/main.ts): the banner's body
+   line, above the buttons. */
 .approval-countdown {
   flex-basis: 100%;
+  order: -1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
-  opacity: 0.7;
+  gap: 4px;
+  margin-top: -6px;
+  font-size: 12px;
+  color: var(--bubble-ink-soft);
   font-variant-numeric: tabular-nums;
 }
 .approval-countdown-bar {
   display: block;
   height: 2px;
   border-radius: 1px;
-  background: rgba(127, 127, 127, 0.25);
+  background: var(--bubble-subtle-hover);
   overflow: hidden;
 }
 .approval-countdown-bar i {
@@ -709,9 +768,9 @@ body.clippy-window {
   transform-origin: left center;
   animation: approval-drain linear forwards;
 }
-.approval-countdown, .approval-countdown-bar i { transition: opacity var(--dur-base) ease, color var(--dur-base) ease, background-color var(--dur-base) ease; }
-/* The last ten seconds: the line and the bar turn rose and stay that way. */
-.approval-countdown[data-urgent] { opacity: 1; color: var(--tint-error-accent); }
+.approval-countdown, .approval-countdown-bar i { transition: color var(--dur-base) ease, background-color var(--dur-base) ease; }
+/* The last ten seconds: the line and the bar turn red and stay that way. */
+.approval-countdown[data-urgent] { color: var(--tint-error-accent); }
 .approval-countdown[data-urgent] .approval-countdown-bar i { background-color: var(--tint-error-accent); }
 /* A new chat row eases in alone (a keyframe is right: each row is a new element that animates once). */
 .chat-msg.is-new { animation: msg-in var(--dur-fast) var(--ease-out); }
@@ -721,7 +780,7 @@ body.clippy-window {
   .approval-countdown-bar { display: none; } /* the seconds text still counts down */
 }
 
-/* ── Suggestion chips (expanded-only) — frosted pills ───────────── */
+/* ── Suggestion chips (expanded-only) ───────────────────────────── */
 #bubble-chips {
   display: none;
   flex-wrap: wrap;
@@ -734,13 +793,12 @@ body.clippy-window {
 .bubble-chip {
   display: inline-flex;
   align-items: center;
-  padding: 5px 12px;
+  padding: 4px 11px;
+  font: inherit;
   font-size: 12px;
-  font-weight: 500;
-  font-family: Inter, system-ui, sans-serif;
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--bubble-subtle);
   border: 1px solid var(--bubble-hairline);
-  border-radius: 999px;
+  border-radius: var(--bubble-btn-radius);
   color: var(--bubble-ink);
   cursor: pointer;
   opacity: 0;
@@ -748,15 +806,10 @@ body.clippy-window {
   /* Stagger applied via inline style --i for each chip. */
   animation: chip-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   animation-delay: calc(var(--i, 0) * 50ms);
-  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  transition: background 0.12s ease;
   -webkit-app-region: no-drag;
 }
-.bubble-chip:hover {
-  transform: translateY(-2px);
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
-}
-.bubble-chip:active { transform: translateY(0); }
+.bubble-chip:hover { background: var(--bubble-subtle-hover); }
 
 @keyframes chip-in {
   from { opacity: 0; transform: translateY(4px); }
@@ -764,9 +817,8 @@ body.clippy-window {
 }
 
 /* ── Input area ─────────────────────────────────────────────────── */
-/* v0.21 — composer: a single pill (.bubble-composer) holds the growing
-   textarea + mic + send. The ring on focus-within is the tint accent so it
-   still reads "busy"/"error" with the rest of the bubble. */
+/* v0.21 — composer: one native text field (.bubble-composer) holds the
+   growing textarea + mic + send. */
 #bubble-input-area {
   display: block;
   margin-top: 10px;
@@ -774,9 +826,7 @@ body.clippy-window {
 .bubble[data-state="expanded"] #bubble-input-area {
   margin: 0;
   padding: 10px 14px 12px;
-  border-radius: 0 0 var(--bubble-radius) var(--bubble-radius);
-  border-top: 1px solid var(--bubble-hairline);
-  background: rgba(255, 255, 255, 0.4);
+  border-top: var(--bubble-stroke) solid var(--bubble-hairline);
   flex-shrink: 0;
 }
 .bubble[data-state="compact"] #bubble-input-area { display: none; }
@@ -789,21 +839,17 @@ body.clippy-window {
 .bubble-composer {
   display: flex;
   align-items: flex-end;
-  gap: 4px;
-  padding: 4px 4px 4px 6px;
+  gap: 2px;
+  padding: 0 4px 0 2px;
   border: 1px solid var(--bubble-hairline);
-  /* 22px = half the one-line height (36 + 8 padding), so a single line is a
-     true pill and it squares off naturally as the textarea grows. */
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.05);
+  border-radius: var(--bubble-btn-radius);
+  background: var(--bubble-field-bg);
+  box-shadow: var(--bubble-field-rest);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   -webkit-app-region: no-drag;
 }
-.bubble-composer:focus-within {
-  border-color: var(--bubble-ink-soft);
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
-}
+/* Windows 11: a 2px accent bottom edge. macOS: the accent focus ring. */
+.bubble-composer:focus-within { box-shadow: var(--bubble-field-focus); }
 
 #bubble-input {
   flex: 1;
@@ -818,56 +864,47 @@ body.clippy-window {
   border-radius: 0;
   resize: none;
   overflow-y: hidden;
-  font-size: 13.5px;
-  font-family: -apple-system, BlinkMacSystemFont, Inter, system-ui, sans-serif;
+  font-size: 13px;
+  font-family: inherit;
   color: var(--bubble-ink);
   background: transparent;
   outline: none;
   scrollbar-width: thin;
-  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+  scrollbar-color: var(--bubble-scroll) transparent;
 }
-#bubble-input::placeholder { color: rgba(15, 23, 42, 0.42); }
+#bubble-input::placeholder { color: var(--bubble-ink-soft); }
 
-/* ── Send button — paper-plane in the accent circle ─────────────── */
+/* ── Send button — paper-plane on the accent fill ───────────────── */
 #bubble-send {
-  width: 32px; height: 32px;
-  background: linear-gradient(180deg, #FFE14A 0%, #FFD400 100%);
-  color: #1c1917;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 50%;
+  width: 28px; height: 28px;
+  margin-bottom: 4px;
+  background: var(--bubble-accent-fill);
+  color: var(--bubble-on-accent);
+  border: none;
+  border-radius: var(--bubble-btn-radius);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.55);
   transition:
     transform var(--dur-press) var(--ease-out),
     background-color var(--dur-fast) ease,
-    box-shadow var(--dur-fast) ease,
+    filter var(--dur-fast) ease,
     opacity var(--dur-fast) ease;
   -webkit-app-region: no-drag;
 }
-#bubble-send:hover:not(:disabled) {
-  background-color: #FFDD3C;
-  box-shadow:
-    0 3px 8px rgba(0, 0, 0, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
-}
+#bubble-send:hover:not(:disabled) { filter: brightness(1.1); }
 #bubble-send:active:not(:disabled) { transform: scale(0.95); }
+/* Empty draft: a flat, quiet glyph. */
 #bubble-send:disabled {
-  background-color: rgba(15, 23, 42, 0.06);
-  background-image: none;
+  background: transparent;
   color: var(--bubble-ink-soft);
-  border-color: transparent;
-  box-shadow: none;
   cursor: default;
   opacity: 0.6;
 }
 #bubble-send:focus-visible, #bubble-mic:focus-visible {
-  outline: 2px solid var(--bubble-ink-soft);
+  outline: 2px solid var(--bubble-ink);
   outline-offset: 1px;
 }
 #bubble-send .send-icon { display: block; transform: translateX(0.5px); }
@@ -875,20 +912,19 @@ body.clippy-window {
 #bubble-send.is-stop .send-icon { display: none; }
 #bubble-send.is-stop .stop-icon { display: block; }
 #bubble-send.is-stop {
-  background-color: rgba(15, 23, 42, 0.86);
-  background-image: none;
-  color: #fff;
+  background: var(--bubble-ink);
+  color: var(--bubble-bg);
 }
-#bubble-send.is-stop:hover { background-color: rgb(15, 23, 42); }
 
 /* ── Mic button — ghost icon with retained level-pulse ──────────── */
 #bubble-mic {
   position: relative;
-  width: 32px; height: 32px;
+  width: 28px; height: 28px;
+  margin-bottom: 4px;
   background: transparent;
   color: var(--bubble-ink-soft);
   border: 1px solid transparent;
-  border-radius: 50%;
+  border-radius: var(--bubble-btn-radius);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
@@ -900,7 +936,7 @@ body.clippy-window {
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
-#bubble-mic:hover { background: rgba(15, 23, 42, 0.06); color: var(--bubble-ink); }
+#bubble-mic:hover { background: var(--bubble-subtle-hover); color: var(--bubble-ink); }
 #bubble-mic:active { transform: scale(0.95); }
 @media (prefers-reduced-motion: reduce) {
   #bubble-mic.recording, #bubble-mic.encoding .mic-icon { animation: none; }
@@ -938,68 +974,32 @@ body.clippy-window {
   50%      { opacity: 1; }
 }
 
-/* ── Expand corner-handle (standard-only, hover-revealed) ──────── */
+/* ── Expand corner-handle (flyout-only, hover-revealed) ────────── */
 #bubble-expand-handle {
   position: absolute;
   bottom: 4px;
   right: 4px;
   width: 18px; height: 18px;
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--bubble-bg);
   border: 1px solid var(--bubble-hairline);
-  border-radius: 6px;
+  border-radius: var(--bubble-btn-radius);
   color: var(--bubble-ink-soft);
   cursor: pointer;
   opacity: 0;
   transform: translate(2px, 2px);
-  transition: opacity 0.15s ease, transform 0.15s ease, background 0.12s ease;
+  transition: opacity 0.15s ease, transform 0.15s ease, color 0.12s ease;
   display: none;
   align-items: center;
   justify-content: center;
   -webkit-app-region: no-drag;
 }
-.bubble[data-state="standard"] #bubble-expand-handle { display: inline-flex; }
-.bubble[data-state="standard"]:hover #bubble-expand-handle {
+.bubble[data-surface="flyout"] #bubble-expand-handle { display: inline-flex; }
+.bubble[data-surface="flyout"]:hover #bubble-expand-handle,
+#bubble-expand-handle:focus-visible {
   opacity: 1;
   transform: translate(0, 0);
 }
-#bubble-expand-handle:hover {
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--bubble-ink);
-}
-
-/* ── Dark mode — keeps brand warmth ─────────────────────────────── */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bubble-bg:        rgba(32, 33, 39, 0.98);
-    --bubble-ink:       #e2e8f0;
-    --bubble-ink-soft:  rgba(226, 232, 240, 0.7);
-    --bubble-hairline:  rgba(255, 255, 255, 0.10);
-    --bubble-inner-stroke: rgba(255, 255, 255, 0.08);
-    --bubble-shadow:    0 12px 30px rgba(0, 0, 0, 0.5);
-  }
-  #bubble-tail, #bubble-tail::before { background: var(--bubble-bg); border-color: var(--bubble-hairline); }
-  .chat-clippy { background: rgba(255, 255, 255, 0.08); color: #e2e8f0; }
-  .chat-msg code { background: rgba(255, 255, 255, 0.08); color: #fda4af; }
-  .chat-user code { background: rgba(0, 0, 0, 0.10); color: #7f1d1d; }
-  .chat-msg pre { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.08); }
-  .chat-clear-confirm button { background: rgba(255, 255, 255, 0.08); }
-  .bubble[data-state="expanded"] #bubble-input-area { background: rgba(0, 0, 0, 0.18); }
-  .bubble-composer { background: rgba(20, 20, 24, 0.85); box-shadow: none; }
-  #bubble-input::placeholder { color: rgba(226, 232, 240, 0.42); }
-  #bubble-input { scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
-  #bubble-send:disabled { background-color: rgba(255, 255, 255, 0.08); }
-  #bubble-mic:hover { background: rgba(255, 255, 255, 0.10); color: #e2e8f0; }
-  .bubble-chip { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
-  .bubble-chip:hover { background: rgba(255, 255, 255, 0.12); }
-  /* --tint-text is a dark ink for light fills; on the dark bubble every action reads light. */
-  #bubble-actions button { background: rgba(255, 255, 255, 0.05); color: #e2e8f0; }
-  /* Primary sits on the bright accent fill (inline background) — dark ink. */
-  #bubble-actions button.is-primary { color: #1c1917; }
-  #bubble-pin[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); }
-  /* The composer is focused whenever the user types, so its focus state is its
-     normal look: a near-white border plus a ring read as an error outline. */
-  .bubble-composer:focus-within { border-color: rgba(255, 255, 255, 0.22); box-shadow: none; }
-}
+#bubble-expand-handle:hover { color: var(--bubble-ink); }
 
 /* === Onboarding Window === */
 /* (Legacy body.onboarding-window 400×500 + the interim 480×620 block were
@@ -3259,7 +3259,7 @@ body.onboarding-window {
     transition-property: opacity;
     transition-duration: var(--dur-fast) !important;
   }
-  .bubble.hidden, .bubble--below.hidden { transform: none; }
+  .bubble.hidden, .bubble--below.hidden, .bubble.hidden.bubble--recoil { transform: none; }
 }
 
 /* === Platform Visual Tokens — v0.19.0 ====================================
@@ -3655,51 +3655,9 @@ body.onboarding-window[data-platform="win"] {
 
 /* ── UI effects: border beam, voice glow, metal ─────────────────────
    Every effect animates only in its real state (thinking, recording, busy,
-   verifying, a fresh approval) and is still under prefers-reduced-motion. */
+   verifying) and is still under prefers-reduced-motion. */
 @property --beam-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 @keyframes beam-spin { to { --beam-angle: 360deg; } }
-
-/* Border beam on the header status while a task runs. Stepped (16 frames per turn) to keep the retro feel. */
-.bubble-header-status[data-busy="true"] { position: relative; }
-.bubble-header-status[data-busy="true"]::after {
-  content: '';
-  position: absolute;
-  inset: -4px -8px;
-  padding: 2px;
-  border-radius: 999px;
-  background: conic-gradient(from var(--beam-angle), rgba(59, 130, 246, 0.18) 0 45%, #3b82f6 80%, #93c5fd 100%);
-  filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.7));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  pointer-events: none;
-  animation: beam-spin 2.4s steps(16) infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .bubble-header-status[data-busy="true"]::after { animation: none; background: rgba(59, 130, 246, 0.6); }
-}
-
-/* A fresh approval card: one beam lap around the buttons, then gone. The countdown row is
-   appended with the card (main.ts), so :has() starts the animation exactly once per prompt. */
-#bubble-actions:has(.approval-countdown) { position: relative; }
-#bubble-actions:has(.approval-countdown)::after {
-  content: '';
-  position: absolute;
-  inset: -4px;
-  padding: 2px;
-  border-radius: 10px;
-  background: conic-gradient(from var(--beam-angle), transparent 0 75%, var(--tint-accent, #f59e0b) 100%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  pointer-events: none;
-  opacity: 0;
-  animation: beam-spin 1.2s steps(16) 1 forwards, beam-fade 1.2s linear 1 forwards;
-}
-@keyframes beam-fade { 0%, 85% { opacity: 1; } 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) {
-  #bubble-actions:has(.approval-countdown)::after { animation: none; }
-}
 
 /* Onboarding code box while the code is being checked: the border carries the beam. */
 .onboarding-step input.code-input[data-verifying] {
@@ -3749,30 +3707,13 @@ body.onboarding-window[data-platform="win"] {
   box-shadow: 0 0 calc(var(--lvl, 0.4) * 4px) calc(var(--lvl, 0.4) * 1px) rgba(244, 67, 54, 0.55);
 }
 
-/* Working: a blue beam circling a platform under his feet. Stepped like the other beams. */
-#clippy-container.is-working:not(.is-listening) #clippy-aura { display: block; }
-#clippy-container.is-working:not(.is-listening) #clippy-aura::before {
-  background: radial-gradient(ellipse at center, rgba(59, 130, 246, 0.28) 0%, rgba(59, 130, 246, 0) 70%);
-}
-#clippy-container.is-working:not(.is-listening) #clippy-aura::after {
-  padding: 3px;
-  background: conic-gradient(from var(--beam-angle), rgba(59, 130, 246, 0.2) 0 40%, #3b82f6 80%, #bfdbfe 100%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.8));
-  animation: beam-spin 2s steps(24) infinite;
-}
-
 @media (prefers-reduced-motion: reduce) {
   #clippy-container.is-listening #clippy-aura { transform: none; transition: none; }
-  #clippy-container.is-working:not(.is-listening) #clippy-aura::after { animation: none; }
 }
 
-/* ── Text box: beam on focus, busy beam, metal send, voice bars ──────
-   Focus = one yellow lap, then a steady soft accent border. Thinking or working =
-   a continuous blue beam round the edge. The ring is an overlay, so the border and
-   the recording glow keep working underneath. */
+/* ── Text field: busy beam, voice glow, voice bars ───────────────────
+   Thinking or working = a continuous accent beam round the edge. The ring is an
+   overlay, so the border and the recording glow keep working underneath. */
 .bubble-composer { position: relative; }
 .bubble-composer::after {
   content: '';
@@ -3780,66 +3721,33 @@ body.onboarding-window[data-platform="win"] {
   inset: -2px;
   padding: 2px;
   border-radius: inherit;
-  background: conic-gradient(from var(--beam-angle), transparent 0 55%, #ffc83d 85%, #fff2b3 100%);
+  background: conic-gradient(from var(--beam-angle), transparent 0 45%, var(--bubble-accent) 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
   pointer-events: none;
   opacity: 0;
 }
-.bubble-composer:focus-within {
-  border-color: rgba(229, 169, 18, 0.75);
-  box-shadow: 0 0 0 3px rgba(255, 200, 61, 0.22), inset 0 1px 2px rgba(15, 23, 42, 0.05);
-}
-.bubble-composer:focus-within::after { animation: beam-spin 1s steps(20) 1 forwards, beam-fade 1s linear 1 forwards; }
-.bubble-composer.is-busy::after,
-.bubble-composer.is-busy:focus-within::after {
-  background: conic-gradient(from var(--beam-angle), transparent 0 45%, #3b82f6 85%, #bfdbfe 100%);
+.bubble-composer.is-busy::after {
   opacity: 1;
   animation: beam-spin 1.8s steps(24) infinite;
 }
 /* Voice glow: recording keeps a red edge that follows the live mic level (--lvl, set in
-   bubble.ts onLevel); no yellow lap on top of it. */
+   bubble.ts onLevel); no beam on top of it. */
 .bubble-composer.is-recording::after { display: none; }
 .bubble-composer.is-recording {
   border-color: rgba(244, 67, 54, 0.8);
   box-shadow: 0 0 calc(var(--lvl, 0.4) * 12px) calc(var(--lvl, 0.4) * 2px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.35));
   transition: border-color 0.15s ease, box-shadow 0.12s ease-out;
 }
-
-@media (prefers-color-scheme: dark) {
-  /* Calm at rest: a dim amber edge, no white ring. */
-  .bubble-composer:focus-within {
-    border-color: rgba(255, 200, 61, 0.45);
-    box-shadow: 0 0 0 2px rgba(255, 200, 61, 0.12);
-  }
-  .bubble-composer.is-recording {
-    border-color: rgba(244, 67, 54, 0.7);
-    box-shadow: 0 0 calc(var(--lvl, 0.4) * 12px) calc(var(--lvl, 0.4) * 2px) rgba(244, 67, 54, calc(var(--lvl, 0.4) * 0.35));
-  }
-}
 @media (prefers-reduced-motion: reduce) {
-  .bubble-composer:focus-within::after { animation: none; opacity: 0; }
-  .bubble-composer.is-busy::after,
-  .bubble-composer.is-busy:focus-within::after { animation: none; opacity: 0.8; background: rgba(59, 130, 246, 0.7); }
+  .bubble-composer.is-busy::after { animation: none; opacity: 0.8; }
   .bubble-composer.is-recording { box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3); transition: none; }
 }
 
 /* A closed bubble keeps its markup (busy status, a leftover orb): freeze every animation
    in it so nothing runs while Clippy sits idle on screen. */
 .bubble.hidden *, .bubble.hidden *::before, .bubble.hidden *::after { animation-play-state: paused; }
-
-/* Send: Clippy-yellow brushed metal with a dark icon once there is text; flat grey when empty. */
-#bubble-send:not(:disabled):not(.is-stop) {
-  background-color: #ffc83d;
-  background-image:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 48%, rgba(120, 70, 0, 0.18) 52%, rgba(120, 70, 0, 0.1) 100%),
-    linear-gradient(180deg, #ffe58a 0%, #ffc83d 50%, #f0a800 100%);
-  color: #1c1917;
-  border-color: rgba(120, 70, 0, 0.45);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.8), inset 0 -1px 0 rgba(120, 70, 0, 0.25);
-}
-#bubble-send:not(:disabled):not(.is-stop):hover { filter: brightness(1.07); }
 
 /* Voice level bars inside the composer. Heights follow --lvl. */
 .voice-bars { display: none; align-items: center; gap: 3px; height: 32px; padding: 0 4px; flex-shrink: 0; }
