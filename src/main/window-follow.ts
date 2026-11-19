@@ -43,7 +43,6 @@
 import { BrowserWindow, screen, systemPreferences } from 'electron';
 import { createLogger } from './logger';
 import * as macBridge from './mac-bridge-native';
-import * as takeover from './user-takeover';
 import * as spatial from './spatial-presence';
 import type { Brain } from './brain';
 
@@ -362,14 +361,11 @@ async function tick(): Promise<void> {
     return;
   }
 
-  // v0.20.0 — freeze ONLY during an actual input dispatch (the ~1.5s after a
-  // mouse/keyboard event), NOT for the whole task. The old `isBusy()` gate
-  // suppressed following for the entire task duration — and v4-pro's longer
-  // thinking tasks made that "frozen" window long enough that Clippy visibly
-  // stopped following focus. Between dispatches focus sits on the task's target
-  // window anyway, so following keeps Clippy there; we only hold still for the
-  // split-second it's clicking/typing so the bubble doesn't jump mid-action.
-  if (takeover.isDispatchingInput()) { diag('dispatching_input'); return; }
+  // Never move during a task: Clippy stays in his spot, kept in front by
+  // task-follow (owner, 0.24.10: "make sure clippy is in his same spot but on
+  // the foreground when executing a task"). v0.20 followed focus between input
+  // dispatches, so he glided after every window a task opened.
+  if (state.brain && state.brain.isBusy()) { diag('task_running'); return; }
 
   // NOTE: we deliberately do NOT bail when the bubble is open. Earlier that
   // hard guard meant Clippy never followed the focused window whenever a tip/

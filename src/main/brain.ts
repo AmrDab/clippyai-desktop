@@ -18,6 +18,7 @@
  */
 
 import { BrowserWindow, net, app, powerMonitor } from 'electron';
+import { watchReachability, REACH_PROBE_TIMEOUT_MS } from './turn-reachability';
 import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk, readForegroundText } from './tools';
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
@@ -139,6 +140,17 @@ import * as byokMod from './byok';
 const log = createLogger('Brain');
 const API_BASE = 'https://api.clippyai.app';
 const TURN_ENDPOINT = `${API_BASE}/v1/turn`;
+
+/** GET url; true on any HTTP response within timeoutMs, false on error or timeout. */
+function probeServer(url: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = net.request({ url, method: 'GET' });
+    const t = setTimeout(() => { req.abort(); resolve(false); }, timeoutMs);
+    req.on('response', (res) => { clearTimeout(t); res.on('data', () => {}); res.on('error', () => {}); resolve(true); });
+    req.on('error', () => { clearTimeout(t); resolve(false); });
+    req.end();
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // v0.19.0 — SuggestionContext builder + FS caches
@@ -3116,6 +3128,7 @@ ${typingLine}`;
       ai_error: "Couldn't think straight — try again!",
       timeout: 'Took too long — try again!',
       network: "Can't reach my brain. Check your internet.",
+      unreachable: "Can't reach my server. Check your internet and try again.",
       parse_error: 'Got a garbled response. Try again!',
     };
     return map[error] || detail || 'Something went wrong.';
@@ -3178,7 +3191,7 @@ ${typingLine}`;
       const result = await this.callTurnOnce(contents, opts);
       // Don't retry non-transient errors
       if (!isError(result)) return result;
-      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'feature_locked', 'parse_error'].includes(result.error)) {
+      if (['invalid_key', 'subscription_inactive', 'limit_reached', 'feature_locked', 'parse_error', 'unreachable'].includes(result.error)) {
         return result;
       }
       // Retry transient errors (ai_error, network, timeout, rate_limited)
@@ -3264,13 +3277,25 @@ ${typingLine}`;
       // without retrying a doomed call.
       const TURN_TIMEOUT_MS = 60_000;
       const timeout = setTimeout(() => {
+        cancelReach();
         const elapsed = Date.now() - startTime;
         log.error(`Turn API timeout (${TURN_TIMEOUT_MS / 1000}s)`, { elapsed_ms: elapsed });
         req.abort();
         resolve({ error: 'timeout' });
       }, TURN_TIMEOUT_MS);
+      // Still waiting after 15 s and /health is down too: stop now (turn-reachability.ts).
+      const cancelReach = watchReachability({
+        probe: () => probeServer(`${API_BASE}/health`, REACH_PROBE_TIMEOUT_MS),
+        onUnreachable: () => {
+          clearTimeout(timeout);
+          log.warn('Turn: server unreachable', { elapsed_ms: Date.now() - startTime });
+          req.abort();
+          resolve({ error: 'unreachable' });
+        },
+      });
 
       req.on('response', (response) => {
+        cancelReach();
         let data = '';
         response.on('data', (chunk) => {
           data += chunk.toString();
@@ -3291,6 +3316,7 @@ ${typingLine}`;
 
       req.on('error', (err) => {
         clearTimeout(timeout);
+        cancelReach();
         log.error('Turn network error', serializeErr(err));
         resolve({ error: 'network' });
       });
