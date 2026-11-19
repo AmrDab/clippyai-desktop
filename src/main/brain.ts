@@ -69,7 +69,7 @@ import { ToolLoopDetector } from './tool-loop-detection';
 import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
 import Store from 'electron-store';
-import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
+import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
 import { offerReply } from './offer-reply';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -1352,9 +1352,9 @@ export class Brain {
       // one-shot 'Thinking' which left Clippy frozen during long tasks.
       this.emit('working-start');
       // Owner report: Clippy was left behind while the agent worked in other
-      // apps. For the task's duration he stays in front and travels with the
-      // cursor (task-follow.ts); stopped in finally{} below.
-      try { taskFollow.begin(this.win, { easing: settingsStore.get('followEasing') }); } catch (err) {
+      // apps. For the task's duration he stays in front, where he is — he does
+      // not follow the cursor (task-follow.ts); stopped in finally{} below.
+      try { taskFollow.begin(this.win); } catch (err) {
         log.warn('task-follow begin failed (non-fatal)', serializeErr(err));
       }
       this.taskOutcome = 'done';
