@@ -45,6 +45,14 @@ describe('classifyLabel — positives', () => {
   it('a Subscribe checkbox or button is not a purchase, unless it is on a checkout', () => {
     expect(classifyLabel('Subscribe')).toBeNull();
     expect(classifyRisk({ tool: 'smart_click', args: { target: 'Subscribe' }, url: 'https://shop.example.com/checkout' })?.class).toBe('destructive_purchase');
+    expect(classifyRisk({ tool: 'smart_click', args: { target: 'Subscribe' }, url: 'https://app.example.com/pricing' })?.class).toBe('destructive_purchase');
+  });
+  it('a Subscribe with a price or plan word is a paid subscription', () => {
+    for (const label of ['Subscribe for $9.99/mo', 'Subscribe to Premium', 'Start free trial and subscribe', 'Subscribe monthly', 'Pro plan: Subscribe']) {
+      expect(classifyLabel(label)?.class).toBe('destructive_purchase');
+    }
+    expect(classifyLabel('Subscribe to newsletter')).toBeNull();
+    expect(classifyLabel('Subscribers')).toBeNull();
   });
 
   it('normalises selectors: #place-order-btn reads as "place order"', () => {

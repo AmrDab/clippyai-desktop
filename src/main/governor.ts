@@ -80,9 +80,11 @@ const LABEL_RULES: LabelRule[] = [
     re: /\b(publish|post|share\s+(now|publicly|to))\b/i },
   { cls: 'destructive_file', what: 'delete',
     re: /\b(delete|remove|erase|wipe|destroy|discard|uninstall|format|empty\s+trash|move\s+to\s+trash)\b/i },
-  // No bare "Subscribe" rule: it asked for a newsletter checkbox (owner benchmark,
-  // 0.24.11). A paid subscribe on a checkout/payment page still asks via the URL
-  // and window-context checks in classifyRisk.
+  // A paid subscribe: "Subscribe" with a price or plan word. A bare "Subscribe"
+  // (a newsletter checkbox, owner benchmark 0.24.11) does not ask; on a checkout,
+  // pricing, plans or upgrade page it still does (PURCHASE_URL / context).
+  { cls: 'destructive_purchase', what: 'paid subscription',
+    re: /\bsubscribe\b.*(?:[$€£]|\/\s?mo\b|\b(?:month|monthly|year|yearly|annual|plan|premium|trial|pro|plus)\b)|(?:[$€£]|\b(?:premium|trial|plan|pro|plus)\b).*\bsubscribe\b/i },
   { cls: 'destructive_exec', what: 'confirmation',
     re: /\b(confirm|authori[sz]e)\b/i },
 ];
@@ -103,7 +105,7 @@ const CREDENTIAL_LABEL = /\b(password|passwd|passcode|pin|ssn|social\s+security|
 
 // ── URL patterns ─────────────────────────────────────────────────────────
 
-const PURCHASE_URL = /(\/(checkout|cart|payment|billing|purchase|buy|order\/confirm|place.?order)(\/|$|\?|#)|checkout\.stripe\.com|paypal\.com\/(cgi-bin\/webscr|checkout))/i;
+const PURCHASE_URL = /(\/(checkout|cart|payment|billing|purchase|buy|order\/confirm|place.?order|subscribe|pricing|plans|upgrade)(\/|$|\?|#)|checkout\.stripe\.com|paypal\.com\/(cgi-bin\/webscr|checkout))/i;
 const COMPOSE_URL = /(\/compose(\/|$|\?|#)|mail\.google\.com\/.*#?compose|outlook\.(live|office)\.com\/mail\/.*\/compose|#compose)/i;
 
 /** Window titles / focused-element names that mark a send or pay surface. */

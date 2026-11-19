@@ -251,7 +251,7 @@ async function init(): Promise<void> {
   // Deny. TTS says only the generic line — never the args.
   // A countdown under the buttons shows main's auto-deny timeout
   // (approval.ts APPROVAL_TIMEOUT_MS); at zero the prompt closes as Deny.
-  window.clippy.onApprovalRequest?.(({ id, summary, timeoutMs }) => {
+  window.clippy.onApprovalRequest?.(({ id, summary, reason, timeoutMs }) => {
     let answered = false;
     let tick: ReturnType<typeof setInterval> | null = null;
     const answer = (approved: boolean) => {
@@ -262,7 +262,8 @@ async function init(): Promise<void> {
     };
     // Summaries start with a capitalized verb ("Click 'Send'"): "Can I click 'Send'?".
     const action = String(summary).replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
-    bubbleCtrl.speakWithActions(`Can I **${action}**?`, [
+    // The banner's first line is its title, the rest its body (splitBanner).
+    bubbleCtrl.speakWithActions(`Can I **${action}**?${reason ? `\n${reason}` : ''}`, [
       { label: 'Approve', variant: 'primary', onClick: () => { answer(true); bubbleCtrl.showThinking(); } },
       { label: 'Deny', variant: 'ghost', onClick: () => { answer(false); bubbleCtrl.hide(); } },
     ], { sticky: true, onDismiss: () => answer(false) });

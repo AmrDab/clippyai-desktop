@@ -1876,14 +1876,14 @@ export class Brain {
           }
           if (decision === 'approve') {
             const baseSummary = approvalMod.summarizeArgs(call.name, call.args);
-            // Just the action: "Can I click 'Send'?". The governor's reason went to the log
-            // (Tool.escalated); prefixed, it read "Can I Looks like a … button: …?".
+            // The action is the question ("Can I click 'Send'?"); the governor's reason is a
+            // second line (prefixed, it read "Can I Looks like a … button: …?").
             const summary = baseSummary;
             // The user is about to click Approve/Deny — that's not a takeover.
             try { userTakeover.pauseDetection(); } catch { /* non-fatal */ }
             let verdict: approvalMod.ApprovalResult;
             try {
-              verdict = await approvalMod.requestApproval(this.win, { tool: call.name, summary, actionClass });
+              verdict = await approvalMod.requestApproval(this.win, { tool: call.name, summary, actionClass, reason: risk?.reason });
             } finally {
               try { userTakeover.resumeDetection(); } catch { /* non-fatal */ }
             }

@@ -22,6 +22,8 @@ export interface ApprovalRequest {
   tool: string;
   summary: string;
   actionClass: ActionClass;
+  /** Why a governed click/key asks (governor.ts), shown under the question. */
+  reason?: string;
 }
 
 export const APPROVAL_TIMEOUT_MS = 60_000;
