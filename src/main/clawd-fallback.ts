@@ -214,6 +214,19 @@ function showConsentNotice(): void {
 }
 
 /**
+ * Clippy is the "agent at work" indicator (in front during a task; a click on
+ * him stops it), so clawdcursor's own pill is not drawn (owner: "no pill for
+ * when hes working"). CLAWD_PILL_CMD hosts the pill in a command that draws
+ * nothing and lives until its stdin closes; clawdcursor keeps its outline and
+ * glow while that command runs. CLAWD_OWN_UI_PIDS marks Clippy's own window.
+ * Exported for tests.
+ */
+export function clawdHostEnv(platform: string = process.platform, pid: number = process.pid): Record<string, string> {
+  const silentPill = platform === 'win32' ? ['cmd.exe', '/d', '/c', 'more >nul'] : ['/bin/sh', '-c', 'cat >/dev/null'];
+  return { CLAWD_PILL_CMD: JSON.stringify(silentPill), CLAWD_OWN_UI_PIDS: String(pid) };
+}
+
+/**
  * v0.21 containment — lazy start. clawdcursor used to be spawned at every
  * boot (persistent child + listener on :3847 + token rotation, with
  * `--accept` passed on the user's behalf) before the user asked for
@@ -271,6 +284,7 @@ export async function startClawd(): Promise<void> {
   const child = spawn(binaryPath, ['agent', '--no-llm', '--port', String(CLAWD_PORT), '--accept'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
+    env: { ...process.env, ...clawdHostEnv() },
   });
   proc = child;
 

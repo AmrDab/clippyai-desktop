@@ -34,13 +34,17 @@ describe('classifyLabel — positives', () => {
     ['Remove', 'destructive_file'],
     ['Empty trash', 'destructive_file'],
     ['Uninstall', 'destructive_file'],
-    ['Subscribe', 'destructive_web'],
     ['Confirm', 'destructive_exec'],
     ['Authorize', 'destructive_exec'],
   ])('%s → %s', (label, cls) => {
     const v = click(label);
     expect(v?.class).toBe(cls);
     expect(v?.reason).toContain(label);
+  });
+
+  it('a Subscribe checkbox or button is not a purchase, unless it is on a checkout', () => {
+    expect(classifyLabel('Subscribe')).toBeNull();
+    expect(classifyRisk({ tool: 'smart_click', args: { target: 'Subscribe' }, url: 'https://shop.example.com/checkout' })?.class).toBe('destructive_purchase');
   });
 
   it('normalises selectors: #place-order-btn reads as "place order"', () => {

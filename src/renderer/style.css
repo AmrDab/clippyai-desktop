@@ -534,6 +534,16 @@ body.clippy-window {
 .banner-body { margin-top: 2px; }
 .banner-body ul { margin: 2px 0 0 18px; padding: 0; }
 
+/* Flyout and banner never outgrow the window: the text (reply or recent chat)
+ * shrinks and scrolls, so the header (minimize, close) and the text field stay
+ * on screen. 104px Clippy strip + 5px inset. */
+.bubble[data-surface="flyout"],
+.bubble[data-surface="banner"] { max-height: calc(100vh - 109px); display: flex; flex-direction: column; }
+.bubble[data-surface="flyout"] > *,
+.bubble[data-surface="banner"] > * { flex-shrink: 0; }
+.bubble[data-surface="flyout"] > #bubble-text,
+.bubble[data-surface="banner"] > #bubble-text { flex-shrink: 1; min-height: 0; }
+
 /* ── Primary text region ─────────────────────────────────────────── */
 #bubble-text {
   margin-bottom: 4px;

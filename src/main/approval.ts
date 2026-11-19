@@ -91,8 +91,7 @@ export function wasApproved(tool: string, key: string): boolean {
 // https://example.com"). Never raw JSON: an unknown tool falls back to its
 // TOOL_META description, then to its name in words. Typed / copied / spoken
 // text is shown only when it is short, multi-word prose (never something
-// that could be a password); otherwise just its length. A governor
-// escalation is prefixed by the caller: "{risk.reason} — {summary}".
+// that could be a password); otherwise just its length.
 
 // Truncation is always VISIBLE: a value cut silently could hide its dangerous
 // tail behind a harmless-looking prefix the user then approves.

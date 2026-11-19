@@ -80,8 +80,9 @@ const LABEL_RULES: LabelRule[] = [
     re: /\b(publish|post|share\s+(now|publicly|to))\b/i },
   { cls: 'destructive_file', what: 'delete',
     re: /\b(delete|remove|erase|wipe|destroy|discard|uninstall|format|empty\s+trash|move\s+to\s+trash)\b/i },
-  { cls: 'destructive_web', what: 'subscription',
-    re: /\b(subscribe)\b/i },
+  // No bare "Subscribe" rule: it asked for a newsletter checkbox (owner benchmark,
+  // 0.24.11). A paid subscribe on a checkout/payment page still asks via the URL
+  // and window-context checks in classifyRisk.
   { cls: 'destructive_exec', what: 'confirmation',
     re: /\b(confirm|authori[sz]e)\b/i },
 ];

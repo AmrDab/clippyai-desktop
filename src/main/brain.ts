@@ -1876,7 +1876,9 @@ export class Brain {
           }
           if (decision === 'approve') {
             const baseSummary = approvalMod.summarizeArgs(call.name, call.args);
-            const summary = risk ? `${risk.reason} — ${baseSummary}` : baseSummary;
+            // Just the action: "Can I click 'Send'?". The governor's reason went to the log
+            // (Tool.escalated); prefixed, it read "Can I Looks like a … button: …?".
+            const summary = baseSummary;
             // The user is about to click Approve/Deny — that's not a takeover.
             try { userTakeover.pauseDetection(); } catch { /* non-fatal */ }
             let verdict: approvalMod.ApprovalResult;

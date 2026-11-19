@@ -260,7 +260,9 @@ async function init(): Promise<void> {
       answered = true;
       void window.clippy.respondApproval(id, approved);
     };
-    bubbleCtrl.speakWithActions(`Can I **${summary}**?`, [
+    // Summaries start with a capitalized verb ("Click 'Send'"): "Can I click 'Send'?".
+    const action = String(summary).replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase());
+    bubbleCtrl.speakWithActions(`Can I **${action}**?`, [
       { label: 'Approve', variant: 'primary', onClick: () => { answer(true); bubbleCtrl.showThinking(); } },
       { label: 'Deny', variant: 'ghost', onClick: () => { answer(false); bubbleCtrl.hide(); } },
     ], { sticky: true, onDismiss: () => answer(false) });
