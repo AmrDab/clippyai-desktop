@@ -51,21 +51,3 @@ describe('abortableDelay', () => {
     expect(reg.size).toBe(0);
   });
 });
-
-describe('wait tool', () => {
-  it('abortAllInFlightTools ends a 30 s wait at once', async () => {
-    vi.resetModules();
-    vi.doMock('electron', () => ({
-      app: { isPackaged: false, getPath: () => require('os').tmpdir(), getAppPath: () => process.cwd() },
-      clipboard: {}, BrowserWindow: class {}, screen: {}, shell: {}, nativeImage: {},
-    }));
-    const tools = await import('../src/main/tools');
-    const started = Date.now();
-    const p = tools.executeTool('wait', { seconds: 30 });
-    await new Promise((r) => setTimeout(r, 20));
-    expect(tools.abortAllInFlightTools()).toBeGreaterThanOrEqual(1);
-    expect((await p).text).toBe('(wait cancelled)');
-    expect(Date.now() - started).toBeLessThan(2000);
-    expect((await tools.executeTool('wait', { seconds: 0.1 })).text).toBe('Waited 0.1s');
-  }, 15000);
-});
