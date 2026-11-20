@@ -26,7 +26,7 @@ function Test-PathAllowedForRead {
         return @{ allowed = $false; resolved = ''; reason = "resolve_failed: $($_.Exception.Message)" }
     }
 
-    # System directories — same set as com-write-file.ps1 blockedPrefixes.
+    # System directories.
     $blockedSystemPrefixes = @(
         "$env:SystemRoot\",            # C:\Windows\
         "$env:ProgramFiles\",          # C:\Program Files\

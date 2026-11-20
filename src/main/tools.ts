@@ -2902,9 +2902,8 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
 // and the blocklist wouldn't catch it. Every legitimate use case is already
 // covered by purpose-built tools (outlook_send_email, read_file, write_file,
 // create_reminder, system_info, list_processes, http_request, ping_host,
-// excel_read, word_to_pdf, etc.). The com-run-powershell.ps1 script is
-// kept on disk for emergency manual debugging but is NOT registered in
-// TOOL_MAP; the model has no way to call it.
+// excel_read, word_to_pdf, etc.). The com-run-powershell.ps1 script itself
+// was deleted in v0.24.12 (it shipped in the installer with no caller).
 
 // ── Agent loop tools ────────────────────────────────────────────
 

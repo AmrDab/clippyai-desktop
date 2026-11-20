@@ -124,7 +124,7 @@ describe.skipIf(!RUN)('Windows PowerShell host harness (own WinForms window)', (
       { op: 'read_screen (UIA tree of own form)', one: () => oneShotScript('get-screen-context.ps1', { ExcludeProcessId: process.pid, FocusedProcessId: info.pid }), host: () => psScript('get-screen-context.ps1', { ExcludeProcessId: process.pid, FocusedProcessId: info.pid }, { timeoutMs: 15000 }) },
       { op: 'mouse_* path (types loaded, cursor read only)', one: () => oneShotCommand(`${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position.X`), host: () => psCommand(`${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position.X`, { timeoutMs: 10000 }) },
       { op: 'key_press path (SendKeys loaded, nothing sent)', one: () => oneShotCommand(`Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.SendKeys]`), host: () => psCommand(`Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.SendKeys]`, { timeoutMs: 10000 }) },
-      { op: 'smart_click UIA find "Send" (old find-element vs smart-find)', one: () => oneShotScript('find-element.ps1', { Name: 'Send', ProcessId: info.pid }), host: () => psScript('smart-find.ps1', { NameB64: b64('Send'), WindowHandle: info.hwnd, Action: 'find' }, { timeoutMs: 15000 }) },
+      { op: 'smart_click UIA find "Send" (smart-find)', one: () => oneShotScript('smart-find.ps1', { NameB64: b64('Send'), WindowHandle: info.hwnd, Action: 'find' }), host: () => psScript('smart-find.ps1', { NameB64: b64('Send'), WindowHandle: info.hwnd, Action: 'find' }, { timeoutMs: 15000 }) },
     ];
     for (const o of ops) {
       await o.host(); // warm the type cache once, as a real session would
@@ -205,14 +205,6 @@ describe.skipIf(!RUN)('Windows PowerShell host harness (own WinForms window)', (
     expect(send!.element.x).toBeGreaterThanOrEqual(win.x);
     const status = matchOcrTarget('Inbox status', layout.elements);
     expect(status?.kind).toBe('span');
-    // old path: capture to %TEMP% PNG (spawn 1) + ocr-recognize.ps1 (spawn 2)
-    const png = path.join(os.tmpdir(), `clippy-harness-${Date.now()}.png`);
-    const old = await timeIt(async () => {
-      await oneShotCommand(`${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $bmp = New-Object System.Drawing.Bitmap(${win.w},${win.h}); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(${win.x},${win.y},0,0,(New-Object System.Drawing.Size(${win.w},${win.h}))); $bmp.Save('${png}', [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()`);
-      await oneShotScript('ocr-recognize.ps1', { ImagePath: png });
-    }, 3);
-    try { fs.unlinkSync(png); } catch { /* gone */ }
-    results.push({ op: 'OCR own-form rect (old 2-spawn PNG path vs resident host)', oneShot: old, host: warm });
     console.log(`OCR host cold ${cold} ms (engine created), warm median ${median(warm)} ms; words=${first.elements.length}`);
     expect(median(warm)).toBeLessThan(median(old));
   }, 120000);
