@@ -70,6 +70,8 @@ import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
+import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
+import { isPingableHost } from './security/net-guard';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
 // never from a model-supplied argument.
@@ -2675,6 +2677,36 @@ function isProtectedPath(p: string): boolean {
   );
 }
 
+/** Guard context for the read tools: Clippy's own userData dir is guarded too. */
+function readGuardEnv(): PathGuardEnv {
+  try { return { extraDirs: [app.getPath('userData')] }; } catch { return {}; }
+}
+
+/**
+ * For a recursive walk from `root`: a predicate that is true for a guarded
+ * entry (~/.ssh, a browser profile...) so the walk steps over it. When the
+ * root itself is guarded the user approved it (assessRisk), so nothing below
+ * it is skipped.
+ */
+async function skipsGuardedBelow(root: string): Promise<(full: string) => boolean> {
+  const env = readGuardEnv();
+  if (!(await checkReadPath(root, env)).allowed) return () => false;
+  return (full) => !judgeResolvedPath(full, env).allowed;
+}
+
+/**
+ * read_file / list_files / search_files_content on a guarded path (0.24.12
+ * audit #2): not refused, escalated so the user is asked first.
+ */
+async function assessReadPath(tool: string, params: Record<string, unknown>): Promise<RiskVerdict | null> {
+  if (tool !== 'read_file' && tool !== 'list_files' && tool !== 'search_files_content') return null;
+  const raw = String(params.path || (tool === 'search_files_content' ? os.homedir() : ''));
+  if (!raw) return null;
+  const check = await checkReadPath(raw, readGuardEnv());
+  if (check.allowed) return null;
+  return { class: 'destructive_file', reason: `This reads ${describePathBlock(check)}` };
+}
+
 /** Cheap binary detector — NUL byte in the first 4 KB is the standard heuristic. */
 function looksBinary(buf: Buffer): boolean {
   const sample = buf.subarray(0, Math.min(buf.length, 4096));
@@ -2909,6 +2941,7 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
   const matches: string[] = [];
   let scanned = 0;
   let truncated = false;
+  const skipGuarded = await skipsGuardedBelow(root);
 
   async function walk(dir: string): Promise<void> {
     if (matches.length >= FS_SEARCH_MAX_MATCHES || scanned >= FS_SEARCH_MAX_TOTAL_BYTES) return;
@@ -2921,6 +2954,7 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
     for (const ent of entries) {
       if (FS_SEARCH_SKIP_DIRS.has(ent.name)) continue;
       const full = path.join(dir, ent.name);
+      if (skipGuarded(full)) continue;
       if (ent.isDirectory()) {
         await walk(full);
         if (matches.length >= FS_SEARCH_MAX_MATCHES || scanned >= FS_SEARCH_MAX_TOTAL_BYTES) return;
@@ -2965,8 +2999,11 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
 }
 
 async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
-  const host = String(params.host || '');
+  const host = String(params.host || '').trim();
   if (!host) return { text: 'Error: host is required' };
+  // A hostname or an IP only: anything else (a URL, a long encoded label) could
+  // carry data out in the DNS lookup.
+  if (!isPingableHost(host)) return { text: '(error:INVALID_ARGS) host must be a plain hostname or an IP address' };
   const count = String(Number(params.count) || 4);
   // Note: -hostName in script (host is a reserved-ish param name in some PS contexts)
   const result = await runComScript('com-ping-host.ps1', ['-hostName', host, '-count', count], 15000);
@@ -4614,6 +4651,7 @@ async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
 
   type Entry = { name: string; type: 'file' | 'dir'; size: number; mtime: string };
   const collected: Entry[] = [];
+  const skipGuarded = await skipsGuardedBelow(dirPath);
 
   async function walk(dir: string, prefix: string): Promise<void> {
     if (collected.length >= top) return;
@@ -4630,7 +4668,7 @@ async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
       const passesFilter = !filterRe || filterRe.test(ent.name);
       if (ent.isDirectory()) {
         if (passesFilter) collected.push({ name: rel + '/', type: 'dir', size: 0, mtime: '' });
-        if (recurse) await walk(full, rel);
+        if (recurse && !skipGuarded(full)) await walk(full, rel);
       } else if (ent.isFile() && passesFilter) {
         try {
           const st = await fsp.stat(full);
@@ -5495,6 +5533,8 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  * Never throws — a failed lookup just means "no extra context".
  */
 export async function assessRisk(tool: string, params: Record<string, unknown> = {}): Promise<RiskVerdict | null> {
+  const guarded = await assessReadPath(tool, params).catch(() => null);
+  if (guarded) return guarded;
   if (!GOVERNED_TOOLS.has(tool)) return null;
   const direct = classifyRisk({ tool, args: params });
   if (direct) return direct;
