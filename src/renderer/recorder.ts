@@ -19,6 +19,16 @@
  * clip.
  */
 
+import { isDeadMic, rmsOf } from '../main/voice-gate';
+import { cleanMicLabel, listMics, otherMics, resolveMic, type Mic, type MicPref } from './mic-select';
+
+// Automatic mode: how long the default microphone, then each other one, is
+// listened to before it is called dead.
+const DEFAULT_PROBE_MS = 500;
+const OTHER_PROBE_MS = 300;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export type RecorderState = 'idle' | 'requesting' | 'recording' | 'encoding';
 
 export interface RecorderEvents {
@@ -29,8 +39,19 @@ export interface RecorderEvents {
   /** Called when audio is captured + encoded. The Uint8Array is a
    *  standard 16 kHz mono 16-bit PCM .wav ready to send to the main
    *  process for whisper-cli. */
-  onResult?: (wav: Uint8Array, durationMs: number) => void;
+  onResult?: (wav: Uint8Array, durationMs: number, clip: RecordedClip) => void;
+  /** Automatic mode found the default microphone dead and moved to one with
+   *  signal. Fires once; the new microphone is kept for the session. */
+  onMicSwitched?: (deadLabel: string, liveLabel: string) => void;
   onError?: (msg: string) => void;
+}
+
+/** What the recorder knows about a finished clip besides its audio. */
+export interface RecordedClip {
+  /** RMS of the whole clip, 0..1. Near 0 means the microphone gave silence. */
+  rms: number;
+  /** Name of the microphone the clip came from ('' when unknown). */
+  micLabel: string;
 }
 
 export class Recorder {
@@ -51,6 +72,15 @@ export class Recorder {
   // Level metering — RMS computed on each onaudioprocess tick.
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private lastLevelSamples: Float32Array | null = null;
+  private micLabel = '';
+  private micPref: MicPref | null = null;
+  // Automatic mode: the microphone that had signal when the default was
+  // dead. Kept for the session so later recordings open it directly.
+  private autoMic: Mic | null = null;
+  private onDefaultMic = false;
+  // Bumped by every start(), so a dead-mic probe left over from an earlier
+  // recording can tell it is stale.
+  private run = 0;
 
   constructor(events: RecorderEvents = {}) {
     this.events = events;
@@ -60,23 +90,114 @@ export class Recorder {
     return this.state;
   }
 
-  /** Begin capturing from the default mic. Resolves once the worklet is
-   *  actually receiving frames; rejects on permission denial. */
+  /** The microphone chosen in Settings → Voice; null or an empty deviceId
+   *  means Automatic. Takes effect on the next start(). */
+  setMic(pref: MicPref | null): void {
+    this.micPref = pref;
+  }
+
+  // Requests 16 kHz; browsers may ignore the hint, which is fine — we
+  // resample on encode. No deviceId = the system default microphone.
+  private getStream(deviceId?: string): Promise<MediaStream> {
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        channelCount: 1,
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+  }
+
+  /** The chosen microphone, or the system default when none is chosen or
+   *  the chosen one is gone (unplugged since). */
+  private async openMic(): Promise<MediaStream> {
+    this.onDefaultMic = false;
+    if (this.micPref?.deviceId) {
+      try {
+        const mic = resolveMic(this.micPref, listMics(await navigator.mediaDevices.enumerateDevices()));
+        if (mic) return await this.getStream(mic.deviceId);
+      } catch { /* gone: fall back to Automatic */ }
+    } else if (this.autoMic) {
+      try {
+        return await this.getStream(this.autoMic.deviceId);
+      } catch { this.autoMic = null; }
+    }
+    this.onDefaultMic = true;
+    return this.getStream();
+  }
+
+  /**
+   * Automatic mode. A default microphone at 0% input volume, or a dock jack
+   * with nothing plugged in, records true digital silence. If the first
+   * ~500 ms are that, listen to every other microphone for ~300 ms (all at
+   * once, so the wait does not grow with their number) and move the
+   * recording to the first one with signal. The clip restarts at the switch:
+   * what the dead microphone gave is dropped. Recording has already begun
+   * when this runs, so a working default costs no delay.
+   */
+  private async skipDeadMic(run: number): Promise<void> {
+    const live = (): boolean => run === this.run && this.state === 'recording';
+    const need = (this.actualSampleRate * DEFAULT_PROBE_MS) / 1000;
+    const giveUp = Date.now() + DEFAULT_PROBE_MS + 1000;
+    const captured = (): number => this.buffers.reduce((n, b) => n + b.length, 0);
+    while (live() && captured() < need && Date.now() < giveUp) await sleep(50);
+    if (!live() || captured() === 0 || !isDeadMic(rmsOf(this.buffers))) return;
+
+    const deadLabel = this.micLabel;
+    let mics: Mic[];
+    try {
+      mics = otherMics(listMics(await navigator.mediaDevices.enumerateDevices()), deadLabel);
+    } catch { return; }
+    const streams = await Promise.all(mics.map((m) => this.probeMic(m)));
+    const found = live() ? streams.findIndex((s) => s !== null) : -1;
+    streams.forEach((s, i) => { if (s && i !== found) s.getTracks().forEach((t) => t.stop()); });
+    if (found < 0 || !this.ctx || !this.node) return;
+
+    try { this.source?.disconnect(); } catch { /* ignore */ }
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = streams[found];
+    this.source = this.ctx.createMediaStreamSource(this.stream!);
+    this.source.connect(this.node);
+    this.buffers = [];
+    this.startedAt = Date.now();
+    this.onDefaultMic = false;
+    this.autoMic = mics[found];
+    this.micLabel = mics[found].label;
+    this.events.onMicSwitched?.(deadLabel, this.micLabel);
+  }
+
+  /** An open stream from `mic` if it carries signal, else null (and closed). */
+  private async probeMic(mic: Mic): Promise<MediaStream | null> {
+    let stream: MediaStream;
+    try { stream = await this.getStream(mic.deviceId); } catch { return null; }
+    try {
+      if (!this.ctx) throw new Error('recording ended');
+      const source = this.ctx.createMediaStreamSource(stream);
+      const analyser = this.ctx.createAnalyser();
+      analyser.fftSize = 4096;
+      source.connect(analyser);
+      await sleep(OTHER_PROBE_MS);
+      const samples = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(samples);
+      source.disconnect();
+      if (!isDeadMic(rmsOf([samples]))) return stream;
+    } catch { /* the recording ended mid-probe */ }
+    stream.getTracks().forEach((t) => t.stop());
+    return null;
+  }
+
+  /** Begin capturing from the chosen mic (the default one in Automatic).
+   *  Resolves once the worklet is actually receiving frames; rejects on
+   *  permission denial. */
   async start(): Promise<void> {
     if (this.state !== 'idle') return; // idempotent
+    const run = ++this.run;
     this.setState('requesting');
     try {
-      // Try requesting at 16 kHz; browsers may ignore the hint, which
-      // is fine — we resample on encode.
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      this.stream = await this.openMic();
     } catch (err) {
       this.cleanup();
       this.setState('idle');
@@ -84,6 +205,8 @@ export class Recorder {
       this.events.onError?.(`Microphone access denied: ${msg}`);
       throw err;
     }
+
+    this.micLabel = cleanMicLabel(this.stream.getAudioTracks()[0]?.label ?? '');
 
     // Try to create at 16 kHz; fall back to default if browser refuses.
     try {
@@ -115,6 +238,7 @@ export class Recorder {
     this.buffers = [];
     this.startedAt = Date.now();
     this.setState('recording');
+    if (this.onDefaultMic) void this.skipDeadMic(run);
 
     // Level meter: report RMS every 150ms.
     this.levelTimer = setInterval(() => {
@@ -155,6 +279,7 @@ export class Recorder {
     if (this.maxDurationTimer) { clearTimeout(this.maxDurationTimer); this.maxDurationTimer = null; }
 
     const durationMs = Date.now() - this.startedAt;
+    const rms = rmsOf(this.buffers);
     const wav = encodeWav(this.buffers, this.actualSampleRate);
     this.buffers = [];
 
@@ -171,7 +296,7 @@ export class Recorder {
     this.node = null;
 
     this.setState('idle');
-    this.events.onResult?.(wav, durationMs);
+    this.events.onResult?.(wav, durationMs, { rms, micLabel: this.micLabel });
   }
 
   /** Abandon the recording without emitting a result. Used when the

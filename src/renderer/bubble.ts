@@ -1,4 +1,5 @@
 import { Recorder } from './recorder';
+import { HEARD_NOTHING, SHORT_CLIP_MS, isSilentClip, micSwitchedMessage, silentMicMessage } from '../main/voice-gate';
 import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
 import { typeTotalMs, typedText, hasMarkdown, splitBanner, DeferredCollapse, RECOIL_MS, shouldAutoMinimize } from './bubble-motion';
 import { reducedMotion } from './motion';
@@ -1171,7 +1172,14 @@ export class BubbleController {
           if (s === 'recording') this.requestAnim('Hearing_1');
           else if (s === 'idle') this.requestAnim('Idle1_1');
         },
-        onResult: (wav, durationMs) => {
+        onResult: (wav, durationMs, clip) => {
+          // Silence gate: a clip with no sound in it is never transcribed, so
+          // whisper cannot turn it into "[BLANK_AUDIO]" or "you". A tap too
+          // short to judge the microphone by gets the plain line.
+          if (isSilentClip(clip.rms)) {
+            this.speakError(durationMs >= SHORT_CLIP_MS ? silentMicMessage(clip.micLabel) : HEARD_NOTHING);
+            return;
+          }
           this.input.placeholder = 'Transcribing...';
           this.input.disabled = true;
           void window.clippy.transcribeAudio?.(wav)
@@ -1184,7 +1192,7 @@ export class BubbleController {
               }
               const text = (res.text || '').trim();
               if (!text) {
-                this.speakError("I didn't catch that.");
+                this.speakError(HEARD_NOTHING);
                 return;
               }
               this.input.value = text;
@@ -1203,8 +1211,16 @@ export class BubbleController {
         onError: (msg) => {
           this.speakError(msg);
         },
+        onMicSwitched: (deadLabel, liveLabel) => {
+          // Shown while recording goes on: keep the bubble as it is.
+          this.speak(micSwitchedMessage(deadLabel, liveLabel), { autoState: this.state === 'compact' ? 'standard' : this.state });
+        },
       });
     }
+
+    // The microphone chosen in Settings → Voice, read fresh so a change there
+    // applies to the next recording.
+    try { this.recorder.setMic((await window.clippy.getMicDevice?.()) ?? null); } catch { /* Automatic */ }
 
     try {
       await this.recorder.start();

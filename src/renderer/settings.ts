@@ -514,6 +514,40 @@ if (sttEngineSelect) {
   });
 }
 
+// Voice INPUT microphone. "Automatic" follows the system default (the
+// recorder skips a silent one). A chosen microphone is saved by id and by
+// name, so it is found again after Chromium changes the id.
+import { listMics, resolveMic, type Mic, type MicPref } from './mic-select';
+const micSelect = document.getElementById('setting-mic') as HTMLSelectElement | null;
+if (micSelect && window.clippy.getMicDevice && navigator.mediaDevices?.enumerateDevices) {
+  let micPref: MicPref = { deviceId: '', label: '' };
+  let mics: Mic[] = [];
+  const renderMics = async (): Promise<void> => {
+    try { mics = listMics(await navigator.mediaDevices.enumerateDevices()); } catch { mics = []; }
+    const chosen = resolveMic(micPref, mics);
+    micSelect.innerHTML = '';
+    micSelect.add(new Option('Automatic (recommended)', ''));
+    mics.forEach((m, i) => micSelect.add(new Option(m.label || `Microphone ${i + 1}`, m.deviceId)));
+    // A saved microphone that is unplugged stays listed: recordings use
+    // Automatic until it is back, and Settings does not forget the choice.
+    if (micPref.deviceId && !chosen) {
+      micSelect.add(new Option(`${micPref.label || 'Microphone'} (not connected)`, micPref.deviceId));
+    }
+    micSelect.value = chosen ? chosen.deviceId : micPref.deviceId;
+  };
+  micSelect.addEventListener('change', () => {
+    const picked = mics.find((m) => m.deviceId === micSelect.value);
+    if (picked) micPref = picked;
+    else if (micSelect.value !== micPref.deviceId) micPref = { deviceId: '', label: '' };
+    void window.clippy.setMicDevice?.(micPref.deviceId, micPref.label);
+  });
+  navigator.mediaDevices.addEventListener('devicechange', () => { void renderMics(); });
+  void window.clippy.getMicDevice()
+    .then((p) => { micPref = { deviceId: p?.deviceId || '', label: p?.label || '' }; })
+    .catch(() => undefined)
+    .then(renderMics);
+}
+
 if (saveOpenAiKeyBtn && openaiKeyInput) {
   saveOpenAiKeyBtn.addEventListener('click', async () => {
     const token = openaiKeyInput.value.trim();
