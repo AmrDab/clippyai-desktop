@@ -45,7 +45,7 @@ describe('ipc.ts wires the sender checks', () => {
   it('user-message checks for the main window before anything else', () => {
     expect(handler('user-message')).toMatch(/if \(!senderIsWindow\(event, mainWindow\)\) return '';/);
   });
-  it.each(['guardrails:get-policy', 'guardrails:set-policy', 'guardrails:get-history', 'guardrails:clear-history', 'action-undo', 'byok:status', 'byok:save', 'byok:clear-key', 'byok:test'])(
+  it.each(['guardrails:get-policy', 'guardrails:set-policy', 'guardrails:get-history', 'guardrails:clear-history', 'action-undo', 'byok:status', 'byok:save', 'byok:clear-key', 'byok:test', 'get-mic-device', 'set-mic-device'])(
     '%s checks for the Settings window', (channel) => {
       expect(handler(channel)).toMatch(/fromSettings\(event\)/);
     });

@@ -953,8 +953,11 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
   // Voice input microphone (Settings → Voice). deviceId '' = Automatic. Read
   // by the bubble before each recording, so no broadcast is needed.
-  ipcMain.handle('get-mic-device', () => getMicDevice());
-  ipcMain.handle('set-mic-device', (_event, deviceId: unknown, label: unknown) => {
+  // Read by the bubble before each recording and by Settings; written only by Settings.
+  ipcMain.handle('get-mic-device', (event) =>
+    (fromSettings(event) || senderIsWindow(event, mainWindow) ? getMicDevice() : null));
+  ipcMain.handle('set-mic-device', (event, deviceId: unknown, label: unknown) => {
+    if (!fromSettings(event)) return false;
     setMicDevice(
       typeof deviceId === 'string' ? deviceId.slice(0, 256) : '',
       typeof label === 'string' ? label.slice(0, 256) : '',
