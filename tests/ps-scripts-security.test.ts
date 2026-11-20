@@ -75,3 +75,20 @@ describe('kill_process (audit #15)', () => {
     for (const p of ['lsass', 'csrss', 'winlogon', 'services', 'svchost', 'explorer', 'clippyai']) expect(src).toContain(`'${p}'`);
   });
 });
+
+describe('zip_files (audit #16)', () => {
+  const src = script('zip-files.ps1');
+  it('requires a .zip output and a literal path before anything is deleted', () => {
+    const remove = at(src, 'Remove-Item -LiteralPath $output');
+    expect(at(src, "if ([System.IO.Path]::GetExtension($output).ToLower() -ne '.zip') { Fail")).toBeLessThan(remove);
+    expect(at(src, "if ($output -match '[*?\\[\\]]') { Fail")).toBeLessThan(remove);
+    expect(at(src, 'if (Test-Path -LiteralPath $output -PathType Container) { Fail')).toBeLessThan(remove);
+  });
+  it('never uses the output or an input as a wildcard path', () => {
+    expect(src).not.toMatch(/Remove-Item -Path/);
+    expect(src).not.toMatch(/Test-Path \$output/);
+    expect(src).not.toMatch(/Get-Item -Path/);
+    expect(src).not.toMatch(/Compress-Archive -Path/);
+    expect(src).toContain('Compress-Archive -LiteralPath $inputList');
+  });
+});

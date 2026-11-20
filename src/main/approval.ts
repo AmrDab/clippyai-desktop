@@ -203,7 +203,8 @@ const LABELS: Record<string, Label> = {
   move_file: R('from to', (a) => `Move ${s(a.from)} to ${s(a.to)}`),
   list_files: (a) => (has(a.path) ? `List the files in ${s(a.path, 80)}` : 'List files'),
   search_files_content: R('pattern', (a) => `Search files${has(a.path) ? ` in ${s(a.path, 80)}` : ''} for ${q(a.pattern, 40)}`),
-  zip_files: (a) => `Zip ${plural(Array.isArray(a.inputs) ? a.inputs.length : 1, 'item')}${has(a.output) ? ` into ${s(a.output, 80)}` : ''}`,
+  // overwrite deletes the existing output first: say so on the card.
+  zip_files: (a) => `Zip ${plural(Array.isArray(a.inputs) ? a.inputs.length : attachmentPaths(a.inputs).length || 1, 'item')}${has(a.output) ? ` into ${s(a.output, 80)}` : ''}${a.overwrite === true || a.overwrite === 'true' ? ', replacing the existing file' : ''}`,
   unzip_files: R('input', (a) => `Unzip ${s(a.input, 80)}${has(a.output) ? ` into ${s(a.output, 80)}` : ''}`),
   hash_file: R('path', (a) => `Compute the ${s(a.algo ?? 'SHA256', 10)} hash of ${s(a.path, 80)}`),
   ocr_from_image: R('path', (a) => `Read the text in the image ${s(a.path, 80)}`),

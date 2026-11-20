@@ -306,3 +306,16 @@ describe('afterApprovals: unrelated bubbles wait for a pending prompt (0.24.12 a
     expect(updater).toMatch(/if \(BUBBLE_CHANNELS\.has\(channel\)\) afterApprovals\(send\);/);
   });
 });
+
+describe('approval card: zip_files shows an overwrite (audit #16)', () => {
+  it('says when the existing file will be replaced', () => {
+    expect(summarizeArgs('zip_files', { inputs: 'C:\\a\\x.txt,C:\\a\\y.txt', output: 'C:\\a\\out.zip', overwrite: true }))
+      .toBe('Zip 2 items into C:\\a\\out.zip, replacing the existing file');
+    expect(summarizeArgs('zip_files', { inputs: 'C:\\a\\x.txt', output: 'C:\\a\\out.zip', overwrite: 'true' }))
+      .toBe('Zip 1 item into C:\\a\\out.zip, replacing the existing file');
+  });
+  it('a plain zip reads as before', () => {
+    expect(summarizeArgs('zip_files', { inputs: 'C:\\a\\x.txt', output: 'C:\\a\\out.zip' })).toBe('Zip 1 item into C:\\a\\out.zip');
+    expect(summarizeArgs('zip_files', { inputs: ['a', 'b', 'c'], output: 'o.zip', overwrite: false })).toBe('Zip 3 items into o.zip');
+  });
+});
