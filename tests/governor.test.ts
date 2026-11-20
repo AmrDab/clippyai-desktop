@@ -6,7 +6,7 @@ import path from 'path';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clippy-governor-'));
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmp } }));
 
-import { classifyRisk, classifyLabel, classifyUrl, classifyKeys, isShellSurface } from '../src/main/governor';
+import { classifyRisk, classifyLabel, classifyUrl, classifyKeys, isShellSurface, isMailSurface, GOVERNED_TOOLS } from '../src/main/governor';
 import { classFor, decide, setPolicy } from '../src/main/permission-policy';
 
 const click = (target: string) => classifyRisk({ tool: 'smart_click', args: { target } });
@@ -255,5 +255,69 @@ describe('typing into a terminal and submitting is execution (0.24.12 audit #4)'
     ['smart_type', { target: 'Search', text: 'cats\n' }, 'msedge', 'Bing - Microsoft Edge'],
   ])('Enter outside a terminal is not escalated: %s %j in %s', (tool, args, process, context) => {
     expect(term(tool, args, process, context)).toBeNull();
+  });
+});
+
+describe('governor gaps: mail send keys, shortcuts_execute, right-click (0.24.12 audit #5)', () => {
+  const key = (k: string, process: string, context = '', url?: string) =>
+    classifyRisk({ tool: 'key_press', args: { key: k }, process, context, url });
+
+  it.each([
+    ['Enter', 'OUTLOOK', 'Inbox - me@example.com - Outlook'],
+    ['ctrl+enter', 'OUTLOOK', 'Re: budget - Message (HTML)'],
+    ['ctrl+enter', 'olk', 'Mail - Me - Outlook'],
+    ['Enter', 'olk', 'Mail - Me - Outlook'],
+    ['alt+s', 'OUTLOOK', 'Re: budget - Message (HTML)'],
+    ['ctrl+enter', 'thunderbird', 'Write: hello - Thunderbird'],
+    ['cmd+enter', 'Mail', 'New Message'],
+    ['cmd+shift+d', 'Mail', 'Re: hello'],
+    ['ctrl+enter', 'chrome', 'Inbox (3) - me@gmail.com - Gmail - Google Chrome'],
+    ['Enter', 'msedge', 'Mail - Me - Outlook - Microsoft Edge'],
+    ['ctrl+enter', 'firefox', 'Proton Mail - Mozilla Firefox'],
+  ])('%s in %s (%s) is a send', (k, process, context) => {
+    expect(key(k, process, context)?.class).toBe('destructive_send');
+  });
+
+  it('a browser on a mail URL is a mail surface even with a plain title', () => {
+    expect(isMailSurface('chrome', 'Untitled', 'https://mail.google.com/mail/u/0/#inbox')).toBe(true);
+    expect(key('ctrl+enter', 'chrome', 'Untitled', 'https://outlook.office.com/mail/')?.class).toBe('destructive_send');
+  });
+
+  it.each([
+    ['Enter', 'chrome', 'cats - Google Search - Google Chrome'],
+    ['ctrl+enter', 'chrome', 'ChatGPT - Google Chrome'],
+    ['Enter', 'WINWORD', 'Document1 - Word'],
+    ['ctrl+enter', 'EXCEL', 'Book1 - Excel'],
+    ['Enter', 'notepad', 'Untitled - Notepad'],
+    ['Enter', 'explorer', 'Documents'],
+    ['Enter', 'Slack', 'general - Slack'],
+    ['alt+s', 'chrome', 'cats - Google Search - Google Chrome'],
+    ['Tab', 'OUTLOOK', 'Inbox - Outlook'],
+    ['ctrl+c', 'OUTLOOK', 'Inbox - Outlook'],
+    ['Down', 'olk', 'Mail - Me - Outlook'],
+  ])('%s in %s (%s) is not escalated', (k, process, context) => {
+    expect(key(k, process, context)).toBeNull();
+  });
+
+  it('shortcuts_execute and mouse_right_click are governed', () => {
+    expect(GOVERNED_TOOLS.has('shortcuts_execute')).toBe(true);
+    expect(GOVERNED_TOOLS.has('mouse_right_click')).toBe(true);
+  });
+
+  it.each(['send', 'Send', 'send email', 'send message', 'send the message'])('shortcuts_execute intent %j is a send', (intent) => {
+    expect(classifyRisk({ tool: 'shortcuts_execute', args: { intent } })?.class).toBe('destructive_send');
+  });
+  it.each(['save document', 'copy', 'paste', 'new tab', 'undo', 'find', 'select all', 'resend-proof word: sender list'])(
+    'shortcuts_execute intent %j is not escalated', (intent) => {
+      expect(classifyRisk({ tool: 'shortcuts_execute', args: { intent } })).toBeNull();
+    });
+
+  it('mouse_right_click is judged like a click: a checkout or compose window asks, anything else does not', () => {
+    const rc = (context: string, url?: string) => classifyRisk({ tool: 'mouse_right_click', args: { x: 10, y: 10 }, context, url });
+    expect(rc('Checkout - Shop')?.class).toBe('destructive_purchase');
+    expect(rc('Untitled - Message (HTML)')?.class).toBe('destructive_send');
+    expect(rc('Untitled - Notepad')).toBeNull();
+    expect(rc('Documents')).toBeNull();
+    expect(rc('', 'https://example.com/docs')).toBeNull();
   });
 });

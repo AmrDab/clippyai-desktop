@@ -36,6 +36,9 @@
  *     (window title / page URL) that looks like a compose or checkout
  *     surface. plip escalates every Enter; for Clippy that would prompt on
  *     every search box.
+ *   - In a mail client (outlook, olk, thunderbird, Mail) or a browser on a
+ *     mail page, Enter / Ctrl+Enter / Alt+S count as a send without needing a
+ *     "compose" title. Everywhere else Enter still needs a context.
  *   - Typing into a terminal or the Run dialog is escalated to
  *     destructive_exec only when the text or key submits the line (a newline
  *     or Enter). Typing a line without running it is plain desktop input.
@@ -65,11 +68,11 @@ export interface RiskVerdict {
 
 /** Tools the governor looks at. Anything else returns null immediately. */
 export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
-  'smart_click', 'mouse_click', 'mouse_double_click', 'key_press', 'smart_type', 'type_text',
-  'cdp_click', 'cdp_type', 'browser_click', 'browser_type',
+  'smart_click', 'mouse_click', 'mouse_double_click', 'mouse_right_click', 'key_press', 'smart_type', 'type_text',
+  'cdp_click', 'cdp_type', 'browser_click', 'browser_type', 'shortcuts_execute',
 ]);
 
-const CLICK_TOOLS = new Set(['smart_click', 'mouse_click', 'mouse_double_click', 'cdp_click', 'browser_click']);
+const CLICK_TOOLS = new Set(['smart_click', 'mouse_click', 'mouse_double_click', 'mouse_right_click', 'cdp_click', 'browser_click']);
 const TYPE_TOOLS = new Set(['smart_type', 'type_text', 'cdp_type', 'browser_type']);
 
 // ── Label patterns (grouped by the actionClass they escalate to) ──────────
@@ -142,6 +145,26 @@ export function isShellSurface(processName?: string, title?: string): boolean {
 function submitsLine(tool: string, args: Record<string, unknown>, keys?: string): boolean {
   if (tool === 'key_press') return /(^|\+)(enter|return)$/.test(normalizeChord(keys ?? String(args.key ?? args.combo ?? '')));
   return /[\r\n]/.test(String(args.text ?? ''));
+}
+
+// ── Mail surfaces ────────────────────────────────────────────────────────
+
+// In a mail client Enter on a focused Send button, Ctrl+Enter, Alt+S and
+// Cmd+Shift+D send the message, whatever the window title says (the new
+// Outlook composes inline under a "Mail - ..." title). 0.24.12 audit #5.
+const MAIL_PROCESS = /^(?:outlook|olk|hxoutlook|thunderbird|mail)(?:\.exe)?$/i;
+const BROWSER_PROCESS = /^(?:chrome|msedge|firefox|brave|opera|vivaldi|arc|safari|chromium|google chrome|microsoft edge|brave browser)(?:\.exe)?$/i;
+const MAIL_PAGE_URL = /(mail\.google\.com|outlook\.(live|office|office365)\.com|mail\.yahoo\.com|mail\.proton\.me|app\.fastmail\.com|icloud\.com\/mail|mail\.zoho\.com)/i;
+const MAIL_PAGE_TITLE = /\b(gmail|outlook|proton\s?mail|yahoo\s+mail|fastmail|icloud\s+mail|zoho\s+mail|compose|new message)\b/i;
+const MAIL_SEND_CHORDS = new Set([...ENTER_KEYS, 'alt+s', 'cmd+shift+d']);
+
+/** True when the foreground is a mail client, or a browser on a mail / compose page. */
+export function isMailSurface(processName?: string, title?: string, url?: string): boolean {
+  const p = String(processName ?? '').trim();
+  if (!p) return false;
+  if (MAIL_PROCESS.test(p)) return true;
+  if (!BROWSER_PROCESS.test(p)) return false;
+  return (!!url && (MAIL_PAGE_URL.test(url) || COMPOSE_URL.test(url))) || MAIL_PAGE_TITLE.test(String(title ?? ''));
 }
 
 function normalizeLabel(s: string): string {
@@ -235,7 +258,21 @@ export function classifyRisk(input: RiskInput): RiskVerdict | null {
   }
 
   if (tool === 'key_press') {
-    return classifyKeys(input.keys ?? String(args.key ?? ''), input.context, input.url);
+    const keys = input.keys ?? String(args.key ?? '');
+    const v = classifyKeys(keys, input.context, input.url);
+    if (v) return v;
+    if (MAIL_SEND_CHORDS.has(normalizeChord(keys)) && isMailSurface(input.process, input.context, input.url)) {
+      return { class: 'destructive_send', reason: `${keys} in ${q(input.process ?? 'the mail app')} can send the message` };
+    }
+    return null;
+  }
+
+  // A shortcut picked by intent: "send" sends whatever is being composed.
+  if (tool === 'shortcuts_execute') {
+    const intent = String(args.intent ?? args.action ?? '');
+    return /\bsend\b/i.test(intent)
+      ? { class: 'destructive_send', reason: `The ${q(intent)} shortcut sends the message` }
+      : null;
   }
 
   if (label) {

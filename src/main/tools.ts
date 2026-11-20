@@ -5591,8 +5591,8 @@ export async function assessRisk(tool: string, params: Record<string, unknown> =
       const key = String(params.key ?? '').toLowerCase();
       // A newline anywhere in typed text submits a line (a terminal runs it).
       const needsWindow =
-        tool === 'mouse_click' || tool === 'mouse_double_click' ||
-        (tool === 'key_press' && /(^|\+)(enter|return)$/.test(key)) ||
+        tool === 'mouse_click' || tool === 'mouse_double_click' || tool === 'mouse_right_click' ||
+        (tool === 'key_press' && (/(^|\+)(enter|return)$/.test(key) || key === 'alt+s' || /^(cmd|command|meta)\+shift\+d$/.test(key))) ||
         ((tool === 'type_text' || tool === 'smart_type') && /[\r\n]/.test(String(params.text ?? '')));
       if (needsWindow) {
         const fg = await getActiveWindow();
