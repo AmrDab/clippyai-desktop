@@ -2,7 +2,33 @@ import { describe, it, expect } from 'vitest';
 import { makeReceipt, blockedReceipt } from '../src/main/receipt';
 import {
   toolVerdict, isPlainDone, shouldRecordWorkflow, typedTextLanded, UNCONFIRMED_COPY,
+  actionReceiptNote, isReceiptNote,
 } from '../src/main/tool-verdict';
+
+describe('actionReceiptNote — what the history keeps of a task (v0.24.12)', () => {
+  it('the reported case: a verified send is on record next to "Sent!"', () => {
+    expect(actionReceiptNote(['outlook_send_email'])).toBe('[done: outlook_send_email → verified in Sent Items]');
+  });
+  it('counts repeats, keeps the order, other tools read "verified"', () => {
+    expect(actionReceiptNote(['write_file', 'open_app', 'write_file', 'smart_type']))
+      .toBe('[done: write_file ×2 → verified; open_app → verified; smart_type → verified]');
+  });
+  it('no verified action, no note', () => {
+    expect(actionReceiptNote([])).toBe('');
+  });
+  it('is short and carries tool names only: nothing that is not a plain tool name gets in', () => {
+    expect(actionReceiptNote(['outlook_send_email', 'bob@example.com', 'C:/Users/me/x.txt', 'a; b]'])).toBe('[done: outlook_send_email → verified in Sent Items]');
+    const many = actionReceiptNote(Array.from({ length: 30 }, (_, i) => `tool_${i}`));
+    expect(many).toContain('+24 more');
+    expect(many.length).toBeLessThan(220);
+  });
+  it('isReceiptNote tells a note from what Clippy said (the history panel hides notes)', () => {
+    expect(isReceiptNote('\n[done: outlook_send_email → verified in Sent Items]')).toBe(true);
+    expect(isReceiptNote(actionReceiptNote(['write_file']))).toBe(true);
+    expect(isReceiptNote('Sent!')).toBe(false);
+    expect(isReceiptNote('[done: half')).toBe(false);
+  });
+});
 
 describe('toolVerdict — receipt drives the success decision when present', () => {
   it('verified receipt → ok + verified, even if the text looks error-shaped', () => {

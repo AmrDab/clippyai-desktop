@@ -101,7 +101,7 @@ import * as lumiereSeen from './proactive/seen-context';
 import * as permissionPolicyMod from './permission-policy';
 import * as actionHistoryMod from './action-history';
 import { blockedReceipt, type ReceiptStatus } from './receipt';
-import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY } from './tool-verdict';
+import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY, actionReceiptNote, isReceiptNote } from './tool-verdict';
 // Phase 3 guardrails — in-bubble Approve/Deny prompt for 'approve' decisions.
 import * as approvalMod from './approval';
 import * as toolUndoMod from './tool-undo';
@@ -1401,6 +1401,8 @@ export class Brain {
       // v0.23 — receipt-driven signal (tool-verdict.ts): how many steps PROVED
       // their effect, and the receipt of the last desktop-changing step.
       let verifiedSteps = 0;
+      // Tools (not reads) whose receipt was 'verified': the history note.
+      const verifiedTools: string[] = [];
       let lastActionReceipt: ReceiptStatus | undefined;
       const screenContextOk = !!screenContext && !screenContext.startsWith('<screen-context-');
       const screenQuestion = isScreenQuestion(text);
@@ -2086,6 +2088,7 @@ export class Brain {
               successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });
             }
             if (verdict.verified) verifiedSteps++;
+            if (verdict.verified && !READ_TOOL_RE.test(call.name)) verifiedTools.push(call.name);
             if (verdict.receiptStatus && !READ_TOOL_RE.test(call.name)) lastActionReceipt = verdict.receiptStatus;
 
             // === DESTRUCTIVE LEDGER (v0.11.25) ===
@@ -2312,7 +2315,10 @@ export class Brain {
       }
 
       if (finalSpoken) {
-        this.pushHistory({ role: 'model', parts: [{ text: finalSpoken }] });
+        // The reply, plus a note of what was verifiably done, so the next
+        // turn's model does not take its own "Sent!" for an empty claim.
+        const note = actionReceiptNote(verifiedTools);
+        this.pushHistory({ role: 'model', parts: note ? [{ text: finalSpoken }, { text: `\n${note}` }] : [{ text: finalSpoken }] });
       }
       if (answeredOk && this.taskOutcome === 'done') this.maybeFirstRunFollowUp();
       return finalSpoken || "I'm not sure what to say.";
@@ -3071,7 +3077,8 @@ ${typingLine}`;
   getConversation(): Array<{ role: 'user' | 'model'; text: string }> {
     const out: Array<{ role: 'user' | 'model'; text: string }> = [];
     for (const c of this.history) {
-      const text = c.parts.map((p) => ('text' in p && typeof p.text === 'string' ? p.text : '')).join('').trim();
+      // Receipt notes are for the model, not the panel: the user never saw them.
+      const text = c.parts.map((p) => ('text' in p && typeof p.text === 'string' && !isReceiptNote(p.text) ? p.text : '')).join('').trim();
       if (text) out.push({ role: c.role, text });
     }
     return out;
