@@ -7,8 +7,9 @@
  * destructive_exec, so even `ls`, `open -a Claude` and an AppleScript
  * `activate` prompted. Policy: in a task the USER started, a shell command
  * that is part of the request runs without asking UNLESS it can delete, close,
- * install, upload, send, change security/system settings, or run opaque code
- * (classifyShellCommand), or something in the task looks like prompt injection,
+ * install, upload, send, change security/system settings, run opaque code,
+ * fetch from the network, run through a script host, run a file out of
+ * Downloads/Temp/AppData or touch a secret store (classifyShellCommand), or something in the task looks like prompt injection,
  * or the task did not come from the user, or the user picked Cautious / an
  * explicit "approve" for the class. The hard blocklist (shell-guard.ts) still
  * refuses at execution whatever this says. Skill installs, purchases, sends,
@@ -102,6 +103,43 @@ const RISKY: Rule[] = [
   { why: 'writes a file', re: rx(String.raw`(?<![0-9&<>=-])>>?(?![&>=])\s*(?!\/dev\/null\b|nul\b|\$null\b)["']?[^\s|;&)"']`) },
 ];
 
+// ── Remote code and secrets (0.24.12 audit #1) ──
+// A command that fetches from the network, runs through a script host, or
+// touches a secret store is how a prompt injection turns into code execution
+// or exfiltration, so these ask whatever the request said.
+const EXEC_EXT = String.raw`(?:exe|com|scr|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msi|msp|jar|lnk|cpl|dll|py|sh)`;
+// A path under Downloads, Temp or AppData (Programs and WindowsApps are where
+// installed apps live, so launching those stays unasked).
+const DROP_DIR = String.raw`(?:[^\s"'|;&<>]*[\\/])?(?:downloads|temp|tmp|appdata(?![\\/]local[\\/](?:programs|microsoft[\\/]windowsapps)[\\/]))[\\/]`;
+const DROP_VAR = String.raw`(?:%(?:temp|tmp|appdata|localappdata)%|\$\{?env:(?:temp|tmp|appdata|localappdata)\}?|\$\{?TMPDIR\}?|/tmp|/var/tmp)[\\/]`;
+const DROP_PATH = String.raw`["']?(?:${DROP_DIR}|${DROP_VAR})[^"'|;&<>\r\n]*?\.${EXEC_EXT}(?![\w.-])`;
+const RUNNER = String.raw`(?:(?:start|call|start-process|saps|invoke-item|ii)\s+(?:""\s+)?(?:-filepath\s+)?|[&.]\s*)?`;
+
+const REMOTE_OR_SECRET: Rule[] = [
+  { why: 'fetches from or sends to the network', re: rx(String.raw`(?:^|[^\w.-])(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|start-bitstransfer|bitsadmin)(?:\.exe)?${END}`) },
+  { why: 'fetches from or sends to the network', re: rx(String.raw`net\.webclient|net\.http|net\.sockets|webrequest\]|xmlhttp|\bcertutil(?:\.exe)?\b[^\r\n]*-(?:urlcache|verifyctl)\b`) },
+  { why: 'script host or system binary that runs other code', re: rx(String.raw`(?:^|[^\w.-])(?:mshta|rundll32|regsvr32|wscript|cscript|msiexec|installutil|cmstp)(?:\.exe)?${END}`) },
+  { why: 'runs code built at run time', re: rx(String.raw`\s-(?:e|ec|enc|encodedcommand)\s+[a-z0-9+/=]{16,}|\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|iex|invoke-expression|cmd|powershell|pwsh)(?:\.exe)?${END}|<\(`) },
+  { why: 'runs a file from Downloads, Temp or AppData', re: rx(CS + RUNNER + DROP_PATH) },
+  { why: 'reads a secret location', re: rx(String.raw`(?:^|[\s\\/"'=(~])\.(?:ssh|aws|gnupg|azure|kube|docker)(?![\w-])|\.git-credentials|\.netrc\b|\.npmrc\b|\bid_(?:rsa|dsa|ecdsa|ed25519)\b`) },
+  { why: 'reads a secret location', re: rx(String.raw`[\\/]user data(?![\w-])|\b(?:login data|cookies\.sqlite|logins\.json|key[34]\.db)\b|agent-server\.json|microsoft[\\/](?:credentials|protect|vault)\b|\b(?:cmdkey|vaultcmd)\b|\.(?:pem|key|pfx|p12|kdbx|ppk)(?![\w-])`) },
+  { why: 'reads a secret location', re: rx(String.raw`(?:^|[\s\\/"'=])\.env(?:\.[\w-]+)*(?=$|[\s"'|;&)])`) },
+];
+
+// The one URL form that stays unasked: the whole command opens one http(s)
+// page in the browser ("open youtube"). No second statement, no variable.
+const URL_ARG = String.raw`(?:"https?://[^"'\s` + BT + String.raw`$%^<>]+"|'https?://[^"'\s` + BT + String.raw`$%^<>]+'|https?://[^"'\s` + BT + String.raw`$%^<>|&;()]+)`;
+const BROWSER = String.raw`(?:chrome|msedge|firefox|brave|safari|"[\w .]+"|'[\w .]+')`;
+const PLAIN_OPEN = new RegExp(String.raw`^(?:start(?:\s+"")?(?:\s+${BROWSER})?|open(?:\s+-a\s+${BROWSER})?|xdg-open|explorer(?:\.exe)?|start-process|saps)\s+${URL_ARG}$`, 'i');
+const HAS_URL = /\b(?:https?|ftps?|file|wss?):\/\//i;
+
+/** The http(s) URL when the whole command just opens it in the browser. */
+export function plainOpenUrl(command: string): string | null {
+  const cmd = String(command ?? '').trim();
+  if (!PLAIN_OPEN.test(cmd)) return null;
+  return cmd.match(/https?:\/\/[^"'\s]+/i)?.[0] ?? null;
+}
+
 /** `null` when the command is safe to run unasked; otherwise why it still asks. */
 export function classifyShellCommand(command: string): string | null {
   const cmd = String(command ?? '').trim();
@@ -109,9 +147,10 @@ export function classifyShellCommand(command: string): string | null {
   const hard = shellBlockReason(cmd);
   if (hard) return `blocklist: ${hard}`;
   const norm = cmd.replace(/\^/g, '');
-  for (const rule of RISKY) {
+  for (const rule of [...REMOTE_OR_SECRET, ...RISKY]) {
     if (rule.re.test(cmd) || rule.re.test(norm)) return rule.why;
   }
+  if (HAS_URL.test(norm) && !plainOpenUrl(norm)) return 'contains a URL';
   return null;
 }
 
