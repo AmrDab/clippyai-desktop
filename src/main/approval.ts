@@ -30,6 +30,32 @@ export const APPROVAL_TIMEOUT_MS = 60_000;
 
 const pending = new Map<string, { resolve: (r: ApprovalResult) => void; timer: ReturnType<typeof setTimeout> }>();
 
+// Bubble messages that have nothing to do with the task (a scheduled
+// greeting, "update ready") wait here while a prompt is up: any new bubble
+// replaces the prompt, and the renderer counts a replaced prompt as Deny, so
+// an unrelated message used to deny the action for the user.
+const held: Array<() => void> = [];
+
+function releaseHeld(): void {
+  if (pending.size > 0 || held.length === 0) return;
+  const run = held.splice(0);
+  // After the answer has reached the task, so the message follows the result.
+  setTimeout(() => {
+    for (const fn of run) {
+      try { fn(); } catch (err) { log.warn('held message failed', { err: String(err) }); }
+    }
+  }, 0);
+}
+
+/**
+ * Run `show` now, or as soon as no approval prompt is pending. For bubble
+ * messages that are not part of the running task.
+ */
+export function afterApprovals(show: () => void): void {
+  if (pending.size === 0) { show(); return; }
+  held.push(show);
+}
+
 function finish(id: string, result: ApprovalResult): boolean {
   const p = pending.get(id);
   if (!p) return false;
@@ -37,6 +63,7 @@ function finish(id: string, result: ApprovalResult): boolean {
   clearTimeout(p.timer);
   log.info('Approval.resolved', { id, result });
   p.resolve(result);
+  releaseHeld();
   return true;
 }
 

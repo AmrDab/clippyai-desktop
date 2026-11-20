@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { BrowserWindow } from 'electron';
+import fs from 'fs';
+import path from 'path';
 
 vi.mock('electron', () => ({ app: { isPackaged: false } }));
 
 import {
-  requestApproval, resolveApproval, cancelAllApprovals, summarizeArgs, cleanLine,
+  requestApproval, resolveApproval, cancelAllApprovals, summarizeArgs, cleanLine, afterApprovals,
   markApproved, wasApproved, APPROVAL_TIMEOUT_MS,
 } from '../src/main/approval';
 import { TOOL_META } from '../src/main/tool-meta';
@@ -226,5 +228,81 @@ describe('approval card: arguments cannot fake a second line or markdown (audit 
     expect((payload as { reason: string }).reason).toBe("Looks like a send button: 'Send' Already approved");
     cancelAllApprovals();
     await p;
+  });
+});
+
+describe('afterApprovals: unrelated bubbles wait for a pending prompt (0.24.12 audit #12)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { cancelAllApprovals(); vi.runAllTimers(); vi.useRealTimers(); });
+
+  it('runs at once when no prompt is pending', () => {
+    const show = vi.fn();
+    afterApprovals(show);
+    expect(show).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the message while a prompt is up, so the prompt is not replaced (= denied)', async () => {
+    const { win, send } = fakeWin();
+    const p = requestApproval(win, req);
+    const greeting = vi.fn(() => win.webContents.send('clippy-speak', { text: 'Good morning!' }));
+    afterApprovals(greeting);
+    vi.advanceTimersByTime(30_000);
+    expect(greeting).not.toHaveBeenCalled();
+    // Only the approval request reached the bubble.
+    expect(send.mock.calls.map((c) => c[0])).toEqual(['approval-request']);
+
+    // The user approves: the task gets 'approved', then the greeting shows.
+    resolveApproval(sentId(send), true);
+    await expect(p).resolves.toBe('approved');
+    expect(greeting).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(0);
+    expect(greeting).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls.map((c) => c[0])).toEqual(['approval-request', 'clippy-speak']);
+  });
+
+  it('releases held messages in order after a timeout or a cancel too', async () => {
+    const { win } = fakeWin();
+    const order: string[] = [];
+    const p1 = requestApproval(win, req);
+    afterApprovals(() => order.push('a'));
+    afterApprovals(() => order.push('b'));
+    vi.advanceTimersByTime(APPROVAL_TIMEOUT_MS);
+    await expect(p1).resolves.toBe('timeout');
+    vi.advanceTimersByTime(1); // scheduled from inside the timeout timer: fake timers add 1 ms
+    expect(order).toEqual(['a', 'b']);
+
+    const p2 = requestApproval(win, req);
+    afterApprovals(() => order.push('c'));
+    cancelAllApprovals();
+    await expect(p2).resolves.toBe('cancelled');
+    vi.advanceTimersByTime(0);
+    expect(order).toEqual(['a', 'b', 'c']);
+  });
+
+  it('waits for every pending prompt, and one failing message does not block the rest', async () => {
+    const { win, send } = fakeWin();
+    const p1 = requestApproval(win, req);
+    const id1 = sentId(send);
+    const p2 = requestApproval(win, req);
+    const id2 = sentId(send);
+    const ok = vi.fn();
+    afterApprovals(() => { throw new Error('window gone'); });
+    afterApprovals(ok);
+    resolveApproval(id1, false);
+    await p1;
+    vi.advanceTimersByTime(0);
+    expect(ok).not.toHaveBeenCalled();
+    resolveApproval(id2, true);
+    await p2;
+    vi.advanceTimersByTime(0);
+    expect(ok).toHaveBeenCalledTimes(1);
+  });
+
+  it('the scheduler and the updater route their bubbles through it', () => {
+    const read = (f: string) => fs.readFileSync(path.join(__dirname, '..', 'src', 'main', f), 'utf8');
+    expect(read('scheduler.ts')).toMatch(/afterApprovals\(\(\) => \{\s*if \(!win\.isDestroyed\(\)\) win\.webContents\.send\('clippy-speak'/);
+    const updater = read('updater.ts');
+    expect(updater).toMatch(/BUBBLE_CHANNELS = new Set\(\['update-available', 'update-ready', 'clippy-speak'\]\)/);
+    expect(updater).toMatch(/if \(BUBBLE_CHANNELS\.has\(channel\)\) afterApprovals\(send\);/);
   });
 });

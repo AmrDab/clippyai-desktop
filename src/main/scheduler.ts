@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron';
 import type { Brain } from './brain';
 import { createLogger } from './logger';
+import { afterApprovals } from './approval';
 
 const log = createLogger('Scheduler');
 
@@ -59,7 +60,11 @@ function fire(
 ): void {
   if (win.isDestroyed()) return;
   log.info('Scheduler.fire', { event, text });
-  win.webContents.send('clippy-speak', { text, animate });
+  // Not part of a task: wait for a pending "Can I ...?" prompt to be answered
+  // first, or this bubble would replace it (which counts as Deny).
+  afterApprovals(() => {
+    if (!win.isDestroyed()) win.webContents.send('clippy-speak', { text, animate });
+  });
   // brain's onSpeak listener doesn't exist; clippy-speak goes straight to
   // the renderer bubble + TTS. That's the same channel proactive tips use.
 }

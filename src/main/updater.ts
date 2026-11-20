@@ -4,6 +4,7 @@ import { createLogger, serializeErr } from './logger';
 import * as telemetry from './telemetry';
 import { cleanupTools, restoreTools } from './tools';
 import * as quitState from './quit-state';
+import { afterApprovals } from './approval';
 import { cmpVersion, classifyAttempt, shouldIdleInstall, shouldPromptStaleUpdate, resumeStillValid, isOfflineUpdateError, shouldReportOffline } from './update-policy';
 import { installMethodFor } from './update-install-method';
 import fs from 'fs';
@@ -232,11 +233,20 @@ function detectSilentFailure(): UpdaterState {
   return state;
 }
 
+// Channels that put a bubble on screen. They wait for a pending approval
+// prompt (approval.ts afterApprovals): a new bubble replaces the prompt, and
+// a replaced prompt is a Deny the user never gave.
+const BUBBLE_CHANNELS = new Set(['update-available', 'update-ready', 'clippy-speak']);
+
 function sendToRenderer(channel: string, ...args: unknown[]): void {
-  if (channel === 'update-ready') telemetry.track('update_prompt', { action: 'shown', surface: 'main' });
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, ...args);
-  }
+  const send = (): void => {
+    if (channel === 'update-ready') telemetry.track('update_prompt', { action: 'shown', surface: 'main' });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, ...args);
+    }
+  };
+  if (BUBBLE_CHANNELS.has(channel)) afterApprovals(send);
+  else send();
 }
 
 export function initUpdater(win: BrowserWindow): void {
