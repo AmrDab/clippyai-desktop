@@ -97,18 +97,12 @@ import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, appNameMatch
 import { formatWinScreen, formatMacScreen, type ScreenLines } from './screen-lines';
 import { reportUiaClick, outcomeLine } from './click-report';
 import { parseForegroundSnapshot, pickUserWindow, activeWindowJson } from './foreground-pick';
+import { toSendKeys } from './sendkeys';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
   // Only allow alphanumeric, spaces, dots, hyphens, underscores
   return name.replace(/[^a-zA-Z0-9\s.\-_]/g, '').substring(0, 50);
-}
-
-function sanitizeForSendKeys(str: string): string {
-  // Only allow known SendKeys tokens
-  const allowed = /^[a-zA-Z0-9\^%+{}\(\)~ ]*$/;
-  if (!allowed.test(str)) return '';
-  return str.substring(0, 50);
 }
 
 function sanitizeNumber(val: unknown): number {
@@ -996,35 +990,13 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
 
   // win32 — System.Windows.Forms.SendKeys (restored from v0.17.7).
   if (process.platform === 'win32') {
-    const keyMap: Record<string, string> = {
-      'Return': '{ENTER}', 'Enter': '{ENTER}',
-      'Tab': '{TAB}', 'Escape': '{ESCAPE}', 'Backspace': '{BACKSPACE}',
-      'Delete': '{DELETE}', 'Up': '{UP}', 'Down': '{DOWN}',
-      'Left': '{LEFT}', 'Right': '{RIGHT}',
-      'Page_Down': '{PGDN}', 'Page_Up': '{PGUP}',
-      'Home': '{HOME}', 'End': '{END}',
-      'F1': '{F1}', 'F2': '{F2}', 'F3': '{F3}', 'F4': '{F4}', 'F5': '{F5}',
-    };
+    // v0.24.12 — sendkeys.ts: case-insensitive names (ctrl+enter used to
+    // send Ctrl+E then type "nter"), F1-F12 / Space / Insert, and a clear
+    // error for an unknown key or raw SendKeys syntax instead of typing it.
+    const sk = toSendKeys(rawKey);
+    if (!sk.ok) return { text: `(error:INVALID_KEY) key_press: ${sk.error}` };
+    const safeSendKeys = sk.keys;
     try {
-      let sendKeysStr = '';
-      if (rawKey.includes('+')) {
-        // Combo like ctrl+s, alt+tab
-        const parts = rawKey.toLowerCase().split('+');
-        let modifiers = '';
-        const mainKey = parts[parts.length - 1];
-        for (const p of parts.slice(0, -1)) {
-          if (p === 'ctrl' || p === 'control') modifiers += '^';
-          else if (p === 'alt') modifiers += '%';
-          else if (p === 'shift') modifiers += '+';
-          else if (p === 'win' || p === 'meta' || p === 'cmd') modifiers += '^{ESC}'; // approximate
-        }
-        sendKeysStr = `${modifiers}${keyMap[mainKey] || mainKey}`;
-      } else {
-        sendKeysStr = keyMap[rawKey] || rawKey;
-      }
-
-      const safeSendKeys = sanitizeForSendKeys(sendKeysStr);
-      if (!safeSendKeys) return { text: `(invalid key: ${rawKey})` };
       await psCommand(
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${safeSendKeys}')`,
         { timeoutMs: 5000 });
