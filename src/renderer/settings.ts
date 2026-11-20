@@ -1,6 +1,7 @@
 // Window.clippy types live in src/preload/api.d.ts (single source of truth).
 export {};
 
+import { buildHistoryRow, undoneBadge } from './history-row';
 import {
   SUMMON_ACCELERATOR, VOICE_ACCELERATOR_DEFAULT, acceleratorKeycaps, acceleratorSpoken,
 } from '../main/hotkey-defs';
@@ -866,7 +867,7 @@ window.clippy.onUpdateNotAvailable(() => {
 
 window.clippy.onUpdateAvailable((version: string) => {
   clearAllUpdateTimeouts();
-  setAllUpdateStatus(`<strong>v${version} available!</strong> <button class="btn-dl-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`);
+  setAllUpdateStatus(`<strong>v${escapeHtml(String(version))} available!</strong> <button class="btn-dl-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;">Download</button>`);
   for (const id of ['btn-check-update', 'btn-check-update-about']) {
     const btn = document.getElementById(id) as HTMLButtonElement | null;
     if (btn) btn.disabled = false;
@@ -880,7 +881,7 @@ window.clippy.onUpdateAvailable((version: string) => {
 });
 
 window.clippy.onUpdateReady((version: string) => {
-  setAllUpdateStatus(`<strong>v${version} ready!</strong> <button class="btn-inst-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;background:#4CAF50;color:white;border:none;border-radius:3px;">Restart & Update</button>`);
+  setAllUpdateStatus(`<strong>v${escapeHtml(String(version))} ready!</strong> <button class="btn-inst-update" style="margin-left:8px;padding:2px 8px;cursor:pointer;background:#4CAF50;color:white;border:none;border-radius:3px;">Restart & Update</button>`);
   document.querySelectorAll('.btn-inst-update').forEach((btn) => {
     btn.addEventListener('click', () => window.clippy.installUpdate());
   });
@@ -893,10 +894,22 @@ window.clippy.onUpdateReady((version: string) => {
 // real reason immediately and re-enable the button.
 window.clippy.onUpdateFailed(({ reason, manualUrl }) => {
   clearAllUpdateTimeouts();
-  const friendly = reason === 'previous-install-failed'
-    ? `Auto-update keeps failing on this machine. <a href="${manualUrl}" target="_blank">Download manually</a> — that fixes it permanently.`
-    : `Couldn't reach the update server (${reason}). <a href="${manualUrl}" target="_blank">Manual download</a>.`;
-  setAllUpdateStatus(friendly);
+  // reason and manualUrl come from the updater (network errors, release
+  // data): text nodes and a checked https link, never innerHTML.
+  const previous = reason === 'previous-install-failed';
+  for (const id of ['update-status', 'update-status-about']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const link = document.createElement('a');
+    link.target = '_blank';
+    if (/^https:\/\//i.test(String(manualUrl))) link.href = String(manualUrl);
+    link.textContent = previous ? 'Download manually' : 'Manual download';
+    el.replaceChildren(
+      previous ? 'Auto-update keeps failing on this machine. ' : `Couldn't reach the update server (${String(reason)}). `,
+      link,
+      previous ? ' — that fixes it permanently.' : '.',
+    );
+  }
   for (const id of ['btn-check-update', 'btn-check-update-about']) {
     const btn = document.getElementById(id) as HTMLButtonElement | null;
     if (btn) btn.disabled = false;
@@ -1379,27 +1392,6 @@ function fmtRelTime(ts: string): string {
   }
 }
 
-function outcomeBadge(outcome: string): string {
-  const color = outcome === 'success' ? '#16a34a' : outcome === 'failure' ? '#dc2626' : outcome === 'blocked' ? '#9333ea' : '#d97706';
-  const label = outcome === 'success' ? '✓' : outcome === 'failure' ? '✗' : outcome === 'blocked' ? '⊘' : '~';
-  return `<span title="${outcome}" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:${color};color:#fff;font-size:9px;font-weight:700;flex-shrink:0;">${label}</span>`;
-}
-
-/** v0.21 — receipt pill: did the action run, and was the effect verified? */
-function receiptBadge(receipt?: { status: string; executed: boolean | null; execution_path?: string; evidence: Record<string, unknown> }): string {
-  if (!receipt) return '';
-  const palette: Record<string, [string, string]> = {
-    verified: ['#d1fae5', '#065f46'], unverified: ['#fef3c7', '#92400e'],
-    blocked: ['#ede9fe', '#5b21b6'], error: ['#fee2e2', '#991b1b'], stale: ['#f3f4f6', '#6b7280'],
-  };
-  const [bg, fg] = palette[receipt.status] ?? palette.stale;
-  const ran = receipt.executed === true ? 'ran' : receipt.executed === false ? 'did not run' : 'outcome unknown';
-  const via = receipt.execution_path ? ` via ${receipt.execution_path}` : '';
-  const reason = typeof receipt.evidence?.reason === 'string' ? ` — ${receipt.evidence.reason}` : '';
-  const title = `${receipt.status}: ${ran}${via}${reason}`.replace(/[<>&"]/g, '');
-  return `<span title="${title}" style="margin-left:6px;background:${bg};color:${fg};border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;white-space:nowrap;cursor:help;">${receipt.status}</span>`;
-}
-
 async function refreshHistory(): Promise<void> {
   const root = document.getElementById('action-history-list');
   const empty = document.getElementById('action-history-empty');
@@ -1415,39 +1407,12 @@ async function refreshHistory(): Promise<void> {
     root.querySelectorAll('.action-row').forEach((el) => el.remove());
 
     for (const r of rows) {
-      const div = document.createElement('div');
-      div.className = 'action-row';
-      div.style.cssText = 'display:grid;grid-template-columns:18px 1fr auto;gap:6px;padding:6px 10px;border-bottom:1px solid #eef0f3;align-items:start;';
-      const escTool = String(r.tool).replace(/[<>&]/g, '');
-      const escDetail = String(r.detail || '').replace(/[<>&]/g, '');
-      const escClass = r.actionClass
-        ? `<span style="color:#888;margin-left:6px;font-size:10.5px;">·${r.actionClass}·T${r.tier}</span>`
-        : `<span style="color:#888;margin-left:6px;font-size:10.5px;">·T${r.tier}</span>`;
+      // Built with textContent / setAttribute (history-row.ts): tool args and
+      // error text in a row can never become markup.
+      const built = buildHistoryRow(document, r, fmtRelTime);
+      const div = built.row as unknown as HTMLDivElement;
 
-      let rightCol: string;
-      if (r.undone) {
-        const undoneAtStr = r.undoneAt ? new Date(r.undoneAt).toLocaleTimeString() : '';
-        rightCol = `<span class="undo-badge undo-done" title="Undone at ${undoneAtStr}" style="background:#d1fae5;color:#065f46;border-radius:4px;padding:2px 7px;font-size:10.5px;font-weight:600;white-space:nowrap;">Undone</span>`;
-      } else if (r.inverse && r.inverse.kind === 'noop') {
-        const reason = String(r.inverse.reason || '').replace(/"/g, '&quot;');
-        rightCol = `<span class="undo-badge undo-noop" title="${reason}" style="background:#f3f4f6;color:#9ca3af;border-radius:4px;padding:2px 7px;font-size:10.5px;font-weight:500;white-space:nowrap;cursor:help;">Can\'t undo</span>`;
-      } else if (r.inverse) {
-        rightCol = `<button class="undo-btn" data-id="${r.id}" style="background:#fff;border:1px solid #d0d4da;border-radius:4px;padding:2px 8px;font-size:10.5px;cursor:pointer;color:#374151;white-space:nowrap;" title="Undo this action">Undo</button>`;
-      } else {
-        rightCol = `<div style="color:#888;font-size:10.5px;white-space:nowrap;">${fmtRelTime(r.ts)}</div>`;
-      }
-
-      div.innerHTML = `
-        ${outcomeBadge(r.outcome)}
-        <div style="overflow:hidden;">
-          <div style="color:#1a1a1a;font-weight:600;font-size:11.5px;">${escTool}${escClass}${receiptBadge(r.receipt)}</div>
-          <div style="color:#555;font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escDetail}">${escDetail}</div>
-          <div style="color:#aaa;font-size:10px;margin-top:1px;">${fmtRelTime(r.ts)}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:4px;">${rightCol}</div>
-      `;
-
-      const undoBtn = div.querySelector<HTMLButtonElement>('.undo-btn');
+      const undoBtn = built.undoButton as unknown as HTMLButtonElement | null;
       if (undoBtn) {
         undoBtn.addEventListener('click', async () => {
           undoBtn.disabled = true;
@@ -1457,7 +1422,7 @@ async function refreshHistory(): Promise<void> {
             if (result.ok) {
               const parent = undoBtn.parentElement;
               if (parent) {
-                parent.innerHTML = `<span class="undo-badge undo-done" style="background:#d1fae5;color:#065f46;border-radius:4px;padding:2px 7px;font-size:10.5px;font-weight:600;">Undone</span>`;
+                parent.replaceChildren(undoneBadge(document) as unknown as Node);
               }
             } else {
               undoBtn.disabled = false;
