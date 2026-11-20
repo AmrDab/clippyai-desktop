@@ -1329,7 +1329,7 @@ export class Brain {
     }
     this.isExecuting = true;
     this.injectionFiredInTask = false;
-    resetTaskTaint();
+    resetTaskTaint(text);
     telemetry.taskBegin();
     this.cancelRequested = false;
     this.stopRequested = false;

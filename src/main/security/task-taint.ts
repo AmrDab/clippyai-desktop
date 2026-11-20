@@ -5,25 +5,44 @@
  * a file the user pointed at must stay unasked (the owner's rule: the request
  * is the permission), so the read is not where to stop it. Instead the
  * dispatcher (tools.ts executeTool) notes here that the task read a file, the
- * clipboard or a secret, and assessRisk asks before a later navigate /
- * open_url / http_request whose address carries data (net-guard.ts).
+ * clipboard or a secret, and keeps the last few results. assessRisk asks
+ * before a later navigate / open_url / http_request only when its address
+ * actually carries some of that text (read-leak.ts).
  *
- * One flag per task: brain.ts resets it when a new user request starts.
+ * One record per task: brain.ts resets it, with the user's own message, when
+ * a new user request starts. Memory only; nothing here is logged or stored.
  */
 
 import { classifyShellCommand } from '../approval-policy';
 
 let readWhat: string | null = null;
+// The last few read results and the user's message, for the leak check.
+const READS_KEPT = 5;
+const READ_MAX_CHARS = 100_000;
+let readTexts: string[] = [];
+let userMessage = '';
 
 // The line being typed into the focused window, across type_text calls, until
 // it is submitted. assessRisk reads it when Enter is pressed in a terminal:
 // the key press itself carries no text, the line typed before it does.
 let typedLine = '';
 
-/** Start of a new task. */
-export function resetTaskTaint(): void {
+/** Start of a new task. `message` is the user's own request text. */
+export function resetTaskTaint(message = ''): void {
   readWhat = null;
   typedLine = '';
+  readTexts = [];
+  userMessage = String(message ?? '');
+}
+
+/** Results of the task's recent reads, newest last. */
+export function taskReadTexts(): string[] {
+  return readTexts;
+}
+
+/** The user's message this task started from. */
+export function taskUserMessage(): string {
+  return userMessage;
 }
 
 /** Text typed since the last Enter / newline ('' when nothing is pending). */
@@ -63,5 +82,8 @@ export function noteToolRan(tool: string, params: Record<string, unknown> | unde
     typedLine = '';
   }
   const what = sensitiveReadOf(tool, params ?? {});
-  if (what && (readWhat === null || what === 'a secret')) readWhat = what;
+  if (!what) return;
+  if (readWhat === null || what === 'a secret') readWhat = what;
+  readTexts.push(String(resultText ?? '').slice(0, READ_MAX_CHARS));
+  if (readTexts.length > READS_KEPT) readTexts.shift();
 }

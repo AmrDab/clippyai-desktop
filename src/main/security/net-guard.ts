@@ -43,19 +43,3 @@ export function httpUrlOrNull(raw: string): string | null {
     return null;
   }
 }
-
-/**
- * True when an address can carry data out with the request: a query string,
- * a long fragment, credentials, or a long encoded host label / path segment.
- * `https://example.com/docs/page` is false.
- */
-export function urlCarriesData(raw: string): boolean {
-  const s = String(raw ?? '').trim();
-  let u: URL;
-  try { u = new URL(s); } catch { return /[?#]./.test(s); }
-  // A short fragment is a page anchor (#install); a long one is a payload.
-  if (u.search.length > 1 || u.hash.length > 24 || u.username || u.password) return true;
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false; // mailto:a@b.com, spotify:track:x
-  if (u.hostname.split('.').some((l) => l.length > MAX_LABEL)) return true;
-  return u.pathname.split('/').some((seg) => seg.length >= 48);
-}

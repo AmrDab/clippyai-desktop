@@ -71,8 +71,9 @@ import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
 import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
-import { isPingableHost, httpUrlOrNull, urlCarriesData } from './security/net-guard';
-import { noteToolRan, taskReadSensitive, pendingTypedLine } from './security/task-taint';
+import { isPingableHost, httpUrlOrNull } from './security/net-guard';
+import { noteToolRan, taskReadSensitive, taskReadTexts, taskUserMessage, pendingTypedLine } from './security/task-taint';
+import { carriedReadContent } from './security/read-leak';
 import { plainOpenUrl, classifyShellCommand } from './approval-policy';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
@@ -2731,29 +2732,38 @@ async function assessAttachments(tool: string, params: Record<string, unknown>):
 /**
  * Read-then-send (0.24.12 audit #3): once this task has read a file, the
  * clipboard or a secret (security/task-taint.ts), opening or requesting an
- * address that carries data asks first. With nothing read, or an address
- * with no query string, nothing changes.
+ * address asks first when it actually carries some of that text (a key or
+ * token, a long passage, or either one encoded: security/read-leak.ts) that
+ * the user did not type themselves. "Read notes.txt and google the first
+ * item" does not ask; a link that is written in the file does not either.
  */
 function assessSendAfterRead(tool: string, params: Record<string, unknown>): RiskVerdict | null {
   const read = taskReadSensitive();
   if (!read) return null;
   let target = '';
+  let extra = '';
   if (tool === 'navigate_browser' || tool === 'browser_navigate' || tool === 'open_url' || tool === 'http_request') {
     target = String(params.url ?? '');
-    if (tool === 'http_request' && String(params.body ?? '')) target = target || 'request';
-    else if (!urlCarriesData(target)) return null;
+    if (tool === 'http_request') {
+      const body = params.body;
+      extra = typeof body === 'string' ? body : body === undefined || body === null ? '' : JSON.stringify(body);
+    }
   } else if (tool === 'shell_exec') {
     target = plainOpenUrl(String(params.command ?? '')) ?? '';
-    if (!target || !urlCarriesData(target)) return null;
   } else if (tool === 'ping_host') {
     target = String(params.host ?? '').trim();
-    if (!target || /^[\d.]+$|:/.test(target)) return null; // an IP address carries nothing
   } else {
     return null;
   }
-  let host = target;
-  try { host = new URL(target).host || target; } catch { /* keep raw */ }
-  return { class: 'destructive_web', reason: `This task read ${read}, and this address can carry data out (${host.slice(0, 60)})` };
+  if (!target) return null;
+  let host = '';
+  try { host = new URL(target).host; } catch { /* a bare host (ping) or not a URL: all of it is payload */ }
+  const reads = taskReadTexts();
+  const userMessage = taskUserMessage();
+  const carried = carriedReadContent({ outbound: target, reads, userMessage, host })
+    ?? (extra ? carriedReadContent({ outbound: extra, reads, userMessage }) : null);
+  if (!carried) return null;
+  return { class: 'destructive_web', reason: `This sends ${carried} read from ${read} earlier in this task to ${(host || target).slice(0, 60)}` };
 }
 
 /** Cheap binary detector — NUL byte in the first 4 KB is the standard heuristic. */
