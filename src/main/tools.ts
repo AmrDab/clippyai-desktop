@@ -94,6 +94,7 @@ import { outlookSendArgs } from './outlook-args';
 
 import { runMacSecurityScan, parseMacSections } from './mac-security-scan';
 import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, appNameMatches } from './screen-context';
+import { formatWinScreen, formatMacScreen, type ScreenLines } from './screen-lines';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -209,6 +210,8 @@ function getScriptsDir(): string {
 // initTools (unit tests) keep the one-shot spawn.
 setPsScriptsDir(getScriptsDir);
 
+const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
+
 // ── Screen Scale ─────────────────────────────────────────────────
 
 let screenScale = 1;
@@ -238,9 +241,9 @@ async function detectScreenScale(): Promise<void> {
  *
  * Generic — never hardcode other process names. Only our own name is removed.
  */
+const OWN_PROCESS_NAMES: ReadonlySet<string> = new Set(['ClippyAI', 'clippyai']);
 function stripOwnWindowFromScreen(raw: string): string {
   if (!raw) return raw;
-  const OWN_PROCESS_NAMES = new Set(['ClippyAI', 'clippyai']);
   // Try accessibility-tree JSON shape first
   try {
     const parsed = JSON.parse(raw);
@@ -293,8 +296,22 @@ async function macTargetPid(): Promise<number | undefined> {
   } catch { return undefined; }
 }
 
+/** id -> control name from the last read_screen, so smart_click("e7") / smart_type("e7") resolve. */
+let lastScreenIds = new Map<string, string>();
+function resolveScreenId(target: string): string {
+  return /^e\d+$/i.test(target.trim()) ? (lastScreenIds.get(target.trim().toLowerCase()) ?? target) : target;
+}
+
+/**
+ * read_screen / smart_read. Model-facing args: mode ('accessibility' | 'ocr'),
+ * processId, find (list only the controls whose name contains it). Internal:
+ * timeoutMs, and format:'json' (the per-turn screen context parses the JSON).
+ */
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
   const mode = String(params.mode || 'accessibility');
+  const find = typeof params.find === 'string' ? params.find.trim() : '';
+  const asJson = params.format === 'json';
+  const lines = (l: ScreenLines): ToolResult => { lastScreenIds = l.ids; return { text: l.text }; };
 
   // v0.20.0 — darwin path routes through the Swift bridge. AX tree for
   // mode='accessibility' (what the brain calls between tool steps to verify
@@ -309,9 +326,14 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
         return { text: JSON.stringify({ elements: result.elements, fullText: result.fullText }) };
       }
       const target = await macForegroundWindow();
-      const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 6 });
-      const filtered = stripOwnWindowFromScreen(JSON.stringify(tree));
-      return { text: filtered || '(empty screen context)' };
+      if (asJson) {
+        const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 6 });
+        return { text: stripOwnWindowFromScreen(JSON.stringify(tree)) || '(empty screen context)' };
+      }
+      // Layout nodes count toward the bridge's depth, so go deep; the
+      // formatter drops them (screen-lines.ts).
+      const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 12 });
+      return lines(formatMacScreen(tree, { find }));
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
         if (err.kind === 'permission') {
@@ -340,12 +362,20 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
       // -ProcessId, so the uiTree branch never ran). With no explicit PID
       // the script resolves the real foreground process itself, skipping
       // Clippy's own window.
+      const timeoutMs = scriptTimeoutParam(params, 10000);
       const { stdout } = await psScript('get-screen-context.ps1', {
         ExcludeProcessId: process.pid,
         FocusedProcessId: params.processId ? String(params.processId) : undefined,
-      }, { timeoutMs: scriptTimeoutParam(params, 10000), maxBuffer: 5 * 1024 * 1024, idempotent: true });
-      const filtered = stripOwnWindowFromScreen(stdout.trim());
-      return { text: filtered || '(empty screen context)' };
+        FindB64: find ? b64(find) : undefined,
+        // The walk returns what it has when its budget ends, well inside the
+        // script timeout (the window list and the JSON still have to follow).
+        BudgetMs: Math.max(150, Math.min(3000, Math.floor(timeoutMs * 0.6))),
+      }, { timeoutMs, maxBuffer: 5 * 1024 * 1024, idempotent: true });
+      const raw = stdout.trim();
+      if (asJson) return { text: stripOwnWindowFromScreen(raw) || '(empty screen context)' };
+      const formatted = formatWinScreen(raw, { find, ownProcessNames: OWN_PROCESS_NAMES });
+      if (formatted) return lines(formatted);
+      return { text: raw || '(empty screen context)' };
     } catch (err) {
       return { text: `(read_screen error: ${err instanceof Error ? err.message : String(err)})` };
     }
@@ -1379,7 +1409,7 @@ async function clickPhysical(x: number, y: number): Promise<void> {
 }
 
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
-  const target = String(params.target || '');
+  const target = resolveScreenId(String(params.target || ''));
   if (!target) return { text: '(no target provided)' };
   // v0.21 — every exit carries a receipt (receipt.ts). A click is never
   // 'verified' here: we know it was dispatched, not what it did.
@@ -1576,8 +1606,6 @@ async function foregroundForFind(): Promise<FindTarget> {
   } catch { return { pid: 0, handle: 0 }; }
 }
 
-const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
-
 async function windowsSmartFind(
   target: string,
   action: 'click' | 'set-value',
@@ -1613,7 +1641,7 @@ async function windowsSmartFind(
 }
 
 async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
-  const target = String(params.target || '');
+  const target = resolveScreenId(String(params.target || ''));
   const text = String(params.text || '');
   if (!target || !text) return { text: '(missing target or text)' };
 

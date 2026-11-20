@@ -2887,7 +2887,7 @@ ${typingLine}`;
       const left = screenQ ? plan.heavyMs : heavyBudgetMs(plan, Date.now() - started);
       if (left >= 200) {
         try {
-          const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left }), left + 150);
+          const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left, format: 'json' }), left + 150);
           if (!r.timedOut && r.value.text && !/^\((read_screen )?error/i.test(r.value.text)) {
             screenText = formatScreenDump(r.value.text);
             if (screenText) source = 'uia';

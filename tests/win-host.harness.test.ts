@@ -145,6 +145,18 @@ describe.skipIf(!RUN)('Windows PowerShell host harness (own WinForms window)', (
     console.log(`own form physical rect ${JSON.stringify(win)}; Send button ${JSON.stringify(r.bounds)}`);
   }, 30000);
 
+  it('get-screen-context: the form controls as flat nodes with state and actions; find filters by name', async () => {
+    const r = JSON.parse((await psScript('get-screen-context.ps1', { WindowHandle: info.hwnd }, { timeoutMs: 15000 })).stdout);
+    expect(r.focusedHandle).toBe(info.hwnd);
+    const byName = (n: string) => r.nodes.find((x: { name: string }) => x.name === n);
+    expect(byName('Send')).toMatchObject({ role: 'Button', actions: expect.stringContaining('invoke') });
+    expect(byName('Remember me')).toMatchObject({ role: 'CheckBox', state: expect.stringContaining('unchecked'), actions: expect.stringContaining('toggle') });
+    expect(byName('Subject')).toMatchObject({ role: 'Edit', actions: expect.stringContaining('setvalue') });
+    expect(r.windows.some((w: { handle: number }) => w.handle === info.hwnd)).toBe(true);
+    const f = JSON.parse((await psScript('get-screen-context.ps1', { WindowHandle: info.hwnd, FindB64: b64('send') }, { timeoutMs: 15000 })).stdout);
+    expect(f.nodes.map((x: { name: string }) => x.name)).toEqual(['Send']);
+  }, 30000);
+
   it('smart-find: fuzzy TreeWalker pass finds a multi-word button from one word', async () => {
     const r = JSON.parse((await psScript('smart-find.ps1', { NameB64: b64('message'), WindowHandle: info.hwnd, Action: 'find' }, { timeoutMs: 15000 })).stdout);
     expect(r).toMatchObject({ found: true, name: 'New message', stage: 'walk', timedOut: false });

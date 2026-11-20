@@ -87,7 +87,7 @@ Clippy operates on a **4-tier capability stack**, picked per step. The model alw
 
 | Tool | What it does |
 |---|---|
-| `read_screen` | Returns the accessibility tree of the focused window — element names, types, bounds. Use OCR mode for canvas/PDFs. |
+| `read_screen` | Lists the focused window's controls, one line each: id, role, name, value, state and the actions it supports. `find` filters by name. Use OCR mode for canvas/PDFs. |
 | `smart_click` | Clicks an element by visible label or text. Preferred over coordinate clicks. |
 | `smart_type` | Types into a labeled input field. |
 | `key_press` | Press a key or combo (`ctrl+s`, `alt+tab`, `Page_Down`). |

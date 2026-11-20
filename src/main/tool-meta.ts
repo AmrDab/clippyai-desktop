@@ -117,7 +117,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // equivalents in v0.20.0 — see src/main/mac-bridge-native.ts. Each of the
   // tools tagged ['win32', 'darwin'] below now routes to the bridge on
   // darwin via the matching tools.ts implementation.
-  read_screen:        { tier: 2, cost: 'medium',    description: 'Read what is currently on screen via the OS accessibility tree (UIA on Windows, AX on macOS)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  read_screen:        { tier: 2, cost: 'medium',    description: 'List the controls of the foreground window, one line each (id, role, name, value, state, actions), then the other open windows. Pass find to filter by name', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   smart_read:         { tier: 2, cost: 'medium',    description: 'Alias of read_screen — read the foreground accessibility tree', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   get_active_window:  { tier: 2, cost: 'cheap',     description: 'Identify the foreground window (process name, title, bounds)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   get_windows:        { tier: 2, cost: 'cheap',     description: 'List all top-level windows on the desktop', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
