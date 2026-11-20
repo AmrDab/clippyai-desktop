@@ -2425,7 +2425,7 @@ function layer1() {
     const metaSrcSec = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
     const inMap = /^\s+security_sweep:\s*securitySweep/m.test(toolsSrcSec);
     const metaLine = metaSrcSec.match(/^\s+security_sweep:\s*\{[^\n]*\}/m);
-    const inMeta = !!metaLine && /actionClass:\s*'read_only'/.test(metaLine[0]) && /platforms:\s*\['win32'\]/.test(metaLine[0]);
+    const inMeta = !!metaLine && /actionClass:\s*'read_only'/.test(metaLine[0]) && /platforms:\s*\['win32'/.test(metaLine[0]); // + 'darwin' since the Mac port
     const inServer = apiToolsSrc ? /name:\s*'security_sweep'/.test(apiToolsSrc) : true;
     if (inMap && inMeta && inServer) {
       pass(`security_sweep: registered (TOOL_MAP + tool-meta read_only/win32${apiToolsSrc ? ' + server prompt' : ' — server skipped, clippyai-api not cloned'})`);
