@@ -71,7 +71,9 @@ import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
 import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
-import { isPingableHost } from './security/net-guard';
+import { isPingableHost, httpUrlOrNull, urlCarriesData } from './security/net-guard';
+import { noteToolRan, taskReadSensitive } from './security/task-taint';
+import { plainOpenUrl } from './approval-policy';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
 // never from a model-supplied argument.
@@ -1731,8 +1733,12 @@ async function getDefaultBrowserProcessName(): Promise<string> {
 }
 
 async function navigateBrowser(params: Record<string, unknown>): Promise<ToolResult> {
-  const url = String(params.url || '');
-  if (!url) return { text: '(no URL provided)' };
+  const rawUrl = String(params.url || '');
+  if (!rawUrl) return { text: '(no URL provided)' };
+  // http(s) only: openExternal hands any other scheme (file:, ms-msdt:,
+  // search-ms:, a UNC path) to whatever handler is installed.
+  const url = httpUrlOrNull(rawUrl);
+  if (!url) return { text: '(error:SCHEME_NOT_ALLOWED) navigate_browser only opens http:// and https:// addresses' };
   try {
     // Use Electron's shell.openExternal — safe, validates URLs, no shell injection.
     await shell.openExternal(url);
@@ -2705,6 +2711,34 @@ async function assessReadPath(tool: string, params: Record<string, unknown>): Pr
   const check = await checkReadPath(raw, readGuardEnv());
   if (check.allowed) return null;
   return { class: 'destructive_file', reason: `This reads ${describePathBlock(check)}` };
+}
+
+/**
+ * Read-then-send (0.24.12 audit #3): once this task has read a file, the
+ * clipboard or a secret (security/task-taint.ts), opening or requesting an
+ * address that carries data asks first. With nothing read, or an address
+ * with no query string, nothing changes.
+ */
+function assessSendAfterRead(tool: string, params: Record<string, unknown>): RiskVerdict | null {
+  const read = taskReadSensitive();
+  if (!read) return null;
+  let target = '';
+  if (tool === 'navigate_browser' || tool === 'browser_navigate' || tool === 'open_url' || tool === 'http_request') {
+    target = String(params.url ?? '');
+    if (tool === 'http_request' && String(params.body ?? '')) target = target || 'request';
+    else if (!urlCarriesData(target)) return null;
+  } else if (tool === 'shell_exec') {
+    target = plainOpenUrl(String(params.command ?? '')) ?? '';
+    if (!target || !urlCarriesData(target)) return null;
+  } else if (tool === 'ping_host') {
+    target = String(params.host ?? '').trim();
+    if (!target || /^[\d.]+$|:/.test(target)) return null; // an IP address carries nothing
+  } else {
+    return null;
+  }
+  let host = target;
+  try { host = new URL(target).host || target; } catch { /* keep raw */ }
+  return { class: 'destructive_web', reason: `This task read ${read}, and this address can carry data out (${host.slice(0, 60)})` };
 }
 
 /** Cheap binary detector — NUL byte in the first 4 KB is the standard heuristic. */
@@ -4184,8 +4218,10 @@ async function installSkillTool(params: Record<string, unknown>): Promise<ToolRe
 // on whatever browser the user has, including their existing tabs."
 
 async function browserNavigate(params: Record<string, unknown>): Promise<ToolResult> {
-  const url = String(params.url || '');
-  if (!url) return { text: '(error:MISSING_URL) browser_navigate requires `url`.' };
+  const rawUrl = String(params.url || '');
+  if (!rawUrl) return { text: '(error:MISSING_URL) browser_navigate requires `url`.' };
+  const url = httpUrlOrNull(rawUrl);
+  if (!url) return { text: '(error:SCHEME_NOT_ALLOWED) browser_navigate only opens http:// and https:// addresses' };
   // Prefer mcp-chrome — drives the user's real signed-in browser. Tool name
   // is chrome_navigate per the v1.0.0 mcp-chrome catalog.
   if (isMcpChromeReady()) {
@@ -4196,7 +4232,7 @@ async function browserNavigate(params: Record<string, unknown>): Promise<ToolRes
       log.warn('mcp-chrome navigate failed, falling through to CDP', { url, err: String(err).slice(0, 200) });
     }
   }
-  return await navigateBrowser(params);
+  return await navigateBrowser({ ...params, url });
 }
 
 async function browserClick(params: Record<string, unknown>): Promise<ToolResult> {
@@ -5481,6 +5517,8 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     // UI hop can recover from. Returning a clean code lets the model decide.
     primaryResult = { text: `(error:TOOL_THREW) ${tool} threw: ${err instanceof Error ? err.message : String(err)}` };
   }
+  // Per-task "read something private" flag for assessSendAfterRead.
+  noteToolRan(tool, params, primaryResult.text);
 
   // v0.18.1 — second noteClippyInput AFTER dispatch to cover OS event-
   // registration tail-latency. macOS in particular can lag the
@@ -5535,6 +5573,8 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
 export async function assessRisk(tool: string, params: Record<string, unknown> = {}): Promise<RiskVerdict | null> {
   const guarded = await assessReadPath(tool, params).catch(() => null);
   if (guarded) return guarded;
+  const sendAfterRead = assessSendAfterRead(tool, params);
+  if (sendAfterRead) return sendAfterRead;
   if (!GOVERNED_TOOLS.has(tool)) return null;
   const direct = classifyRisk({ tool, args: params });
   if (direct) return direct;

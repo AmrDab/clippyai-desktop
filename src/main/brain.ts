@@ -20,6 +20,7 @@
 import { BrowserWindow, net, app, powerMonitor } from 'electron';
 import { watchReachability, REACH_PROBE_TIMEOUT_MS } from './turn-reachability';
 import { executeTool, abortAllInFlightTools, verifyIMessageSent, assessRisk, readForegroundText, resolveKillTargets } from './tools';
+import { resetTaskTaint } from './security/task-taint';
 import { TOOL_META, isToolSupportedOnPlatform, shouldVerifyAfter } from './tool-meta';
 import { trimToBudget } from './history-budget';
 import { taskOutcomeFor, type TaskOutcome } from './task-outcome';
@@ -1328,6 +1329,7 @@ export class Brain {
     }
     this.isExecuting = true;
     this.injectionFiredInTask = false;
+    resetTaskTaint();
     telemetry.taskBegin();
     this.cancelRequested = false;
     this.stopRequested = false;
