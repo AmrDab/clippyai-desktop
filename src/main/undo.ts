@@ -22,6 +22,7 @@
 
 import fs from 'fs';
 import type { InverseAction } from './action-history';
+import { takeClipboard } from './tool-undo';
 
 export interface UndoResult {
   ok: boolean;
@@ -57,8 +58,12 @@ export async function applyInverse(inv: InverseAction): Promise<UndoResult> {
 
     case 'restore-clipboard': {
       try {
+        const previousText = takeClipboard(inv.clipRef);
+        if (previousText === undefined) {
+          return { ok: false, detail: 'The previous clipboard text is kept in memory only and is no longer available.' };
+        }
         const { clipboard } = await import('electron');
-        clipboard.writeText(inv.previousText);
+        clipboard.writeText(previousText);
         return { ok: true, detail: 'Clipboard restored.' };
       } catch (err) {
         return { ok: false, detail: err instanceof Error ? err.message : String(err) };

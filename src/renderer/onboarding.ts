@@ -450,7 +450,7 @@ window.clippy.onActivationResult((r) => {
     licenseError.textContent = '';
     if (currentStep !== 1) return;
     if (!IS_MAC) { void finishFirstRun(); return; }
-    if (r.licenseKey) licenseInput.value = r.licenseKey;
+    licenseSavedInMain = true; // main stored the key; Next saves only name + voice
     showStep(2);
     return;
   }

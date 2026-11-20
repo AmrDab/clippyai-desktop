@@ -90,6 +90,7 @@ import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
 import * as profileMod from './profile';
 import { sanitizeProfileUpdate } from './profile-field';
+import { rememberClipboard } from './tool-undo';
 // v0.24 — persistent PowerShell host (plan §2.4). Every win32 PowerShell call
 // below goes through psScript / psCommand: in the long-lived host when it is
 // up, as the old one-shot powershell.exe spawn otherwise.
@@ -1971,7 +1972,9 @@ async function writeClipboard(params: Record<string, unknown>): Promise<ToolResu
   try {
     const { clipboard } = await import('electron');
     const previous = clipboard.readText() || null;
-    (params as Record<string, unknown>)._previousClipboard = previous;
+    // Only a reference goes into the args (they are summarised into the
+    // activity log); the text itself stays in memory.
+    if (previous) (params as Record<string, unknown>)._previousClipboardRef = rememberClipboard(previous);
   } catch { /* non-fatal: if pre-capture fails, undo falls back to noop */ }
   // win32 — Set-Clipboard via temp file (restored from v0.17.7).
   if (process.platform === 'win32') {

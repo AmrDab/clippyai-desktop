@@ -240,7 +240,8 @@ async function handleActivateUrl(url: string): Promise<void> {
   telemetry.track('activation', { outcome: 'ok' });
   if (onboarding) {
     // Onboarding advances itself (Meet Clippy) and persists name/voice on Next.
-    onboarding.webContents.send('activation-result', { ok: true, plan: result.plan, licenseKey: result.licenseKey });
+    // The key is already saved here in main; it never goes to the window.
+    onboarding.webContents.send('activation-result', { ok: true, plan: result.plan });
     onboarding.focus();
   } else if (mainWindow && !mainWindow.isDestroyed()) {
     const text = `You're all set — ${planLabel(result.plan)} is active! 📎`;

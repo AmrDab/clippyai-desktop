@@ -14,7 +14,9 @@
  *
  * Mac port notes (v0.19.0):
  *   - write_clipboard uses Electron clipboard API (not PowerShell Get-Clipboard)
- *     so _previousClipboard is captured via clipboard.readText() in tools.ts.
+ *     so the previous text is captured via clipboard.readText() in tools.ts
+ *     and kept in memory here (rememberClipboard); only a reference reaches
+ *     the history file.
  *   - delete_file uses fs.renameSync to ~/.clippy-trash (POSIX-compatible).
  *   - rename_file / move_file swap from/to for undo.
  *   - Apple Mail / Mac-specific tools not added yet (fail-closed = no Undo button).
@@ -22,6 +24,32 @@
 
 import type { InverseAction } from './action-history';
 import type { ToolResult } from './types/tool-result';
+
+// Previous clipboard text for the write_clipboard undo. Memory only: it is
+// never written to action-history.json or a log, and is gone when Clippy
+// quits (the undo then says so). Small ring so it cannot grow.
+const CLIPBOARD_MEMORY_MAX = 20;
+const clipboardMemory = new Map<string, string>();
+let clipboardSeq = 0;
+
+/** Keep `text` in memory; returns the reference to store in the history entry. */
+export function rememberClipboard(text: string): string {
+  const ref = `clip-${Date.now().toString(36)}-${++clipboardSeq}`;
+  clipboardMemory.set(ref, text);
+  while (clipboardMemory.size > CLIPBOARD_MEMORY_MAX) {
+    const oldest = clipboardMemory.keys().next().value;
+    if (oldest === undefined) break;
+    clipboardMemory.delete(oldest);
+  }
+  return ref;
+}
+
+/** The remembered text for `ref` (removed once taken), or undefined. */
+export function takeClipboard(ref: string): string | undefined {
+  const text = clipboardMemory.get(ref);
+  clipboardMemory.delete(ref);
+  return text;
+}
 
 type ToolUndoFactory = (
   args: Record<string, unknown>,
@@ -90,9 +118,9 @@ export const TOOL_UNDO: Record<string, ToolUndoFactory> = {
   // ── Clipboard ────────────────────────────────────────────────────────────
 
   write_clipboard: (args, _result): InverseAction => {
-    const previousText = args._previousClipboard as string | null | undefined;
-    if (typeof previousText === 'string') {
-      return { kind: 'restore-clipboard', previousText };
+    const clipRef = args._previousClipboardRef as string | null | undefined;
+    if (typeof clipRef === 'string' && clipRef) {
+      return { kind: 'restore-clipboard', clipRef };
     }
     return { kind: 'noop', reason: 'Previous clipboard content was not captured.' };
   },
