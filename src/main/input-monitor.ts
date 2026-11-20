@@ -113,6 +113,16 @@ export class InputMonitor {
       this.child = null;
       this.enabled = false;
     });
+    // A helper that cannot be started (ENOENT, EACCES, a quarantined binary)
+    // or cannot be signalled reports it as an 'error' event, not a throw: with
+    // no listener that is an uncaught exception in the main process.
+    this.child.on('error', (err) => {
+      log.warn('input-monitor process error; keystroke awareness disabled', { err: String(err) });
+      this.child = null;
+      this.enabled = false;
+    });
+    // Same for a write to a helper that has just died (EPIPE).
+    this.child.stdin?.on('error', (err) => log.debug('input-monitor stdin error', { err: String(err) }));
     return true;
   }
 
