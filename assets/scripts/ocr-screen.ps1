@@ -6,10 +6,14 @@
     pipeline. In the persistent host the OCR engine and the WinRT AsTask
     helper are created once and kept in $global:__ClippyOcr.
 
-    -Region foreground : the foreground window's frame (skipping windows of
-                         -ExcludeProcessId, i.e. Clippy itself), clipped to
-                         the virtual screen. Falls back to the whole virtual
-                         screen when there is no usable window.
+    -Region foreground : the foreground window's frame, clipped to the
+                         virtual screen. The caller passes the frame of the
+                         window it picked as -X -Y -Width -Height (v0.24.12,
+                         foreground-pick.ts); without it the script walks the
+                         Z-order itself (skipping windows of
+                         -ExcludeProcessId, i.e. Clippy itself). Falls back
+                         to the whole virtual screen when there is no usable
+                         window.
     -Region screen     : the whole virtual screen (all monitors).
     -Region rect       : -X -Y -Width -Height (physical screen pixels).
 
@@ -103,6 +107,8 @@ public class OcrScreenWin32 {
     $source = $Region
     $rx = $vs.X; $ry = $vs.Y; $rw = $vs.Width; $rh = $vs.Height
     if ($Region -eq 'rect' -and $Width -gt 0 -and $Height -gt 0) {
+        $rx = $X; $ry = $Y; $rw = $Width; $rh = $Height
+    } elseif ($Region -eq 'foreground' -and $Width -gt 0 -and $Height -gt 0) {
         $rx = $X; $ry = $Y; $rw = $Width; $rh = $Height
     } elseif ($Region -eq 'foreground') {
         $r = New-Object OcrScreenWin32+RECT

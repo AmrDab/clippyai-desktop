@@ -96,6 +96,7 @@ import { runMacSecurityScan, parseMacSections } from './mac-security-scan';
 import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, appNameMatches } from './screen-context';
 import { formatWinScreen, formatMacScreen, type ScreenLines } from './screen-lines';
 import { reportUiaClick, outcomeLine } from './click-report';
+import { parseForegroundSnapshot, pickUserWindow, activeWindowJson } from './foreground-pick';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -364,8 +365,12 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
       // the script resolves the real foreground process itself, skipping
       // Clippy's own window.
       const timeoutMs = scriptTimeoutParam(params, 10000);
+      // The window to read is the one get_active_window picks (no overlays).
+      // windowHandle is internal: the per-turn context already has it.
+      const handle = params.processId ? 0 : (Number(params.windowHandle) || (await foregroundForFind()).handle);
       const { stdout } = await psScript('get-screen-context.ps1', {
         ExcludeProcessId: process.pid,
+        WindowHandle: handle || undefined,
         FocusedProcessId: params.processId ? String(params.processId) : undefined,
         FindB64: find ? b64(find) : undefined,
         // The walk returns what it has when its budget ends, well inside the
@@ -470,7 +475,13 @@ async function getActiveWindow(params: Record<string, unknown> = {}): Promise<To
   if (process.platform === 'win32') {
     try {
       const { stdout } = await psScript('get-foreground-window.ps1', { ExcludeProcessId: process.pid }, { timeoutMs: scriptTimeoutParam(params, 5000), idempotent: true });
-      return { text: stdout.trim() || '(no active window)' };
+      const out = stdout.trim();
+      // v0.24.12 — the script lists the windows; the pick (never Clippy's own
+      // window, never an always-on-top overlay) is foreground-pick.ts.
+      const snap = parseForegroundSnapshot(out);
+      if (!snap) return { text: out || '(no active window)' };
+      const picked = pickUserWindow(snap, process.pid);
+      return { text: picked ? activeWindowJson(picked) : '(no active window)' };
     } catch (err) {
       log.warn('get_active_window failed', serializeErr(err));
       return { text: '(could not get active window)' };
@@ -1310,7 +1321,11 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
  * coordinate clicks against OCR locally instead of asking the model to
  * pixel-locate from a screenshot — a documented LLM weakness.
  */
-async function captureAndOcr(region: 'foreground' | 'screen' = 'screen', timeoutMs = 15000): Promise<OcrLayout | null> {
+async function captureAndOcr(
+  region: 'foreground' | 'screen' = 'screen',
+  timeoutMs = 15000,
+  fgBounds?: { x: number; y: number; width: number; height: number },
+): Promise<OcrLayout | null> {
   // win32-only pipeline — see docstring. On darwin the bridge Vision path
   // handles OCR; reaching here means the bridge is unavailable, in which
   // case the PowerShell spawn would just ENOENT.
@@ -1322,7 +1337,11 @@ async function captureAndOcr(region: 'foreground' | 'screen' = 'screen', timeout
   // failure mode is still logged (v0.11.25, report ccd4d6f4).
   let stdout: string;
   try {
-    const r = await psScript('ocr-screen.ps1', { Region: region, ExcludeProcessId: process.pid }, {
+    // 'foreground' = the frame of the window get_active_window picks; the
+    // script's own Z-order walk (which can land on an overlay) is the fallback.
+    const b = region === 'foreground' ? (fgBounds ?? (await foregroundForFind()).bounds) : undefined;
+    const frame = b && b.width > 0 && b.height > 0 ? { X: b.x, Y: b.y, Width: b.width, Height: b.height } : {};
+    const r = await psScript('ocr-screen.ps1', { Region: region, ExcludeProcessId: process.pid, ...frame }, {
       timeoutMs, maxBuffer: 5 * 1024 * 1024, idempotent: true,
     });
     stdout = r.stdout;
@@ -1541,7 +1560,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
     }
 
     // Tier 2 — OCR fallback. The big win for WebViews and custom-rendered UIs.
-    let ocr = await captureAndOcr('foreground');
+    let ocr = await captureAndOcr('foreground', 15000, fgBounds);
     let match = ocr ? matchOcrTarget(target, ocr.elements, fgBounds) : null;
     if (!match && ocr?.region?.source !== 'screen') {
       // The label may sit in a popup / dialog outside the foreground frame.

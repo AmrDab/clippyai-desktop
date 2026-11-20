@@ -100,6 +100,14 @@ export function extractProcessName(windowJson: string): string {
   return '';
 }
 
+/** Window handle from the window JSON (Windows); 0 when there is none. */
+export function extractWindowHandle(windowJson: string): number {
+  try {
+    const h = (JSON.parse(windowJson) as { handle?: unknown }).handle;
+    return typeof h === 'number' && h > 0 ? h : 0;
+  } catch { return 0; }
+}
+
 export type Raced<T> = { timedOut: false; value: T } | { timedOut: true };
 
 /** Resolve with the value, or `{timedOut:true}` after ms. The timer is always cleared. */

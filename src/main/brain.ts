@@ -45,7 +45,7 @@ import { languageSample, proactiveMessage } from './tip-language';
 import * as cursorVision from './cursor-vision';
 import {
   newCtxState, planCapture, recordOutcome, heavyBudgetMs, windowCallFailed, extractProcessName, raceDeadline,
-  isScreenQuestion, formatScreenDump, formatOcrContext, SCREEN_Q_OCR_MS,
+  isScreenQuestion, formatScreenDump, formatOcrContext, SCREEN_Q_OCR_MS, extractWindowHandle,
   type CtxState, type ScreenCtxOutcome, type ScreenSource,
 } from './screen-context';
 import * as userTakeover from './user-takeover';
@@ -2909,7 +2909,7 @@ ${typingLine}`;
       const left = screenQ ? plan.heavyMs : heavyBudgetMs(plan, Date.now() - started);
       if (left >= 200) {
         try {
-          const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left, format: 'json' }), left + 150);
+          const r = await raceDeadline(executeTool('read_screen', { timeoutMs: left, format: 'json', windowHandle: extractWindowHandle(windowText) || undefined }), left + 150);
           if (!r.timedOut && r.value.text && !/^\((read_screen )?error/i.test(r.value.text)) {
             screenText = formatScreenDump(r.value.text);
             if (screenText) source = 'uia';
