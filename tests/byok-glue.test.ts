@@ -119,8 +119,12 @@ describe('byok settings + key storage', () => {
       .toMatchObject({ baseUrl: 'https://api.openai.com/v1', keyPresent: true, keyHint: '4321', active: true });
   });
 
-  it('accepts http:// only for this computer; a refused URL changes nothing (audit #19)', () => {
-    for (const bad of ['http://api.example.com/v1', 'http://192.168.1.20:11434/v1', 'http://10.0.0.5/v1', 'http://localhost.attacker.example/v1', 'http://127.0.0.1.attacker.example/v1']) {
+  it('accepts http:// only for this computer and the local network; a refused URL changes nothing (audit #19)', () => {
+    for (const bad of [
+      'http://api.example.com/v1', 'http://8.8.8.8/v1', 'http://172.32.0.1/v1', 'http://172.15.0.1/v1', 'http://192.169.1.1/v1', 'http://11.0.0.1/v1',
+      'http://localhost.attacker.example/v1', 'http://127.0.0.1.attacker.example/v1', 'http://192.168.1.20.attacker.example/v1',
+      'http://my.local.attacker.example/v1', 'http://[2001:db8::1]/v1', 'http://[fec0::1]/v1', 'http://999.168.1.1/v1',
+    ]) {
       const r = byok.saveByokSettings({ baseUrl: bad });
       expect(r.ok).toBe(false);
       expect((r as { error: string }).error).toMatch(/https:\/\//);
@@ -129,6 +133,11 @@ describe('byok settings + key storage', () => {
     expect(baseUrlProblem('http://localhost:11434/v1')).toBeNull();
     expect(baseUrlProblem('http://127.0.0.1:1234/v1')).toBeNull();
     expect(baseUrlProblem('http://[::1]:8080/v1')).toBeNull();
+    // Ollama / LM Studio on another machine at home.
+    for (const lan of [
+      'http://192.168.1.20:11434/v1', 'http://10.0.0.5:1234/v1', 'http://172.16.4.2/v1', 'http://172.31.255.254/v1',
+      'http://gaming-pc.local:11434/v1', 'http://[fe80::1c2b:3aff:fe4d:5e6f]:11434/v1', 'http://[febf::1]/v1',
+    ]) expect(baseUrlProblem(lan), lan).toBeNull();
     expect(baseUrlProblem('https://api.example.com/v1')).toBeNull();
     expect(baseUrlProblem('ftp://x')).toMatch(/http/);
     expect(baseUrlProblem('not a url')).toMatch(/http/);
@@ -192,6 +201,18 @@ describe('kit + turn through the glue', () => {
     byok.clearByokKey();
     expect(await byok.testByokConnection()).toMatchObject({ ok: false, message: expect.stringMatching(/needs an API key/) });
     expect(byok.getByokStatus()).toMatchObject({ keyPresent: false, keyHint: '', active: false });
+  });
+});
+
+describe('Ollama on another machine at home works over http', () => {
+  it('saves a LAN base URL and sends the turn there', async () => {
+    const r = byok.saveByokSettings({ provider: 'ollama', baseUrl: 'http://192.168.1.20:11434/v1', model: 'qwen2.5:7b', enabled: true });
+    expect(r.ok).toBe(true);
+    expect(r.status).toMatchObject({ baseUrl: 'http://192.168.1.20:11434/v1', active: true });
+    const seen: string[] = [];
+    fetchMock((url) => { seen.push(url); return { status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: 'hi' } }] } }; });
+    expect(await byok.runTurn(kit, [{ role: 'user', parts: [{ text: 'hello' }] }], {})).toMatchObject({ done: true });
+    expect(seen).toEqual(['http://192.168.1.20:11434/v1/chat/completions']);
   });
 });
 
