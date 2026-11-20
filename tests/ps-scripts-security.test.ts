@@ -51,3 +51,27 @@ describe('Office COM tools (audit #11)', () => {
     }
   });
 });
+
+describe('kill_process (audit #15)', () => {
+  const src = script('com-kill-process.ps1');
+  it('rejects wildcard characters in a name before the lookup', () => {
+    const reject = at(src, "if ($cleanName -match '[*?\\[\\]]') { Fail");
+    expect(reject).toBeLessThan(at(src, 'Get-Process -Name $cleanName'));
+    // The script's own pattern rejects every wildcard form and accepts real names.
+    const pattern = src.slice(reject).match(/-match '([^']+)'/)![1];
+    const re = new RegExp(pattern);
+    for (const bad of ['*', 'ls*', 'l?ass', '[l]sass', 'win[il]*', 'svc]host']) expect(re.test(bad)).toBe(true);
+    for (const ok of ['notepad', 'designcenter', 'msedge', 'my-app_2', 'code - insiders', 'app.v2']) expect(re.test(ok)).toBe(false);
+  });
+  it('re-checks every resolved process against the blocklist before anything is killed', () => {
+    const lookup = at(src, 'Get-Process -Name $cleanName');
+    const recheck = at(src, "if ($BLOCKLIST -contains $tn) { Fail");
+    expect(recheck).toBeGreaterThan(lookup);
+    expect(recheck).toBeLessThan(at(src, 'Stop-Process -Id'));
+    // ...and before the resolve-only answer the approval gate reads.
+    expect(recheck).toBeLessThan(at(src, 'Out-Result @{ ok = $true; targets = $rows }'));
+  });
+  it('the blocklist still names the OS-critical processes', () => {
+    for (const p of ['lsass', 'csrss', 'winlogon', 'services', 'svchost', 'explorer', 'clippyai']) expect(src).toContain(`'${p}'`);
+  });
+});
