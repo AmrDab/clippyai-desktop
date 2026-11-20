@@ -86,6 +86,7 @@ import * as actionHistoryMod from './action-history';
 import * as memoryMod from './memory';
 // Phase 3 guardrails — the bubble's Approve/Deny answer lands here.
 import * as approvalMod from './approval';
+import { replyOrSpeak } from './user-message-reply';
 // v0.20.0 — onboarding permission walkthrough: read macOS permission state,
 // open exact System Preferences panes, surface SR dialog, and restart.
 import { permissions, requestScreenRecording } from './mac-bridge-native';
@@ -114,17 +115,16 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (brain.isTutorialActive() && !onboarding) brain.setTutorial(false);
     const tutorial = brain.isTutorialActive();
     if (tutorial) onboarding!.webContents.send('onboarding-tutorial', 'started');
-    try {
+    // The renderer ignores this handler's return value and shows only what is
+    // spoken, so the fallbacks are spoken too (user-message-reply.ts).
+    return replyOrSpeak(async () => {
       const response = await brain.handleUserMessage(trimmed);
       if (tutorial) {
         getOnboardingWindow()?.webContents.send('onboarding-tutorial', 'answered');
         mainWindow.webContents.send('play-animation', 'Congratulate');
       }
-      return response || "Hmm, try again! 📎";
-    } catch (err) {
-      log.error('handleUserMessage threw', serializeErr(err));
-      return "Something went wrong — try again! 📎";
-    }
+      return response;
+    }, (p) => mainWindow.webContents.send('clippy-speak', p), (err) => log.error('handleUserMessage threw', serializeErr(err)));
   });
 
   // v0.11.28 — renderer log bridge. Renderer-side errors and warnings get

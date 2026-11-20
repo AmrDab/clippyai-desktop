@@ -1320,7 +1320,11 @@ export class Brain {
         // two concurrent tool loops because that would clobber each other's
         // always-on-top re-asserts and read_screen output.
         log.warn('Previous task did not abort within 10s — dropping override', { newMessage: text.substring(0, 80) });
-        return "Give me a sec — still finishing that up.";
+        // Spoken, not only returned: the bubble shows nothing else (the
+        // renderer ignores the IPC's return value).
+        const busy = "Give me a sec — still finishing that up.";
+        this.emit('clippy-speak', { text: busy, animate: 'Alert' });
+        return busy;
       }
     }
     // v0.21 — an outside agent (Settings → Connect an agent) is mid-call:
