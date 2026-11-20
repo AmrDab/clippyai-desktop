@@ -3424,125 +3424,6 @@ async function shellExec(params: Record<string, unknown>): Promise<ToolResult> {
   });
 }
 
-// ── macOS native mail (Apple Mail / Outlook for Mac) ─────────────
-//
-// Both clients expose an AppleScript dictionary. The shape differs slightly
-// (Mail uses "outgoing message", Outlook for Mac uses "new outgoing message"
-// under the "Microsoft Outlook" application) but the lifecycle is the same:
-// create → set properties → make recipients/attachments → send. Errors are
-// returned as structured ComResult-shaped values so the dispatcher above can
-// fall through cleanly.
-
-interface MacMailArgs {
-  to: string;
-  cc: string;
-  subject: string;
-  body: string;
-  attachments: string;
-}
-
-interface MacMailResult {
-  ok: boolean;
-  message: string;
-}
-
-function splitAddresses(s: string): string[] {
-  return s.split(/[;,]/).map((a) => a.trim()).filter(Boolean);
-}
-
-function splitAttachments(s: string): string[] {
-  return s.split(/[;,]/).map((a) => a.trim()).filter(Boolean);
-}
-
-async function sendViaAppleMail(args: MacMailArgs): Promise<MacMailResult> {
-  if (process.platform !== 'darwin') return { ok: false, message: '(error:PLATFORM_UNSUPPORTED) Apple Mail is macOS-only' };
-  const toList = splitAddresses(args.to);
-  const ccList = splitAddresses(args.cc);
-  const attachments = splitAttachments(args.attachments);
-  if (toList.length === 0) return { ok: false, message: '(error:NO_RECIPIENT) Apple Mail send requires at least one "to" address' };
-
-  // AppleScript: build the message, add recipients, optionally attach files, send.
-  // We pass subject + body via stdin to avoid quoting hell with arbitrary text.
-  // Recipients and attachments are constructed by literal string concat into
-  // the script — we sanitize them at the JS layer with splitAddresses (which
-  // strips quotes and surrounding whitespace) before composing the snippet.
-  const subjEsc = args.subject.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const bodyEsc = args.body.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  let recips = '';
-  for (const addr of toList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new to recipient at end of to recipients with properties {address:"${a}"}\n`;
-  }
-  for (const addr of ccList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new cc recipient at end of cc recipients with properties {address:"${a}"}\n`;
-  }
-  let attach = '';
-  for (const p of attachments) {
-    const posix = p.replace(/"/g, '');
-    attach += `make new attachment with properties {file name:(POSIX file "${posix}")} at after the last paragraph\n`;
-  }
-
-  const script = `
-    tell application "Mail"
-      activate
-      set newMsg to make new outgoing message with properties {subject:"${subjEsc}", content:"${bodyEsc}", visible:false}
-      tell newMsg
-        ${recips}
-        ${attach}
-        send
-      end tell
-      return "ok"
-    end tell
-  `;
-  const r = await runApplescript(script, { timeoutMs: 20_000 });
-  if (!r.ok) {
-    return { ok: false, message: `(error:APPLE_MAIL_FAILED) Apple Mail send failed: ${r.error ?? r.stderr.trim()}` };
-  }
-  return { ok: true, message: `Sent via Apple Mail to ${toList.join(', ')}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}` };
-}
-
-async function sendViaOutlookMac(args: MacMailArgs): Promise<MacMailResult> {
-  if (process.platform !== 'darwin') return { ok: false, message: '(error:PLATFORM_UNSUPPORTED) Outlook for Mac is macOS-only' };
-  const toList = splitAddresses(args.to);
-  const ccList = splitAddresses(args.cc);
-  const attachments = splitAttachments(args.attachments);
-  if (toList.length === 0) return { ok: false, message: '(error:NO_RECIPIENT) Outlook for Mac send requires at least one "to" address' };
-
-  const subjEsc = args.subject.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const bodyEsc = args.body.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  let recips = '';
-  for (const addr of toList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new to recipient at end of to recipients of newMsg with properties {email address:{address:"${a}"}}\n`;
-  }
-  for (const addr of ccList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new cc recipient at end of cc recipients of newMsg with properties {email address:{address:"${a}"}}\n`;
-  }
-  let attach = '';
-  for (const p of attachments) {
-    const posix = p.replace(/"/g, '');
-    attach += `make new attachment of newMsg with properties {file:(POSIX file "${posix}")}\n`;
-  }
-
-  const script = `
-    tell application "Microsoft Outlook"
-      activate
-      set newMsg to make new outgoing message with properties {subject:"${subjEsc}", content:"${bodyEsc}"}
-      ${recips}
-      ${attach}
-      send newMsg
-      return "ok"
-    end tell
-  `;
-  const r = await runApplescript(script, { timeoutMs: 20_000 });
-  if (!r.ok) {
-    return { ok: false, message: `(error:OUTLOOK_MAC_FAILED) Outlook for Mac send failed: ${r.error ?? r.stderr.trim()}` };
-  }
-  return { ok: true, message: `Sent via Outlook for Mac to ${toList.join(', ')}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}` };
-}
-
 // ── Mail dispatcher ──────────────────────────────────────────────
 
 async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolResult> {
@@ -3628,23 +3509,9 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
     }
   }
 
-  // L1a — Outlook for Mac via AppleScript dictionary. Composes + sends in
-  // one shot. Attachments path uses `make new attachment` with POSIX file.
-  if (env?.outlook_mac_installed) {
-    tried.push('outlook-mac');
-    const r = await sendViaOutlookMac({ to, cc: params.cc ? String(params.cc) : '', subject, body, attachments: params.attachments ? String(params.attachments) : '' });
-    if (r.ok) return { text: r.message };
-    log.info('outlook-mac send failed', { err: r.message });
-  }
-
-  // L1b — Apple Mail via AppleScript. Same flow; AppleMail's dictionary
-  // is similar but `make new outgoing message` lives under `application "Mail"`.
-  if (env?.apple_mail_installed) {
-    tried.push('apple-mail');
-    const r = await sendViaAppleMail({ to, cc: params.cc ? String(params.cc) : '', subject, body, attachments: params.attachments ? String(params.attachments) : '' });
-    if (r.ok) return { text: r.message };
-    log.info('apple-mail send failed', { err: r.message });
-  }
+  // (The Outlook for Mac / Apple Mail AppleScript tiers that sat here were
+  // removed in v0.24.12: this tool is win32-only (tool-meta platforms), so
+  // they never ran. macOS sends go through apple_mail_send_email.)
 
   // v0.15.0 — L1.5: mcp-chrome with user's REAL signed-in browser. Tries
   // outlook.live.com using the user's actual logged-in tab. Much higher
