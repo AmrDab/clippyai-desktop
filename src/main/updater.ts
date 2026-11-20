@@ -5,7 +5,8 @@ import * as telemetry from './telemetry';
 import { cleanupTools, restoreTools } from './tools';
 import * as quitState from './quit-state';
 import { cmpVersion, classifyAttempt, shouldIdleInstall, shouldPromptStaleUpdate, resumeStillValid, isOfflineUpdateError, shouldReportOffline } from './update-policy';
-import { installMethodFor } from './update-install-method';
+import { installMethodFor, installWatchdogMs, alsoForSettings } from './update-install-method';
+import { getSettingsWindow } from './window';
 import fs from 'fs';
 import path from 'path';
 
@@ -237,6 +238,26 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, ...args);
   }
+  // Settings → "Check for updates" listens for the same update-* events.
+  if (alsoForSettings(channel)) {
+    const settings = getSettingsWindow();
+    if (settings) settings.webContents.send(channel, ...args);
+  }
+}
+
+/**
+ * "Restart to update" flagged a real quit and released the tools, but the app
+ * is still running: the installer never took over (Squirrel.Mac refused the
+ * bundle; the NSIS installer did not start). Without this the app stayed
+ * "quitting": closing Clippy destroyed his window instead of hiding it, and
+ * the tools stayed torn down until a manual restart.
+ */
+function installNotCompleted(relaunch: boolean): void {
+  if (!quitState.isQuitting()) return;
+  log.warn('Install.notCompleted — staying up', { version: expectedVersion, relaunch });
+  if (!relaunch) { app.quit(); return; } // the user asked to quit: still quit
+  quitState.setQuitting(false);
+  try { restoreTools(); } catch (err) { log.warn('restoreTools error (non-fatal)', serializeErr(err)); }
 }
 
 export function initUpdater(win: BrowserWindow): void {
@@ -762,15 +783,9 @@ export async function installUpdate(): Promise<void> {
     // 'error' handler already shows the "isn't working" prompt; without this the
     // app stayed "quitting", so closing Clippy destroyed his window instead of
     // hiding it, and the tools stayed torn down until a manual restart.
-    const notInstalled = (): void => {
-      if (!quitState.isQuitting()) return;
-      log.warn('Install.notCompleted — staying up', { version: expectedVersion, relaunch });
-      if (!relaunch) { app.quit(); return; } // the user asked to quit: still quit
-      quitState.setQuitting(false);
-      try { restoreTools(); } catch (err) { log.warn('restoreTools error (non-fatal)', serializeErr(err)); }
-    };
+    const notInstalled = (): void => installNotCompleted(relaunch);
     autoUpdater.once('error', notInstalled);
-    setTimeout(notInstalled, 120_000).unref?.();
+    setTimeout(notInstalled, installWatchdogMs('darwin')).unref?.();
     // Small delay so the message paints before the app quits to swap itself.
     setTimeout(() => autoUpdater.quitAndInstall(false, relaunch), 1200);
     return;
@@ -866,7 +881,22 @@ export async function installUpdate(): Promise<void> {
       animate: 'GetAttention',
     });
     quitState.setQuitting();
-    setTimeout(() => autoUpdater.quitAndInstall(true, relaunch), 1200);
+    setTimeout(() => {
+      // electron-updater 6.x returns false (it does not throw) when it could
+      // not start the installer.
+      let started = true;
+      try { started = (autoUpdater.quitAndInstall(true, relaunch) as unknown) !== false; }
+      catch (err) { log.error('quitAndInstall threw', serializeErr(err)); started = false; }
+      // v0.24.12 — the same watchdog the macOS branch has: a silent install
+      // quits the app within moments. Still running after 20 s = it never ran.
+      const stillHere = (): void => {
+        if (!quitState.isQuitting()) return;
+        installNotCompleted(relaunch);
+        if (relaunch) sendToRenderer('clippy-speak', { text: "The update didn't start, so I'm still here on this version. Try again in a bit. 📎", animate: 'Alert' });
+      };
+      if (!started) { stillHere(); return; }
+      setTimeout(stillHere, installWatchdogMs('win32')).unref?.();
+    }, 1200);
     return;
   }
 
