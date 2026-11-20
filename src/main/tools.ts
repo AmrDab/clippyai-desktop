@@ -4382,7 +4382,7 @@ async function unzipFiles(params: Record<string, unknown>): Promise<ToolResult> 
   const output = String(params.output || '');
   if (!input) return { text: '(error:MISSING_INPUT) input is required (.zip path)' };
   if (!output) return { text: '(error:MISSING_OUTPUT) output is required (directory)' };
-  const args = ['-input', input, '-output', output];
+  const args = ['-zipPath', input, '-output', output];
   if (params.overwrite === true || params.overwrite === 'true') args.push('-overwrite', 'true');
   return await runComScript('unzip-files.ps1', args, 60_000);
 }
