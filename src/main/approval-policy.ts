@@ -71,7 +71,7 @@ const rx = (src: string) => new RegExp(src, 'i');
 // `Format-Table` / `Format-List`, and `del`, `rd`, `mi` before any hyphen.
 const END = String.raw`(?![\w-])`;
 
-interface Rule { why: string; re: RegExp }
+interface Rule { why: string; re: RegExp; /** Asks only because it reaches the network. */ net?: true }
 
 const RISKY: Rule[] = [
   { why: 'elevated privileges', re: rx(CS + String.raw`(?:sudo|doas|su|runas)\b`) },
@@ -120,7 +120,7 @@ const DROP_PATH = String.raw`["']?(?:${DROP_DIR}|${DROP_VAR})[^"'|;&<>\r\n]*?\.$
 const RUNNER = String.raw`(?:(?:start|call|start-process|saps|invoke-item|ii)\s+(?:""\s+)?(?:-filepath\s+)?|[&.]\s*)?`;
 
 const REMOTE_OR_SECRET: Rule[] = [
-  { why: 'fetches from or sends to the network', re: rx(String.raw`(?:^|[^\w.-])(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|start-bitstransfer|bitsadmin)(?:\.exe)?${END}`) },
+  { why: 'fetches from or sends to the network', net: true, re: rx(String.raw`(?:^|[^\w.-])(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|start-bitstransfer|bitsadmin)(?:\.exe)?${END}`) },
   { why: 'fetches from or sends to the network', re: rx(String.raw`net\.webclient|net\.http|net\.sockets|webrequest\]|xmlhttp|\bcertutil(?:\.exe)?\b[^\r\n]*-(?:urlcache|verifyctl)\b`) },
   { why: 'script host or system binary that runs other code', re: rx(String.raw`(?:^|[^\w.-])(?:mshta|rundll32|regsvr32|wscript|cscript|msiexec|installutil|cmstp)(?:\.exe)?${END}`) },
   { why: 'runs code built at run time', re: rx(String.raw`\s-(?:e|ec|enc|encodedcommand)\s+[a-z0-9+/=]{16,}|\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|iex|invoke-expression|cmd|powershell|pwsh)(?:\.exe)?${END}|<\(`) },
@@ -144,19 +144,109 @@ export function plainOpenUrl(command: string): string | null {
   return cmd.match(/https?:\/\/[^"'\s]+/i)?.[0] ?? null;
 }
 
-/** `null` when the command is safe to run unasked; otherwise why it still asks. */
-export function classifyShellCommand(command: string): string | null {
+/** `skipNet`: leave out the two "it reaches the network" reasons (a fetch tool, a URL). */
+function classify(command: string, skipNet: boolean): string | null {
   const cmd = String(command ?? '').trim();
   if (!cmd) return 'empty command';
   const hard = shellBlockReason(cmd);
   if (hard) return `blocklist: ${hard}`;
   const norm = cmd.replace(/\^/g, '');
   for (const rule of [...REMOTE_OR_SECRET, ...RISKY]) {
+    if (skipNet && rule.net) continue;
     if (rule.re.test(cmd) || rule.re.test(norm)) return rule.why;
   }
-  if (HAS_URL.test(norm) && !plainOpenUrl(norm)) return 'contains a URL';
+  if (!skipNet && HAS_URL.test(norm) && !plainOpenUrl(norm)) return 'contains a URL';
   return null;
 }
+
+/** `null` when the command is safe to run unasked; otherwise why it still asks. */
+export function classifyShellCommand(command: string): string | null {
+  return classify(command, false);
+}
+
+// ── A fetch the user asked for ───────────────────────────────────────────
+// "The user's request is the permission": `git clone https://github.com/x/y`
+// or a download from python.org runs unasked when the USER'S OWN MESSAGE named
+// that host (or, on a code host, that repo / package). A host that appears
+// only in a page, a file or a tool result is never named. Everything else in
+// the command must still pass: a pipe to a shell, a LOLBin, an upload, a
+// second statement that runs the download, all still ask.
+
+// Hosts where the repo / package name identifies what is fetched.
+const CODE_HOSTS = new Set([
+  'github.com', 'gitlab.com', 'bitbucket.org', 'raw.githubusercontent.com', 'codeload.github.com',
+  'registry.npmjs.org', 'npmjs.com', 'pypi.org', 'files.pythonhosted.org', 'crates.io',
+]);
+// Suffixes anyone can get a name under: naming one does not name a site.
+const SHARED_SUFFIXES = new Set([
+  'co.uk', 'com.au', 'co.jp', 'com.br', 'co.in', 'github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'web.app',
+  'netlify.app', 'vercel.app', 'herokuapp.com', 'blogspot.com', 'azurewebsites.net', 'cloudfront.net', 'amazonaws.com',
+  'ngrok.io', 'ngrok-free.app', 'trycloudflare.com',
+]);
+const GENERIC_PATH_WORDS = new Set([
+  'archive', 'releases', 'release', 'download', 'downloads', 'blob', 'tree', 'main', 'master', 'refs', 'heads', 'tags',
+  'raw', 'package', 'packages', 'simple', 'api', 'latest', 'files', 'file', 'src', 'dist', 'docs', 'the', 'and',
+]);
+// Statements that may sit beside the fetch: they only pick the folder.
+const FOLDER_ONLY = /^(?:cd|chdir|pushd|popd|mkdir|md|set-location|sl)(?:\s|$)/i;
+const FETCH_URL = /\b(?:https?|ftps?|file|wss?):\/\/[^\s"'<>|;)]+/gi;
+const OUTPUT_FLAG = /^(?:-o|-O|--output|--output-document|-outfile|-destination|-out|--directory-prefix|-P)$/i;
+
+/** Domain-like words in the user's message ("python.org", "github.com/x/y" -> "github.com"). */
+function namedDomains(message: string): string[] {
+  return (message.toLowerCase().match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+/g) ?? [])
+    .map((d) => d.replace(/^www\./, '').replace(/\.+$/, ''))
+    .filter((d) => /\.[a-z]{2,}$/.test(d) && !SHARED_SUFFIXES.has(d) && d.split('.')[0].length >= 2);
+}
+
+function hostNamed(host: string, domains: string[]): boolean {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  return domains.some((d) => h === d || h.endsWith(`.${d}`));
+}
+
+/** On a code host: the user's message has the repo / package name as a word. */
+function repoNamed(u: URL, message: string): boolean {
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  if (!CODE_HOSTS.has(host) || u.search || u.hash) return false;
+  const msg = message.toLowerCase();
+  const segs = decodeURIComponent(u.pathname).toLowerCase().split('/')
+    .map((s) => s.replace(/\.(?:git|zip|tgz|tar\.gz|whl)$/, ''))
+    .filter((s) => s.length >= 3 && !GENERIC_PATH_WORDS.has(s));
+  return segs.some((s) => new RegExp(`(?<![\\w-])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(msg));
+}
+
+/**
+ * True when `command` asks only because it fetches from the network, and
+ * every address in it was named in the user's own message.
+ */
+export function isUserNamedFetch(command: string, requestText: string | undefined): boolean {
+  const cmd = String(command ?? '').trim().replace(/\^/g, '');
+  if (!cmd || !requestText) return false;
+  // Nothing but the fetch itself may be risky.
+  if (classify(cmd, true) !== null || classify(cmd, false) === null) return false;
+  // One fetch statement; anything beside it only changes folder.
+  const statements = cmd.split(/&&|\|\||[;&|\r\n]/).map((s) => s.trim()).filter(Boolean);
+  const fetches = statements.filter((s) => !FOLDER_ONLY.test(s));
+  if (fetches.length !== 1) return false;
+  const urls = fetches[0].match(FETCH_URL) ?? [];
+  if (urls.length === 0) return false; // a bare host argument: can't tell what it is
+  // No second, scheme-less address hiding among the arguments.
+  const words = fetches[0].split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i].replace(/^["']|["']$/g, '');
+    if (/^[a-z]+:\/\//i.test(w) || w.startsWith('-') || OUTPUT_FLAG.test(words[i - 1])) continue;
+    if (/^[\w-]+(?:\.[\w-]+)+(?:[/:?#].*)?$/.test(w)) return false; // curl treats it as another address
+  }
+  const domains = namedDomains(requestText);
+  return urls.every((raw) => {
+    let u: URL;
+    try { u = new URL(raw); } catch { return false; }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+    if (u.username || u.password) return false;
+    return hostNamed(u.hostname, domains) || repoNamed(u, requestText);
+  });
+}
+
 
 // Same list as com-kill-process.ps1's blocklist, plus the macOS equivalents.
 const PROTECTED_PROCESSES = new Set([
@@ -300,5 +390,7 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   const command = String(args?.command ?? '');
   const app = parseQuitCommand(command);
   if (app && !shellBlockReason(command) && shellQuitNamed(ctx.requestText, app)) return false;
-  return classifyShellCommand(command) !== null;
+  if (classifyShellCommand(command) === null) return false;
+  // A fetch from a site (or a repo / package) the user named in their own message.
+  return !isUserNamedFetch(command, ctx.requestText);
 }
