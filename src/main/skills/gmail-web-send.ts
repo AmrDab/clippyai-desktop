@@ -10,6 +10,7 @@ import { getCdpClient } from '../cdp-client';
 import { spawnCdpBrowser } from '../cdp-spawn';
 import { createLogger } from '../logger';
 import type { ToolResult } from '../types/tool-result';
+import { gmailComposeUrl, navigateJs, fillBodyJs } from './web-mail-js';
 
 const log = createLogger('GmailWebSend');
 
@@ -70,13 +71,9 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
   // honors view=cm to open the compose modal directly.
   log.info('Step 1: navigate to Gmail compose deep-link');
   try {
-    const safeTo = encodeURIComponent(to);
-    const safeSubject = encodeURIComponent(subject);
-    const safeBody = encodeURIComponent(body);
-    const safeCc = cc ? `&cc=${encodeURIComponent(cc)}` : '';
-    await client.evaluate(
-      `location.href = 'https://mail.google.com/mail/u/0/?view=cm&fs=1&to=${safeTo}&su=${safeSubject}&body=${safeBody}${safeCc}'`,
-    );
+    // The URL goes in as one JSON string literal: encodeURIComponent leaves
+    // an apostrophe as is, which used to end the quoted string.
+    await client.evaluate(navigateJs(gmailComposeUrl({ to, subject, body, cc })));
   } catch (err) {
     return { text: `(error:NAVIGATE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -121,8 +118,7 @@ export async function gmailWebSendEmail(params: GmailWebSendParams): Promise<Too
       (function(){
         const el = document.querySelector('div[g_editable="true"][role="textbox"], div[aria-label*="Message Body" i][contenteditable]');
         if (!el) return false;
-        el.focus();
-        el.innerHTML = ${JSON.stringify(body.replace(/\n/g, '<br>'))};
+        el.focus();${fillBodyJs('el', body)}
         el.dispatchEvent(new InputEvent('input', { bubbles: true }));
         return true;
       })()

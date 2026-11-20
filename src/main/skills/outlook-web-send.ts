@@ -17,6 +17,7 @@ import { getCdpClient } from '../cdp-client';
 import { spawnCdpBrowser } from '../cdp-spawn';
 import { createLogger } from '../logger';
 import type { ToolResult } from '../types/tool-result';
+import { fillBodyJs, jsString } from './web-mail-js';
 
 const log = createLogger('OutlookWebSend');
 
@@ -223,9 +224,9 @@ export async function outlookWebSendEmail(params: OutlookWebSendParams): Promise
       const el = document.querySelector('div[role="textbox"][aria-label*="body" i], div[role="textbox"][aria-label*="message" i]');
       if (!el) return false;
       el.focus();
-      // Preserve newlines as <br> tags so the message renders multi-line.
-      el.innerHTML = ${JSON.stringify(body.replace(/\n/g, '<br>'))};
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${JSON.stringify(body)} }));
+      // Text nodes with a <br> per line break: the message renders
+      // multi-line and nothing in the body is parsed as HTML.${fillBodyJs('el', body)}
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${jsString(body)} }));
       return true;
     })()
   `);
