@@ -106,3 +106,18 @@ describe('ping_host', () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });
+
+describe('mail attachments go through the path guard (0.24.12 audit #8)', () => {
+  it('an attachment from a guarded folder escalates with the reason', async () => {
+    const v = await assessRisk('outlook_send_email', { to: 'a@b.example', subject: 's', body: 'b', attachments: `${path.join(docs, 'a.txt')}, ~/.ssh/notes.txt` });
+    expect(v?.class).toBe('destructive_send');
+    expect(v?.reason).toMatch(/^This attaches a file from a folder that holds keys or credentials: notes\.txt$/);
+    expect(v?.family).toBeUndefined();
+    const unc = await assessRisk('apple_mail_send_email', { to: 'a@b.example', attachments: '\\\\attacker.example\\share\\x.txt' });
+    expect(unc?.reason).toMatch(/network share/);
+  });
+  it('ordinary attachments and mails without attachments are not escalated', async () => {
+    expect(await assessRisk('outlook_send_email', { to: 'a@b.example', subject: 's', body: 'b', attachments: path.join(docs, 'a.txt') })).toBeNull();
+    expect(await assessRisk('outlook_send_email', { to: 'a@b.example', subject: 's', body: 'b' })).toBeNull();
+  });
+});

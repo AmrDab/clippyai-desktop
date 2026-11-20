@@ -2714,6 +2714,22 @@ async function assessReadPath(tool: string, params: Record<string, unknown>): Pr
 }
 
 /**
+ * A mail attachment from a guarded location (0.24.12 audit #8): the same path
+ * guard as the read tools, so "attach ~/.ssh/id_rsa" says so on the card and
+ * asks in every mode.
+ */
+async function assessAttachments(tool: string, params: Record<string, unknown>): Promise<RiskVerdict | null> {
+  if (!/_send_email$/.test(tool) || !params.attachments) return null;
+  for (const p of approval.attachmentPaths(params.attachments)) {
+    const check = await checkReadPath(p, readGuardEnv());
+    if (!check.allowed) {
+      return { class: 'destructive_send', reason: `This attaches a file from ${describePathBlock(check)}: ${path.basename(check.resolved || p)}` };
+    }
+  }
+  return null;
+}
+
+/**
  * Read-then-send (0.24.12 audit #3): once this task has read a file, the
  * clipboard or a secret (security/task-taint.ts), opening or requesting an
  * address that carries data asks first. With nothing read, or an address
@@ -5574,6 +5590,8 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
 export async function assessRisk(tool: string, params: Record<string, unknown> = {}): Promise<RiskVerdict | null> {
   const guarded = await assessReadPath(tool, params).catch(() => null);
   if (guarded) return guarded;
+  const attached = await assessAttachments(tool, params).catch(() => null);
+  if (attached) return attached;
   const sendAfterRead = assessSendAfterRead(tool, params);
   if (sendAfterRead) return sendAfterRead;
   if (!GOVERNED_TOOLS.has(tool)) return null;
