@@ -46,7 +46,7 @@ import { createLogger, serializeErr } from './logger';
 // never emits. Import statically; scripts/check-bundle-requires.js now fails the build.
 import * as skillRegistryMod from './skill-registry';
 import * as followMe from './follow-me'; // static: see task-follow.ts
-import { screenshotHint } from './screenshot-hint';
+import { screenshotHint, windowShotHint } from './screenshot-hint';
 import * as telemetry from './telemetry';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 import { docxFromBlocks } from './skills/generate/docx-from-blocks';
@@ -1621,7 +1621,7 @@ type SmartFindOutcome =
   | { kind: 'miss'; reason: string; result?: SmartFindResult }
   | { kind: 'unknown'; reason: string };
 
-interface FindTarget { pid: number; handle: number; bounds?: { x: number; y: number; width: number; height: number } }
+interface FindTarget { pid: number; handle: number; bounds?: { x: number; y: number; width: number; height: number }; title?: string; processName?: string }
 
 async function foregroundForFind(): Promise<FindTarget> {
   try {
@@ -1632,6 +1632,8 @@ async function foregroundForFind(): Promise<FindTarget> {
       handle: typeof parsed.handle === 'number' ? parsed.handle : 0,
     };
     if (parsed.bounds && typeof parsed.bounds.x === 'number') out.bounds = parsed.bounds;
+    if (typeof parsed.title === 'string') out.title = parsed.title;
+    if (typeof parsed.processName === 'string') out.processName = parsed.processName;
     // Never search Clippy's own bubble.
     if (out.pid === process.pid) return { pid: 0, handle: 0 };
     return out;
@@ -1831,7 +1833,12 @@ async function navigateBrowser(params: Record<string, unknown>): Promise<ToolRes
 const TARGET_SCREENSHOT_WIDTH = 1024;
 const SCREENSHOT_DOWNSCALE_THRESHOLD = 1280;
 
-async function desktopScreenshot(): Promise<ToolResult> {
+/**
+ * desktop_screenshot. Model-facing arg: region ('window', the default: the
+ * foreground window; 'screen': the whole primary screen). win32 only for now:
+ * macOS still captures the screen.
+ */
+async function desktopScreenshot(params: Record<string, unknown> = {}): Promise<ToolResult> {
   // win32 — GDI CopyFromScreen + in-PowerShell downscale (restored from
   // v0.17.7). captureScreen()/screenshot-helper below is macOS-only and
   // throws HelperError('missing') on Windows.
@@ -1839,9 +1846,20 @@ async function desktopScreenshot(): Promise<ToolResult> {
     try {
       // v0.11.26 abortable so sleep can kill an in-flight 10s capture
       // (v0.24: abortPsWork covers both the host and one-shot spawns).
+      // v0.24.12 — the foreground window (the one get_active_window picks),
+      // not the whole screen: a small dialog on a 3840x2400 screen shrunk to
+      // 1024 wide was unreadable. region:'screen', or no usable window,
+      // captures the primary screen as before. The frame is clipped to the
+      // virtual screen; the header reports what was really captured.
+      const fg = params.region === 'screen' ? null : await foregroundForFind();
+      const win = fg?.bounds && fg.bounds.width >= 80 && fg.bounds.height >= 80 ? fg : null;
+      const wb = win?.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
       const { stdout } = await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
         `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+        `$win = New-Object System.Drawing.Rectangle(${Math.round(wb.x)},${Math.round(wb.y)},${Math.round(wb.width)},${Math.round(wb.height)}); ` +
+        `$win.Intersect([System.Windows.Forms.SystemInformation]::VirtualScreen); ` +
+        `$isWin = 0; if ($win.Width -ge 80 -and $win.Height -ge 80) { $isWin = 1; $b = $win } ` +
         `$nw = $b.Width; $nh = $b.Height; ` +
         `$bmp = New-Object System.Drawing.Bitmap($nw,$nh); ` +
         `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
@@ -1861,7 +1879,7 @@ async function desktopScreenshot(): Promise<ToolResult> {
         `$ms = New-Object System.IO.MemoryStream; ` +
         `$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); ` +
         `$bmp.Dispose(); ` +
-        `Write-Output ("$nw $nh $fw $fh"); ` +
+        `Write-Output ("$nw $nh $fw $fh $($b.X) $($b.Y) $isWin"); ` +
         `Write-Output ([Convert]::ToBase64String($ms.ToArray()))`,
         { timeoutMs: 10000, maxBuffer: 20 * 1024 * 1024, idempotent: true });
 
@@ -1872,13 +1890,16 @@ async function desktopScreenshot(): Promise<ToolResult> {
       const finalW = parseInt(headerParts[2] || '0', 10);
       const finalH = parseInt(headerParts[3] || '0', 10);
       const base64 = (lines.slice(1).join('') || '').trim();
-      const downscaled = nativeW > 0 && finalW > 0 && finalW < nativeW;
-      const scale = downscaled ? nativeW / finalW : 1;
-      const text = downscaled
-        ? `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
-          `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
-          `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`
-        : `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+      // Origin of the captured area on the screen, and whether it is the
+      // window (absent from an older header: the whole screen at 0,0).
+      const originX = parseInt(headerParts[4] || '0', 10) || 0;
+      const originY = parseInt(headerParts[5] || '0', 10) || 0;
+      const isWindow = headerParts[6] === '1' && !!win;
+      const text = windowShotHint({
+        region: { x: originX, y: originY, width: nativeW, height: nativeH },
+        finalW, finalH,
+        window: isWindow ? `"${(win!.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)}" (${win!.processName || '?'})` : undefined,
+      });
       return { text, image: { data: base64, mimeType: 'image/png' } };
     } catch (err) {
       return { text: `(screenshot error: ${err instanceof Error ? err.message : ''})` };
