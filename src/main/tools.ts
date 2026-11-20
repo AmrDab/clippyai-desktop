@@ -70,6 +70,11 @@ import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
+import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
+import { isPingableHost, httpUrlOrNull } from './security/net-guard';
+import { noteToolRan, taskReadSensitive, taskReadTexts, taskUserMessage, pendingTypedLine } from './security/task-taint';
+import { carriedReadContent } from './security/read-leak';
+import { plainOpenUrl, classifyShellCommand } from './approval-policy';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
 // never from a model-supplied argument.
@@ -85,6 +90,8 @@ import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersC
 import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
 import * as profileMod from './profile';
+import { sanitizeProfileUpdate } from './profile-field';
+import { rememberClipboard } from './tool-undo';
 // v0.24 — persistent PowerShell host (plan §2.4). Every win32 PowerShell call
 // below goes through psScript / psCommand: in the long-lived host when it is
 // up, as the old one-shot powershell.exe spawn otherwise.
@@ -799,7 +806,6 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
         };
       }
       const result = await macBridge.typeText({ text });
-      const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
       // Read the focused field back (AX value) so the receipt can say 'verified'.
       await new Promise((r) => setTimeout(r, 200));
       const rb = await macBridge.a11yFocused().catch(() => null);
@@ -807,12 +813,12 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
       const evidence = { chars: result.chars, app: front?.app ?? '' };
       if (typedTextLanded(text, readback)) {
         return {
-          text: `Typed ${result.chars} chars: "${preview}" (verified: the field reads back what was typed)`,
+          text: `Typed ${result.chars} chars (verified: the field reads back what was typed)`,
           receipt: makeReceipt('type_text', 'verified', true, { ...evidence, readback: 'match' }, 'cgevent'),
         };
       }
       return {
-        text: `Typed ${result.chars} chars: "${preview}" (NOT verified: the field could not be read back; check the screen before telling the user it's done)`,
+        text: `Typed ${result.chars} chars (NOT verified: the field could not be read back; check the screen before telling the user it's done)`,
         receipt: makeReceipt('type_text', 'unverified', true, { ...evidence, readback: readback === null ? 'unavailable' : 'mismatch' }, 'cgevent'),
       };
     } catch (err) {
@@ -855,19 +861,18 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
           receipt: makeReceipt('type_text', 'error', false, { reason: 'own_window', foregroundProcessId: r.foregroundProcessId }, 'sendkeys'),
         };
       }
-      const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
       const where = r.processName ? `into ${r.processName}` : 'into the focused window';
       const evidence = { chars: text.length, foregroundProcessId: r.foregroundProcessId ?? null, processName: r.processName ?? '' };
       if (typedTextLanded(text, r.readback)) {
         return {
-          text: `Pasted ${text.length} chars ${where}: "${preview}" (verified — the field reads back what was typed)`,
+          text: `Pasted ${text.length} chars ${where} (verified — the field reads back what was typed)`,
           receipt: makeReceipt('type_text', 'verified', true, { ...evidence, readback: 'match' }, 'sendkeys'),
         };
       }
       // The paste is fire-and-forget — the VM test showed a "Typed 313 chars"
       // that never landed and Clippy told the user it was done. Say so.
       return {
-        text: `Pasted ${text.length} chars ${where}: "${preview}" (NOT verified — the field could not be read back; check the screen before telling the user it's done)`,
+        text: `Pasted ${text.length} chars ${where} (NOT verified — the field could not be read back; check the screen before telling the user it's done)`,
         receipt: makeReceipt('type_text', 'unverified', true, { ...evidence, readback: r.hasReadback ? 'mismatch' : 'unavailable' }, 'sendkeys'),
       };
     } catch (err) {
@@ -891,8 +896,7 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
     });
     if (!paste.ok) return { text: `(type_text error: paste failed: ${paste.error ?? paste.stderr})` };
 
-    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-    return { text: `Typed ${text.length} chars: "${preview}"` };
+    return { text: `Typed ${text.length} chars` };
   } finally {
     await restoreClipboard();
   }
@@ -1630,8 +1634,7 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
         const m = ax.matches[0];
         try {
           await macBridge.a11ySetValue({ pid: m.pid, path: m.path, value: text });
-          const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-          return { text: `Typed into "${m.title || target}" via AX-set-value: "${preview}"` };
+          return { text: `Typed ${text.length} chars into "${m.title || target}" via AX-set-value` };
         } catch (setErr) {
           // AX-set-value failed (element doesn't expose AXValue or is read-
           // only). Fall through to click+type so contenteditable-style
@@ -1669,12 +1672,11 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
   if (process.platform === 'win32') {
     const fg = await foregroundForFind();
     const sf = await windowsSmartFind(target, 'set-value', fg, text);
-    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
     if (sf.kind === 'acted' && sf.result.setValue) {
       const r = sf.result;
       const verified = r.readback === 'match';
       return {
-        text: `Typed into ${r.controlType} "${r.name}" via UIA ValuePattern: "${preview}"${verified ? ' (verified — the field reads back what was typed)' : ' (NOT verified — the field read back something else; check the screen)'}`,
+        text: `Typed ${text.length} chars into ${r.controlType} "${r.name}" via UIA ValuePattern${verified ? ' (verified — the field reads back what was typed)' : ' (NOT verified — the field read back something else; check the screen)'}`,
         receipt: makeReceipt('smart_type', verified ? 'verified' : 'unverified', true, { target, label: r.name, chars: text.length, readback: r.readback, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs }, 'uia-setvalue'),
       };
     }
@@ -1729,8 +1731,12 @@ async function getDefaultBrowserProcessName(): Promise<string> {
 }
 
 async function navigateBrowser(params: Record<string, unknown>): Promise<ToolResult> {
-  const url = String(params.url || '');
-  if (!url) return { text: '(no URL provided)' };
+  const rawUrl = String(params.url || '');
+  if (!rawUrl) return { text: '(no URL provided)' };
+  // http(s) only: openExternal hands any other scheme (file:, ms-msdt:,
+  // search-ms:, a UNC path) to whatever handler is installed.
+  const url = httpUrlOrNull(rawUrl);
+  if (!url) return { text: '(error:SCHEME_NOT_ALLOWED) navigate_browser only opens http:// and https:// addresses' };
   try {
     // Use Electron's shell.openExternal — safe, validates URLs, no shell injection.
     await shell.openExternal(url);
@@ -1967,7 +1973,9 @@ async function writeClipboard(params: Record<string, unknown>): Promise<ToolResu
   try {
     const { clipboard } = await import('electron');
     const previous = clipboard.readText() || null;
-    (params as Record<string, unknown>)._previousClipboard = previous;
+    // Only a reference goes into the args (they are summarised into the
+    // activity log); the text itself stays in memory.
+    if (previous) (params as Record<string, unknown>)._previousClipboardRef = rememberClipboard(previous);
   } catch { /* non-fatal: if pre-capture fails, undo falls back to noop */ }
   // win32 — Set-Clipboard via temp file (restored from v0.17.7).
   if (process.platform === 'win32') {
@@ -2675,6 +2683,89 @@ function isProtectedPath(p: string): boolean {
   );
 }
 
+/** Guard context for the read tools: Clippy's own userData dir is guarded too. */
+function readGuardEnv(): PathGuardEnv {
+  try { return { extraDirs: [app.getPath('userData')] }; } catch { return {}; }
+}
+
+/**
+ * For a recursive walk from `root`: a predicate that is true for a guarded
+ * entry (~/.ssh, a browser profile...) so the walk steps over it. When the
+ * root itself is guarded the user approved it (assessRisk), so nothing below
+ * it is skipped.
+ */
+async function skipsGuardedBelow(root: string): Promise<(full: string) => boolean> {
+  const env = readGuardEnv();
+  if (!(await checkReadPath(root, env)).allowed) return () => false;
+  return (full) => !judgeResolvedPath(full, env).allowed;
+}
+
+/**
+ * read_file / list_files / search_files_content on a guarded path (0.24.12
+ * audit #2): not refused, escalated so the user is asked first.
+ */
+async function assessReadPath(tool: string, params: Record<string, unknown>): Promise<RiskVerdict | null> {
+  if (tool !== 'read_file' && tool !== 'list_files' && tool !== 'search_files_content') return null;
+  const raw = String(params.path || (tool === 'search_files_content' ? os.homedir() : ''));
+  if (!raw) return null;
+  const check = await checkReadPath(raw, readGuardEnv());
+  if (check.allowed) return null;
+  return { class: 'destructive_file', reason: `This reads ${describePathBlock(check)}` };
+}
+
+/**
+ * A mail attachment from a guarded location (0.24.12 audit #8): the same path
+ * guard as the read tools, so "attach ~/.ssh/id_rsa" says so on the card and
+ * asks in every mode.
+ */
+async function assessAttachments(tool: string, params: Record<string, unknown>): Promise<RiskVerdict | null> {
+  if (!/_send_email$/.test(tool) || !params.attachments) return null;
+  for (const p of approval.attachmentPaths(params.attachments)) {
+    const check = await checkReadPath(p, readGuardEnv());
+    if (!check.allowed) {
+      return { class: 'destructive_send', reason: `This attaches a file from ${describePathBlock(check)}: ${path.basename(check.resolved || p)}` };
+    }
+  }
+  return null;
+}
+
+/**
+ * Read-then-send (0.24.12 audit #3): once this task has read a file, the
+ * clipboard or a secret (security/task-taint.ts), opening or requesting an
+ * address asks first when it actually carries some of that text (a key or
+ * token, a long passage, or either one encoded: security/read-leak.ts) that
+ * the user did not type themselves. "Read notes.txt and google the first
+ * item" does not ask; a link that is written in the file does not either.
+ */
+function assessSendAfterRead(tool: string, params: Record<string, unknown>): RiskVerdict | null {
+  const read = taskReadSensitive();
+  if (!read) return null;
+  let target = '';
+  let extra = '';
+  if (tool === 'navigate_browser' || tool === 'browser_navigate' || tool === 'open_url' || tool === 'http_request') {
+    target = String(params.url ?? '');
+    if (tool === 'http_request') {
+      const body = params.body;
+      extra = typeof body === 'string' ? body : body === undefined || body === null ? '' : JSON.stringify(body);
+    }
+  } else if (tool === 'shell_exec') {
+    target = plainOpenUrl(String(params.command ?? '')) ?? '';
+  } else if (tool === 'ping_host') {
+    target = String(params.host ?? '').trim();
+  } else {
+    return null;
+  }
+  if (!target) return null;
+  let host = '';
+  try { host = new URL(target).host; } catch { /* a bare host (ping) or not a URL: all of it is payload */ }
+  const reads = taskReadTexts();
+  const userMessage = taskUserMessage();
+  const carried = carriedReadContent({ outbound: target, reads, userMessage, host })
+    ?? (extra ? carriedReadContent({ outbound: extra, reads, userMessage }) : null);
+  if (!carried) return null;
+  return { class: 'destructive_web', reason: `This sends ${carried} read from ${read} earlier in this task to ${(host || target).slice(0, 60)}` };
+}
+
 /** Cheap binary detector — NUL byte in the first 4 KB is the standard heuristic. */
 function looksBinary(buf: Buffer): boolean {
   const sample = buf.subarray(0, Math.min(buf.length, 4096));
@@ -2909,6 +3000,7 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
   const matches: string[] = [];
   let scanned = 0;
   let truncated = false;
+  const skipGuarded = await skipsGuardedBelow(root);
 
   async function walk(dir: string): Promise<void> {
     if (matches.length >= FS_SEARCH_MAX_MATCHES || scanned >= FS_SEARCH_MAX_TOTAL_BYTES) return;
@@ -2921,6 +3013,7 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
     for (const ent of entries) {
       if (FS_SEARCH_SKIP_DIRS.has(ent.name)) continue;
       const full = path.join(dir, ent.name);
+      if (skipGuarded(full)) continue;
       if (ent.isDirectory()) {
         await walk(full);
         if (matches.length >= FS_SEARCH_MAX_MATCHES || scanned >= FS_SEARCH_MAX_TOTAL_BYTES) return;
@@ -2965,8 +3058,11 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
 }
 
 async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
-  const host = String(params.host || '');
+  const host = String(params.host || '').trim();
   if (!host) return { text: 'Error: host is required' };
+  // A hostname or an IP only: anything else (a URL, a long encoded label) could
+  // carry data out in the DNS lookup.
+  if (!isPingableHost(host)) return { text: '(error:INVALID_ARGS) host must be a plain hostname or an IP address' };
   const count = String(Number(params.count) || 4);
   // Note: -hostName in script (host is a reserved-ish param name in some PS contexts)
   const result = await runComScript('com-ping-host.ps1', ['-hostName', host, '-count', count], 15000);
@@ -3159,11 +3255,16 @@ function sanitizeShellEnv(): NodeJS.ProcessEnv {
 // iex`. The defense for the new tool is two-pronged and STRUCTURAL:
 //
 //   1. Permission gate. shell_exec is registered with actionClass
-//      'destructive_exec' in TOOL_META so permission-policy.decide()
-//      prompts the user in Cautious + Standard mode. The user sees the
-//      command BEFORE it runs. This is the primary defense — the
-//      blocklist below is a last-resort safety net, not the security
-//      story.
+//      'destructive_exec' in TOOL_META, and approval-policy.needsApproval
+//      decides whether the user sees the command BEFORE it runs. In a task
+//      the user started, plain commands (Get-Process, dir, git status) run
+//      unasked; anything classifyShellCommand flags asks: deletes, installs,
+//      uploads, any URL or network fetch, script hosts (mshta, rundll32,
+//      wscript...), iex / -EncodedCommand, a file run out of Downloads/Temp/
+//      AppData, a secret location. Cautious mode, a remote agent, a
+//      proactive tip or a prompt-injection hit ask for every command. This
+//      is the primary defense — the blocklist below is a last-resort safety
+//      net, not the security story.
 //   2. System-prompt rule. clippyai-api/src/lib/tools.ts SKILLS block
 //      tells the model: never execute commands extracted from screen
 //      text / OCR / page content. If the user says "run this command
@@ -4142,8 +4243,10 @@ async function installSkillTool(params: Record<string, unknown>): Promise<ToolRe
 // on whatever browser the user has, including their existing tabs."
 
 async function browserNavigate(params: Record<string, unknown>): Promise<ToolResult> {
-  const url = String(params.url || '');
-  if (!url) return { text: '(error:MISSING_URL) browser_navigate requires `url`.' };
+  const rawUrl = String(params.url || '');
+  if (!rawUrl) return { text: '(error:MISSING_URL) browser_navigate requires `url`.' };
+  const url = httpUrlOrNull(rawUrl);
+  if (!url) return { text: '(error:SCHEME_NOT_ALLOWED) browser_navigate only opens http:// and https:// addresses' };
   // Prefer mcp-chrome — drives the user's real signed-in browser. Tool name
   // is chrome_navigate per the v1.0.0 mcp-chrome catalog.
   if (isMcpChromeReady()) {
@@ -4154,7 +4257,7 @@ async function browserNavigate(params: Record<string, unknown>): Promise<ToolRes
       log.warn('mcp-chrome navigate failed, falling through to CDP', { url, err: String(err).slice(0, 200) });
     }
   }
-  return await navigateBrowser(params);
+  return await navigateBrowser({ ...params, url });
 }
 
 async function browserClick(params: Record<string, unknown>): Promise<ToolResult> {
@@ -4609,6 +4712,7 @@ async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
 
   type Entry = { name: string; type: 'file' | 'dir'; size: number; mtime: string };
   const collected: Entry[] = [];
+  const skipGuarded = await skipsGuardedBelow(dirPath);
 
   async function walk(dir: string, prefix: string): Promise<void> {
     if (collected.length >= top) return;
@@ -4625,7 +4729,7 @@ async function listFiles(params: Record<string, unknown>): Promise<ToolResult> {
       const passesFilter = !filterRe || filterRe.test(ent.name);
       if (ent.isDirectory()) {
         if (passesFilter) collected.push({ name: rel + '/', type: 'dir', size: 0, mtime: '' });
-        if (recurse) await walk(full, rel);
+        if (recurse && !skipGuarded(full)) await walk(full, rel);
       } else if (ent.isFile() && passesFilter) {
         try {
           const st = await fsp.stat(full);
@@ -4927,7 +5031,7 @@ async function cdpType(params: Record<string, unknown>): Promise<ToolResult> {
   if (!selector && !label) return { text: 'Error: cdp_type requires selector or label' };
   const r = label ? await client.typeByLabel(label, text) : await client.typeInField(selector, text);
   if (!r.success) return { text: `(cdp_type failed: ${r.error})` };
-  return { text: `Typed "${text.substring(0, 60)}" into ${selector || `label="${label}"`}` };
+  return { text: `Typed ${text.length} chars into ${selector || `label="${label}"`}` };
 }
 
 async function cdpSelectOption(params: Record<string, unknown>): Promise<ToolResult> {
@@ -5076,10 +5180,13 @@ async function detectWebviewApps(_params: Record<string, unknown>): Promise<Tool
 // and cheap (just touch the local profile/ workspace).
 
 async function updateUserProfileField(params: Record<string, unknown>): Promise<ToolResult> {
-  const field = String(params.field || '').trim();
-  const value = String(params.value ?? '').trim();
-  if (!field) return { text: '(error:BAD_INPUT) field is required (e.g. "Role", "Reply style", "Timezone")' };
-  if (!value) return { text: '(error:BAD_INPUT) value is required (empty string would clear the field — pass "(not set)" or skip the field instead)' };
+  if (!String(params.field || '').trim()) return { text: '(error:BAD_INPUT) field is required (e.g. "Role", "Reply style", "Timezone")' };
+  if (!String(params.value ?? '').trim()) return { text: '(error:BAD_INPUT) value is required (empty string would clear the field — pass "(not set)" or skip the field instead)' };
+  // USER.md is read into every future turn: only short facts in known fields
+  // (profile-field.ts), never text that reads like an instruction.
+  const update = sanitizeProfileUpdate(params.field, params.value);
+  if (!update.ok) return { text: update.error };
+  const { field, value } = update;
   try {
     profileMod.updateUserFields({ [field]: value });
     return { text: `Saved ${field}: ${value}` };
@@ -5428,7 +5535,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   try {
     primaryResult = await fn(params);
     const elapsed = Date.now() - startTime;
-    log.debug(`Tool ${tool} ok (${elapsed}ms)`, primaryResult.text?.substring(0, 100));
+    log.debug(`Tool ${tool} ok (${elapsed}ms)`, { len: primaryResult.text?.length ?? 0 });
   } catch (err) {
     const elapsed = Date.now() - startTime;
     log.error(`Tool ${tool} failed (${elapsed}ms)`, serializeErr(err));
@@ -5438,6 +5545,8 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     // UI hop can recover from. Returning a clean code lets the model decide.
     primaryResult = { text: `(error:TOOL_THREW) ${tool} threw: ${err instanceof Error ? err.message : String(err)}` };
   }
+  // Per-task "read something private" flag for assessSendAfterRead.
+  noteToolRan(tool, params, primaryResult.text);
 
   // v0.18.1 — second noteClippyInput AFTER dispatch to cover OS event-
   // registration tail-latency. macOS in particular can lag the
@@ -5471,6 +5580,18 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
 }
 
 /**
+ * The command a terminal line would run passes the same checks as shell_exec
+ * (classifyShellCommand: no fetch, script host, iex, secret path, delete...).
+ * type_text / smart_type: the pending line plus this text, every line of it.
+ * key_press Enter: the line typed before it; unknown text is not plain.
+ */
+function typedCommandIsPlain(tool: string, params: Record<string, unknown>): boolean {
+  const typed = pendingTypedLine() + (tool === 'key_press' ? '' : String(params.text ?? ''));
+  const lines = typed.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => classifyShellCommand(l) === null);
+}
+
+/**
  * v0.21 — risky-action governor front door. Runs BEFORE the permission gate
  * (brain.ts / agent-tools.ts) so a click that looks like "Place order" is
  * judged as destructive_purchase instead of plain desktop_input.
@@ -5479,9 +5600,10 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  *   - args alone first (smart_click target, cdp selector/text, key chord) —
  *     no I/O when that already decides.
  *   - cdp_* tools: the attached tab's URL (cached on the client, free).
- *   - coordinate clicks, Enter-type key_press, type_text ending in "
-":
- *     the active window title (one get_active_window call). v0.24 (plan
+ *   - coordinate clicks, Enter-type key_press, type_text / smart_type with
+ *     a newline: the active window title and process (one get_active_window
+ *     call), so typing a line into a terminal and running it is judged as
+ *     execution. v0.24 (plan
  *     §1.6): on win32 that call runs in the persistent PowerShell host
  *     (~20-30 ms, no spawn) instead of a 1-2 s powershell.exe. Deliberately
  *     NOT cached: a stale title from a window the user just left could
@@ -5490,32 +5612,46 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  * Never throws — a failed lookup just means "no extra context".
  */
 export async function assessRisk(tool: string, params: Record<string, unknown> = {}): Promise<RiskVerdict | null> {
+  const guarded = await assessReadPath(tool, params).catch(() => null);
+  if (guarded) return guarded;
+  const attached = await assessAttachments(tool, params).catch(() => null);
+  if (attached) return attached;
+  const sendAfterRead = assessSendAfterRead(tool, params);
+  if (sendAfterRead) return sendAfterRead;
   if (!GOVERNED_TOOLS.has(tool)) return null;
   const direct = classifyRisk({ tool, args: params });
   if (direct) return direct;
 
   let url: string | undefined;
   let context: string | undefined;
+  let processName: string | undefined;
   try {
     if (tool.startsWith('cdp_')) {
       const client = getCdpClient();
       if (client.isConnected()) url = await client.getUrl();
     } else {
       const key = String(params.key ?? '').toLowerCase();
+      // A newline anywhere in typed text submits a line (a terminal runs it).
       const needsWindow =
-        tool === 'mouse_click' || tool === 'mouse_double_click' ||
-        (tool === 'key_press' && /(^|\+)(enter|return)$/.test(key)) ||
-        (tool === 'type_text' && /[\r\n]$/.test(String(params.text ?? '')));
+        tool === 'mouse_click' || tool === 'mouse_double_click' || tool === 'mouse_right_click' ||
+        (tool === 'key_press' && (/(^|\+)(enter|return)$/.test(key) || key === 'alt+s' || /^(cmd|command|meta)\+shift\+d$/.test(key))) ||
+        ((tool === 'type_text' || tool === 'smart_type') && /[\r\n]/.test(String(params.text ?? '')));
       if (needsWindow) {
         const fg = await getActiveWindow();
-        const parsed = JSON.parse(fg.text) as { title?: string; windowTitle?: string; url?: string };
+        const parsed = JSON.parse(fg.text) as { title?: string; windowTitle?: string; url?: string; processName?: string; app?: string };
         context = parsed.title ?? parsed.windowTitle;
+        processName = parsed.processName ?? parsed.app;
         if (parsed.url) url = parsed.url;
       }
     }
   } catch { /* no context — judge on args alone (already null) */ }
-  if (!url && !context) return null;
-  return classifyRisk({ tool, args: params, url, context });
+  if (!url && !context && !processName) return null;
+  const verdict = classifyRisk({ tool, args: params, url, context, process: processName });
+  if (verdict?.family === 'terminal' && !typedCommandIsPlain(tool, params)) {
+    // Not a plain command (or unknown): it asks whatever the user said.
+    return { class: verdict.class, reason: verdict.reason };
+  }
+  return verdict;
 }
 
 /**

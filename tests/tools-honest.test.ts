@@ -131,7 +131,9 @@ describe('type_text', () => {
   it('verified receipt when the focused field reads back what was pasted', async () => {
     replies = [(a) => typeScript(a) ? { stdout: '{"success":true,"foregroundProcessId":10380,"processName":"Notepad","hasReadback":true,"readback":"old text\\r\\nhello world"}' } : undefined];
     const r = await executeTool('type_text', { text: 'hello world' });
-    expect(r.text).toMatch(/Pasted 11 chars into Notepad: "hello world" \(verified/);
+    expect(r.text).toMatch(/Pasted 11 chars into Notepad \(verified/);
+    // 0.24.12: the result (which is logged and stored) never echoes the typed text.
+    expect(r.text).not.toContain('hello world');
     expect(r.receipt).toMatchObject({ status: 'verified', executed: true, evidence: { readback: 'match', processName: 'Notepad' } });
   });
 

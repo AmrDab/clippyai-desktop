@@ -30,6 +30,32 @@ export const APPROVAL_TIMEOUT_MS = 60_000;
 
 const pending = new Map<string, { resolve: (r: ApprovalResult) => void; timer: ReturnType<typeof setTimeout> }>();
 
+// Bubble messages that have nothing to do with the task (a scheduled
+// greeting, "update ready") wait here while a prompt is up: any new bubble
+// replaces the prompt, and the renderer counts a replaced prompt as Deny, so
+// an unrelated message used to deny the action for the user.
+const held: Array<() => void> = [];
+
+function releaseHeld(): void {
+  if (pending.size > 0 || held.length === 0) return;
+  const run = held.splice(0);
+  // After the answer has reached the task, so the message follows the result.
+  setTimeout(() => {
+    for (const fn of run) {
+      try { fn(); } catch (err) { log.warn('held message failed', { err: String(err) }); }
+    }
+  }, 0);
+}
+
+/**
+ * Run `show` now, or as soon as no approval prompt is pending. For bubble
+ * messages that are not part of the running task.
+ */
+export function afterApprovals(show: () => void): void {
+  if (pending.size === 0) { show(); return; }
+  held.push(show);
+}
+
 function finish(id: string, result: ApprovalResult): boolean {
   const p = pending.get(id);
   if (!p) return false;
@@ -37,6 +63,7 @@ function finish(id: string, result: ApprovalResult): boolean {
   clearTimeout(p.timer);
   log.info('Approval.resolved', { id, result });
   p.resolve(result);
+  releaseHeld();
   return true;
 }
 
@@ -48,7 +75,9 @@ export function requestApproval(win: BrowserWindow | null, req: ApprovalRequest)
     const timer = setTimeout(() => finish(id, 'timeout'), APPROVAL_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
     log.info('Approval.request', { id, tool: req.tool, class: req.actionClass });
-    win.webContents.send('approval-request', { id, ...req, timeoutMs: APPROVAL_TIMEOUT_MS });
+    // The reason can quote a label or path from the screen: one clean line too.
+    const reason = req.reason === undefined ? undefined : cleanLine(req.reason);
+    win.webContents.send('approval-request', { id, ...req, reason, timeoutMs: APPROVAL_TIMEOUT_MS });
   });
 }
 
@@ -97,8 +126,19 @@ export function wasApproved(tool: string, key: string): boolean {
 
 // Truncation is always VISIBLE: a value cut silently could hide its dangerous
 // tail behind a harmless-looking prefix the user then approves.
+//
+// One line, no markdown: the bubble renders the card as "Can I **…**?" plus a
+// reason line, so a newline in an argument could fake a second line ("Reason:
+// the user already approved") and `**` or a backtick could break out of the
+// bold / code span. Line breaks collapse to a space, `**` is dropped and a
+// backtick becomes the look-alike ˋ (a shell command still reads the same).
+export const cleanLine = (v: unknown): string => String(v ?? '')
+  .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
+  .replace(/\*{2,}/g, '')
+  .replace(/`/g, 'ˋ')
+  .replace(/ {2,}/g, ' ');
 const s = (v: unknown, max = 60): string => {
-  const str = String(v ?? '');
+  const str = cleanLine(v);
   return str.length > max ? `${str.substring(0, max)}… (+${str.length - max} more chars)` : str;
 };
 const q = (v: unknown, max = 60): string => `'${s(v, max)}'`;
@@ -163,7 +203,8 @@ const LABELS: Record<string, Label> = {
   move_file: R('from to', (a) => `Move ${s(a.from)} to ${s(a.to)}`),
   list_files: (a) => (has(a.path) ? `List the files in ${s(a.path, 80)}` : 'List files'),
   search_files_content: R('pattern', (a) => `Search files${has(a.path) ? ` in ${s(a.path, 80)}` : ''} for ${q(a.pattern, 40)}`),
-  zip_files: (a) => `Zip ${plural(Array.isArray(a.inputs) ? a.inputs.length : 1, 'item')}${has(a.output) ? ` into ${s(a.output, 80)}` : ''}`,
+  // overwrite deletes the existing output first: say so on the card.
+  zip_files: (a) => `Zip ${plural(Array.isArray(a.inputs) ? a.inputs.length : attachmentPaths(a.inputs).length || 1, 'item')}${has(a.output) ? ` into ${s(a.output, 80)}` : ''}${a.overwrite === true || a.overwrite === 'true' ? ', replacing the existing file' : ''}`,
   unzip_files: R('input', (a) => `Unzip ${s(a.input, 80)}${has(a.output) ? ` into ${s(a.output, 80)}` : ''}`),
   hash_file: R('path', (a) => `Compute the ${s(a.algo ?? 'SHA256', 10)} hash of ${s(a.path, 80)}`),
   ocr_from_image: R('path', (a) => `Read the text in the image ${s(a.path, 80)}`),
@@ -267,6 +308,32 @@ function fromDescription(tool: string): string | null {
   return first ? cap(s(first, 100)) : null;
 }
 
+/** Attachment paths from a comma / semicolon list or an array. */
+export function attachmentPaths(v: unknown): string[] {
+  const list = Array.isArray(v) ? v.map((x) => String(x ?? '')) : String(v ?? '').split(/[;,]/);
+  return list.map((p) => p.trim()).filter(Boolean);
+}
+
+/**
+ * Everything that leaves with the mail: who else gets it (cc / bcc), which
+ * files are attached and how the body starts. A card that showed only "to"
+ * and "subject" let a hidden bcc or an attached key file through.
+ */
+function emailSummary(a: Record<string, unknown>): string {
+  const parts = [`Email to ${s(a.to)}`];
+  if (has(a.cc)) parts.push(`cc ${s(a.cc)}`);
+  if (has(a.bcc)) parts.push(`bcc ${s(a.bcc)}`);
+  if (has(a.subject)) parts.push(`subject ${s(a.subject)}`);
+  const files = attachmentPaths(a.attachments).map((p) => p.split(/[\\/]/).pop() || p);
+  if (files.length) parts.push(`${plural(files.length, 'attachment')}: ${s(files.join(', '), 120)}`);
+  const body = String(a.body ?? '').trim();
+  if (body) {
+    const first = body.split(/\r?\n/)[0].trim();
+    parts.push(`body ${q(first, 60)}${body.length > first.length ? ` (${body.length.toLocaleString()} chars in all)` : ''}`);
+  }
+  return parts.join(', ');
+}
+
 export function summarizeArgs(tool: string, args: Record<string, unknown> = {}): string {
   const a = args && typeof args === 'object' ? args : {};
   const label = LABELS[tool];
@@ -276,7 +343,7 @@ export function summarizeArgs(tool: string, args: Record<string, unknown> = {}):
       if (out) return cap(out);
     } catch { /* fall through to the description */ }
   }
-  if (/_send_email$/.test(tool) && has(a.to)) return `Email to ${s(a.to)}${has(a.subject) ? `, subject ${s(a.subject)}` : ''}`;
+  if (/_send_email$/.test(tool) && has(a.to)) return emailSummary(a);
   if (tool.startsWith('skill__')) {
     return `Run skill ${tool.slice('skill__'.length)}${Object.keys(a).length ? ` ${s(JSON.stringify(redactArgs(a)), 240)}` : ''}`;
   }

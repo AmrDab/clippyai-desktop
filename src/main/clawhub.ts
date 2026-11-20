@@ -31,7 +31,7 @@ import path from 'path';
 import os from 'os';
 import https from 'https';
 import { promisify } from 'util';
-import { pipeline as pipelineCb } from 'stream';
+import { pipeline as pipelineCb, Transform } from 'stream';
 import { createLogger, serializeErr } from './logger';
 
 const log = createLogger('ClawHub');
@@ -83,6 +83,11 @@ const UNSAFE_CAPABILITY_TAGS = new Set([
   'registry-write',
   'native-code',
 ]);
+
+// Moderation states that count as reviewed-and-fine / as a hard no. Anything
+// else (pending, unknown, missing) is neither: the user is asked.
+const OK_MODERATION_STATES = new Set(['approved', 'active', 'published', 'visible', 'clean', 'ok']);
+const BAD_MODERATION_STATES = new Set(['suspicious', 'malicious', 'removed', 'hidden', 'banned', 'blocked', 'quarantined', 'rejected', 'flagged']);
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -138,12 +143,63 @@ function httpGet<T>(url: string, timeoutMs = 8_000): Promise<T> {
   });
 }
 
-function httpGetStream(url: string, timeoutMs = 30_000): Promise<NodeJS.ReadableStream> {
+// A skill archive is a few files of text. The caps stop a hostile or broken
+// server from filling the disk or bouncing the download around forever.
+export const SKILL_ZIP_MAX_BYTES = 25 * 1024 * 1024;
+export const SKILL_MAX_REDIRECTS = 3;
+
+/**
+ * Where a redirect may lead: an absolute or relative Location, https only,
+ * at most SKILL_MAX_REDIRECTS hops. Throws otherwise.
+ */
+export function nextRedirectUrl(current: string, location: string | undefined, hops: number): string {
+  if (hops >= SKILL_MAX_REDIRECTS) throw new Error(`Too many redirects (${SKILL_MAX_REDIRECTS})`);
+  if (!location) throw new Error('Redirect without a Location header');
+  const next = new URL(location, current);
+  if (next.protocol !== 'https:') throw new Error(`Redirect to a non-https address refused (${next.protocol})`);
+  return next.toString();
+}
+
+/** Pass-through that fails once more than `maxBytes` have gone by. */
+export function byteCap(maxBytes: number): Transform {
+  let seen = 0;
+  return new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      seen += chunk.length;
+      if (seen > maxBytes) cb(new Error(`Download exceeds ${maxBytes} bytes`));
+      else cb(null, chunk);
+    },
+  });
+}
+
+/**
+ * Every entry under `root` must really live under `root`: no symlink or
+ * junction (an archive can carry one that points at ~/.ssh), and no path
+ * that resolves outside. Throws on the first violation.
+ */
+export async function assertTreeInside(root: string): Promise<void> {
+  const realRoot = await fs.promises.realpath(root);
+  const inside = (p: string) => p === realRoot || p.startsWith(realRoot + path.sep);
+  async function walk(dir: string): Promise<void> {
+    for (const ent of await fs.promises.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      const st = await fs.promises.lstat(full);
+      if (st.isSymbolicLink()) throw new Error(`Skill archive contains a link: ${path.relative(root, full)}`);
+      if (!inside(await fs.promises.realpath(full))) throw new Error(`Skill archive entry escapes its folder: ${path.relative(root, full)}`);
+      if (st.isDirectory()) await walk(full);
+    }
+  }
+  await walk(root);
+}
+
+function httpGetStream(url: string, timeoutMs = 30_000, hops = 0): Promise<NodeJS.ReadableStream> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: timeoutMs, headers: { 'User-Agent': 'ClippyAI/0.14.0' } }, (res) => {
-      if (res.statusCode === 302 || res.statusCode === 301) {
-        const loc = res.headers.location;
-        if (loc) { resolve(httpGetStream(loc, timeoutMs)); return; }
+      if (res.statusCode === 302 || res.statusCode === 301 || res.statusCode === 303 || res.statusCode === 307 || res.statusCode === 308) {
+        res.resume();
+        try { resolve(httpGetStream(nextRedirectUrl(url, res.headers.location, hops), timeoutMs, hops + 1)); }
+        catch (err) { reject(err); }
+        return;
       }
       if (res.statusCode !== undefined && res.statusCode >= 400) {
         reject(new Error(`HTTP ${res.statusCode}`));
@@ -186,10 +242,16 @@ export async function getSkillScan(slug: string): Promise<SkillScan | null> {
  */
 export function classifySkillSafety(scan: SkillScan | null): 'safe' | 'consent' | 'reject' {
   if (!scan) return 'consent'; // unknown → ask
+  const moderation = String(scan.moderation_state ?? '').toLowerCase();
   if (scan.verdict === 'suspicious' || scan.verdict === 'malicious') return 'reject';
+  if (BAD_MODERATION_STATES.has(moderation)) return 'reject';
   const tags = scan.capability_tags || [];
   if (tags.some((t) => UNSAFE_CAPABILITY_TAGS.has(t))) return 'consent';
-  if (tags.every((t) => SAFE_CAPABILITY_TAGS.has(t))) return 'safe';
+  // 'safe' needs positive evidence on all three counts. An unscored scan, an
+  // empty tag list ([].every() is true) or an unknown moderation state used
+  // to count as safe.
+  if (scan.verdict === 'clean' && tags.length > 0 && tags.every((t) => SAFE_CAPABILITY_TAGS.has(t))
+    && OK_MODERATION_STATES.has(moderation)) return 'safe';
   return 'consent';
 }
 
@@ -218,7 +280,12 @@ export async function installSkill(slug: string, version?: string): Promise<Skil
   log.info('Downloading skill', { slug, version: version || 'latest' });
   const zipPath = path.join(SKILLS_DIR, `${slug}.zip`);
   const stream = await httpGetStream(downloadUrl, 30_000);
-  await pipeline(stream, fs.createWriteStream(zipPath));
+  try {
+    await pipeline(stream, byteCap(SKILL_ZIP_MAX_BYTES), fs.createWriteStream(zipPath));
+  } catch (err) {
+    await fs.promises.rm(zipPath, { force: true }).catch(() => {});
+    throw err;
+  }
 
   // Extract the ZIP using a platform-native, zero-dep CLI:
   //   - darwin → `ditto -x -k` (the macOS-blessed archive tool, ships in
@@ -246,6 +313,14 @@ export async function installSkill(slug: string, version?: string): Promise<Skil
   });
   // Best-effort: remove the zip
   try { await fs.promises.unlink(zipPath); } catch { /* ignore */ }
+
+  // Nothing in the archive may point or resolve outside the skill's folder.
+  try {
+    await assertTreeInside(destDir);
+  } catch (err) {
+    await fs.promises.rm(destDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
 
   // Find and parse SKILL.md
   const manifest = await parseSkillMd(destDir, slug, scan?.capability_tags || []);

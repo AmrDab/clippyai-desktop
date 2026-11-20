@@ -32,10 +32,16 @@
  *     Shell execution is governed by shell_exec's own destructive_exec class.
  *   - "send/submit feedback" stays risky: it still posts text under the
  *     user's identity.
- *   - Enter/Return is escalated only when the caller supplies a context
- *     (window title / page URL) that looks like a compose or checkout
- *     surface. plip escalates every Enter; for Clippy that would prompt on
- *     every search box.
+ *   - Plain Enter/Return is escalated only on a checkout surface (window
+ *     title / page URL). It is never a send: in a mail app it adds a line to
+ *     the body, runs a search or opens a message, and asking there would
+ *     prompt on every search box.
+ *   - The send chords (Ctrl+Enter, Cmd+Enter, Alt+S, Cmd+Shift+D) count as a
+ *     send in a mail client (outlook, olk, thunderbird, Mail), in a browser
+ *     on a mail page, and on a compose surface.
+ *   - Typing into a terminal or the Run dialog is escalated to
+ *     destructive_exec only when the text or key submits the line (a newline
+ *     or Enter). Typing a line without running it is plain desktop input.
  */
 
 import type { ActionClass } from './tool-meta';
@@ -51,20 +57,28 @@ export interface RiskInput {
   keys?: string;
   /** Active window title / focused element name — used for coordinate clicks + Enter. */
   context?: string;
+  /** Foreground process / app name ("WindowsTerminal", "powershell", "Terminal"). */
+  process?: string;
 }
 
 export interface RiskVerdict {
   class: ActionClass;
   reason: string;
+  /** Set only when a Send-type or Delete-type control or key was recognised
+   *  (not a credential field, a checkout, or a click judged by its window).
+   *  approval-policy uses it: "send the email" + a Send button runs unasked. */
+  /** 'terminal': a line typed into a shell that passed the shell_exec checks
+   *  (tools.ts assessRisk decides that); "run X in PowerShell" runs unasked. */
+  family?: 'send' | 'delete' | 'terminal';
 }
 
 /** Tools the governor looks at. Anything else returns null immediately. */
 export const GOVERNED_TOOLS: ReadonlySet<string> = new Set([
-  'smart_click', 'mouse_click', 'mouse_double_click', 'key_press', 'smart_type', 'type_text',
-  'cdp_click', 'cdp_type', 'browser_click', 'browser_type',
+  'smart_click', 'mouse_click', 'mouse_double_click', 'mouse_right_click', 'key_press', 'smart_type', 'type_text',
+  'cdp_click', 'cdp_type', 'browser_click', 'browser_type', 'shortcuts_execute',
 ]);
 
-const CLICK_TOOLS = new Set(['smart_click', 'mouse_click', 'mouse_double_click', 'cdp_click', 'browser_click']);
+const CLICK_TOOLS = new Set(['smart_click', 'mouse_click', 'mouse_double_click', 'mouse_right_click', 'cdp_click', 'browser_click']);
 const TYPE_TOOLS = new Set(['smart_type', 'type_text', 'cdp_type', 'browser_type']);
 
 // ── Label patterns (grouped by the actionClass they escalate to) ──────────
@@ -118,6 +132,47 @@ const PURCHASE_CONTEXT = /\b(checkout|place order|payment|billing|review your or
 const RISKY_CHORDS = new Set(['alt+f4', 'ctrl+alt+del', 'cmd+q', 'cmd+shift+q', 'cmd+alt+esc']);
 const ENTER_KEYS = new Set(['enter', 'return', 'ctrl+enter', 'ctrl+return', 'cmd+enter', 'cmd+return']);
 
+// ── Terminals ────────────────────────────────────────────────────────────
+
+// Typing a line into a shell and pressing Enter runs it: the same thing as
+// shell_exec, without shell_exec's gate (0.24.12 audit #4).
+const SHELL_PROCESS = /^(?:powershell(?:_ise)?|pwsh|cmd|windowsterminal|wt|openconsole|conhost|bash|zsh|sh|fish|wsl|ubuntu|mintty|git-bash|terminal|iterm2?|alacritty|wezterm(?:-gui)?|kitty|warp|hyper|tabby|cmder|conemu(?:64)?)(?:\.exe)?$/i;
+/** The Win+R Run dialog is hosted by explorer.exe with the title "Run". */
+const RUN_DIALOG_TITLE = /^run$/i;
+
+/** True when keystrokes in the foreground window are executed as commands. */
+export function isShellSurface(processName?: string, title?: string): boolean {
+  const p = String(processName ?? '').trim();
+  if (p && SHELL_PROCESS.test(p)) return true;
+  return /^explorer(?:\.exe)?$/i.test(p) && RUN_DIALOG_TITLE.test(String(title ?? '').trim());
+}
+
+/** The typed text or key chord submits the line (Enter / newline). */
+function submitsLine(tool: string, args: Record<string, unknown>, keys?: string): boolean {
+  if (tool === 'key_press') return /(^|\+)(enter|return)$/.test(normalizeChord(keys ?? String(args.key ?? args.combo ?? '')));
+  return /[\r\n]/.test(String(args.text ?? ''));
+}
+
+// ── Mail surfaces ────────────────────────────────────────────────────────
+
+// In a mail client Ctrl+Enter, Cmd+Enter, Alt+S and Cmd+Shift+D send the
+// message, whatever the window title says (the new Outlook composes inline
+// under a "Mail - ..." title). 0.24.12 audit #5. Plain Enter is not here.
+const MAIL_PROCESS = /^(?:outlook|olk|hxoutlook|thunderbird|mail)(?:\.exe)?$/i;
+const BROWSER_PROCESS = /^(?:chrome|msedge|firefox|brave|opera|vivaldi|arc|safari|chromium|google chrome|microsoft edge|brave browser)(?:\.exe)?$/i;
+const MAIL_PAGE_URL = /(mail\.google\.com|outlook\.(live|office|office365)\.com|mail\.yahoo\.com|mail\.proton\.me|app\.fastmail\.com|icloud\.com\/mail|mail\.zoho\.com)/i;
+const MAIL_PAGE_TITLE = /\b(gmail|outlook|proton\s?mail|yahoo\s+mail|fastmail|icloud\s+mail|zoho\s+mail|compose|new message)\b/i;
+const MAIL_SEND_CHORDS = new Set(['ctrl+enter', 'ctrl+return', 'cmd+enter', 'cmd+return', 'alt+s', 'cmd+shift+d']);
+
+/** True when the foreground is a mail client, or a browser on a mail / compose page. */
+export function isMailSurface(processName?: string, title?: string, url?: string): boolean {
+  const p = String(processName ?? '').trim();
+  if (!p) return false;
+  if (MAIL_PROCESS.test(p)) return true;
+  if (!BROWSER_PROCESS.test(p)) return false;
+  return (!!url && (MAIL_PAGE_URL.test(url) || COMPOSE_URL.test(url))) || MAIL_PAGE_TITLE.test(String(title ?? ''));
+}
+
 function normalizeLabel(s: string): string {
   return s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -139,7 +194,10 @@ export function classifyLabel(label: string): RiskVerdict | null {
   if (LABEL_EXCLUSIONS.some((re) => re.test(norm))) return null;
   for (const rule of LABEL_RULES) {
     const m = rule.re.exec(norm);
-    if (m) return { class: rule.cls, reason: `Looks like a ${rule.what} button: ${q(norm)}` };
+    if (m) {
+      const family = rule.what === 'send' ? 'send' : rule.what === 'delete' ? 'delete' : undefined;
+      return { class: rule.cls, reason: `Looks like a ${rule.what} button: ${q(norm)}`, ...(family ? { family } : {}) };
+    }
   }
   return null;
 }
@@ -164,7 +222,7 @@ function classifyContext(context: string): RiskVerdict | null {
   return null;
 }
 
-/** Risk from a key chord. Enter only escalates with a send/pay context. */
+/** Risk from a key chord. Enter needs a pay context; the Ctrl/Cmd+Enter chords a send or pay one. */
 export function classifyKeys(keys: string, context?: string, url?: string): RiskVerdict | null {
   const chord = normalizeChord(keys);
   if (!chord) return null;
@@ -173,7 +231,9 @@ export function classifyKeys(keys: string, context?: string, url?: string): Risk
   }
   if (ENTER_KEYS.has(chord)) {
     const v = (url ? classifyUrl(url) : null) ?? (context ? classifyContext(context) : null);
-    if (v) return { class: v.class, reason: `${keys} would probably ${v.class === 'destructive_purchase' ? 'submit the order' : 'send the message'} — ${v.reason}` };
+    // Plain Enter submits an order, but it does not send a mail.
+    const plain = chord === 'enter' || chord === 'return';
+    if (v && !(plain && v.class === 'destructive_send')) return { class: v.class, reason: `${keys} would probably ${v.class === 'destructive_purchase' ? 'submit the order' : 'send the message'} — ${v.reason}`, ...(v.class === 'destructive_send' ? { family: 'send' as const } : {}) };
   }
   return null;
 }
@@ -197,12 +257,33 @@ export function classifyRisk(input: RiskInput): RiskVerdict | null {
 
   const label = input.resolvedLabel ?? labelFromArgs(tool, args);
 
+  // Typing into a terminal or the Run dialog AND submitting is execution.
+  // Typing without Enter is not: nothing runs until the line is submitted.
+  if ((tool === 'type_text' || tool === 'key_press' || tool === 'smart_type')
+    && isShellSurface(input.process, input.context) && submitsLine(tool, args, input.keys)) {
+    return { class: 'destructive_exec', reason: `This runs what is typed in ${q(input.process || 'a terminal')}`, family: 'terminal' };
+  }
+
   if (TYPE_TOOLS.has(tool) && label && CREDENTIAL_LABEL.test(normalizeLabel(label))) {
     return { class: 'destructive_send', reason: `Typing into a credential field: ${q(normalizeLabel(label))}` };
   }
 
   if (tool === 'key_press') {
-    return classifyKeys(input.keys ?? String(args.key ?? ''), input.context, input.url);
+    const keys = input.keys ?? String(args.key ?? '');
+    const v = classifyKeys(keys, input.context, input.url);
+    if (v) return v;
+    if (MAIL_SEND_CHORDS.has(normalizeChord(keys)) && isMailSurface(input.process, input.context, input.url)) {
+      return { class: 'destructive_send', reason: `${keys} in ${q(input.process ?? 'the mail app')} can send the message`, family: 'send' };
+    }
+    return null;
+  }
+
+  // A shortcut picked by intent: "send" sends whatever is being composed.
+  if (tool === 'shortcuts_execute') {
+    const intent = String(args.intent ?? args.action ?? '');
+    return /\bsend\b/i.test(intent)
+      ? { class: 'destructive_send', reason: `The ${q(intent)} shortcut sends the message`, family: 'send' }
+      : null;
   }
 
   if (label) {

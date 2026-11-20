@@ -55,7 +55,8 @@ import * as profileMod from './profile';
 // v0.20.0-alpha.12 — static import for window-follow (NOT lazy require)
 // to keep Rollup from tree-shaking it. See memory: feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
-import { noteOnboardingStep, setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
+import { noteOnboardingStep, setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, getSettingsWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
+import { senderIsWindow } from './ipc-guard';
 import { takeWhatsNew, claimFirstRunScript, claimNamePrompt } from './whats-new';
 import { wakeScript } from './first-run';
 import { isOnboardingStep } from './onboarding-track';
@@ -104,7 +105,12 @@ const PERMISSION_PANES: Record<string, string> = {
 
 export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): void {
   // User typed a message in the bubble (with input validation)
-  ipcMain.handle('user-message', async (_event, text: unknown) => {
+  // Only the Settings window's page may read or change guardrails / BYOK.
+  const fromSettings = (event: { sender: unknown }): boolean => senderIsWindow(event, getSettingsWindow());
+
+  ipcMain.handle('user-message', async (event, text: unknown) => {
+    // A task starts only from the bubble: no other window's page can start one.
+    if (!senderIsWindow(event, mainWindow)) return '';
     if (typeof text !== 'string') return 'Invalid input.';
     const trimmed = text.trim().substring(0, 4096);
     if (!trimmed) return '';
@@ -1308,8 +1314,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // v0.21 — "Your own AI model" (BYOK). The key goes renderer → main once
   // (byok:save) and is encrypted at rest; status only ever carries a
   // "••••1234" hint back. byok:test makes one tiny request to the provider.
-  ipcMain.handle('byok:status', async () => byokMod.getByokStatus());
-  ipcMain.handle('byok:save', async (_event, input: unknown) => {
+  ipcMain.handle('byok:status', async (event) => (fromSettings(event) ? byokMod.getByokStatus() : null));
+  ipcMain.handle('byok:save', async (event, input: unknown) => {
+    if (!fromSettings(event)) return null;
     const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
     const r = byokMod.saveByokSettings({
       enabled: typeof i.enabled === 'boolean' ? i.enabled : undefined,
@@ -1321,29 +1328,34 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     refreshTrayTooltip();
     return r;
   });
-  ipcMain.handle('byok:clear-key', async () => {
+  ipcMain.handle('byok:clear-key', async (event) => {
+    if (!fromSettings(event)) return null;
     const s = byokMod.clearByokKey();
     refreshTrayTooltip();
     return s;
   });
-  ipcMain.handle('byok:test', async () => byokMod.testByokConnection());
+  ipcMain.handle('byok:test', async (event) => (fromSettings(event) ? byokMod.testByokConnection() : null));
 
   // v0.17.8 — Guardrails: permission policy + action history IPC handlers.
   // These are the renderer-facing API for Settings → Guardrails.
-  ipcMain.handle('guardrails:get-policy', async () => {
+  ipcMain.handle('guardrails:get-policy', async (event) => {
+    if (!fromSettings(event)) return null;
     return permissionPolicyMod.getPolicy();
   });
-  ipcMain.handle('guardrails:set-policy', async (_event, payload: unknown) => {
+  ipcMain.handle('guardrails:set-policy', async (event, payload: unknown) => {
+    if (!fromSettings(event)) return null;
     const p = payload as { mode?: import('./permission-policy').Mode; classOverrides?: Record<string, import('./permission-policy').ClassDecision> };
     return permissionPolicyMod.setPolicy({
       mode: p?.mode,
       classOverrides: p?.classOverrides as Partial<Record<import('./tool-meta').ActionClass, import('./permission-policy').ClassDecision>>,
     });
   });
-  ipcMain.handle('guardrails:get-history', async () => {
+  ipcMain.handle('guardrails:get-history', async (event) => {
+    if (!fromSettings(event)) return [];
     return actionHistoryMod.getAll();
   });
-  ipcMain.handle('guardrails:clear-history', async () => {
+  ipcMain.handle('guardrails:clear-history', async (event) => {
+    if (!fromSettings(event)) return false;
     actionHistoryMod.clear();
     return true;
   });
@@ -1377,7 +1389,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Trust budget: if we're unsure (entry not found, already undone, no
   // inverse recorded), return ok:false with an honest reason. Never claim
   // success when we didn't actually undo.
-  ipcMain.handle('action-undo', async (_event, id: unknown) => {
+  ipcMain.handle('action-undo', async (event, id: unknown) => {
+    if (!fromSettings(event)) return { ok: false, detail: 'Not available from this window.' };
     if (typeof id !== 'string' || !id) {
       return { ok: false, detail: 'Invalid action id.' };
     }

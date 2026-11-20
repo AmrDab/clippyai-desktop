@@ -28,7 +28,9 @@ export type InverseAction =
   | { kind: 'move'; from: string; to: string }
   | { kind: 'delete-calendar-event'; eventId: string; calendarId?: string }
   | { kind: 'delete-email-draft'; draftId: string }
-  | { kind: 'restore-clipboard'; previousText: string }
+  // The text itself stays in memory (tool-undo.ts rememberClipboard): what
+  // was on the clipboard can be a password, and this record is a file.
+  | { kind: 'restore-clipboard'; clipRef: string }
   | { kind: 'recreate-from-args'; tool: string; args: Record<string, unknown> }
   | { kind: 'noop'; reason: string };
 
@@ -78,6 +80,22 @@ function load(): void {
     const raw = fs.readFileSync(historyPath(), 'utf8');
     _entries = JSON.parse(raw) as ActionEntry[];
     if (!Array.isArray(_entries)) _entries = [];
+    // Builds before 0.24.12 wrote the previous clipboard text into this
+    // file. Drop it (the undo then reports it is no longer available).
+    let scrubbed = false;
+    for (const e of _entries) {
+      const inv = e?.inverse as (Record<string, unknown> | undefined);
+      if (inv && inv.kind === 'restore-clipboard' && 'previousText' in inv) {
+        delete inv.previousText;
+        if (typeof inv.clipRef !== 'string') inv.clipRef = '';
+        scrubbed = true;
+      }
+      if (typeof e?.argsSummary === 'string' && e.argsSummary.includes('_previousClipboard"')) {
+        e.argsSummary = '{}';
+        scrubbed = true;
+      }
+    }
+    if (scrubbed) flush();
   } catch {
     _entries = [];
   }

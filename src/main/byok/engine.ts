@@ -98,9 +98,15 @@ export function tidyProactive(text: string, finishReason: string): string {
 async function callProvider(
   o: { target: ByokTarget; systemPrompt: string; contents: WireContent[]; tools: KitTool[]; maxTokens: number; fetch: EngineFetch; signal?: AbortSignal; timeoutMs: number },
 ): Promise<{ ok: true; result: AdapterResult } | { ok: false; kind: 'timeout' | 'network' | 'cancelled' | 'ai_error' | 'parse_error'; detail: string }> {
-  const req = buildProviderRequest(o.target.api, o.target.baseUrl, o.target.apiKey, {
-    systemPrompt: o.systemPrompt, contents: o.contents, tools: o.tools, model: o.target.model, maxTokens: o.maxTokens,
-  });
+  let req: ReturnType<typeof buildProviderRequest>;
+  try {
+    req = buildProviderRequest(o.target.api, o.target.baseUrl, o.target.apiKey, {
+      systemPrompt: o.systemPrompt, contents: o.contents, tools: o.tools, model: o.target.model, maxTokens: o.maxTokens,
+    });
+  } catch (err) {
+    // e.g. a base URL that is plain http to another host: nothing is sent.
+    return { ok: false, kind: 'ai_error', detail: err instanceof Error ? err.message : String(err) };
+  }
   const ctl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, o.timeoutMs);

@@ -7,13 +7,16 @@
  * destructive_exec, so even `ls`, `open -a Claude` and an AppleScript
  * `activate` prompted. Policy: in a task the USER started, a shell command
  * that is part of the request runs without asking UNLESS it can delete, close,
- * install, upload, send, change security/system settings, or run opaque code
- * (classifyShellCommand), or something in the task looks like prompt injection,
+ * install, upload, send, change security/system settings, run opaque code,
+ * fetch from the network, run through a script host, run a file out of
+ * Downloads/Temp/AppData or touch a secret store (classifyShellCommand), or something in the task looks like prompt injection,
  * or the task did not come from the user, or the user picked Cautious / an
  * explicit "approve" for the class. The hard blocklist (shell-guard.ts) still
  * refuses at execution whatever this says. Skill installs, purchases, sends,
- * payments, http_request, clawd_task and every governor-escalated click keep
- * asking exactly as before.
+ * payments, http_request and clawd_task keep asking exactly as before. A
+ * governor-escalated click or key asks too, with one exception: the user's
+ * own message asked for a send or a delete and the control is a Send-type or
+ * Delete-type one (isRequestedEscalation). A purchase always asks.
  *
  * One deliberate exception besides shell_exec (owner report: "force quit
  * designcenter" asked three times, then failed): quitting THE APP THE USER
@@ -42,6 +45,8 @@ export interface ApprovalCtx {
   actionClass: ActionClass;
   /** The governor escalated this call (looks like a purchase / send / delete click). */
   escalated: boolean;
+  /** The governor recognised a Send-type or Delete-type control or key (RiskVerdict.family). */
+  riskFamily?: 'send' | 'delete' | 'terminal';
   /** Policy mode; 'cautious' means the user wants to see every action. */
   mode: 'cautious' | 'standard' | 'trusted';
   /** The user explicitly set this class to 'approve' in Settings → Guardrails. */
@@ -66,7 +71,7 @@ const rx = (src: string) => new RegExp(src, 'i');
 // `Format-Table` / `Format-List`, and `del`, `rd`, `mi` before any hyphen.
 const END = String.raw`(?![\w-])`;
 
-interface Rule { why: string; re: RegExp }
+interface Rule { why: string; re: RegExp; /** Asks only because it reaches the network. */ net?: true }
 
 const RISKY: Rule[] = [
   { why: 'elevated privileges', re: rx(CS + String.raw`(?:sudo|doas|su|runas)\b`) },
@@ -102,18 +107,146 @@ const RISKY: Rule[] = [
   { why: 'writes a file', re: rx(String.raw`(?<![0-9&<>=-])>>?(?![&>=])\s*(?!\/dev\/null\b|nul\b|\$null\b)["']?[^\s|;&)"']`) },
 ];
 
-/** `null` when the command is safe to run unasked; otherwise why it still asks. */
-export function classifyShellCommand(command: string): string | null {
+// ── Remote code and secrets (0.24.12 audit #1) ──
+// A command that fetches from the network, runs through a script host, or
+// touches a secret store is how a prompt injection turns into code execution
+// or exfiltration, so these ask whatever the request said.
+const EXEC_EXT = String.raw`(?:exe|com|scr|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msi|msp|jar|lnk|cpl|dll|py|sh)`;
+// A path under Downloads, Temp or AppData (Programs and WindowsApps are where
+// installed apps live, so launching those stays unasked).
+const DROP_DIR = String.raw`(?:[^\s"'|;&<>]*[\\/])?(?:downloads|temp|tmp|appdata(?![\\/]local[\\/](?:programs|microsoft[\\/]windowsapps)[\\/]))[\\/]`;
+const DROP_VAR = String.raw`(?:%(?:temp|tmp|appdata|localappdata)%|\$\{?env:(?:temp|tmp|appdata|localappdata)\}?|\$\{?TMPDIR\}?|/tmp|/var/tmp)[\\/]`;
+const DROP_PATH = String.raw`["']?(?:${DROP_DIR}|${DROP_VAR})[^"'|;&<>\r\n]*?\.${EXEC_EXT}(?![\w.-])`;
+const RUNNER = String.raw`(?:(?:start|call|start-process|saps|invoke-item|ii)\s+(?:""\s+)?(?:-filepath\s+)?|[&.]\s*)?`;
+
+const REMOTE_OR_SECRET: Rule[] = [
+  { why: 'fetches from or sends to the network', net: true, re: rx(String.raw`(?:^|[^\w.-])(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|start-bitstransfer|bitsadmin)(?:\.exe)?${END}`) },
+  { why: 'fetches from or sends to the network', re: rx(String.raw`net\.webclient|net\.http|net\.sockets|webrequest\]|xmlhttp|\bcertutil(?:\.exe)?\b[^\r\n]*-(?:urlcache|verifyctl)\b`) },
+  { why: 'script host or system binary that runs other code', re: rx(String.raw`(?:^|[^\w.-])(?:mshta|rundll32|regsvr32|wscript|cscript|msiexec|installutil|cmstp)(?:\.exe)?${END}`) },
+  { why: 'runs code built at run time', re: rx(String.raw`\s-(?:e|ec|enc|encodedcommand)\s+[a-z0-9+/=]{16,}|\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|iex|invoke-expression|cmd|powershell|pwsh)(?:\.exe)?${END}|<\(`) },
+  { why: 'runs a file from Downloads, Temp or AppData', re: rx(CS + RUNNER + DROP_PATH) },
+  { why: 'reads a secret location', re: rx(String.raw`(?:^|[\s\\/"'=(~])\.(?:ssh|aws|gnupg|azure|kube|docker)(?![\w-])|\.git-credentials|\.netrc\b|\.npmrc\b|\bid_(?:rsa|dsa|ecdsa|ed25519)\b`) },
+  { why: 'reads a secret location', re: rx(String.raw`[\\/]user data(?![\w-])|\b(?:login data|cookies\.sqlite|logins\.json|key[34]\.db)\b|agent-server\.json|microsoft[\\/](?:credentials|protect|vault)\b|\b(?:cmdkey|vaultcmd)\b|\.(?:pem|key|pfx|p12|kdbx|ppk)(?![\w-])`) },
+  { why: 'reads a secret location', re: rx(String.raw`(?:^|[\s\\/"'=])\.env(?:\.[\w-]+)*(?=$|[\s"'|;&)])`) },
+];
+
+// The one URL form that stays unasked: the whole command opens one http(s)
+// page in the browser ("open youtube"). No second statement, no variable.
+const URL_ARG = String.raw`(?:"https?://[^"'\s` + BT + String.raw`$%^<>]+"|'https?://[^"'\s` + BT + String.raw`$%^<>]+'|https?://[^"'\s` + BT + String.raw`$%^<>|&;()]+)`;
+const BROWSER = String.raw`(?:chrome|msedge|firefox|brave|safari|"[\w .]+"|'[\w .]+')`;
+const PLAIN_OPEN = new RegExp(String.raw`^(?:start(?:\s+"")?(?:\s+${BROWSER})?|open(?:\s+-a\s+${BROWSER})?|xdg-open|explorer(?:\.exe)?|start-process|saps)\s+${URL_ARG}$`, 'i');
+const HAS_URL = /\b(?:https?|ftps?|file|wss?):\/\//i;
+
+/** The http(s) URL when the whole command just opens it in the browser. */
+export function plainOpenUrl(command: string): string | null {
+  const cmd = String(command ?? '').trim();
+  if (!PLAIN_OPEN.test(cmd)) return null;
+  return cmd.match(/https?:\/\/[^"'\s]+/i)?.[0] ?? null;
+}
+
+/** `skipNet`: leave out the two "it reaches the network" reasons (a fetch tool, a URL). */
+function classify(command: string, skipNet: boolean): string | null {
   const cmd = String(command ?? '').trim();
   if (!cmd) return 'empty command';
   const hard = shellBlockReason(cmd);
   if (hard) return `blocklist: ${hard}`;
   const norm = cmd.replace(/\^/g, '');
-  for (const rule of RISKY) {
+  for (const rule of [...REMOTE_OR_SECRET, ...RISKY]) {
+    if (skipNet && rule.net) continue;
     if (rule.re.test(cmd) || rule.re.test(norm)) return rule.why;
   }
+  if (!skipNet && HAS_URL.test(norm) && !plainOpenUrl(norm)) return 'contains a URL';
   return null;
 }
+
+/** `null` when the command is safe to run unasked; otherwise why it still asks. */
+export function classifyShellCommand(command: string): string | null {
+  return classify(command, false);
+}
+
+// ── A fetch the user asked for ───────────────────────────────────────────
+// "The user's request is the permission": `git clone https://github.com/x/y`
+// or a download from python.org runs unasked when the USER'S OWN MESSAGE named
+// that host (or, on a code host, that repo / package). A host that appears
+// only in a page, a file or a tool result is never named. Everything else in
+// the command must still pass: a pipe to a shell, a LOLBin, an upload, a
+// second statement that runs the download, all still ask.
+
+// Hosts where the repo / package name identifies what is fetched.
+const CODE_HOSTS = new Set([
+  'github.com', 'gitlab.com', 'bitbucket.org', 'raw.githubusercontent.com', 'codeload.github.com',
+  'registry.npmjs.org', 'npmjs.com', 'pypi.org', 'files.pythonhosted.org', 'crates.io',
+]);
+// Suffixes anyone can get a name under: naming one does not name a site.
+const SHARED_SUFFIXES = new Set([
+  'co.uk', 'com.au', 'co.jp', 'com.br', 'co.in', 'github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'web.app',
+  'netlify.app', 'vercel.app', 'herokuapp.com', 'blogspot.com', 'azurewebsites.net', 'cloudfront.net', 'amazonaws.com',
+  'ngrok.io', 'ngrok-free.app', 'trycloudflare.com',
+]);
+const GENERIC_PATH_WORDS = new Set([
+  'archive', 'releases', 'release', 'download', 'downloads', 'blob', 'tree', 'main', 'master', 'refs', 'heads', 'tags',
+  'raw', 'package', 'packages', 'simple', 'api', 'latest', 'files', 'file', 'src', 'dist', 'docs', 'the', 'and',
+]);
+// Statements that may sit beside the fetch: they only pick the folder.
+const FOLDER_ONLY = /^(?:cd|chdir|pushd|popd|mkdir|md|set-location|sl)(?:\s|$)/i;
+const FETCH_URL = /\b(?:https?|ftps?|file|wss?):\/\/[^\s"'<>|;)]+/gi;
+const OUTPUT_FLAG = /^(?:-o|-O|--output|--output-document|-outfile|-destination|-out|--directory-prefix|-P)$/i;
+
+/** Domain-like words in the user's message ("python.org", "github.com/x/y" -> "github.com"). */
+function namedDomains(message: string): string[] {
+  return (message.toLowerCase().match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+/g) ?? [])
+    .map((d) => d.replace(/^www\./, '').replace(/\.+$/, ''))
+    .filter((d) => /\.[a-z]{2,}$/.test(d) && !SHARED_SUFFIXES.has(d) && d.split('.')[0].length >= 2);
+}
+
+function hostNamed(host: string, domains: string[]): boolean {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  return domains.some((d) => h === d || h.endsWith(`.${d}`));
+}
+
+/** On a code host: the user's message has the repo / package name as a word. */
+function repoNamed(u: URL, message: string): boolean {
+  const host = u.hostname.toLowerCase().replace(/^www\./, '');
+  if (!CODE_HOSTS.has(host) || u.search || u.hash) return false;
+  const msg = message.toLowerCase();
+  const segs = decodeURIComponent(u.pathname).toLowerCase().split('/')
+    .map((s) => s.replace(/\.(?:git|zip|tgz|tar\.gz|whl)$/, ''))
+    .filter((s) => s.length >= 3 && !GENERIC_PATH_WORDS.has(s));
+  return segs.some((s) => new RegExp(`(?<![\\w-])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(msg));
+}
+
+/**
+ * True when `command` asks only because it fetches from the network, and
+ * every address in it was named in the user's own message.
+ */
+export function isUserNamedFetch(command: string, requestText: string | undefined): boolean {
+  const cmd = String(command ?? '').trim().replace(/\^/g, '');
+  if (!cmd || !requestText) return false;
+  // Nothing but the fetch itself may be risky.
+  if (classify(cmd, true) !== null || classify(cmd, false) === null) return false;
+  // One fetch statement; anything beside it only changes folder.
+  const statements = cmd.split(/&&|\|\||[;&|\r\n]/).map((s) => s.trim()).filter(Boolean);
+  const fetches = statements.filter((s) => !FOLDER_ONLY.test(s));
+  if (fetches.length !== 1) return false;
+  const urls = fetches[0].match(FETCH_URL) ?? [];
+  if (urls.length === 0) return false; // a bare host argument: can't tell what it is
+  // No second, scheme-less address hiding among the arguments.
+  const words = fetches[0].split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i].replace(/^["']|["']$/g, '');
+    if (/^[a-z]+:\/\//i.test(w) || w.startsWith('-') || OUTPUT_FLAG.test(words[i - 1])) continue;
+    if (/^[\w-]+(?:\.[\w-]+)+(?:[/:?#].*)?$/.test(w)) return false; // curl treats it as another address
+  }
+  const domains = namedDomains(requestText);
+  return urls.every((raw) => {
+    let u: URL;
+    try { u = new URL(raw); } catch { return false; }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+    if (u.username || u.password) return false;
+    return hostNamed(u.hostname, domains) || repoNamed(u, requestText);
+  });
+}
+
 
 // Same list as com-kill-process.ps1's blocklist, plus the macOS equivalents.
 const PROTECTED_PROCESSES = new Set([
@@ -210,6 +343,35 @@ export function parseQuitCommand(command: string): string | null {
   return null;
 }
 
+// Verbs in the user's own message that ask for a send or a delete. email /
+// mail / reply / post are also nouns ("what does this email say?"), so they
+// count only when no determiner comes right before them.
+const NOUN_MARK = String.raw`(?<!\b(?:this|that|the|my|a|an|your|his|her|their|our|latest|last|new|unread|every|each|any|some|which|what|these|those)\s+)`;
+const REQUEST_VERBS: Record<'send' | 'delete' | 'terminal', RegExp> = {
+  // "run ipconfig", "execute this in PowerShell", "type dir in cmd".
+  terminal: /\b(?:run|runs|running|execute|executes|exec)\b|\b(?:in|into|inside|from|using|via|open)\s+(?:a\s+|an\s+|the\s+|my\s+)?(?:terminal|powershell|pwsh|cmd|command\s+prompt|command\s+line|console|shell|bash|zsh)\b/i,
+  send: new RegExp(String.raw`\b(?:send|sends|sending|submit|submits|submitting|emailing|mailing|replying|posting)\b|${NOUN_MARK}\b(?:email|e-mail|mail|reply|post)\b`, 'i'),
+  delete: new RegExp(String.raw`\b(?:delete|deletes|deleting|remove|removes|removing|empty|emptying)\b|${NOUN_MARK}\btrash\b`, 'i'),
+};
+const FAMILY_CLASS: Record<'send' | 'delete' | 'terminal', ActionClass> = { send: 'destructive_send', delete: 'destructive_file', terminal: 'destructive_exec' };
+
+/**
+ * An escalated click or key that is exactly what the user asked for: they
+ * wrote "send ..." and the control is a Send button, or "delete ..." and it is
+ * a Delete button; or they asked to run something in a terminal and the line
+ * typed there is a plain command (family 'terminal', set by assessRisk only
+ * when the line passes the shell_exec checks). `requestText` must be the
+ * user's own message, never page text, a tool result or model text.
+ * Purchases, credential fields, any other destructive_exec and a control of
+ * another family are never requested.
+ */
+export function isRequestedEscalation(ctx: ApprovalCtx): boolean {
+  const family = ctx.riskFamily;
+  if (!ctx.escalated || !family || !ctx.requestText) return false;
+  if (ctx.actionClass !== FAMILY_CLASS[family]) return false;
+  return REQUEST_VERBS[family].test(ctx.requestText);
+}
+
 /**
  * True when the user must be asked. Anything that is not an eligible
  * user-started shell command or named-app quit defers to permission-policy's
@@ -219,10 +381,11 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   if (ctx.decision === 'allow') return false;
   if (ctx.decision === 'block') return true;
   // decision === 'approve' from here: ask unless every relaxation condition holds.
-  if (ctx.escalated) return true;                 // purchase / send / delete click: never loosened
   if (ctx.origin !== 'user') return true;         // remote agent or proactive tip
   if (ctx.injectionSeen) return true;             // untrusted content in play
   if (ctx.mode === 'cautious' || ctx.classForcedApprove) return true; // the user asked to see everything
+  // A purchase / send / delete click asks, unless it is the send or delete the user asked for.
+  if (ctx.escalated) return !isRequestedEscalation(ctx);
   if (ctx.actionClass !== 'destructive_exec') return true;
   if (tool === 'kill_process') {
     // An empty or failed resolve asks (fail closed): what runs could differ from what was resolved.
@@ -232,5 +395,7 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   const command = String(args?.command ?? '');
   const app = parseQuitCommand(command);
   if (app && !shellBlockReason(command) && shellQuitNamed(ctx.requestText, app)) return false;
-  return classifyShellCommand(command) !== null;
+  if (classifyShellCommand(command) === null) return false;
+  // A fetch from a site (or a repo / package) the user named in their own message.
+  return !isUserNamedFetch(command, ctx.requestText);
 }

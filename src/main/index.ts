@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, globalShortcut, crashReporter, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, crashReporter, powerMonitor, shell } from 'electron';
+import { installNavigationGuards } from './nav-guard';
 import fs from 'fs';
 import path from 'path';
 
@@ -239,7 +240,8 @@ async function handleActivateUrl(url: string): Promise<void> {
   telemetry.track('activation', { outcome: 'ok' });
   if (onboarding) {
     // Onboarding advances itself (Meet Clippy) and persists name/voice on Next.
-    onboarding.webContents.send('activation-result', { ok: true, plan: result.plan, licenseKey: result.licenseKey });
+    // The key is already saved here in main; it never goes to the window.
+    onboarding.webContents.send('activation-result', { ok: true, plan: result.plan });
     onboarding.focus();
   } else if (mainWindow && !mainWindow.isDestroyed()) {
     const text = `You're all set — ${planLabel(result.plan)} is active! 📎`;
@@ -347,6 +349,13 @@ process.on('unhandledRejection', (reason) => {
   // Do NOT exit — promise rejections are usually recoverable (network
   // errors, missing optional features). Logging is enough.
 });
+
+// Every window carries the preload bridge: none of them may be navigated to
+// a web page or open an in-app child window (nav-guard.ts).
+installNavigationGuards(app, (url) => shell.openExternal(url), {
+  devUrl: process.env.ELECTRON_RENDERER_URL,
+  rendererDir: path.join(__dirname, '../renderer'),
+}, (kind, url) => log.warn('Navigation blocked', { kind, url: url.slice(0, 120) }));
 
 app.whenReady().then(async () => {
   bootLog('APP_READY');

@@ -18,6 +18,12 @@ function Fail($code, $msg) { Out-Result @{ ok = $false; error = $code; message =
 if ([string]::IsNullOrWhiteSpace($inputs)) { Fail 'missing_inputs' 'inputs is required (comma-separated paths)' }
 if ([string]::IsNullOrWhiteSpace($output)) { Fail 'missing_output' 'output is required (.zip path)' }
 
+# 0.24.12 - with overwrite=true the output is deleted first. It must be a .zip
+# (so "overwrite" can never delete a document or a program), and it is used
+# as a literal path: * ? [ ] would let Remove-Item match other files.
+if ([System.IO.Path]::GetExtension($output).ToLower() -ne '.zip') { Fail 'bad_output' 'output must end in .zip' }
+if ($output -match '[*?\[\]]') { Fail 'bad_output' 'output must be a plain path (no wildcards)' }
+
 # Path-guard the output destination so the model can't write into system dirs.
 . "$PSScriptRoot\_path-guard.ps1"
 $outGuard = Test-PathAllowedForRead (Split-Path -Path $output -Parent)
@@ -32,24 +38,25 @@ foreach ($p in $inputs.Split(',')) {
     if (-not $p) { continue }
     $g = Test-PathAllowedForRead $p
     if (-not $g.allowed) { Fail 'path_blocked' ("Input blocked: " + $g.reason) }
-    if (-not (Test-Path $g.resolved)) { Fail 'input_not_found' ("Input not found: " + $g.resolved) }
+    if (-not (Test-Path -LiteralPath $g.resolved)) { Fail 'input_not_found' ("Input not found: " + $g.resolved) }
     $inputList += $g.resolved
 }
 if ($inputList.Count -eq 0) { Fail 'missing_inputs' 'no valid inputs after parsing' }
 
-if ((Test-Path $output) -and ($overwrite -ne 'true')) {
+if ((Test-Path -LiteralPath $output) -and ($overwrite -ne 'true')) {
     Fail 'output_exists' "Output already exists; pass overwrite=true to replace"
 }
-if (Test-Path $output) { Remove-Item -Path $output -Force -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath $output -PathType Container) { Fail 'bad_output' 'output is a folder' }
+if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue }
 
 try {
-    Compress-Archive -Path $inputList -DestinationPath $output -Force -ErrorAction Stop
+    Compress-Archive -LiteralPath $inputList -DestinationPath $output -Force -ErrorAction Stop
 } catch {
     Fail 'compress_failed' ("Compress-Archive: " + $_.Exception.Message)
 }
 
-if (-not (Test-Path $output)) { Fail 'compress_failed' 'archive was not created' }
-$info = Get-Item -Path $output
+if (-not (Test-Path -LiteralPath $output)) { Fail 'compress_failed' 'archive was not created' }
+$info = Get-Item -LiteralPath $output
 Out-Result @{
     ok = $true
     zip = $output

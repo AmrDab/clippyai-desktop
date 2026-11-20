@@ -27,6 +27,7 @@
  */
 
 import { app } from 'electron';
+import { oneLine, escapeRegExp } from './profile-field';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createLogger } from './logger';
@@ -416,13 +417,31 @@ export function updateUserFields(updates: Record<string, string>): void {
   } else {
     content = applySubstitutions(loadTemplate('USER.md'), { userName: '(not set)' });
   }
-  for (const [key, value] of Object.entries(updates)) {
-    const re = new RegExp(`(-\\s+\\*\\*${key}:\\*\\*\\s+)(.*)`);
+  for (const [rawKey, rawValue] of Object.entries(updates)) {
+    // One line each: a line break in a value would add its own bullet or
+    // heading to a file that is read into every turn.
+    const key = oneLine(rawKey).replace(/[*:]+/g, '').trim();
+    const value = oneLine(rawValue);
+    if (!key) continue;
+    // The key is escaped (a "(" used to throw, ".*" matched any field) and the
+    // replacement is a function, so "$1" / "$&" in a value stay literal.
+    const re = new RegExp(`(-\\s+\\*\\*${escapeRegExp(key)}:\\*\\*\\s+)(.*)`);
     if (re.test(content)) {
-      content = content.replace(re, `$1${value}`);
+      content = content.replace(re, (_m, lead: string) => `${lead}${value}`);
     } else {
-      // Field doesn't exist yet — insert after the "About You" header.
-      content = content.replace(/(# USER\.md[^\n]*\n[^\n]*\n\n)/, `$1- **${key}:** ${value}\n`);
+      // Field doesn't exist yet — add it after the first block of fields.
+      // (The old header regex never matched the template, so a new field
+      // such as Role was silently dropped.)
+      const lines = content.split('\n');
+      const isField = (l: string | undefined): boolean => !!l && /^- \*\*[^:]+:\*\*/.test(l);
+      let i = lines.findIndex(isField);
+      if (i < 0) {
+        content = `${content.replace(/\s*$/, '')}\n\n- **${key}:** ${value}\n`;
+      } else {
+        while (isField(lines[i + 1])) i++;
+        lines.splice(i + 1, 0, `- **${key}:** ${value}${lines[i].endsWith('\r') ? '\r' : ''}`);
+        content = lines.join('\n');
+      }
     }
   }
   try {

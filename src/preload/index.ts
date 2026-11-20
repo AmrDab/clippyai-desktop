@@ -338,7 +338,7 @@ contextBridge.exposeInMainWorld('clippy', {
   onOnboardingComplete: () => ipcRenderer.invoke('onboarding-complete'),
   // Onboarding v2 — clippyai://activate deep link redeemed by main. On ok the
   // key rides along so the Meet Clippy save path is identical to a pasted key.
-  onActivationResult: (cb: (r: { ok: boolean; plan?: string; licenseKey?: string; message?: string }) => void) => {
+  onActivationResult: (cb: (r: { ok: boolean; plan?: string; message?: string }) => void) => {
     ipcRenderer.on('activation-result', (_e, r) => cb(r));
   },
   // Onboarding v2 — "Try it" tutorial. Start shows the main window + wakes the

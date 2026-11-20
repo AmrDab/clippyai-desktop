@@ -23,6 +23,12 @@ if ($path.StartsWith('~')) { $path = $path -replace '^~', $env:USERPROFILE }
 $path = [System.Environment]::ExpandEnvironmentVariables($path)
 $path = $path.Replace('/', '\')
 
+# 0.24.12 - same read guard as read_file / list_files: no UNC path (opening one
+# makes Windows authenticate to the server it names), no credential folders.
+. "$PSScriptRoot\_path-guard.ps1"
+$guard = Test-PathAllowedForRead $path
+if (-not $guard.allowed) { Fail "path not allowed: $($guard.reason)" }
+
 if (-not (Test-Path $path)) { Fail "file not found: $path" }
 $ext = [System.IO.Path]::GetExtension($path).ToLower()
 if ($ext -notin @('.xlsx','.xls','.xlsm','.csv')) { Fail "not an Excel file: $ext" }
@@ -33,6 +39,10 @@ try {
     $excel = New-Object -ComObject Excel.Application -ErrorAction Stop
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
+    # 3 = msoAutomationSecurityForceDisable: a workbook or document opened by
+    # Clippy never runs its macros (Workbook_Open / AutoOpen), whatever the
+    # user's own macro setting is.
+    $excel.AutomationSecurity = 3
     $wb = $excel.Workbooks.Open($path, 0, $true)  # ReadOnly=true
 
     $ws = if ([string]::IsNullOrWhiteSpace($sheet)) { $wb.Sheets.Item(1) } else { $wb.Sheets.Item($sheet) }

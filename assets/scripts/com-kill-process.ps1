@@ -68,8 +68,17 @@ try {
         $targets = @($proc)
     } elseif (-not [string]::IsNullOrWhiteSpace($name)) {
         $cleanName = $name.Trim().ToLower() -replace '\.exe$', ''
+        # Get-Process -Name takes wildcards: "ls*" resolved to lsass and "*" to
+        # every process, past the exact-name blocklist check below. The name
+        # must be exact.
+        if ($cleanName -match '[*?\[\]]') { Fail "process name must be exact (no wildcards): '$cleanName'" }
         if ($BLOCKLIST -contains $cleanName) { Fail "refusing to kill protected process '$cleanName'" }
         $targets = @(Get-Process -Name $cleanName -ErrorAction SilentlyContinue)
+        # Re-check what the name actually resolved to, not only what was typed.
+        foreach ($t in $targets) {
+            $tn = $t.ProcessName.ToLower()
+            if ($BLOCKLIST -contains $tn) { Fail "refusing to kill protected process '$tn'" }
+        }
         if ($targets.Count -eq 0) {
             Fail "no process named '$cleanName'. The app may run under another process name: retry with window (its window title) or find it with list_processes(query)"
         }

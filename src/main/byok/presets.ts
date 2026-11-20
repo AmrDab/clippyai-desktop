@@ -33,3 +33,42 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze([
 export function getPreset(id: string): ProviderPreset {
   return PROVIDER_PRESETS.find((p) => p.id === id) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1];
 }
+
+/**
+ * Why a base URL can't be used, or null when it can. https anywhere; http
+ * only to this computer or the local network (Ollama / LM Studio on
+ * localhost or on another machine at home): over plain http to a host on the
+ * internet the API key and every prompt travel in clear text.
+ */
+export function baseUrlProblem(baseUrl: string): string | null {
+  let u: URL;
+  try { u = new URL(String(baseUrl ?? '').trim()); } catch { return 'Base URL must start with http:// or https://'; }
+  if (u.protocol === 'https:') return null;
+  if (u.protocol !== 'http:') return 'Base URL must start with http:// or https://';
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return isLocalNetworkHost(host) ? null
+    : 'Base URL must use https:// (http:// is only allowed for this computer or your local network, e.g. http://localhost:11434 or http://192.168.1.20:11434)';
+}
+
+/**
+ * Loopback, or a private LAN address: 10/8, 172.16/12, 192.168/16, IPv6
+ * link-local fe80::/10, or a .local (mDNS) name. `host` is a bare hostname.
+ */
+export function isLocalNetworkHost(host: string): boolean {
+  const h = String(host ?? '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h === '::1') return true;
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.local$/.test(h)) return true;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number);
+    if ([a, b, c, d].some((n) => n > 255)) return false;
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  // fe80::/10 = fe80 .. febf (a zone id such as %eth0 may follow).
+  return /^fe[89ab][0-9a-f]:/.test(h);
+}
+
+/** Lower-case host[:port] of a base URL ('' when it does not parse). */
+export function baseUrlHost(baseUrl: string): string {
+  try { return new URL(String(baseUrl ?? '').trim()).host.toLowerCase(); } catch { return ''; }
+}
