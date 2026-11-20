@@ -89,6 +89,7 @@ import { runApplescript, asValue, getAppPidByName, runCli, KEY_CODES, modifiersC
 import { classifyMessagesTree, type SendVerdict } from './send-verify';
 import { getMainWindow } from './window';
 import * as profileMod from './profile';
+import { sanitizeProfileUpdate } from './profile-field';
 // v0.24 — persistent PowerShell host (plan §2.4). Every win32 PowerShell call
 // below goes through psScript / psCommand: in the long-lived host when it is
 // up, as the old one-shot powershell.exe spawn otherwise.
@@ -5166,10 +5167,13 @@ async function detectWebviewApps(_params: Record<string, unknown>): Promise<Tool
 // and cheap (just touch the local profile/ workspace).
 
 async function updateUserProfileField(params: Record<string, unknown>): Promise<ToolResult> {
-  const field = String(params.field || '').trim();
-  const value = String(params.value ?? '').trim();
-  if (!field) return { text: '(error:BAD_INPUT) field is required (e.g. "Role", "Reply style", "Timezone")' };
-  if (!value) return { text: '(error:BAD_INPUT) value is required (empty string would clear the field — pass "(not set)" or skip the field instead)' };
+  if (!String(params.field || '').trim()) return { text: '(error:BAD_INPUT) field is required (e.g. "Role", "Reply style", "Timezone")' };
+  if (!String(params.value ?? '').trim()) return { text: '(error:BAD_INPUT) value is required (empty string would clear the field — pass "(not set)" or skip the field instead)' };
+  // USER.md is read into every future turn: only short facts in known fields
+  // (profile-field.ts), never text that reads like an instruction.
+  const update = sanitizeProfileUpdate(params.field, params.value);
+  if (!update.ok) return { text: update.error };
+  const { field, value } = update;
   try {
     profileMod.updateUserFields({ [field]: value });
     return { text: `Saved ${field}: ${value}` };
