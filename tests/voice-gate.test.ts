@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  cleanTranscript, rmsOf, wavStats, isSilentClip, silentMicMessage,
-  HEARD_NOTHING, LOW_ENERGY_RMS, SHORT_CLIP_MS, SILENT_CLIP_RMS,
+  cleanTranscript, rmsOf, wavStats, isSilentClip, silentMicMessage, isDeadMic, micSwitchedMessage,
+  HEARD_NOTHING, LOW_ENERGY_RMS, SHORT_CLIP_MS, SILENT_CLIP_RMS, DEAD_MIC_RMS,
 } from '../src/main/voice-gate';
 
 const spoken = { rms: 0.05, durationMs: 2000 };
@@ -101,5 +101,25 @@ describe('silence gate — a silent clip is never transcribed', () => {
       "I didn't hear anything. Your microphone seems silent; check it's plugged in and its input volume isn't 0, or pick another in Settings → Voice.",
     );
     expect(HEARD_NOTHING).toBe("I didn't hear anything.");
+  });
+});
+
+describe('dead microphone — Automatic mode leaves a default that gives digital silence', () => {
+  it('a 0%-volume or unplugged input (all zeros) is dead', () => {
+    expect(isDeadMic(rmsOf([new Float32Array(8000)]))).toBe(true);
+    expect(isDeadMic(DEAD_MIC_RMS / 2)).toBe(true);
+  });
+  it('a live microphone in a quiet room is not: its noise floor is above the line', () => {
+    const noise = Float32Array.from({ length: 8000 }, (_, i) => (i % 2 ? 1 : -1) * 0.0005);
+    expect(isDeadMic(rmsOf([noise]))).toBe(false);
+    expect(isSilentClip(rmsOf([noise]))).toBe(true); // quiet, but the microphone works
+  });
+  it('tells the user which microphone was left and which is used', () => {
+    expect(micSwitchedMessage('Microphone (HP USB-C Dock Audio Headset)', 'Microphone Array (Intel Smart Sound Technology)')).toBe(
+      "Your default mic (Microphone (HP USB-C Dock Audio Headset)) is silent, so I'm using Microphone Array (Intel Smart Sound Technology).",
+    );
+  });
+  it('still reads well without names', () => {
+    expect(micSwitchedMessage('', '')).toBe("Your default mic is silent, so I'm using another one.");
   });
 });

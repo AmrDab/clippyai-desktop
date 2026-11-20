@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cleanMicLabel, listMics, resolveMic } from '../src/renderer/mic-select';
+import { cleanMicLabel, listMics, otherMics, resolveMic } from '../src/renderer/mic-select';
 
 describe('cleanMicLabel', () => {
   it("strips Chromium's default and communications prefixes", () => {
@@ -52,5 +52,19 @@ describe('resolveMic — the saved microphone among those plugged in', () => {
     expect(resolveMic({ deviceId: 'old-id', label: 'USB Headset' }, mics)).toBeNull();
     expect(resolveMic({ deviceId: 'old-id', label: '' }, mics)).toBeNull();
     expect(resolveMic({ deviceId: 'id-array', label: array.label }, [])).toBeNull();
+  });
+});
+
+describe('otherMics — what Automatic tries when the default microphone is dead', () => {
+  const mics = listMics(devices);
+  it("leaves out the dead default, matched by the default alias's cleaned name", () => {
+    const dead = cleanMicLabel('Default - Microphone (HP USB-C Dock Audio Headset)');
+    expect(otherMics(mics, dead)).toEqual([{ deviceId: 'id-array', label: array.label }]);
+  });
+  it('tries every microphone when the default has no name', () => {
+    expect(otherMics(mics, '')).toEqual(mics);
+  });
+  it('is empty when the dead default is the only microphone', () => {
+    expect(otherMics([{ deviceId: 'id-dock', label: dock.label }], dock.label)).toEqual([]);
   });
 });

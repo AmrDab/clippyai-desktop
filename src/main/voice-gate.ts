@@ -17,6 +17,21 @@ export function isSilentClip(rms: number): boolean {
   return rms < SILENT_CLIP_RMS;
 }
 
+/** A microphone below this RMS is giving true digital silence: its input
+ *  volume is 0% or nothing is plugged in. A live microphone in a quiet room
+ *  still shows noise far above it. */
+export const DEAD_MIC_RMS = 1e-4;
+
+export function isDeadMic(rms: number): boolean {
+  return rms < DEAD_MIC_RMS;
+}
+
+/** Said once when Automatic leaves a dead default microphone for a live one. */
+export function micSwitchedMessage(deadLabel: string, liveLabel: string): string {
+  const dead = deadLabel ? `Your default mic (${deadLabel})` : 'Your default mic';
+  return `${dead} is silent, so I'm using ${liveLabel || 'another one'}.`;
+}
+
 /** Said when a clip had sound in it but no words. */
 export const HEARD_NOTHING = "I didn't hear anything.";
 

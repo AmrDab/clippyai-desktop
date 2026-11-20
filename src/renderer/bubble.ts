@@ -1,5 +1,5 @@
 import { Recorder } from './recorder';
-import { HEARD_NOTHING, SHORT_CLIP_MS, isSilentClip, silentMicMessage } from '../main/voice-gate';
+import { HEARD_NOTHING, SHORT_CLIP_MS, isSilentClip, micSwitchedMessage, silentMicMessage } from '../main/voice-gate';
 import { type ChatMessage, visibleHistory, fromPersisted, composerHeight, recallStep } from './chat-history';
 import { typeTotalMs, typedText, hasMarkdown, splitBanner, DeferredCollapse, RECOIL_MS, shouldAutoMinimize } from './bubble-motion';
 import { reducedMotion } from './motion';
@@ -1210,6 +1210,10 @@ export class BubbleController {
         },
         onError: (msg) => {
           this.speakError(msg);
+        },
+        onMicSwitched: (deadLabel, liveLabel) => {
+          // Shown while recording goes on: keep the bubble as it is.
+          this.speak(micSwitchedMessage(deadLabel, liveLabel), { autoState: this.state === 'compact' ? 'standard' : this.state });
         },
       });
     }

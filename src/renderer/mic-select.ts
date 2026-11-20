@@ -36,3 +36,10 @@ export function resolveMic(pref: MicPref | null | undefined, mics: Mic[]): Mic |
     ?? (pref.label ? mics.find((m) => m.label === pref.label) : undefined)
     ?? null;
 }
+
+/** Automatic mode, default microphone dead: the microphones worth trying
+ *  instead, in system order. The dead one is left out by name, because the
+ *  default is listed a second time under its own id. */
+export function otherMics(mics: Mic[], deadLabel: string): Mic[] {
+  return deadLabel ? mics.filter((m) => m.label !== deadLabel) : mics;
+}
