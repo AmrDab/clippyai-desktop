@@ -1,10 +1,42 @@
 import { describe, it, expect } from 'vitest';
 import {
   ToolLoopDetector,
+  exemptFromRunawayGuard,
+  notRunAfterFailure,
   digestArgs,
   hashToolCall,
   hashResult,
 } from '../src/main/tool-loop-detection';
+
+describe('runaway guard exemptions (v0.24.12)', () => {
+  it('look-only tools and mouse_drag are not counted by the args-only guard', () => {
+    for (const t of ['desktop_screenshot', 'read_screen', 'smart_read', 'get_windows', 'mouse_drag']) expect(exemptFromRunawayGuard(t)).toBe(true);
+  });
+  it('tools that act are still counted', () => {
+    for (const t of ['smart_click', 'key_press', 'type_text', 'open_app', 'mouse_click', 'shell_exec']) expect(exemptFromRunawayGuard(t)).toBe(false);
+  });
+  it('the result-aware detector still stops a read that never changes', () => {
+    const d = new ToolLoopDetector();
+    let level = 'ok';
+    for (let i = 0; i < 40 && level !== 'critical'; i++) level = d.recordAndCheck('read_screen', {}, 'Foreground window: "Same" (app)').level;
+    expect(level).toBe('critical');
+  });
+  it('a read between actions is never flagged, however often it repeats', () => {
+    const d = new ToolLoopDetector();
+    for (let i = 0; i < 12; i++) {
+      expect(d.recordAndCheck('read_screen', {}, `screen ${i}`).level).toBe('ok');
+      expect(d.recordAndCheck('smart_click', { target: `b${i}` }, `Clicked b${i}`).level).toBe('ok');
+    }
+  });
+});
+
+describe('calls not run after a failure in the same turn', () => {
+  it('names the call that failed and reads as an error to the model', () => {
+    const s = notRunAfterFailure('smart_click');
+    expect(s.startsWith('(error:NOT_RUN)')).toBe(true);
+    expect(s).toContain('smart_click');
+  });
+});
 
 describe('digest helpers', () => {
   it('digestArgs is order-independent for object keys', () => {

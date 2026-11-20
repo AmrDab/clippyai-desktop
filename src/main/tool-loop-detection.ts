@@ -162,6 +162,28 @@ function cheapHash(input: string): string {
  * Stateful loop detector. One instance per task. All detection logic runs
  * inside {@link recordAndCheck}; nothing else mutates state.
  */
+/**
+ * Tools that only look. Looking at the same thing again after acting is
+ * normal ("read, click, read"), so the args-only runaway guard in brain.ts
+ * ("3 identical calls in 6 steps") does not count them: the result-aware
+ * detector below still stops a look that keeps returning the same thing.
+ */
+export const LOOK_ONLY_TOOLS: ReadonlySet<string> = new Set(['desktop_screenshot', 'read_screen', 'smart_read', 'get_windows']);
+
+/** mouse_drag: drawings chain many drags. Look-only tools: see above. */
+export function exemptFromRunawayGuard(tool: string): boolean {
+  return tool === 'mouse_drag' || LOOK_ONLY_TOOLS.has(tool);
+}
+
+/**
+ * When the model sends several calls in one turn and one fails, the rest were
+ * planned on the assumption that it worked. They are not run; each gets this
+ * as its result so the model knows which ones and decides again.
+ */
+export function notRunAfterFailure(failedTool: string): string {
+  return `(error:NOT_RUN) not run: ${failedTool}, earlier in this turn, failed. Read its result, then decide again; send this call again only if it still makes sense.`;
+}
+
 export class ToolLoopDetector {
   private readonly historySize: number;
   private readonly warnThreshold: number;

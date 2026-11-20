@@ -66,7 +66,7 @@ import { summarizeTyping } from './input-summarizer';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
-import { ToolLoopDetector } from './tool-loop-detection';
+import { ToolLoopDetector, exemptFromRunawayGuard, notRunAfterFailure } from './tool-loop-detection';
 import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
 import Store from 'electron-store';
@@ -1746,7 +1746,10 @@ export class Brain {
           // so the byte-identical-args check below already exempts normal
           // drawing. But to be safe, skip the runaway guard entirely for
           // mouse_drag — drawings naturally repeat the same tool name.
-          if (call.name === 'mouse_drag') continue;
+          // Look-only tools (read_screen, desktop_screenshot...) too: reading
+          // the same window after each action is how a task is checked; the
+          // result-aware loop detector stops a read that never changes.
+          if (exemptFromRunawayGuard(call.name)) continue;
           const sig = `${call.name}::${JSON.stringify(call.args)}`;
           const recent = contents.slice(-12) // last 6 turn pairs
             .filter((c) => c.role === 'model')
@@ -1776,7 +1779,15 @@ export class Brain {
 
         // Execute each function call, collect responses
         const responseParts: FunctionResponsePart[] = [];
+        // Several calls in one turn: the later ones assume the earlier ones
+        // worked. After the first failure the rest are not run, and say so.
+        let failedInTurn: string | null = null;
         for (const call of calls) {
+          if (failedInTurn) {
+            log.info('Tool.not_run', { step: step + 1, tool: call.name, after: failedInTurn });
+            responseParts.push({ functionResponse: { name: call.name, response: { content: notRunAfterFailure(failedInTurn) } } });
+            continue;
+          }
           // v0.11.25 — cancel check BEFORE each tool. Previously
           // `cancelRequested` was only checked between turns (top of the
           // outer `for (step ...)` loop), so a 30-second outlook_send_email
@@ -1873,6 +1884,7 @@ export class Brain {
                 response: { content: `(error:policy_blocked) The user's Guardrails settings forbid this action class (${actionClass}). Suggest an alternative or tell the user how to enable it.` },
               },
             });
+            failedInTurn = call.name;
             continue;
           }
           if (decision === 'approve') {
@@ -1906,6 +1918,7 @@ export class Brain {
                   response: { content: `(error:user_denied) User declined (${verdict}). Do not retry; ask what they'd like instead.` },
                 },
               });
+              failedInTurn = call.name;
               continue;
             }
             log.info('Tool.approved', { step: step + 1, tool: call.name, class: actionClass });
@@ -2060,6 +2073,7 @@ export class Brain {
             // Filter out clearly-failed results so we don't memorize a no-op
             // sequence as a "successful" workflow.
             const looksLikeError = !verdict.ok;
+            if (looksLikeError) failedInTurn = call.name;
             if (looksLikeError) telemetry.taskToolFailed(call.name, resultText);
             if (!looksLikeError) {
               successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });
@@ -2126,6 +2140,7 @@ export class Brain {
             const toolElapsed = Date.now() - toolStart;
             log.error('Tool.error', { step: step + 1, tool: call.name, elapsed_ms: toolElapsed, error: msg });
             telemetry.taskToolFailed(call.name, msg);
+            failedInTurn = call.name;
             responseParts.push({
               functionResponse: {
                 name: call.name,
