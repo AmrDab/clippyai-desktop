@@ -355,7 +355,12 @@ process.on('unhandledRejection', (reason) => {
 installNavigationGuards(app, (url) => shell.openExternal(url), {
   devUrl: process.env.ELECTRON_RENDERER_URL,
   rendererDir: path.join(__dirname, '../renderer'),
-}, (kind, url) => log.warn('Navigation blocked', { kind, url: url.slice(0, 120) }));
+}, (kind, target) => {
+  // Only the origin: a full address can carry tokens or document text.
+  let origin = 'invalid';
+  try { origin = new URL(target).origin; } catch { /* keep 'invalid' */ }
+  log.warn('Navigation blocked', { kind, origin });
+});
 
 app.whenReady().then(async () => {
   bootLog('APP_READY');

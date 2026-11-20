@@ -857,7 +857,7 @@ function layer1() {
     const pgSrc = fs.readFileSync(pathGuardPath, 'utf8');
     const hasFn = /function Test-PathAllowedForRead/.test(pgSrc);
     const blocksSshAws = /\.ssh|\.aws|\.azure/.test(pgSrc);
-    const blocksBrowserCreds = /Login Data|Cookies/.test(pgSrc);
+    const blocksBrowserCreds = /Login Data|Cookies|User Data/.test(pgSrc);
     const dotSourced = ['hash-file.ps1', 'zip-files.ps1', 'unzip-files.ps1', 'ocr-from-image.ps1'].every((f) => {
       const src = fs.readFileSync(path.join(ROOT, 'assets', 'scripts', f), 'utf8');
       return /_path-guard\.ps1/.test(src) && /Test-PathAllowedForRead/.test(src);
