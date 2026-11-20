@@ -71,7 +71,7 @@ import { ToolLoopDetector } from './tool-loop-detection';
 import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
 import Store from 'electron-store';
-import { createLogger, serializeErr, setCurrentTaskId, redactArgs } from './logger';
+import { createLogger, serializeErr, setCurrentTaskId, redactArgs, resultForLog } from './logger';
 import { offerReply } from './offer-reply';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -1950,7 +1950,7 @@ export class Brain {
               elapsed_ms: toolElapsed,
               // Read tools return the user's own text (file bodies, inbox,
               // clipboard, selection) — log only its length, never the text.
-              output: READ_TOOL_RE.test(call.name) ? `{len:${resultText.length}}` : resultText.substring(0, 300),
+              output: resultForLog(call.name, resultText),
               has_image: !!(result.image?.data),
             });
 
@@ -2134,7 +2134,7 @@ export class Brain {
                 tool: call.name,
                 args: call.args as Record<string, unknown>,
                 outcome,
-                detail: resultText.substring(0, 200),
+                detail: resultForLog(call.name, resultText, 200),
                 inverse,
                 receipt: result.receipt,
               });

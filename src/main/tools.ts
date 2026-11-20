@@ -803,7 +803,6 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
         };
       }
       const result = await macBridge.typeText({ text });
-      const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
       // Read the focused field back (AX value) so the receipt can say 'verified'.
       await new Promise((r) => setTimeout(r, 200));
       const rb = await macBridge.a11yFocused().catch(() => null);
@@ -811,12 +810,12 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
       const evidence = { chars: result.chars, app: front?.app ?? '' };
       if (typedTextLanded(text, readback)) {
         return {
-          text: `Typed ${result.chars} chars: "${preview}" (verified: the field reads back what was typed)`,
+          text: `Typed ${result.chars} chars (verified: the field reads back what was typed)`,
           receipt: makeReceipt('type_text', 'verified', true, { ...evidence, readback: 'match' }, 'cgevent'),
         };
       }
       return {
-        text: `Typed ${result.chars} chars: "${preview}" (NOT verified: the field could not be read back; check the screen before telling the user it's done)`,
+        text: `Typed ${result.chars} chars (NOT verified: the field could not be read back; check the screen before telling the user it's done)`,
         receipt: makeReceipt('type_text', 'unverified', true, { ...evidence, readback: readback === null ? 'unavailable' : 'mismatch' }, 'cgevent'),
       };
     } catch (err) {
@@ -859,19 +858,18 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
           receipt: makeReceipt('type_text', 'error', false, { reason: 'own_window', foregroundProcessId: r.foregroundProcessId }, 'sendkeys'),
         };
       }
-      const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
       const where = r.processName ? `into ${r.processName}` : 'into the focused window';
       const evidence = { chars: text.length, foregroundProcessId: r.foregroundProcessId ?? null, processName: r.processName ?? '' };
       if (typedTextLanded(text, r.readback)) {
         return {
-          text: `Pasted ${text.length} chars ${where}: "${preview}" (verified — the field reads back what was typed)`,
+          text: `Pasted ${text.length} chars ${where} (verified — the field reads back what was typed)`,
           receipt: makeReceipt('type_text', 'verified', true, { ...evidence, readback: 'match' }, 'sendkeys'),
         };
       }
       // The paste is fire-and-forget — the VM test showed a "Typed 313 chars"
       // that never landed and Clippy told the user it was done. Say so.
       return {
-        text: `Pasted ${text.length} chars ${where}: "${preview}" (NOT verified — the field could not be read back; check the screen before telling the user it's done)`,
+        text: `Pasted ${text.length} chars ${where} (NOT verified — the field could not be read back; check the screen before telling the user it's done)`,
         receipt: makeReceipt('type_text', 'unverified', true, { ...evidence, readback: r.hasReadback ? 'mismatch' : 'unavailable' }, 'sendkeys'),
       };
     } catch (err) {
@@ -895,8 +893,7 @@ async function typeText(params: Record<string, unknown>): Promise<ToolResult> {
     });
     if (!paste.ok) return { text: `(type_text error: paste failed: ${paste.error ?? paste.stderr})` };
 
-    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-    return { text: `Typed ${text.length} chars: "${preview}"` };
+    return { text: `Typed ${text.length} chars` };
   } finally {
     await restoreClipboard();
   }
@@ -1634,8 +1631,7 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
         const m = ax.matches[0];
         try {
           await macBridge.a11ySetValue({ pid: m.pid, path: m.path, value: text });
-          const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
-          return { text: `Typed into "${m.title || target}" via AX-set-value: "${preview}"` };
+          return { text: `Typed ${text.length} chars into "${m.title || target}" via AX-set-value` };
         } catch (setErr) {
           // AX-set-value failed (element doesn't expose AXValue or is read-
           // only). Fall through to click+type so contenteditable-style
@@ -1673,12 +1669,11 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
   if (process.platform === 'win32') {
     const fg = await foregroundForFind();
     const sf = await windowsSmartFind(target, 'set-value', fg, text);
-    const preview = text.length > 80 ? `${text.substring(0, 77)}...` : text;
     if (sf.kind === 'acted' && sf.result.setValue) {
       const r = sf.result;
       const verified = r.readback === 'match';
       return {
-        text: `Typed into ${r.controlType} "${r.name}" via UIA ValuePattern: "${preview}"${verified ? ' (verified — the field reads back what was typed)' : ' (NOT verified — the field read back something else; check the screen)'}`,
+        text: `Typed ${text.length} chars into ${r.controlType} "${r.name}" via UIA ValuePattern${verified ? ' (verified — the field reads back what was typed)' : ' (NOT verified — the field read back something else; check the screen)'}`,
         receipt: makeReceipt('smart_type', verified ? 'verified' : 'unverified', true, { target, label: r.name, chars: text.length, readback: r.readback, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs }, 'uia-setvalue'),
       };
     }
@@ -5022,7 +5017,7 @@ async function cdpType(params: Record<string, unknown>): Promise<ToolResult> {
   if (!selector && !label) return { text: 'Error: cdp_type requires selector or label' };
   const r = label ? await client.typeByLabel(label, text) : await client.typeInField(selector, text);
   if (!r.success) return { text: `(cdp_type failed: ${r.error})` };
-  return { text: `Typed "${text.substring(0, 60)}" into ${selector || `label="${label}"`}` };
+  return { text: `Typed ${text.length} chars into ${selector || `label="${label}"`}` };
 }
 
 async function cdpSelectOption(params: Record<string, unknown>): Promise<ToolResult> {
@@ -5523,7 +5518,7 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
   try {
     primaryResult = await fn(params);
     const elapsed = Date.now() - startTime;
-    log.debug(`Tool ${tool} ok (${elapsed}ms)`, primaryResult.text?.substring(0, 100));
+    log.debug(`Tool ${tool} ok (${elapsed}ms)`, { len: primaryResult.text?.length ?? 0 });
   } catch (err) {
     const elapsed = Date.now() - startTime;
     log.error(`Tool ${tool} failed (${elapsed}ms)`, serializeErr(err));

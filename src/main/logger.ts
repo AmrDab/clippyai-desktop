@@ -28,19 +28,46 @@ const LEVEL_COLORS: Record<LogLevel, string> = {
 
 // ── PII scrubbing ───────────────────────────────────────────────────
 
-const USERNAME = os.userInfo().username;
+/** Escape a literal for use inside a RegExp. */
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// A short or generic account name ("me", "user", "admin") is also an
+// ordinary word: replacing it everywhere would mangle the log, and the home
+// path rule already covers where it matters.
+const COMMON_USERNAMES = new Set([
+  'user', 'users', 'admin', 'administrator', 'owner', 'guest', 'default', 'public', 'home', 'root',
+  'system', 'test', 'tester', 'demo', 'local', 'windows', 'desktop', 'laptop', 'office', 'work',
+  'clippy', 'name', 'main', 'error', 'info', 'tool', 'true', 'false', 'null',
+]);
+
+/**
+ * The home-path and username rules for this machine. Both values are escaped
+ * before they reach `new RegExp`: an account name like "J. (Work)" used to
+ * throw "Unterminated group" at import and Clippy would not start.
+ */
+export function buildIdentityPatterns(home: string, username: string): Array<[RegExp, string]> {
+  const out: Array<[RegExp, string]> = [];
+  if (home) {
+    // Absolute paths containing the username → replace with ~
+    out.push([new RegExp(escapeRe(home), 'gi'), '~']);
+    out.push([new RegExp(escapeRe(home.replace(/\\/g, '/')), 'gi'), '~']);
+    // scrubPII runs on JSON.stringify output, where each Windows backslash is
+    // doubled ("C:\\Users\\name") — match that form too or the home path
+    // leaks through every structured line.
+    out.push([new RegExp(escapeRe(JSON.stringify(home).slice(1, -1)), 'gi'), '~']);
+  }
+  // Username in isolation
+  if (username && username.length >= 4 && !COMMON_USERNAMES.has(username.toLowerCase())) {
+    out.push([new RegExp(`(?<![\\w-])${escapeRe(username)}(?![\\w-])`, 'gi'), '<user>']);
+  }
+  return out;
+}
+
+const USERNAME = (() => { try { return os.userInfo().username; } catch { return ''; } })();
 const HOME_DIR = os.homedir();
 // Match common sensitive patterns
 const PII_PATTERNS: Array<[RegExp, string]> = [
-  // Absolute paths containing the username → replace with ~
-  [new RegExp(HOME_DIR.replace(/\\/g, '\\\\'), 'gi'), '~'],
-  [new RegExp(HOME_DIR.replace(/\\/g, '/'), 'gi'), '~'],
-  // scrubPII runs on JSON.stringify output, where each Windows backslash is
-  // doubled ("C:\\Users\\name") — match that form too or the home path
-  // leaks through every structured line.
-  [new RegExp(JSON.stringify(HOME_DIR).slice(1, -1).replace(/\\/g, '\\\\'), 'gi'), '~'],
-  // Username in isolation
-  [new RegExp(`\\b${USERNAME}\\b`, 'gi'), '<user>'],
+  ...buildIdentityPatterns(HOME_DIR, USERNAME),
   // Email addresses
   [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '<email>'],
   // License keys: current CLIPPY-XXXX-XXXX-XXXX (any group count) and the
@@ -50,6 +77,21 @@ const PII_PATTERNS: Array<[RegExp, string]> = [
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, 'Bearer [redacted]'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, 'sk-[redacted]'],
   [/\bAIza[0-9A-Za-z_-]{30,}/g, 'AIza[redacted]'],
+  // 0.24.12 — keys that reach the log through screen reads and tool output
+  // (a live Stripe key fragment landed in a log from a Notepad read).
+  // Stripe secret / restricted / publishable keys (also a cut-off fragment) and webhook secrets.
+  [/\b(sk|rk|pk)_(live|test)_[A-Za-z0-9]{4,}/g, '$1_$2_[redacted]'],
+  [/\bwhsec_[A-Za-z0-9]{4,}/g, 'whsec_[redacted]'],
+  // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained PATs.
+  [/\bgh[pousr]_[A-Za-z0-9]{16,}/g, 'gh_[redacted]'],
+  [/\bgithub_pat_[A-Za-z0-9_]{16,}/g, 'github_pat_[redacted]'],
+  // AWS access key ids, Slack tokens, Groq keys.
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, 'AKIA[redacted]'],
+  [/\bxox[abpr]-[A-Za-z0-9-]{8,}/g, 'xox-[redacted]'],
+  [/\bgsk_[A-Za-z0-9]{16,}/g, 'gsk_[redacted]'],
+  // JWTs (header.payload.signature) and HTTP Basic credentials.
+  [/\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/g, '[jwt redacted]'],
+  [/\bBasic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2}(?![A-Za-z0-9])/g, 'Basic [redacted]'],
 ];
 
 export function scrubPII(text: string): string {
@@ -66,7 +108,9 @@ export function scrubPII(text: string): string {
 // other strings → first 80 chars, nested objects → their keys only.
 
 const SECRET_KEY_RE = /pass|token|secret|auth|cookie|api_?key|headers/i;
-const FREE_TEXT_KEY_RE = /^(text|body|content|message|script|expression|html|notes)$/i;
+// `value` (a field's new text), `javascript` (cdp_evaluate) and `command`
+// (shell_exec) are free text too: they can carry a pasted key or a token.
+const FREE_TEXT_KEY_RE = /^(text|body|content|message|script|expression|html|notes|value|javascript|command)$/i;
 const MAX_ARG_STRING = 80;
 
 export function redactArgs(args: unknown): Record<string, unknown> {
@@ -80,6 +124,29 @@ export function redactArgs(args: unknown): Record<string, unknown> {
     out[k] = v;
   }
   return out;
+}
+
+// ── Tool-result logging ─────────────────────────────────────────────
+// Tools whose result is the user's own content (the screen, a file, the
+// clipboard, a page, command output, an HTTP response): the Tool.result line
+// and the activity log keep only the length, never the text.
+const CONTENT_RESULT_RE = /^(read_screen|smart_read|ocr_.*|excel_read|cdp_page_context|cdp_evaluate|shell_exec|http_request|read_file|read_clipboard|search_files_content|get_selection|get_focused_element|outlook_read_inbox|.*_read_text)$/;
+
+/** True when `tool`'s result must not be written to a log or to history. */
+export function isContentResultTool(tool: string): boolean {
+  return CONTENT_RESULT_RE.test(tool);
+}
+
+/**
+ * What the Tool.result log line / activity log may keep of a tool result:
+ * `{len:N}` for content tools (an error keeps its `(error:CODE)` tag so
+ * failures stay diagnosable), else the first `max` chars.
+ */
+export function resultForLog(tool: string, text: string, max = 300): string {
+  const t = String(text ?? '');
+  if (!isContentResultTool(tool)) return t.substring(0, max);
+  const code = t.match(/^\(error:[A-Za-z0-9_]+\)/)?.[0];
+  return code ? `${code} {len:${t.length}}` : `{len:${t.length}}`;
 }
 
 // ── Log infrastructure ──────────────────────────────────────────────
