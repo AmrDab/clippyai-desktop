@@ -5148,12 +5148,34 @@ async function probeCdpPort(port: number): Promise<boolean> {
   });
 }
 
+type WebviewWinInfo = { processName?: string; app?: string; title?: string; processId?: number };
+type WebviewMatch = { name: string; processName: string; title: string; flag: string };
+
+/**
+ * Windows whose process is a known WebView app. The window list carries the
+ * process as `processName` on Windows and as `app` from the macOS bridge
+ * (which was not read, so nothing was ever detected on a Mac).
+ */
+export function matchWebviewApps(windows: WebviewWinInfo[]): WebviewMatch[] {
+  const matches: WebviewMatch[] = [];
+  for (const w of windows) {
+    const procName = w.processName || w.app || '';
+    const pn = procName.toLowerCase();
+    for (const fp of KNOWN_WEBVIEW_APPS) {
+      if (fp.procPrefixes.some((p) => pn.startsWith(p))) {
+        matches.push({ name: fp.name, processName: procName, title: w.title || '', flag: fp.flag });
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
 async function detectWebviewApps(_params: Record<string, unknown>): Promise<ToolResult> {
   try {
     // Reuse get_windows to enumerate processes (PowerShell-backed).
     const winResult = await getWindows();
-    type WinInfo = { processName?: string; title?: string; processId?: number };
-    let windows: WinInfo[] = [];
+    let windows: WebviewWinInfo[] = [];
     try {
       const parsed = JSON.parse(winResult.text);
       windows = Array.isArray(parsed) ? parsed : (parsed.windows || []);
@@ -5161,16 +5183,7 @@ async function detectWebviewApps(_params: Record<string, unknown>): Promise<Tool
       return { text: '(detect_webview_apps: could not parse window list)' };
     }
     const cdpPort = (await probeCdpPort(9223)) ? 9223 : (await probeCdpPort(9222)) ? 9222 : null;
-    const matches: Array<{ name: string; processName: string; title: string; flag: string }> = [];
-    for (const w of windows) {
-      const pn = (w.processName || '').toLowerCase();
-      for (const fp of KNOWN_WEBVIEW_APPS) {
-        if (fp.procPrefixes.some((p) => pn.startsWith(p))) {
-          matches.push({ name: fp.name, processName: w.processName || '', title: w.title || '', flag: fp.flag });
-          break;
-        }
-      }
-    }
+    const matches = matchWebviewApps(windows);
     if (matches.length === 0) {
       return { text: cdpPort ? `No known WebView apps in window list. CDP IS live on port ${cdpPort} — call cdp_connect.` : 'No known WebView apps detected, no live CDP endpoint.' };
     }
