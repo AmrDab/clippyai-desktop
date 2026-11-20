@@ -115,8 +115,14 @@ export function actionReceiptNote(verifiedTools: readonly string[]): string {
   return `${RECEIPT_NOTE_START}${items.join('; ')}]`;
 }
 
-/** True for a history text part that is a receipt note (the bubble's history panel leaves it out). */
-export function isReceiptNote(text: string): boolean {
-  const t = text.trim();
-  return t.startsWith(RECEIPT_NOTE_START) && t.endsWith(']');
+/** The reply as history stores it: the note goes on its own last line of the same text. */
+export function withReceiptNote(reply: string, verifiedTools: readonly string[]): string {
+  const note = actionReceiptNote(verifiedTools);
+  return note ? `${reply}\n${note}` : reply;
+}
+
+/** The reply as the user saw it: without the note (the bubble's history panel shows this). */
+export function stripReceiptNote(text: string): string {
+  const i = text.lastIndexOf(`\n${RECEIPT_NOTE_START}`);
+  return i >= 0 && text.trimEnd().endsWith(']') && !text.slice(i + 1).trimEnd().includes('\n') ? text.slice(0, i) : text;
 }

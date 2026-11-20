@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { makeReceipt, blockedReceipt } from '../src/main/receipt';
 import {
   toolVerdict, isPlainDone, shouldRecordWorkflow, typedTextLanded, UNCONFIRMED_COPY,
-  actionReceiptNote, isReceiptNote,
+  actionReceiptNote, withReceiptNote, stripReceiptNote,
 } from '../src/main/tool-verdict';
 
 describe('actionReceiptNote — what the history keeps of a task (v0.24.12)', () => {
@@ -22,11 +22,17 @@ describe('actionReceiptNote — what the history keeps of a task (v0.24.12)', ()
     expect(many).toContain('+24 more');
     expect(many.length).toBeLessThan(220);
   });
-  it('isReceiptNote tells a note from what Clippy said (the history panel hides notes)', () => {
-    expect(isReceiptNote('\n[done: outlook_send_email → verified in Sent Items]')).toBe(true);
-    expect(isReceiptNote(actionReceiptNote(['write_file']))).toBe(true);
-    expect(isReceiptNote('Sent!')).toBe(false);
-    expect(isReceiptNote('[done: half')).toBe(false);
+  it('history stores reply + note as one text; the panel gets the reply back', () => {
+    const stored = withReceiptNote('Sent!', ['outlook_send_email']);
+    expect(stored).toBe('Sent!\n[done: outlook_send_email → verified in Sent Items]');
+    expect(stripReceiptNote(stored)).toBe('Sent!');
+    expect(withReceiptNote('Hello!', [])).toBe('Hello!');
+  });
+  it('stripReceiptNote leaves anything else alone', () => {
+    expect(stripReceiptNote('Sent!')).toBe('Sent!');
+    expect(stripReceiptNote('Here is a list:\n[done: a]\nand more text')).toBe('Here is a list:\n[done: a]\nand more text');
+    expect(stripReceiptNote('two\nlines\n[done: write_file → verified]')).toBe('two\nlines');
+    expect(stripReceiptNote('[done: half')).toBe('[done: half');
   });
 });
 

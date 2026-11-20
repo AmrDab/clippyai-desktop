@@ -101,7 +101,7 @@ import * as lumiereSeen from './proactive/seen-context';
 import * as permissionPolicyMod from './permission-policy';
 import * as actionHistoryMod from './action-history';
 import { blockedReceipt, type ReceiptStatus } from './receipt';
-import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY, actionReceiptNote, isReceiptNote } from './tool-verdict';
+import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY, withReceiptNote, stripReceiptNote } from './tool-verdict';
 // Phase 3 guardrails — in-bubble Approve/Deny prompt for 'approve' decisions.
 import * as approvalMod from './approval';
 import * as toolUndoMod from './tool-undo';
@@ -2317,8 +2317,7 @@ export class Brain {
       if (finalSpoken) {
         // The reply, plus a note of what was verifiably done, so the next
         // turn's model does not take its own "Sent!" for an empty claim.
-        const note = actionReceiptNote(verifiedTools);
-        this.pushHistory({ role: 'model', parts: note ? [{ text: finalSpoken }, { text: `\n${note}` }] : [{ text: finalSpoken }] });
+        this.pushHistory({ role: 'model', parts: [{ text: withReceiptNote(finalSpoken, verifiedTools) }] });
       }
       if (answeredOk && this.taskOutcome === 'done') this.maybeFirstRunFollowUp();
       return finalSpoken || "I'm not sure what to say.";
@@ -3078,7 +3077,7 @@ ${typingLine}`;
     const out: Array<{ role: 'user' | 'model'; text: string }> = [];
     for (const c of this.history) {
       // Receipt notes are for the model, not the panel: the user never saw them.
-      const text = c.parts.map((p) => ('text' in p && typeof p.text === 'string' && !isReceiptNote(p.text) ? p.text : '')).join('').trim();
+      const text = stripReceiptNote(c.parts.map((p) => ('text' in p && typeof p.text === 'string' ? p.text : '')).join('')).trim();
       if (text) out.push({ role: c.role, text });
     }
     return out;
