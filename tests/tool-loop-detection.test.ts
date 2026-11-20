@@ -3,6 +3,7 @@ import {
   ToolLoopDetector,
   exemptFromRunawayGuard,
   notRunAfterFailure,
+  failureStopsTurn,
   digestArgs,
   hashToolCall,
   hashResult,
@@ -27,6 +28,18 @@ describe('runaway guard exemptions (v0.24.12)', () => {
       expect(d.recordAndCheck('read_screen', {}, `screen ${i}`).level).toBe('ok');
       expect(d.recordAndCheck('smart_click', { target: `b${i}` }, `Clicked b${i}`).level).toBe('ok');
     }
+  });
+});
+
+describe('which failures stop the rest of a turn', () => {
+  it('a failed action does', () => {
+    for (const cls of ['desktop_input', 'destructive_file', 'system_control', 'browser_navigate', 'destructive_send']) expect(failureStopsTurn(true, cls)).toBe(true);
+  });
+  it('a failed read does not ("(no active window)" must not cancel the open_app sent with it)', () => {
+    expect(failureStopsTurn(true, 'read_only')).toBe(false);
+  });
+  it('a call that worked never does', () => {
+    expect(failureStopsTurn(false, 'desktop_input')).toBe(false);
   });
 });
 

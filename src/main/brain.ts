@@ -66,7 +66,7 @@ import { summarizeTyping } from './input-summarizer';
 import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
-import { ToolLoopDetector, exemptFromRunawayGuard, notRunAfterFailure } from './tool-loop-detection';
+import { ToolLoopDetector, exemptFromRunawayGuard, notRunAfterFailure, failureStopsTurn } from './tool-loop-detection';
 import { AbortRegistry, abortableDelay } from './turn-abort';
 import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
@@ -2086,7 +2086,7 @@ export class Brain {
             // Filter out clearly-failed results so we don't memorize a no-op
             // sequence as a "successful" workflow.
             const looksLikeError = !verdict.ok;
-            if (looksLikeError) failedInTurn = call.name;
+            if (failureStopsTurn(looksLikeError, actionClass)) failedInTurn = call.name;
             if (looksLikeError) telemetry.taskToolFailed(call.name, resultText);
             if (!looksLikeError) {
               successfulActions.push({ name: call.name, args: call.args as Record<string, unknown> });

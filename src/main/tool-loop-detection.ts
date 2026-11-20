@@ -180,6 +180,16 @@ export function exemptFromRunawayGuard(tool: string): boolean {
  * planned on the assumption that it worked. They are not run; each gets this
  * as its result so the model knows which ones and decides again.
  */
+/**
+ * Does this call's failure stop the rest of its turn? A failed action does:
+ * what follows was planned on it. A failed read does not: the model had not
+ * seen its result when it planned the rest either way ("(no active window)"
+ * must not cancel the open_app sent with it).
+ */
+export function failureStopsTurn(errored: boolean, actionClass: string): boolean {
+  return errored && actionClass !== 'read_only';
+}
+
 export function notRunAfterFailure(failedTool: string): string {
   return `(error:NOT_RUN) not run: ${failedTool}, earlier in this turn, failed. Read its result, then decide again; send this call again only if it still makes sense.`;
 }
