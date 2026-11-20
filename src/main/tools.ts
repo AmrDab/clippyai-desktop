@@ -735,6 +735,16 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
  * but reporting "Focused existing" vs "Launched" is useful signal for the
  * model.
  */
+/**
+ * open_app found the app already open and focused that window. The model must
+ * know: in a test it then pressed ctrl+a, ctrl+v in the owner's open Notepad
+ * and replaced his notes with the task's text.
+ */
+function focusedExistingText(name: string, pid: number): string {
+  const newDoc = process.platform === 'darwin' ? 'cmd+n' : 'ctrl+n';
+  return `Focused an existing ${name} window (pid ${pid}); it may hold the user's unsaved work — start a new document (${newDoc}) before typing, and do not select all or replace what is already there`;
+}
+
 async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   const name = sanitizeAppName(String(params.name || ''));
   if (!name) return { text: '(no app name provided)' };
@@ -752,7 +762,7 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
         // v0.23 — pass the focus verdict through instead of assuming it took.
         const focused = await focusWindow({ processName: name });
         if (focused.receipt?.status === 'verified') {
-          return { text: `Focused existing ${name} (pid ${existing})`, receipt: makeReceipt('open_app', 'verified', true, { pid: existing, via: 'focus_window' }) };
+          return { text: focusedExistingText(name, existing), receipt: makeReceipt('open_app', 'verified', true, { pid: existing, via: 'focus_window', existing: true }) };
         }
         return {
           text: `${name} is already running (pid ${existing}) but could not be brought to front: ${focused.text.substring(0, 160)}`,
@@ -787,7 +797,7 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   if (existingPid > 0) {
     const focused = await focusWindow({ processName: name });
     if (focused.receipt?.status === 'verified') {
-      return { text: `Focused existing ${name} (pid ${existingPid})`, receipt: makeReceipt('open_app', 'verified', true, { pid: existingPid, via: 'focus_window' }) };
+      return { text: focusedExistingText(name, existingPid), receipt: makeReceipt('open_app', 'verified', true, { pid: existingPid, via: 'focus_window', existing: true }) };
     }
     return {
       text: `${name} is already running (pid ${existingPid}) but could not be confirmed in front: ${focused.text.substring(0, 160)}`,

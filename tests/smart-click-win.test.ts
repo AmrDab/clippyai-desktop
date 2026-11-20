@@ -153,6 +153,25 @@ describe('smart_click (win32) — honest results (v0.24.12)', () => {
   });
 });
 
+describe('open_app (win32) on an app that is already open (v0.24.12)', () => {
+  it('says it focused an existing window that may hold unsaved work', async () => {
+    replies = [
+      (a) => (a.some((x) => x.includes("Get-Process -Name 'notepad'")) ? { stdout: '4321\n' } : undefined),
+      (a) => (script('focus-window.ps1')(a) ? { stdout: '{"success":true,"title":"notes.txt - Notepad","processId":4321,"foregroundProcessId":4321}' } : undefined),
+    ];
+    const r = await executeTool('open_app', { name: 'notepad' });
+    expect(r.text).toBe("Focused an existing notepad window (pid 4321); it may hold the user's unsaved work — start a new document (ctrl+n) before typing, and do not select all or replace what is already there");
+    expect(r.receipt).toMatchObject({ tool: 'open_app', status: 'verified' });
+    expect(r.receipt?.evidence).toMatchObject({ existing: true });
+  });
+
+  it('a fresh launch does not carry the warning', async () => {
+    replies = [(a) => (a.some((x) => x.includes('Start-Process')) ? { stdout: '777\n' } : a.some((x) => x.includes("Get-Process -Name 'notepad'")) ? { stdout: '\n' } : undefined)];
+    const r = await executeTool('open_app', { name: 'notepad' });
+    expect(r.text).toBe('Launched notepad (pid 777, window up)');
+  });
+});
+
 describe('smart_type (win32)', () => {
   it('the edit inside a Win32 combo box is typed, not set: select all, then paste', async () => {
     replies = [
