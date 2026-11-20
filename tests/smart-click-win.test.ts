@@ -113,7 +113,60 @@ describe('smart_click (win32)', () => {
   });
 });
 
+describe('smart_click (win32) — honest results (v0.24.12)', () => {
+  const found = (extra: Record<string, unknown>) => (a: string[]) => (script('smart-find.ps1')(a)
+    ? { stdout: JSON.stringify({ found: true, bounds: { x: 10, y: 10, width: 80, height: 30 }, score: 1.1, stage: 'exact', pending: false, setValue: null, readback: 'none', nodesVisited: 3, elapsedMs: 20, timedOut: false, ...extra }) }
+    : undefined);
+
+  it('WinForms list item: real click, what changed, and no claim of "UIA Select"', async () => {
+    replies = [fgReply, found({ name: 'High', controlType: 'ListItem', method: 'uia-coords', classic: true, before: '', after: '(gone)', gone: true, changed: ['a popup closed', 'focus: ComboBox "Priority" = "High"'] })];
+    const r = await executeTool('smart_click', { target: 'High' });
+    expect(r.text).toBe('Clicked "High" with a real click (classic control, UIA patterns skipped) (ListItem "High")\nChanged: a popup closed; focus: ComboBox "Priority" = "High"\n[unverified · the screen changed as listed; read_screen if the result matters]');
+    expect(r.receipt).toMatchObject({ status: 'unverified', executed: true, execution_path: 'uia-coords' });
+    expect(r.receipt?.evidence).toMatchObject({ classic: true, changed: ['a popup closed', 'focus: ComboBox "Priority" = "High"'] });
+  });
+
+  it('Toggle read back changed → verified receipt and [confirmed]', async () => {
+    replies = [fgReply, found({ name: 'Remember me', controlType: 'CheckBox', method: 'uia-toggle', classic: false, before: 'unchecked', after: 'checked', gone: false, changed: ['"Remember me": unchecked -> checked'] })];
+    const r = await executeTool('smart_click', { target: 'Remember me' });
+    expect(r.text.endsWith('[confirmed]')).toBe(true);
+    expect(r.receipt).toMatchObject({ status: 'verified', executed: true, execution_path: 'uia-toggle' });
+  });
+
+  it('Select that changed nothing → error receipt DID_NOTHING (executed), no OCR second click', async () => {
+    replies = [fgReply, found({ name: 'High', controlType: 'ListItem', method: 'uia-select', classic: false, before: '', after: '', gone: false, changed: [] })];
+    const r = await executeTool('smart_click', { target: 'High' });
+    expect(r.text).toMatch(/\[failed · DID_NOTHING · /);
+    expect(r.receipt).toMatchObject({ status: 'error', executed: true });
+    expect(r.receipt?.evidence).toMatchObject({ reason: 'DID_NOTHING' });
+    expect(calls.some(script('ocr-screen.ps1'))).toBe(false);
+  });
+
+  it('not found ends with the failed line', async () => {
+    replies = [
+      fgReply,
+      (a) => (script('smart-find.ps1')(a) ? { stdout: '{"found":false,"nodesVisited":5,"elapsedMs":9,"timedOut":false}' } : undefined),
+      (a) => (script('ocr-screen.ps1')(a) ? ocrWords([['Hello', 0, 0]]) : undefined),
+    ];
+    const r = await executeTool('smart_click', { target: 'Missing' });
+    expect(r.text.split('\n').pop()).toMatch(/^\[failed · UI_NOT_FOUND · /);
+  });
+});
+
 describe('smart_type (win32)', () => {
+  it('the edit inside a Win32 combo box is typed, not set: select all, then paste', async () => {
+    replies = [
+      fgReply,
+      (a) => (script('smart-find.ps1')(a) ? { stdout: '{"found":true,"name":"File name:","controlType":"Edit","bounds":{"x":1,"y":1,"width":100,"height":20},"score":1.2,"stage":"exact","method":"uia-coords","pending":false,"setValue":false,"readback":"none","classic":false,"comboEdit":true,"nodesVisited":4,"elapsedMs":30,"timedOut":false}' } : undefined),
+      (a) => (a.some((x) => x.includes("SendWait('^a')")) ? { stdout: '' } : undefined),
+      (a) => (script('type-text.ps1')(a) ? { stdout: '{"success":true,"foregroundProcessId":777,"processName":"notepad","hasReadback":true,"readback":"report.txt"}' } : undefined),
+    ];
+    const r = await executeTool('smart_type', { target: 'File name:', text: 'report.txt' });
+    expect(r.text).toMatch(/^Pasted 10 chars into notepad/);
+    const order = calls.map((a) => (script('smart-find.ps1')(a) ? 'find' : a.some((x) => x.includes("SendWait('^a')")) ? 'select-all' : script('type-text.ps1')(a) ? 'type' : 'other')).filter((x) => x !== 'other');
+    expect(order).toEqual(['find', 'select-all', 'type']);
+  });
+
   it('ValuePattern.SetValue with matching read-back → verified receipt, no clipboard paste', async () => {
     replies = [fgReply, (a) => (script('smart-find.ps1')(a) ? { stdout: '{"found":true,"name":"Subject","controlType":"Edit","bounds":{"x":1,"y":1,"width":100,"height":20},"score":1.2,"stage":"walk","method":"uia-setvalue","pending":false,"setValue":true,"readback":"match","nodesVisited":40,"elapsedMs":80,"timedOut":false}' } : undefined)];
     const r = await executeTool('smart_type', { target: 'Subject', text: 'Quarterly — numbers ✓' });

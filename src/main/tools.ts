@@ -95,6 +95,7 @@ import { outlookSendArgs } from './outlook-args';
 import { runMacSecurityScan, parseMacSections } from './mac-security-scan';
 import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, appNameMatches } from './screen-context';
 import { formatWinScreen, formatMacScreen, type ScreenLines } from './screen-lines';
+import { reportUiaClick, outcomeLine } from './click-report';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -1408,6 +1409,10 @@ async function clickPhysical(x: number, y: number): Promise<void> {
   if (!r.ok) throw new Error(r.error ?? r.stderr.trim() ?? 'click failed');
 }
 
+const NOT_FOUND_LINE = outcomeLine('failed', 'UI_NOT_FOUND', 'read_screen with find to get the exact name, or desktop_screenshot then mouse_click');
+const TIMEOUT_LINE = outcomeLine('failed', 'TIMEOUT', 'it may or may not have clicked; read_screen before trying again');
+const OCR_CLICK_LINE = outcomeLine('unverified', undefined, 'clicked by position from OCR; read_screen to check');
+
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
   const target = resolveScreenId(String(params.target || ''));
   if (!target) return { text: '(no target provided)' };
@@ -1437,7 +1442,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
         const m = ax.matches[0];
         try {
           await macBridge.a11yPress({ pid: m.pid, path: m.path });
-          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})`, receipt: clicked('ax', { label: m.title || target, role: m.role }) };
+          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})\n${outcomeLine('unverified', undefined, 'read_screen to check')}`, receipt: clicked('ax', { label: m.title || target, role: m.role }) };
         } catch (pressErr) {
           // AX-press failed (element gone, role doesn't expose AXPress, etc).
           // Fall through to OCR. Log so we see how often AX-find→AX-press
@@ -1465,9 +1470,9 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
         const cy = Math.round(match.element.y + match.element.height / 2);
         await macBridge.click({ x: cx, y: cy });
         const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
+        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}\n${OCR_CLICK_LINE}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
       }
-      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"`, receipt: notRun('not found via AX or OCR') };
+      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"\n${NOT_FOUND_LINE}`, receipt: notRun('not found via AX or OCR') };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
         if (err.kind === 'permission') {
@@ -1516,15 +1521,21 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       const sf = await windowsSmartFind(target, 'click', fg);
       if (sf.kind === 'acted') {
         const r = sf.result;
+        // The script read the control back and listed what changed: say so,
+        // and end with the outcome line (click-report.ts).
+        const rep = reportUiaClick(target, r);
+        const evidence = { label: r.name, controlType: r.controlType, score: r.score, stage: r.stage, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs, bounds: r.bounds, fgPid: fg.pid, pending: r.pending, classic: !!r.classic, before: r.before, after: r.after, changed: r.changed };
         return {
-          text: `Clicked "${target}" via UIA ${UIA_METHOD_LABEL[r.method] ?? r.method} (${r.controlType} "${r.name}")${r.pending ? ' — the app is still handling it (a dialog may have opened)' : ''}`,
-          receipt: clicked(r.method, { label: r.name, controlType: r.controlType, score: r.score, stage: r.stage, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs, bounds: r.bounds, fgPid: fg.pid, pending: r.pending }),
+          text: rep.text,
+          receipt: rep.status === 'error'
+            ? makeReceipt('smart_click', 'error', true, { target, reason: rep.code, ...evidence }, r.method)
+            : makeReceipt('smart_click', rep.status, true, { target, ...evidence }, r.method),
         };
       }
       if (sf.kind === 'unknown') {
         // The host gave up mid-call: the click may or may not have landed —
         // never click a second time via OCR.
-        return { text: `(error:TIMEOUT) smart_click "${target}" — UIA call timed out: ${sf.reason}`, receipt: notRun(sf.reason, null) };
+        return { text: `(error:TIMEOUT) smart_click "${target}" — UIA call timed out: ${sf.reason}\n${TIMEOUT_LINE}`, receipt: notRun(sf.reason, null) };
       }
       log.info('smart_click: UIA miss, falling back to OCR', { target, fgPid: fg.pid, reason: sf.reason });
     }
@@ -1545,16 +1556,16 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       const cy = Math.round(match.element.y + match.element.height / 2);
       await clickPhysical(cx, cy);
       const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, kind: match.kind, coords: { x: cx, y: cy }, region: ocr.region?.source }) };
+      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}\n${OCR_CLICK_LINE}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, kind: match.kind, coords: { x: cx, y: cy }, region: ocr.region?.source }) };
     }
-    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"`, receipt: notRun('not found via UIA or OCR') };
+    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"\n${NOT_FOUND_LINE}`, receipt: notRun('not found via UIA or OCR') };
   } catch (err) {
     // v0.12.5 — classify timeouts as TIMEOUT (fallback-eligible) instead of
     // forcing them to UI_NOT_FOUND. Per code audit finding #2.
     const msg = err instanceof Error ? err.message : String(err);
     if (/ETIMEDOUT|timed out|timeout/i.test(msg)) {
       // Timed out after dispatch — we can't tell whether the click landed.
-      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}`, receipt: notRun(msg, null) };
+      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}\n${TIMEOUT_LINE}`, receipt: notRun(msg, null) };
     }
     return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}`, receipt: notRun(msg) };
   }
@@ -1573,16 +1584,18 @@ interface SmartFindResult {
   pending: boolean;
   setValue: boolean | null;
   readback: 'match' | 'mismatch' | 'none';
+  /** v0.24.12 — see smart-find.ps1: real click on a classic control, read-back, what changed. */
+  classic?: boolean;
+  comboEdit?: boolean;
+  before?: string | null;
+  after?: string | null;
+  gone?: boolean;
+  changed?: string[];
   nodesVisited: number;
   elapsedMs: number;
   timedOut: boolean;
   error?: string;
 }
-
-const UIA_METHOD_LABEL: Record<string, string> = {
-  'uia-invoke': 'Invoke', 'uia-toggle': 'Toggle', 'uia-select': 'Select',
-  'uia-legacy': 'default action', 'uia-coords': 'click at the element centre', 'uia-setvalue': 'ValuePattern',
-};
 
 type SmartFindOutcome =
   | { kind: 'acted'; result: SmartFindResult }
@@ -1708,6 +1721,10 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
     }
     if (sf.kind === 'acted') {
       await new Promise(r => setTimeout(r, 300));
+      // The edit inside a Win32 combo box (a file dialog's File name) is
+      // typed, not set: select what is there so the typing replaces it, as
+      // SetValue would have.
+      if (sf.result.comboEdit) await keyPress({ key: 'ctrl+a' });
       return typeText({ text });
     }
     if (sf.kind === 'unknown') {
