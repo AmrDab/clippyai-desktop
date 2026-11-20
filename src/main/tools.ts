@@ -98,6 +98,7 @@ import { formatWinScreen, formatMacScreen, type ScreenLines } from './screen-lin
 import { reportUiaClick, outcomeLine } from './click-report';
 import { parseForegroundSnapshot, pickUserWindow, activeWindowJson } from './foreground-pick';
 import { toSendKeys } from './sendkeys';
+import { moveAcrossDevices } from './file-move';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
@@ -2107,9 +2108,37 @@ export function cleanClippyTrash(): void {
   }
 }
 
+/**
+ * delete_file / move_file / rename_file share write_file's guards: no `..`
+ * segment in the path as given, and no OS-owned location (isProtectedPath),
+ * for the source as well as the destination. Returns the refusal, or null.
+ */
+function fileOpRefusal(tool: string, rawPaths: string[]): ToolResult | null {
+  for (const raw of rawPaths) {
+    if (raw.split(/[\\/]/).some((seg) => seg === '..')) {
+      return { text: `(error:PROTECTED_PATH) path traversal (..) is not permitted in ${tool}.` };
+    }
+    const abs = expandHome(raw);
+    if (isProtectedPath(abs)) return { text: `(error:PROTECTED_PATH) ${tool} refuses to touch system path: ${abs}` };
+  }
+  return null;
+}
+
+/** Move `filePath` into ~/.clippy-trash (restorable for 7 days). Returns where it went. */
+function moveToClippyTrash(filePath: string): string {
+  fs.mkdirSync(CLIPPY_TRASH_DIR, { recursive: true });
+  const trashPath = path.join(CLIPPY_TRASH_DIR, `${Date.now()}-${path.basename(filePath)}`);
+  // The trash is under the home folder: a file on another drive is copied, then removed.
+  moveAcrossDevices(filePath, trashPath);
+  return trashPath;
+}
+
 async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = String(params.path || '');
-  if (!filePath) return { text: 'Error: path is required' };
+  const rawPath = String(params.path || '');
+  if (!rawPath) return { text: 'Error: path is required' };
+  const refusal = fileOpRefusal('delete_file', [rawPath]);
+  if (refusal) return refusal;
+  const filePath = expandHome(rawPath);
   try {
     if (!fs.existsSync(filePath)) {
       return { text: `(error:FILE_NOT_FOUND) File does not exist: ${filePath}` };
@@ -2117,12 +2146,11 @@ async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> 
     // Move to ~/.clippy-trash/ instead of hard-delete so the undo inverse
     // can restore it. The trash path is smuggled back via params for the
     // undo factory in tool-undo.ts.
-    fs.mkdirSync(CLIPPY_TRASH_DIR, { recursive: true });
-    const trashName = `${Date.now()}-${path.basename(filePath)}`;
-    const trashPath = path.join(CLIPPY_TRASH_DIR, trashName);
-    fs.renameSync(filePath, trashPath);
-    // Smuggle the trash path so TOOL_UNDO[delete_file] can build the inverse.
+    const trashPath = moveToClippyTrash(filePath);
+    // Smuggle the trash path so TOOL_UNDO[delete_file] can build the inverse
+    // (and the expanded path, so Undo restores to the real location).
     (params as Record<string, unknown>)._clippyTrashPath = trashPath;
+    (params as Record<string, unknown>).path = filePath;
     log.info('deleteFile → trash', { filePath, trashPath });
     return { text: `Trashed ${filePath} (restorable via Undo within 7 days)` };
   } catch (err) {
@@ -2130,37 +2158,51 @@ async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> 
   }
 }
 
-async function renameFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const fromPath = String(params.from || '');
-  const toPath = String(params.to || '');
-  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
+/**
+ * rename_file and move_file. v0.24.12: works across drives; refuses to
+ * replace an existing destination unless overwrite:true (the file that was
+ * there then goes to the Clippy trash, not away for good); same path guards
+ * as write_file.
+ */
+async function relocateFile(tool: 'rename_file' | 'move_file', params: Record<string, unknown>): Promise<ToolResult> {
+  const rawFrom = String(params.from || '');
+  const rawTo = String(params.to || '');
+  if (!rawFrom || !rawTo) return { text: 'Error: from and to paths are required' };
+  const refusal = fileOpRefusal(tool, [rawFrom, rawTo]);
+  if (refusal) return refusal;
+  const fromPath = expandHome(rawFrom);
+  const toPath = expandHome(rawTo);
+  const overwrite = params.overwrite === true || params.overwrite === 'true';
+  const FAILED = tool === 'rename_file' ? 'RENAME_FILE_FAILED' : 'MOVE_FILE_FAILED';
   try {
     if (!fs.existsSync(fromPath)) {
       return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
     }
-    fs.renameSync(fromPath, toPath);
-    log.info('renameFile', { from: fromPath, to: toPath });
-    return { text: `Renamed: ${fromPath} → ${toPath}` };
+    let replaced = '';
+    // Same file under another spelling (a case-only rename on Windows / macOS) is not "exists".
+    const sameFile = path.resolve(fromPath).toLowerCase() === path.resolve(toPath).toLowerCase();
+    if (!sameFile && fs.existsSync(toPath)) {
+      if (fs.statSync(toPath).isDirectory()) {
+        return { text: `(error:DEST_EXISTS) ${toPath} is an existing folder. Give the full new path, including the file name.` };
+      }
+      if (!overwrite) {
+        return { text: `(error:DEST_EXISTS) ${toPath} already exists and was left alone. Choose another name, or pass overwrite:true if the user asked to replace it.` };
+      }
+      replaced = moveToClippyTrash(toPath);
+    }
+    moveAcrossDevices(fromPath, toPath);
+    // The expanded paths, so Undo (which swaps from/to) acts on the real files.
+    (params as Record<string, unknown>).from = fromPath;
+    (params as Record<string, unknown>).to = toPath;
+    log.info(tool === 'rename_file' ? 'renameFile' : 'moveFile', { from: fromPath, to: toPath, replaced: !!replaced });
+    return { text: `${tool === 'rename_file' ? 'Renamed' : 'Moved'}: ${fromPath} → ${toPath}${replaced ? ` (the file that was there is in the Clippy trash: ${replaced})` : ''}` };
   } catch (err) {
-    return { text: `(error:RENAME_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+    return { text: `(error:${FAILED}) ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-async function moveFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const fromPath = String(params.from || '');
-  const toPath = String(params.to || '');
-  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
-  try {
-    if (!fs.existsSync(fromPath)) {
-      return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
-    }
-    fs.renameSync(fromPath, toPath);
-    log.info('moveFile', { from: fromPath, to: toPath });
-    return { text: `Moved: ${fromPath} → ${toPath}` };
-  } catch (err) {
-    return { text: `(error:MOVE_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
+const renameFile = (params: Record<string, unknown>): Promise<ToolResult> => relocateFile('rename_file', params);
+const moveFile = (params: Record<string, unknown>): Promise<ToolResult> => relocateFile('move_file', params);
 
 // ── Mouse variants ───────────────────────────────────────────────
 
