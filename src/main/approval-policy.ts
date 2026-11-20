@@ -46,7 +46,7 @@ export interface ApprovalCtx {
   /** The governor escalated this call (looks like a purchase / send / delete click). */
   escalated: boolean;
   /** The governor recognised a Send-type or Delete-type control or key (RiskVerdict.family). */
-  riskFamily?: 'send' | 'delete';
+  riskFamily?: 'send' | 'delete' | 'terminal';
   /** Policy mode; 'cautious' means the user wants to see every action. */
   mode: 'cautious' | 'standard' | 'trusted';
   /** The user explicitly set this class to 'approve' in Settings → Guardrails. */
@@ -347,18 +347,23 @@ export function parseQuitCommand(command: string): string | null {
 // mail / reply / post are also nouns ("what does this email say?"), so they
 // count only when no determiner comes right before them.
 const NOUN_MARK = String.raw`(?<!\b(?:this|that|the|my|a|an|your|his|her|their|our|latest|last|new|unread|every|each|any|some|which|what|these|those)\s+)`;
-const REQUEST_VERBS: Record<'send' | 'delete', RegExp> = {
+const REQUEST_VERBS: Record<'send' | 'delete' | 'terminal', RegExp> = {
+  // "run ipconfig", "execute this in PowerShell", "type dir in cmd".
+  terminal: /\b(?:run|runs|running|execute|executes|exec)\b|\b(?:in|into|inside|from|using|via|open)\s+(?:a\s+|an\s+|the\s+|my\s+)?(?:terminal|powershell|pwsh|cmd|command\s+prompt|command\s+line|console|shell|bash|zsh)\b/i,
   send: new RegExp(String.raw`\b(?:send|sends|sending|submit|submits|submitting|emailing|mailing|replying|posting)\b|${NOUN_MARK}\b(?:email|e-mail|mail|reply|post)\b`, 'i'),
   delete: new RegExp(String.raw`\b(?:delete|deletes|deleting|remove|removes|removing|empty|emptying)\b|${NOUN_MARK}\btrash\b`, 'i'),
 };
-const FAMILY_CLASS: Record<'send' | 'delete', ActionClass> = { send: 'destructive_send', delete: 'destructive_file' };
+const FAMILY_CLASS: Record<'send' | 'delete' | 'terminal', ActionClass> = { send: 'destructive_send', delete: 'destructive_file', terminal: 'destructive_exec' };
 
 /**
  * An escalated click or key that is exactly what the user asked for: they
  * wrote "send ..." and the control is a Send button, or "delete ..." and it is
- * a Delete button. `requestText` must be the user's own message, never page
- * text, a tool result or model text. Purchases, credential fields,
- * destructive_exec and a control of the other family are never requested.
+ * a Delete button; or they asked to run something in a terminal and the line
+ * typed there is a plain command (family 'terminal', set by assessRisk only
+ * when the line passes the shell_exec checks). `requestText` must be the
+ * user's own message, never page text, a tool result or model text.
+ * Purchases, credential fields, any other destructive_exec and a control of
+ * another family are never requested.
  */
 export function isRequestedEscalation(ctx: ApprovalCtx): boolean {
   const family = ctx.riskFamily;

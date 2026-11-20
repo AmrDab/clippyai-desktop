@@ -15,9 +15,20 @@ import { classifyShellCommand } from '../approval-policy';
 
 let readWhat: string | null = null;
 
+// The line being typed into the focused window, across type_text calls, until
+// it is submitted. assessRisk reads it when Enter is pressed in a terminal:
+// the key press itself carries no text, the line typed before it does.
+let typedLine = '';
+
 /** Start of a new task. */
 export function resetTaskTaint(): void {
   readWhat = null;
+  typedLine = '';
+}
+
+/** Text typed since the last Enter / newline ('' when nothing is pending). */
+export function pendingTypedLine(): string {
+  return typedLine;
 }
 
 /** What the task read ("a file", "the clipboard"), or null. */
@@ -44,6 +55,13 @@ export function sensitiveReadOf(tool: string, params: Record<string, unknown> = 
 /** Called by the dispatcher after a tool ran. Error results read nothing. */
 export function noteToolRan(tool: string, params: Record<string, unknown> | undefined, resultText: string | undefined): void {
   if (/^\(error:/.test(resultText ?? '')) return;
+  if (tool === 'type_text' || tool === 'smart_type') {
+    const text = String(params?.text ?? '');
+    const cut = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r'));
+    typedLine = cut >= 0 ? text.slice(cut + 1) : (typedLine + text).slice(-4000);
+  } else if (tool === 'key_press' && /(^|\+)(enter|return)$/i.test(String(params?.key ?? params?.combo ?? ''))) {
+    typedLine = '';
+  }
   const what = sensitiveReadOf(tool, params ?? {});
   if (what && (readWhat === null || what === 'a secret')) readWhat = what;
 }

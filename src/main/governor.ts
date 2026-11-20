@@ -67,7 +67,9 @@ export interface RiskVerdict {
   /** Set only when a Send-type or Delete-type control or key was recognised
    *  (not a credential field, a checkout, or a click judged by its window).
    *  approval-policy uses it: "send the email" + a Send button runs unasked. */
-  family?: 'send' | 'delete';
+  /** 'terminal': a line typed into a shell that passed the shell_exec checks
+   *  (tools.ts assessRisk decides that); "run X in PowerShell" runs unasked. */
+  family?: 'send' | 'delete' | 'terminal';
 }
 
 /** Tools the governor looks at. Anything else returns null immediately. */
@@ -257,7 +259,7 @@ export function classifyRisk(input: RiskInput): RiskVerdict | null {
   // Typing without Enter is not: nothing runs until the line is submitted.
   if ((tool === 'type_text' || tool === 'key_press' || tool === 'smart_type')
     && isShellSurface(input.process, input.context) && submitsLine(tool, args, input.keys)) {
-    return { class: 'destructive_exec', reason: `This runs what is typed in ${q(input.process || 'a terminal')}` };
+    return { class: 'destructive_exec', reason: `This runs what is typed in ${q(input.process || 'a terminal')}`, family: 'terminal' };
   }
 
   if (TYPE_TOOLS.has(tool) && label && CREDENTIAL_LABEL.test(normalizeLabel(label))) {

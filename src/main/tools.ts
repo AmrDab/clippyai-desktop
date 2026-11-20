@@ -72,8 +72,8 @@ import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from '.
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
 import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
 import { isPingableHost, httpUrlOrNull, urlCarriesData } from './security/net-guard';
-import { noteToolRan, taskReadSensitive } from './security/task-taint';
-import { plainOpenUrl } from './approval-policy';
+import { noteToolRan, taskReadSensitive, pendingTypedLine } from './security/task-taint';
+import { plainOpenUrl, classifyShellCommand } from './approval-policy';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
 // Phase 3 guardrails — install consent comes from the user's Approve click,
 // never from a model-supplied argument.
@@ -5570,6 +5570,18 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
 }
 
 /**
+ * The command a terminal line would run passes the same checks as shell_exec
+ * (classifyShellCommand: no fetch, script host, iex, secret path, delete...).
+ * type_text / smart_type: the pending line plus this text, every line of it.
+ * key_press Enter: the line typed before it; unknown text is not plain.
+ */
+function typedCommandIsPlain(tool: string, params: Record<string, unknown>): boolean {
+  const typed = pendingTypedLine() + (tool === 'key_press' ? '' : String(params.text ?? ''));
+  const lines = typed.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => classifyShellCommand(l) === null);
+}
+
+/**
  * v0.21 — risky-action governor front door. Runs BEFORE the permission gate
  * (brain.ts / agent-tools.ts) so a click that looks like "Place order" is
  * judged as destructive_purchase instead of plain desktop_input.
@@ -5624,7 +5636,12 @@ export async function assessRisk(tool: string, params: Record<string, unknown> =
     }
   } catch { /* no context — judge on args alone (already null) */ }
   if (!url && !context && !processName) return null;
-  return classifyRisk({ tool, args: params, url, context, process: processName });
+  const verdict = classifyRisk({ tool, args: params, url, context, process: processName });
+  if (verdict?.family === 'terminal' && !typedCommandIsPlain(tool, params)) {
+    // Not a plain command (or unknown): it asks whatever the user said.
+    return { class: verdict.class, reason: verdict.reason };
+  }
+  return verdict;
 }
 
 /**
