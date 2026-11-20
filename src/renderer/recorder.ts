@@ -19,6 +19,9 @@
  * clip.
  */
 
+import { rmsOf } from '../main/voice-gate';
+import { cleanMicLabel } from './mic-select';
+
 export type RecorderState = 'idle' | 'requesting' | 'recording' | 'encoding';
 
 export interface RecorderEvents {
@@ -29,8 +32,16 @@ export interface RecorderEvents {
   /** Called when audio is captured + encoded. The Uint8Array is a
    *  standard 16 kHz mono 16-bit PCM .wav ready to send to the main
    *  process for whisper-cli. */
-  onResult?: (wav: Uint8Array, durationMs: number) => void;
+  onResult?: (wav: Uint8Array, durationMs: number, clip: RecordedClip) => void;
   onError?: (msg: string) => void;
+}
+
+/** What the recorder knows about a finished clip besides its audio. */
+export interface RecordedClip {
+  /** RMS of the whole clip, 0..1. Near 0 means the microphone gave silence. */
+  rms: number;
+  /** Name of the microphone the clip came from ('' when unknown). */
+  micLabel: string;
 }
 
 export class Recorder {
@@ -51,6 +62,7 @@ export class Recorder {
   // Level metering — RMS computed on each onaudioprocess tick.
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private lastLevelSamples: Float32Array | null = null;
+  private micLabel = '';
 
   constructor(events: RecorderEvents = {}) {
     this.events = events;
@@ -84,6 +96,8 @@ export class Recorder {
       this.events.onError?.(`Microphone access denied: ${msg}`);
       throw err;
     }
+
+    this.micLabel = cleanMicLabel(this.stream.getAudioTracks()[0]?.label ?? '');
 
     // Try to create at 16 kHz; fall back to default if browser refuses.
     try {
@@ -155,6 +169,7 @@ export class Recorder {
     if (this.maxDurationTimer) { clearTimeout(this.maxDurationTimer); this.maxDurationTimer = null; }
 
     const durationMs = Date.now() - this.startedAt;
+    const rms = rmsOf(this.buffers);
     const wav = encodeWav(this.buffers, this.actualSampleRate);
     this.buffers = [];
 
@@ -171,7 +186,7 @@ export class Recorder {
     this.node = null;
 
     this.setState('idle');
-    this.events.onResult?.(wav, durationMs);
+    this.events.onResult?.(wav, durationMs, { rms, micLabel: this.micLabel });
   }
 
   /** Abandon the recording without emitting a result. Used when the

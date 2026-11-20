@@ -9,6 +9,23 @@ export const LOW_ENERGY_RMS = 0.01;
 /** A clip shorter than this cannot hold a real "thank you". */
 export const SHORT_CLIP_MS = 600;
 
+/** A whole clip below this RMS holds no speech: a muted, unplugged or
+ *  0%-volume input, or a room nobody spoke in. Quiet speech is ~10x above. */
+export const SILENT_CLIP_RMS = 0.002;
+
+export function isSilentClip(rms: number): boolean {
+  return rms < SILENT_CLIP_RMS;
+}
+
+/** Said when a clip had sound in it but no words. */
+export const HEARD_NOTHING = "I didn't hear anything.";
+
+/** Said when the clip itself was silent: names the microphone and what to check. */
+export function silentMicMessage(micLabel: string): string {
+  const mic = micLabel ? `Your microphone (${micLabel})` : 'Your microphone';
+  return `${HEARD_NOTHING} ${mic} seems silent; check it's plugged in and its input volume isn't 0, or pick another in Settings → Voice.`;
+}
+
 export interface ClipStats {
   /** Root mean square of the samples, 0..1. */
   rms: number;

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { cleanTranscript, rmsOf, wavStats, LOW_ENERGY_RMS, SHORT_CLIP_MS } from '../src/main/voice-gate';
+import {
+  cleanTranscript, rmsOf, wavStats, isSilentClip, silentMicMessage,
+  HEARD_NOTHING, LOW_ENERGY_RMS, SHORT_CLIP_MS, SILENT_CLIP_RMS,
+} from '../src/main/voice-gate';
 
 const spoken = { rms: 0.05, durationMs: 2000 };
 const quiet = { rms: LOW_ENERGY_RMS / 10, durationMs: 2000 };
@@ -72,5 +75,31 @@ describe('rmsOf / wavStats — clip energy', () => {
     const padded = new Uint8Array(w.length + 8);
     padded.set(w, 8);
     expect(wavStats(padded.subarray(8)).rms).toBeCloseTo(0.25, 3);
+  });
+});
+
+describe('silence gate — a silent clip is never transcribed', () => {
+  it('digital silence and a dead input are silent', () => {
+    expect(isSilentClip(0)).toBe(true);
+    expect(isSilentClip(rmsOf([new Float32Array(16000)]))).toBe(true);
+    expect(isSilentClip(SILENT_CLIP_RMS / 2)).toBe(true);
+  });
+  it('speech, even quiet speech, is not', () => {
+    expect(isSilentClip(SILENT_CLIP_RMS)).toBe(false);
+    expect(isSilentClip(0.02)).toBe(false);
+  });
+  it('a clip whisper would call "you" is gated before the hallucination filter needs to', () => {
+    expect(SILENT_CLIP_RMS).toBeLessThan(LOW_ENERGY_RMS);
+  });
+  it('names the microphone and what to check', () => {
+    expect(silentMicMessage('Microphone (HP USB-C Dock Audio Headset)')).toBe(
+      "I didn't hear anything. Your microphone (Microphone (HP USB-C Dock Audio Headset)) seems silent; check it's plugged in and its input volume isn't 0, or pick another in Settings → Voice.",
+    );
+  });
+  it('still reads well when the microphone has no name', () => {
+    expect(silentMicMessage('')).toBe(
+      "I didn't hear anything. Your microphone seems silent; check it's plugged in and its input volume isn't 0, or pick another in Settings → Voice.",
+    );
+    expect(HEARD_NOTHING).toBe("I didn't hear anything.");
   });
 });
