@@ -33,3 +33,23 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze([
 export function getPreset(id: string): ProviderPreset {
   return PROVIDER_PRESETS.find((p) => p.id === id) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1];
 }
+
+/**
+ * Why a base URL can't be used, or null when it can. https anywhere; http
+ * only to this computer (Ollama / LM Studio on localhost): over plain http
+ * to any other host the API key and every prompt travel in clear text.
+ */
+export function baseUrlProblem(baseUrl: string): string | null {
+  let u: URL;
+  try { u = new URL(String(baseUrl ?? '').trim()); } catch { return 'Base URL must start with http:// or https://'; }
+  if (u.protocol === 'https:') return null;
+  if (u.protocol !== 'http:') return 'Base URL must start with http:// or https://';
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const loopback = host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  return loopback ? null : 'Base URL must use https:// (http:// is only allowed for this computer, e.g. http://localhost:11434)';
+}
+
+/** Lower-case host[:port] of a base URL ('' when it does not parse). */
+export function baseUrlHost(baseUrl: string): string {
+  try { return new URL(String(baseUrl ?? '').trim()).host.toLowerCase(); } catch { return ''; }
+}

@@ -39,6 +39,7 @@ vi.mock('../src/main/logger', () => ({
 }));
 
 import * as byok from '../src/main/byok';
+import { baseUrlProblem } from '../src/main/byok/presets';
 
 const KEY = 'sk-live-TOPSECRET-4321';
 const kit = { version: 'k1', systemPrompt: 'You are Clippy {{TODAY}}', tools: [], notes: '' };
@@ -93,7 +94,44 @@ describe('byok settings + key storage', () => {
     expect(byok.saveByokSettings({ baseUrl: 'ftp://x' }).ok).toBe(false);
     const r = byok.saveByokSettings({ provider: 'ollama' });
     expect(r.status).toMatchObject({ provider: 'ollama', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5:7b', active: true });
-    byok.saveByokSettings({ provider: 'openai' });
+    // 0.24.12: the OpenAI key does not follow the switch to another provider.
+    expect(r.status).toMatchObject({ keyPresent: false, keyHint: '' });
+    const back = byok.saveByokSettings({ provider: 'openai' });
+    expect(back.status).toMatchObject({ keyPresent: false, active: false });
+    expect(byok.saveByokSettings({ apiKey: KEY }).status).toMatchObject({ keyPresent: true, active: true });
+  });
+
+  it('clears the key when the host changes, keeps it when only the path or model does (audit #19)', () => {
+    const base = byok.getByokStatus();
+    expect(base).toMatchObject({ provider: 'openai', keyPresent: true });
+    // Same host, different path / model: the key stays.
+    expect(byok.saveByokSettings({ baseUrl: 'https://api.openai.com/v2', model: 'gpt-5.4' }).status.keyPresent).toBe(true);
+    expect(byok.saveByokSettings({ baseUrl: 'https://API.OPENAI.COM/v1' }).status.keyPresent).toBe(true);
+    // Another host: the key is forgotten, so it cannot be sent there.
+    const moved = byok.saveByokSettings({ baseUrl: 'https://collector.attacker.example/v1' });
+    expect(moved.ok).toBe(true);
+    expect(moved.status).toMatchObject({ keyPresent: false, keyHint: '', active: false });
+    // A new key saved together with the new host is kept.
+    const fresh = byok.saveByokSettings({ baseUrl: 'https://my-proxy.example/v1', apiKey: 'sk-other-KEY-9999' });
+    expect(fresh.status).toMatchObject({ keyPresent: true, keyHint: '9999', baseUrl: 'https://my-proxy.example/v1' });
+    // Back to the provider default with the real key for the tests below.
+    expect(byok.saveByokSettings({ baseUrl: '', model: 'gpt-5.4-mini', apiKey: KEY }).status)
+      .toMatchObject({ baseUrl: 'https://api.openai.com/v1', keyPresent: true, keyHint: '4321', active: true });
+  });
+
+  it('accepts http:// only for this computer; a refused URL changes nothing (audit #19)', () => {
+    for (const bad of ['http://api.example.com/v1', 'http://192.168.1.20:11434/v1', 'http://10.0.0.5/v1', 'http://localhost.attacker.example/v1', 'http://127.0.0.1.attacker.example/v1']) {
+      const r = byok.saveByokSettings({ baseUrl: bad });
+      expect(r.ok).toBe(false);
+      expect((r as { error: string }).error).toMatch(/https:\/\//);
+      expect(r.status).toMatchObject({ baseUrl: 'https://api.openai.com/v1', keyPresent: true });
+    }
+    expect(baseUrlProblem('http://localhost:11434/v1')).toBeNull();
+    expect(baseUrlProblem('http://127.0.0.1:1234/v1')).toBeNull();
+    expect(baseUrlProblem('http://[::1]:8080/v1')).toBeNull();
+    expect(baseUrlProblem('https://api.example.com/v1')).toBeNull();
+    expect(baseUrlProblem('ftp://x')).toMatch(/http/);
+    expect(baseUrlProblem('not a url')).toMatch(/http/);
   });
 });
 
@@ -154,5 +192,16 @@ describe('kit + turn through the glue', () => {
     byok.clearByokKey();
     expect(await byok.testByokConnection()).toMatchObject({ ok: false, message: expect.stringMatching(/needs an API key/) });
     expect(byok.getByokStatus()).toMatchObject({ keyPresent: false, keyHint: '', active: false });
+  });
+});
+
+describe('a refused http base URL leaves the working setup in place (0.24.12 audit #19)', () => {
+  it('the https setup keeps working and the http one is not stored', async () => {
+    byok.saveByokSettings({ provider: 'custom', model: 'm', baseUrl: 'https://old.example/v1', apiKey: KEY, enabled: true });
+    const fetch = fetchMock(() => ({ status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: 'hi' } }] } }));
+    expect(await byok.runTurn(kit, [{ role: 'user', parts: [{ text: 'hello' }] }], {})).toMatchObject({ done: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(byok.saveByokSettings({ baseUrl: 'http://old.example/v1' }).ok).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

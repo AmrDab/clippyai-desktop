@@ -18,7 +18,7 @@ import path from 'path';
 import { getLicenseKey } from './license';
 import { createLogger } from './logger';
 import * as telemetry from './telemetry';
-import { PROVIDER_PRESETS, getPreset, type ProviderPreset } from './byok/presets';
+import { PROVIDER_PRESETS, getPreset, baseUrlProblem, baseUrlHost, type ProviderPreset } from './byok/presets';
 import { buildKitUrl, loadKitCache, resolveKit, saveKitCache, type AgentKit, type KitCache } from './byok/kit';
 import { runByokTurn, testConnection, TURN_TIMEOUT_MS, type ByokTarget, type EngineResult } from './byok/engine';
 import type { WireContent } from './byok/adapters';
@@ -129,6 +129,12 @@ export interface ByokSaveInput { enabled?: boolean; provider?: string; baseUrl?:
 
 /** Save settings; `apiKey` (when present and non-empty) is encrypted at rest. */
 export function saveByokSettings(input: ByokSaveInput): { ok: true; status: ByokStatus } | { ok: false; error: string; status: ByokStatus } {
+  const before = { provider: store.get('provider'), host: baseUrlHost(effective().baseUrl) };
+  if (typeof input.baseUrl === 'string' && input.baseUrl.trim()) {
+    // Checked before anything is stored, so a refused URL changes nothing.
+    const problem = baseUrlProblem(input.baseUrl);
+    if (problem) return { ok: false, error: problem, status: getByokStatus() };
+  }
   if (typeof input.provider === 'string' && PROVIDER_PRESETS.some((p) => p.id === input.provider)) {
     if (input.provider !== store.get('provider')) {
       // Switching preset resets the URL/model to that preset's defaults.
@@ -138,9 +144,15 @@ export function saveByokSettings(input: ByokSaveInput): { ok: true; status: Byok
     }
   }
   if (typeof input.baseUrl === 'string') {
-    const u = input.baseUrl.trim();
-    if (u && !/^https?:\/\//i.test(u)) return { ok: false, error: 'Base URL must start with http:// or https://', status: getByokStatus() };
-    store.set('baseUrl', u.slice(0, 500));
+    store.set('baseUrl', input.baseUrl.trim().slice(0, 500));
+  }
+  // A key belongs to the provider and host it was entered for. If either
+  // changed, forget it: otherwise pointing the base URL at another server
+  // (or switching preset) would send the old provider's key there.
+  if (store.get('keyEnc') && (store.get('provider') !== before.provider || baseUrlHost(effective().baseUrl) !== before.host)) {
+    store.set('keyEnc', '');
+    store.set('keyHint', '');
+    log.info('Byok.key_cleared', { reason: 'provider_or_host_changed', provider: store.get('provider') });
   }
   if (typeof input.model === 'string') store.set('model', input.model.trim().slice(0, 200));
   if (typeof input.apiKey === 'string' && input.apiKey.trim()) {

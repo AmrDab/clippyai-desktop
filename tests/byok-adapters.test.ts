@@ -212,3 +212,16 @@ describe('dispatch + errors', () => {
     expect(providerErrorMessage(500, null)).toBe('HTTP 500');
   });
 });
+
+describe('adapters refuse plain http to another host (0.24.12 audit #19)', () => {
+  const input = { model: 'm', systemPrompt: 's', contents: [], tools: [], maxTokens: 10 } as unknown as Parameters<typeof toOpenAIRequest>[2];
+  it('throws before a request (and its Authorization header) is built', () => {
+    expect(() => toOpenAIRequest('http://api.example.com/v1', 'sk-test', input)).toThrow(/https:\/\//);
+    expect(() => toOpenAIRequest('http://192.168.1.20:11434/v1', 'sk-test', input)).toThrow(/https:\/\//);
+  });
+  it('still builds for https and for localhost', () => {
+    expect(toOpenAIRequest('https://api.example.com/v1', 'sk-test', input).url).toBe('https://api.example.com/v1/chat/completions');
+    expect(toOpenAIRequest('http://localhost:11434/v1', '', input).url).toBe('http://localhost:11434/v1/chat/completions');
+    expect(toOpenAIRequest('http://127.0.0.1:1234/v1', '', input).url).toBe('http://127.0.0.1:1234/v1/chat/completions');
+  });
+});

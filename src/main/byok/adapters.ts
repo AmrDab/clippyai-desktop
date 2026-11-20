@@ -11,7 +11,7 @@
  * (a text part, no calls), `done = !hasFunctionCall`.
  */
 
-import type { ByokApi } from './presets';
+import { baseUrlProblem, type ByokApi } from './presets';
 
 export type WirePart =
   | { text: string }
@@ -73,6 +73,10 @@ function callId(name: string, turnIdx: number, callIdx: number): string {
 }
 
 function joinUrl(base: string, path: string): string {
+  // Last line of defence for a base URL saved before 0.24.12 or edited on
+  // disk: never send the key or a prompt over plain http to another host.
+  const problem = baseUrlProblem(base);
+  if (problem) throw new Error(problem);
   return base.replace(/\/+$/, '') + path;
 }
 
