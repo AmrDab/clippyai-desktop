@@ -36,6 +36,9 @@
  *     (window title / page URL) that looks like a compose or checkout
  *     surface. plip escalates every Enter; for Clippy that would prompt on
  *     every search box.
+ *   - Typing into a terminal or the Run dialog is escalated to
+ *     destructive_exec only when the text or key submits the line (a newline
+ *     or Enter). Typing a line without running it is plain desktop input.
  */
 
 import type { ActionClass } from './tool-meta';
@@ -51,6 +54,8 @@ export interface RiskInput {
   keys?: string;
   /** Active window title / focused element name — used for coordinate clicks + Enter. */
   context?: string;
+  /** Foreground process / app name ("WindowsTerminal", "powershell", "Terminal"). */
+  process?: string;
 }
 
 export interface RiskVerdict {
@@ -117,6 +122,27 @@ const PURCHASE_CONTEXT = /\b(checkout|place order|payment|billing|review your or
 // Compared after normalizeChord (control→ctrl, command/meta→cmd, option→alt, delete→del).
 const RISKY_CHORDS = new Set(['alt+f4', 'ctrl+alt+del', 'cmd+q', 'cmd+shift+q', 'cmd+alt+esc']);
 const ENTER_KEYS = new Set(['enter', 'return', 'ctrl+enter', 'ctrl+return', 'cmd+enter', 'cmd+return']);
+
+// ── Terminals ────────────────────────────────────────────────────────────
+
+// Typing a line into a shell and pressing Enter runs it: the same thing as
+// shell_exec, without shell_exec's gate (0.24.12 audit #4).
+const SHELL_PROCESS = /^(?:powershell(?:_ise)?|pwsh|cmd|windowsterminal|wt|openconsole|conhost|bash|zsh|sh|fish|wsl|ubuntu|mintty|git-bash|terminal|iterm2?|alacritty|wezterm(?:-gui)?|kitty|warp|hyper|tabby|cmder|conemu(?:64)?)(?:\.exe)?$/i;
+/** The Win+R Run dialog is hosted by explorer.exe with the title "Run". */
+const RUN_DIALOG_TITLE = /^run$/i;
+
+/** True when keystrokes in the foreground window are executed as commands. */
+export function isShellSurface(processName?: string, title?: string): boolean {
+  const p = String(processName ?? '').trim();
+  if (p && SHELL_PROCESS.test(p)) return true;
+  return /^explorer(?:\.exe)?$/i.test(p) && RUN_DIALOG_TITLE.test(String(title ?? '').trim());
+}
+
+/** The typed text or key chord submits the line (Enter / newline). */
+function submitsLine(tool: string, args: Record<string, unknown>, keys?: string): boolean {
+  if (tool === 'key_press') return /(^|\+)(enter|return)$/.test(normalizeChord(keys ?? String(args.key ?? args.combo ?? '')));
+  return /[\r\n]/.test(String(args.text ?? ''));
+}
 
 function normalizeLabel(s: string): string {
   return s.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -196,6 +222,13 @@ export function classifyRisk(input: RiskInput): RiskVerdict | null {
   if (!GOVERNED_TOOLS.has(tool)) return null;
 
   const label = input.resolvedLabel ?? labelFromArgs(tool, args);
+
+  // Typing into a terminal or the Run dialog AND submitting is execution.
+  // Typing without Enter is not: nothing runs until the line is submitted.
+  if ((tool === 'type_text' || tool === 'key_press' || tool === 'smart_type')
+    && isShellSurface(input.process, input.context) && submitsLine(tool, args, input.keys)) {
+    return { class: 'destructive_exec', reason: `This runs what is typed in ${q(input.process || 'a terminal')}` };
+  }
 
   if (TYPE_TOOLS.has(tool) && label && CREDENTIAL_LABEL.test(normalizeLabel(label))) {
     return { class: 'destructive_send', reason: `Typing into a credential field: ${q(normalizeLabel(label))}` };

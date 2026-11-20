@@ -5560,9 +5560,10 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
  *   - args alone first (smart_click target, cdp selector/text, key chord) —
  *     no I/O when that already decides.
  *   - cdp_* tools: the attached tab's URL (cached on the client, free).
- *   - coordinate clicks, Enter-type key_press, type_text ending in "
-":
- *     the active window title (one get_active_window call). v0.24 (plan
+ *   - coordinate clicks, Enter-type key_press, type_text / smart_type with
+ *     a newline: the active window title and process (one get_active_window
+ *     call), so typing a line into a terminal and running it is judged as
+ *     execution. v0.24 (plan
  *     §1.6): on win32 that call runs in the persistent PowerShell host
  *     (~20-30 ms, no spawn) instead of a 1-2 s powershell.exe. Deliberately
  *     NOT cached: a stale title from a window the user just left could
@@ -5581,26 +5582,29 @@ export async function assessRisk(tool: string, params: Record<string, unknown> =
 
   let url: string | undefined;
   let context: string | undefined;
+  let processName: string | undefined;
   try {
     if (tool.startsWith('cdp_')) {
       const client = getCdpClient();
       if (client.isConnected()) url = await client.getUrl();
     } else {
       const key = String(params.key ?? '').toLowerCase();
+      // A newline anywhere in typed text submits a line (a terminal runs it).
       const needsWindow =
         tool === 'mouse_click' || tool === 'mouse_double_click' ||
         (tool === 'key_press' && /(^|\+)(enter|return)$/.test(key)) ||
-        (tool === 'type_text' && /[\r\n]$/.test(String(params.text ?? '')));
+        ((tool === 'type_text' || tool === 'smart_type') && /[\r\n]/.test(String(params.text ?? '')));
       if (needsWindow) {
         const fg = await getActiveWindow();
-        const parsed = JSON.parse(fg.text) as { title?: string; windowTitle?: string; url?: string };
+        const parsed = JSON.parse(fg.text) as { title?: string; windowTitle?: string; url?: string; processName?: string; app?: string };
         context = parsed.title ?? parsed.windowTitle;
+        processName = parsed.processName ?? parsed.app;
         if (parsed.url) url = parsed.url;
       }
     }
   } catch { /* no context — judge on args alone (already null) */ }
-  if (!url && !context) return null;
-  return classifyRisk({ tool, args: params, url, context });
+  if (!url && !context && !processName) return null;
+  return classifyRisk({ tool, args: params, url, context, process: processName });
 }
 
 /**
