@@ -176,32 +176,43 @@ Start-Sleep -Milliseconds 300
 # Send: to[Tab]subject[Tab][Tab]body — the double-tab past cc/bcc varies.
 # Use clipboard + Ctrl+V for body so multi-line content survives.
 
-# Type To
-[System.Windows.Forms.SendKeys]::SendWait($to.Replace('+', '{+}').Replace('^', '{^}').Replace('%', '{%}').Replace('~', '{~}').Replace('(', '{(}').Replace(')', '{)}'))
-Start-Sleep -Milliseconds 200
+# 0.24.12 - To and Subject are pasted from the clipboard, like the body.
+# They used to be typed with SendKeys after escaping only + ^ % ~ ( ): a
+# value containing {ENTER}, {TAB} or {F4} was sent as those KEYS, so a crafted
+# subject could press keys in the compose window (or send the mail early).
+# A paste is always literal text. Line breaks are removed from the two
+# single-line fields so they cannot move focus or submit.
+function Paste-Literal([string]$text) {
+    [System.Windows.Forms.Clipboard]::SetText($text)
+    Start-Sleep -Milliseconds 100
+    [System.Windows.Forms.SendKeys]::SendWait('^v')
+    Start-Sleep -Milliseconds 300
+}
+function One-Line([string]$text) { return (($text -replace '[\r\n\t]+', ' ').Trim()) }
+
+$priorClip = $null
+try { $priorClip = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+
+# Paste To
+try { Paste-Literal (One-Line $to) } catch {
+    Fail 'to_paste_failed' "Could not paste the recipient into compose: $($_.Exception.Message)" 'fill_to'
+}
 [System.Windows.Forms.SendKeys]::SendWait('{TAB}')
 Start-Sleep -Milliseconds 200
 
-# Type Subject (escape SendKeys special chars)
-$escapedSubject = $subject.Replace('+', '{+}').Replace('^', '{^}').Replace('%', '{%}').Replace('~', '{~}').Replace('(', '{(}').Replace(')', '{)}')
-[System.Windows.Forms.SendKeys]::SendWait($escapedSubject)
-Start-Sleep -Milliseconds 200
+# Paste Subject
+try { Paste-Literal (One-Line $subject) } catch {
+    Fail 'subject_paste_failed' "Could not paste the subject into compose: $($_.Exception.Message)" 'fill_subject'
+}
 [System.Windows.Forms.SendKeys]::SendWait('{TAB}')
 Start-Sleep -Milliseconds 400
 
 # Paste body via clipboard (handles newlines + emoji reliably)
-$priorClip = $null
-try { $priorClip = [System.Windows.Forms.Clipboard]::GetText() } catch { }
-try {
-    [System.Windows.Forms.Clipboard]::SetText($body)
-    Start-Sleep -Milliseconds 100
-    [System.Windows.Forms.SendKeys]::SendWait('^v')
-    Start-Sleep -Milliseconds 300
-} catch {
+try { Paste-Literal $body } catch {
     Fail 'body_paste_failed' "Could not paste body into compose: $($_.Exception.Message)" 'fill_body'
 }
 # Restore prior clipboard
-try { if ($priorClip) { [System.Windows.Forms.Clipboard]::SetText($priorClip) } } catch { }
+try { if ($priorClip) { [System.Windows.Forms.Clipboard]::SetText($priorClip) } else { [System.Windows.Forms.Clipboard]::Clear() } } catch { }
 
 # Step 6: send via Ctrl+Enter (olk standard).
 [System.Windows.Forms.SendKeys]::SendWait('^{ENTER}')

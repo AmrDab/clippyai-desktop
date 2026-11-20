@@ -92,3 +92,31 @@ describe('zip_files (audit #16)', () => {
     expect(src).toContain('Compress-Archive -LiteralPath $inputList');
   });
 });
+
+describe('olk-send-email-direct.ps1 (audit #22)', () => {
+  const src = script('olk-send-email-direct.ps1');
+  it('no mail field is typed with SendKeys: To, Subject and body are pasted', () => {
+    // The only SendKeys calls left send fixed key names, never a variable.
+    const calls = src.match(/SendKeys\]::SendWait\(([^\n]*)\)/g) ?? [];
+    expect(calls.length).toBeGreaterThan(2);
+    for (const c of calls) expect(c).toMatch(/SendWait\('(\^v|\{TAB\}|\^\{ENTER\}|[^'$]*)'\)$/);
+    expect(src).not.toMatch(/SendWait\(\$/);
+    expect(src).not.toContain('$escapedSubject');
+    expect(src).toContain('Paste-Literal (One-Line $to)');
+    expect(src).toContain('Paste-Literal (One-Line $subject)');
+    expect(src).toContain('Paste-Literal $body');
+  });
+  it('fields are pasted in order, before the send key', () => {
+    const to = at(src, 'Paste-Literal (One-Line $to)');
+    const subject = at(src, 'Paste-Literal (One-Line $subject)');
+    const body = at(src, 'Paste-Literal $body');
+    const send = at(src, "SendWait('^{ENTER}')");
+    expect(to).toBeLessThan(subject);
+    expect(subject).toBeLessThan(body);
+    expect(body).toBeLessThan(send);
+  });
+  it('the single-line fields lose their line breaks, and the clipboard is put back', () => {
+    expect(src).toContain("function One-Line([string]$text) { return (($text -replace '[\\r\\n\\t]+', ' ').Trim()) }");
+    expect(at(src, '[System.Windows.Forms.Clipboard]::SetText($priorClip)')).toBeLessThan(at(src, "SendWait('^{ENTER}')"));
+  });
+});
