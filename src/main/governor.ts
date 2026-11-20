@@ -32,13 +32,13 @@
  *     Shell execution is governed by shell_exec's own destructive_exec class.
  *   - "send/submit feedback" stays risky: it still posts text under the
  *     user's identity.
- *   - Enter/Return is escalated only when the caller supplies a context
- *     (window title / page URL) that looks like a compose or checkout
- *     surface. plip escalates every Enter; for Clippy that would prompt on
- *     every search box.
- *   - In a mail client (outlook, olk, thunderbird, Mail) or a browser on a
- *     mail page, Enter / Ctrl+Enter / Alt+S count as a send without needing a
- *     "compose" title. Everywhere else Enter still needs a context.
+ *   - Plain Enter/Return is escalated only on a checkout surface (window
+ *     title / page URL). It is never a send: in a mail app it adds a line to
+ *     the body, runs a search or opens a message, and asking there would
+ *     prompt on every search box.
+ *   - The send chords (Ctrl+Enter, Cmd+Enter, Alt+S, Cmd+Shift+D) count as a
+ *     send in a mail client (outlook, olk, thunderbird, Mail), in a browser
+ *     on a mail page, and on a compose surface.
  *   - Typing into a terminal or the Run dialog is escalated to
  *     destructive_exec only when the text or key submits the line (a newline
  *     or Enter). Typing a line without running it is plain desktop input.
@@ -155,14 +155,14 @@ function submitsLine(tool: string, args: Record<string, unknown>, keys?: string)
 
 // ── Mail surfaces ────────────────────────────────────────────────────────
 
-// In a mail client Enter on a focused Send button, Ctrl+Enter, Alt+S and
-// Cmd+Shift+D send the message, whatever the window title says (the new
-// Outlook composes inline under a "Mail - ..." title). 0.24.12 audit #5.
+// In a mail client Ctrl+Enter, Cmd+Enter, Alt+S and Cmd+Shift+D send the
+// message, whatever the window title says (the new Outlook composes inline
+// under a "Mail - ..." title). 0.24.12 audit #5. Plain Enter is not here.
 const MAIL_PROCESS = /^(?:outlook|olk|hxoutlook|thunderbird|mail)(?:\.exe)?$/i;
 const BROWSER_PROCESS = /^(?:chrome|msedge|firefox|brave|opera|vivaldi|arc|safari|chromium|google chrome|microsoft edge|brave browser)(?:\.exe)?$/i;
 const MAIL_PAGE_URL = /(mail\.google\.com|outlook\.(live|office|office365)\.com|mail\.yahoo\.com|mail\.proton\.me|app\.fastmail\.com|icloud\.com\/mail|mail\.zoho\.com)/i;
 const MAIL_PAGE_TITLE = /\b(gmail|outlook|proton\s?mail|yahoo\s+mail|fastmail|icloud\s+mail|zoho\s+mail|compose|new message)\b/i;
-const MAIL_SEND_CHORDS = new Set([...ENTER_KEYS, 'alt+s', 'cmd+shift+d']);
+const MAIL_SEND_CHORDS = new Set(['ctrl+enter', 'ctrl+return', 'cmd+enter', 'cmd+return', 'alt+s', 'cmd+shift+d']);
 
 /** True when the foreground is a mail client, or a browser on a mail / compose page. */
 export function isMailSurface(processName?: string, title?: string, url?: string): boolean {
@@ -222,7 +222,7 @@ function classifyContext(context: string): RiskVerdict | null {
   return null;
 }
 
-/** Risk from a key chord. Enter only escalates with a send/pay context. */
+/** Risk from a key chord. Enter needs a pay context; the Ctrl/Cmd+Enter chords a send or pay one. */
 export function classifyKeys(keys: string, context?: string, url?: string): RiskVerdict | null {
   const chord = normalizeChord(keys);
   if (!chord) return null;
@@ -231,7 +231,9 @@ export function classifyKeys(keys: string, context?: string, url?: string): Risk
   }
   if (ENTER_KEYS.has(chord)) {
     const v = (url ? classifyUrl(url) : null) ?? (context ? classifyContext(context) : null);
-    if (v) return { class: v.class, reason: `${keys} would probably ${v.class === 'destructive_purchase' ? 'submit the order' : 'send the message'} — ${v.reason}`, ...(v.class === 'destructive_send' ? { family: 'send' as const } : {}) };
+    // Plain Enter submits an order, but it does not send a mail.
+    const plain = chord === 'enter' || chord === 'return';
+    if (v && !(plain && v.class === 'destructive_send')) return { class: v.class, reason: `${keys} would probably ${v.class === 'destructive_purchase' ? 'submit the order' : 'send the message'} — ${v.reason}`, ...(v.class === 'destructive_send' ? { family: 'send' as const } : {}) };
   }
   return null;
 }

@@ -142,15 +142,21 @@ describe('classifyKeys', () => {
     expect(classifyRisk({ tool: 'key_press', args: { key: 'Return' }, context: 'Inbox - Gmail' })).toBeNull();
   });
 
-  it('Enter escalates in a compose or checkout context', () => {
-    expect(classifyRisk({ tool: 'key_press', args: { key: 'Enter' }, context: 'New Message - Outlook' })?.class).toBe('destructive_send');
+  it('Ctrl+Enter escalates in a compose context, Enter on a checkout; plain Enter is never a send', () => {
+    expect(classifyRisk({ tool: 'key_press', args: { key: 'Enter' }, context: 'New Message - Outlook' })).toBeNull();
+    expect(classifyRisk({ tool: 'key_press', args: { key: 'Return' }, url: 'https://mail.google.com/mail/u/0/#inbox?compose=new' })).toBeNull();
     expect(classifyRisk({ tool: 'key_press', args: { key: 'ctrl+enter' }, context: 'Untitled - Message (HTML)' })?.class).toBe('destructive_send');
+    expect(classifyRisk({ tool: 'key_press', args: { key: 'cmd+return' }, context: 'New Message' })?.class).toBe('destructive_send');
+    expect(classifyRisk({ tool: 'key_press', args: { key: 'ctrl+enter' }, url: 'https://shop.example.com/checkout' })?.class).toBe('destructive_purchase');
     expect(classifyRisk({ tool: 'key_press', args: { key: 'Return' }, url: 'https://shop.example.com/checkout' })?.class).toBe('destructive_purchase');
   });
 
-  it('type_text ending in a newline behaves like Enter', () => {
+  it('type_text ending in a newline behaves like plain Enter', () => {
     expect(classifyRisk({ tool: 'type_text', args: { text: 'hello\n' } })).toBeNull();
-    expect(classifyRisk({ tool: 'type_text', args: { text: 'hello\n' }, context: 'Compose - Mail' })?.class).toBe('destructive_send');
+    // A line break in a mail body is not a send...
+    expect(classifyRisk({ tool: 'type_text', args: { text: 'hello\n' }, context: 'Compose - Mail' })).toBeNull();
+    // ...but on a checkout it submits the order.
+    expect(classifyRisk({ tool: 'type_text', args: { text: '4111111111111111\n' }, context: 'Checkout - Shop' })?.class).toBe('destructive_purchase');
     expect(classifyRisk({ tool: 'type_text', args: { text: 'hello' }, context: 'Compose - Mail' })).toBeNull();
   });
 });
@@ -263,16 +269,14 @@ describe('governor gaps: mail send keys, shortcuts_execute, right-click (0.24.12
     classifyRisk({ tool: 'key_press', args: { key: k }, process, context, url });
 
   it.each([
-    ['Enter', 'OUTLOOK', 'Inbox - me@example.com - Outlook'],
     ['ctrl+enter', 'OUTLOOK', 'Re: budget - Message (HTML)'],
     ['ctrl+enter', 'olk', 'Mail - Me - Outlook'],
-    ['Enter', 'olk', 'Mail - Me - Outlook'],
     ['alt+s', 'OUTLOOK', 'Re: budget - Message (HTML)'],
     ['ctrl+enter', 'thunderbird', 'Write: hello - Thunderbird'],
     ['cmd+enter', 'Mail', 'New Message'],
     ['cmd+shift+d', 'Mail', 'Re: hello'],
     ['ctrl+enter', 'chrome', 'Inbox (3) - me@gmail.com - Gmail - Google Chrome'],
-    ['Enter', 'msedge', 'Mail - Me - Outlook - Microsoft Edge'],
+    ['alt+s', 'msedge', 'Mail - Me - Outlook - Microsoft Edge'],
     ['ctrl+enter', 'firefox', 'Proton Mail - Mozilla Firefox'],
   ])('%s in %s (%s) is a send', (k, process, context) => {
     expect(key(k, process, context)?.class).toBe('destructive_send');
@@ -284,6 +288,14 @@ describe('governor gaps: mail send keys, shortcuts_execute, right-click (0.24.12
   });
 
   it.each([
+    // Plain Enter is never a send: a search box, the message list, a compose body.
+    ['Enter', 'OUTLOOK', 'Inbox - me@example.com - Outlook'],
+    ['Enter', 'OUTLOOK', 'Re: budget - Message (HTML)'],
+    ['Return', 'olk', 'Mail - Me - Outlook'],
+    ['Enter', 'thunderbird', 'Write: hello - Thunderbird'],
+    ['Enter', 'Mail', 'New Message'],
+    ['Enter', 'chrome', 'Inbox (3) - me@gmail.com - Gmail - Google Chrome'],
+    ['Enter', 'msedge', 'Mail - Me - Outlook - Microsoft Edge'],
     ['Enter', 'chrome', 'cats - Google Search - Google Chrome'],
     ['ctrl+enter', 'chrome', 'ChatGPT - Google Chrome'],
     ['Enter', 'WINWORD', 'Document1 - Word'],
