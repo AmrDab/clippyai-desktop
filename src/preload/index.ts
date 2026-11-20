@@ -177,6 +177,9 @@ contextBridge.exposeInMainWorld('clippy', {
   transcribeAudio: (wav: Uint8Array, initialPrompt?: string) =>
     ipcRenderer.invoke('transcribe-audio', wav, initialPrompt),
   sttStatus: () => ipcRenderer.invoke('stt-status'),
+  // Voice input microphone chosen in Settings → Voice ('' = Automatic).
+  getMicDevice: () => ipcRenderer.invoke('get-mic-device'),
+  setMicDevice: (deviceId: string, label: string) => ipcRenderer.invoke('set-mic-device', deviceId, label),
 
   // v0.20.0 (voice v1) — optional OpenAI TTS. synthesizeSpeech returns
   // audio BYTES (the key stays in main); on unavailable/error the renderer

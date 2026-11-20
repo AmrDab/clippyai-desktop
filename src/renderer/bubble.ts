@@ -1214,6 +1214,10 @@ export class BubbleController {
       });
     }
 
+    // The microphone chosen in Settings → Voice, read fresh so a change there
+    // applies to the next recording.
+    try { this.recorder.setMic((await window.clippy.getMicDevice?.()) ?? null); } catch { /* Automatic */ }
+
     try {
       await this.recorder.start();
     } catch {

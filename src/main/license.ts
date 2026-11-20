@@ -36,6 +36,11 @@ interface LicenseStore {
   // bridge (free, offline, default); 'openai' = cloud gpt-4o-transcribe
   // (needs the user's key; audio leaves the machine — opt-in only).
   sttEngine: 'apple' | 'openai';
+  // Voice input microphone picked in Settings → Voice. '' = Automatic (the
+  // system default). The label rides along because Chromium's device ids
+  // change; the recorder re-matches by name when the id is gone.
+  micDeviceId: string;
+  micLabel: string;
   // feat/pricing-free-tier — last usage snapshot from a /turn response. Lets
   // Settings render a monthly usage meter (tokensUsed / tokensAllowed) without
   // a dedicated usage endpoint. Additive + best-effort: zero means "unknown".
@@ -59,6 +64,8 @@ const store = new Store<LicenseStore>({
     openaiKeyPresent: false,
     ttsEngine: 'system',
     sttEngine: 'apple',
+    micDeviceId: '',
+    micLabel: '',
     tokensUsed: 0,
     tokensAllowed: 0,
   },
@@ -112,6 +119,15 @@ export function getSttEngine(): 'apple' | 'openai' {
 
 export function setSttEngine(engine: 'apple' | 'openai'): void {
   store.set('sttEngine', engine);
+}
+
+export function getMicDevice(): { deviceId: string; label: string } {
+  return { deviceId: store.get('micDeviceId'), label: store.get('micLabel') };
+}
+
+export function setMicDevice(deviceId: string, label: string): void {
+  store.set('micDeviceId', deviceId);
+  store.set('micLabel', deviceId ? label : '');
 }
 
 export function getMachineId(): string {

@@ -20,7 +20,7 @@
  */
 
 import { rmsOf } from '../main/voice-gate';
-import { cleanMicLabel } from './mic-select';
+import { cleanMicLabel, listMics, resolveMic, type MicPref } from './mic-select';
 
 export type RecorderState = 'idle' | 'requesting' | 'recording' | 'encoding';
 
@@ -63,6 +63,7 @@ export class Recorder {
   private levelTimer: ReturnType<typeof setInterval> | null = null;
   private lastLevelSamples: Float32Array | null = null;
   private micLabel = '';
+  private micPref: MicPref | null = null;
 
   constructor(events: RecorderEvents = {}) {
     this.events = events;
@@ -72,23 +73,47 @@ export class Recorder {
     return this.state;
   }
 
-  /** Begin capturing from the default mic. Resolves once the worklet is
-   *  actually receiving frames; rejects on permission denial. */
+  /** The microphone chosen in Settings → Voice; null or an empty deviceId
+   *  means Automatic. Takes effect on the next start(). */
+  setMic(pref: MicPref | null): void {
+    this.micPref = pref;
+  }
+
+  // Requests 16 kHz; browsers may ignore the hint, which is fine — we
+  // resample on encode. No deviceId = the system default microphone.
+  private getStream(deviceId?: string): Promise<MediaStream> {
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        channelCount: 1,
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+  }
+
+  /** The chosen microphone, or the system default when none is chosen or
+   *  the chosen one is gone (unplugged since). */
+  private async openMic(): Promise<MediaStream> {
+    if (this.micPref?.deviceId) {
+      try {
+        const mic = resolveMic(this.micPref, listMics(await navigator.mediaDevices.enumerateDevices()));
+        if (mic) return await this.getStream(mic.deviceId);
+      } catch { /* gone: fall back to Automatic */ }
+    }
+    return this.getStream();
+  }
+
+  /** Begin capturing from the chosen mic (the default one in Automatic).
+   *  Resolves once the worklet is actually receiving frames; rejects on
+   *  permission denial. */
   async start(): Promise<void> {
     if (this.state !== 'idle') return; // idempotent
     this.setState('requesting');
     try {
-      // Try requesting at 16 kHz; browsers may ignore the hint, which
-      // is fine — we resample on encode.
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      this.stream = await this.openMic();
     } catch (err) {
       this.cleanup();
       this.setState('idle');

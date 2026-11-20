@@ -248,6 +248,9 @@ interface Window {
     /** v0.17.0 — Voice input (offline whisper.cpp transcription) */
     transcribeAudio?: (wav: Uint8Array, initialPrompt?: string) => Promise<{ ok: boolean; text?: string; error?: string; elapsedMs?: number }>;
     sttStatus?: () => Promise<{ ready: boolean; reason?: string }>;
+    /** Voice input microphone chosen in Settings → Voice; deviceId '' = Automatic. */
+    getMicDevice?: () => Promise<{ deviceId: string; label: string }>;
+    setMicDevice?: (deviceId: string, label: string) => Promise<boolean>;
     /** v0.20.0 (voice v1) — optional OpenAI TTS proxy. Returns audio bytes
      *  on ok; `unavailable` means no key configured (renderer uses local
      *  SpeechSynthesis). The key never crosses this bridge. */

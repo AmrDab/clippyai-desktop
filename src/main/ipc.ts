@@ -35,6 +35,7 @@ import {
   getUsage,
   store as licenseStore,
 } from './license';
+import { getMicDevice, setMicDevice } from './license';
 import { setSecret, clearSecret } from './skills/secrets';
 import { API_KEYCHAIN_SERVICE } from './api-routes';
 // v0.20.0 (voice v1) — STATIC import (bundle-anchor rule) for the
@@ -942,6 +943,17 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       log.warn('transcribe-audio failed', serializeErr(err));
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+  });
+
+  // Voice input microphone (Settings → Voice). deviceId '' = Automatic. Read
+  // by the bubble before each recording, so no broadcast is needed.
+  ipcMain.handle('get-mic-device', () => getMicDevice());
+  ipcMain.handle('set-mic-device', (_event, deviceId: unknown, label: unknown) => {
+    setMicDevice(
+      typeof deviceId === 'string' ? deviceId.slice(0, 256) : '',
+      typeof label === 'string' ? label.slice(0, 256) : '',
+    );
+    return true;
   });
 
   ipcMain.handle('stt-status', async () => {
