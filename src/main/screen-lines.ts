@@ -21,6 +21,8 @@ export interface ScreenNode {
   state?: string;
   /** invoke, setvalue, toggle, select, expand — comma separated. */
   actions?: string;
+  /** [x, y, width, height] on screen (Windows: physical pixels; macOS: points). Sent only with `find`. */
+  rect?: [number, number, number, number];
 }
 
 export interface ScreenLinesInput {
@@ -56,7 +58,8 @@ export function nodeLine(id: string, n: ScreenNode): string {
     (name ? ` "${name}"` : '') +
     (value !== undefined && value !== name ? ` = "${value}"` : '') +
     (n.state ? ` ${n.state}` : '') +
-    (n.actions ? ` (${n.actions.split(',').join(', ')})` : '');
+    (n.actions ? ` (${n.actions.split(',').join(', ')})` : '') +
+    (Array.isArray(n.rect) && n.rect.length === 4 ? ` @${n.rect[0]},${n.rect[1]} ${n.rect[2]}x${n.rect[3]}` : '');
 }
 
 export function renderScreenLines(input: ScreenLinesInput, maxLines = MAX_SCREEN_LINES): ScreenLines {
@@ -81,6 +84,9 @@ export function renderScreenLines(input: ScreenLinesInput, maxLines = MAX_SCREEN
       : '(this window exposes no controls: use ocr_read_screen or desktop_screenshot)');
   } else if (cut) {
     out.push(`[only the first ${shown} controls are shown: call read_screen with find:"<part of a name>" to list the ones you need]`);
+  }
+  if (shown > 0 && input.find && input.nodes.some((n) => n.rect)) {
+    out.push('[@x,y WxH is each control\'s rectangle on screen: its centre (x+W/2, y+H/2) can go straight to mouse_click]');
   }
   if (input.others?.length) out.push(`Other windows: ${input.others.join('; ')}`);
   return { text: out.join('\n'), ids };
@@ -118,7 +124,7 @@ export function formatWinScreen(raw: string, opts: { find?: string; ownProcessNa
 
 // ── macOS: the Swift bridge a11y-tree ────────────────────────────────
 
-interface AxNodeLike { role?: string; title?: string; value?: string | null; enabled?: boolean; focused?: boolean; children?: AxNodeLike[] }
+interface AxNodeLike { role?: string; title?: string; value?: string | null; enabled?: boolean; focused?: boolean; bounds?: { x: number; y: number; width: number; height: number }; children?: AxNodeLike[] }
 export interface AxTreeLike { app?: string; windows?: Array<{ title?: string; elements?: AxNodeLike[] }>; truncated?: boolean }
 
 /** AX roles kept even with no title and no value: a control the model can act on. */
@@ -141,7 +147,11 @@ export function axTreeToNodes(tree: AxTreeLike, find = ''): ScreenNode[] {
       const name = title || (role === 'StaticText' ? value : '');
       const state = [el.enabled === false ? 'disabled' : '', el.focused ? 'focused' : '', secure ? 'password' : ''].filter(Boolean).join(' ');
       if (!f || name.toLowerCase().includes(f) || value.toLowerCase().includes(f)) {
-        nodes.push({ d: depth, role, name, ...(value && value !== name ? { value } : {}), ...(state ? { state } : {}) });
+        const b = el.bounds;
+        const rect = f && b && b.width > 0 && b.height > 0
+          ? { rect: [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)] as [number, number, number, number] }
+          : {};
+        nodes.push({ d: depth, role, name, ...(value && value !== name ? { value } : {}), ...(state ? { state } : {}), ...rect });
       }
       d++;
     }

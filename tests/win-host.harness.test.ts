@@ -155,6 +155,8 @@ describe.skipIf(!RUN)('Windows PowerShell host harness (own WinForms window)', (
     expect(r.windows.some((w: { handle: number }) => w.handle === info.hwnd)).toBe(true);
     const f = JSON.parse((await psScript('get-screen-context.ps1', { WindowHandle: info.hwnd, FindB64: b64('send') }, { timeoutMs: 15000 })).stdout);
     expect(f.nodes.map((x: { name: string }) => x.name)).toEqual(['Send']);
+    expect(f.nodes[0].rect).toHaveLength(4); // only with find
+    expect(r.nodes.every((x: { rect?: unknown }) => x.rect === undefined)).toBe(true);
   }, 30000);
 
   it('smart-find: fuzzy TreeWalker pass finds a multi-word button from one word', async () => {

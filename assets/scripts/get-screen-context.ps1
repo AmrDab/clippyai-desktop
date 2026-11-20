@@ -12,13 +12,15 @@
 
     Output: one JSON object
       {focusedProcessId, focusedHandle, focusedTitle, focusedProcess,
-       nodes:[{d, role, name, value?, state?, actions?}], seen, truncated,
+       nodes:[{d, role, name, value?, state?, actions?, rect?}], seen, truncated,
        elapsedMs, windows:[{handle, title, processName, processId, isMinimized}]}
     d       depth among the shown nodes
     value   fields only, never a password
     state   checked/unchecked/mixed, selected, expanded/collapsed, disabled,
             focused, offscreen, password (space separated)
     actions invoke, setvalue, toggle, select, expand (comma separated)
+    rect    [x, y, width, height] in physical screen pixels; only with
+            -FindB64 (a few lines), for a caller that needs to click by position
 .PARAMETER WindowHandle
     The window to read. The caller picks it (foreground-pick.ts).
 .PARAMETER FocusedProcessId
@@ -65,6 +67,7 @@ using System.Windows.Automation;
 
 public static class ClippyScreenCtx {
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr v);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
@@ -122,7 +125,7 @@ public static class ClippyScreenCtx {
     static readonly AutomationProperty[] CachedProps = {
         AutomationElement.NameProperty, AutomationElement.AutomationIdProperty, AutomationElement.ControlTypeProperty,
         AutomationElement.IsEnabledProperty, AutomationElement.IsOffscreenProperty, AutomationElement.IsPasswordProperty,
-        AutomationElement.HasKeyboardFocusProperty,
+        AutomationElement.HasKeyboardFocusProperty, AutomationElement.BoundingRectangleProperty,
         AutomationElement.IsInvokePatternAvailableProperty, AutomationElement.IsValuePatternAvailableProperty,
         AutomationElement.IsTogglePatternAvailableProperty, AutomationElement.IsSelectionItemPatternAvailableProperty,
         AutomationElement.IsExpandCollapsePatternAvailableProperty, AutomationElement.IsRangeValuePatternAvailableProperty,
@@ -150,7 +153,7 @@ public static class ClippyScreenCtx {
     static string Cut(string s, int max) { return s.Length > max ? s.Substring(0, max) : s; }
     static bool B(AutomationElement el, AutomationProperty p) { object o = el.GetCachedPropertyValue(p); return o is bool && (bool)o; }
 
-    static string Node(AutomationElement el, string role, string name, int depth, bool off) {
+    static string Node(AutomationElement el, string role, string name, int depth, bool off, bool withRect) {
         var acts = new List<string>();
         var state = new List<string>();
         bool password = B(el, AutomationElement.IsPasswordProperty);
@@ -201,6 +204,14 @@ public static class ClippyScreenCtx {
         if (v != null) o.Append(",\"value\":").Append(Q(v));
         if (state.Count > 0) o.Append(",\"state\":").Append(Q(string.Join(" ", state.ToArray())));
         if (acts.Count > 0) o.Append(",\"actions\":").Append(Q(string.Join(",", acts.ToArray())));
+        if (withRect) {
+            object br = el.GetCachedPropertyValue(AutomationElement.BoundingRectangleProperty);
+            if (br is System.Windows.Rect) {
+                var r = (System.Windows.Rect)br;
+                if (!r.IsEmpty && !double.IsInfinity(r.X) && r.Width > 0 && r.Height > 0)
+                    o.Append(",\"rect\":[").Append((int)r.X).Append(",").Append((int)r.Y).Append(",").Append((int)r.Width).Append(",").Append((int)r.Height).Append("]");
+            }
+        }
         return o.Append("}").ToString();
     }
 
@@ -223,7 +234,7 @@ public static class ClippyScreenCtx {
             if (off && w.Find.Length == 0) return;
             if (name.Trim().Length > 0 || Shown.Contains(role)) {
                 string node;
-                try { node = Node(el, role, name, depth, off); } catch { return; }
+                try { node = Node(el, role, name, depth, off, w.Find.Length > 0); } catch { return; }
                 lock (w) {
                     w.Seen++;
                     if (w.Find.Length == 0 || name.IndexOf(w.Find, StringComparison.OrdinalIgnoreCase) >= 0 || aid.IndexOf(w.Find, StringComparison.OrdinalIgnoreCase) >= 0) w.Nodes.Add(node);
@@ -240,6 +251,7 @@ public static class ClippyScreenCtx {
     }
 
     static void WalkWindow(Walk w, IntPtr h) {
+        try { SetThreadDpiAwarenessContext(new IntPtr(-4)); } catch { } // rects in physical pixels (per-monitor v2)
         try {
             var cr = new CacheRequest();
             cr.AutomationElementMode = AutomationElementMode.Full;

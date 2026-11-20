@@ -77,6 +77,23 @@ describe('nodeLine', () => {
   });
 });
 
+describe('find adds the rectangle, for a click by position', () => {
+  const found = { ...DUMP, nodes: [{ d: 0, role: 'Pane', name: 'Canvas', rect: [120, 340, 1600, 900] as [number, number, number, number] }] };
+  it('each line ends with @x,y WxH and the result says what it is', () => {
+    const out = formatWinScreen(JSON.stringify(found), { find: 'canvas' })!.text.split('\n');
+    expect(out[1]).toBe('e1 Pane "Canvas" @120,340 1600x900');
+    expect(out[2]).toBe("[@x,y WxH is each control's rectangle on screen: its centre (x+W/2, y+H/2) can go straight to mouse_click]");
+  });
+  it('a plain read has no rectangles (they would eat the budget)', () => {
+    expect(formatWinScreen(JSON.stringify(DUMP))!.text).not.toContain('@');
+  });
+  it('macOS: the AX bounds, only with find', () => {
+    const tree = { app: 'Paint', windows: [{ title: 'W', elements: [{ role: 'AXButton', title: 'Brush', value: null, bounds: { x: 10.4, y: 20, width: 30, height: 40 } }] }] };
+    expect(formatMacScreen(tree, { find: 'brush' }).text).toContain(' e2 Button "Brush" @10,20 30x40');
+    expect(formatMacScreen(tree).text).not.toContain('@');
+  });
+});
+
 describe('formatWinScreen', () => {
   it('foreground window first, one line per control, the other windows last and in brief', () => {
     const out = formatWinScreen(JSON.stringify(DUMP), { ownProcessNames: new Set(['ClippyAI']) })!;
