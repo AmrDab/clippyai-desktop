@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, globalShortcut, crashReporter, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, crashReporter, powerMonitor, shell } from 'electron';
+import { installNavigationGuards } from './nav-guard';
 import fs from 'fs';
 import path from 'path';
 
@@ -347,6 +348,13 @@ process.on('unhandledRejection', (reason) => {
   // Do NOT exit — promise rejections are usually recoverable (network
   // errors, missing optional features). Logging is enough.
 });
+
+// Every window carries the preload bridge: none of them may be navigated to
+// a web page or open an in-app child window (nav-guard.ts).
+installNavigationGuards(app, (url) => shell.openExternal(url), {
+  devUrl: process.env.ELECTRON_RENDERER_URL,
+  rendererDir: path.join(__dirname, '../renderer'),
+}, (kind, url) => log.warn('Navigation blocked', { kind, url: url.slice(0, 120) }));
 
 app.whenReady().then(async () => {
   bootLog('APP_READY');
