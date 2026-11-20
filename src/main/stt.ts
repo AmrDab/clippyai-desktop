@@ -12,6 +12,7 @@ import * as openaiVoice from './openai-voice';
 import { isOpenAiKeyPresent, getSttEngine } from './license';
 // Static import (bundle-anchor rule) — the on-device Apple Speech engine.
 import * as macBridge from './mac-bridge-native';
+import { cleanTranscript, wavStats } from './voice-gate';
 
 const log = createLogger('STT');
 
@@ -134,6 +135,23 @@ export function isSttReady(): { ready: boolean; reason?: string } {
 export async function transcribeWav(
   wavBuffer: Uint8Array | Buffer,
   opts: TranscribeOptions = {},
+): Promise<TranscribeResult> {
+  const r = await transcribeRaw(wavBuffer, opts);
+  if (!r.ok || !r.text) return r;
+  // Every engine (whisper-cli, Apple Speech, OpenAI) goes through the same
+  // filter: "[BLANK_AUDIO]" or a hallucinated "you" comes back as '' and the
+  // bubble says it heard nothing instead of sending it as a message.
+  const clip = wavStats(wavBuffer);
+  const text = cleanTranscript(r.text, clip);
+  if (text !== r.text.trim()) {
+    log.info('STT.filtered non-speech', { rms: Number(clip.rms.toFixed(5)), durationMs: Math.round(clip.durationMs), kept: text.length });
+  }
+  return { ...r, text };
+}
+
+async function transcribeRaw(
+  wavBuffer: Uint8Array | Buffer,
+  opts: TranscribeOptions,
 ): Promise<TranscribeResult> {
   const ready = isSttReady();
   if (!ready.ready) return { ok: false, error: ready.reason };
