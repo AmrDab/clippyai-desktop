@@ -1978,8 +1978,15 @@ async function ocrReadScreen(): Promise<ToolResult> {
 
 async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
   const seconds = Math.min(30, Math.max(0.1, Number(params.seconds || 1)));
-  await new Promise(r => setTimeout(r, seconds * 1000));
-  return { text: `Waited ${seconds}s` };
+  // Stop / sleep / a new message end the wait at once (abortAllInFlightTools).
+  const ac = new AbortController();
+  activeAborts.add(ac);
+  const full = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(true), seconds * 1000);
+    ac.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(false); }, { once: true });
+  });
+  activeAborts.delete(ac);
+  return { text: full ? `Waited ${seconds}s` : '(wait cancelled)' };
 }
 
 // ── Clipboard ────────────────────────────────────────────────────

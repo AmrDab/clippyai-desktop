@@ -67,6 +67,7 @@ import { sanitizeReply } from './reply-sanitize';
 import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import { ToolLoopDetector, exemptFromRunawayGuard, notRunAfterFailure } from './tool-loop-detection';
+import { AbortRegistry, abortableDelay } from './turn-abort';
 import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
 import Store from 'electron-store';
@@ -799,6 +800,8 @@ export class Brain {
   // and aborts, letting the new message take over. Resets at the start of
   // every new execution.
   private cancelRequested = false;
+  /** In-flight /v1/turn requests and retry waits: a cancel aborts them at once (turn-abort.ts). */
+  private readonly turnWaits = new AbortRegistry();
   /** v0.18.1 — populated when cancellation is fired by user-takeover. */
   private cancelReason: import('./user-takeover').TakeoverReason | null = null;
   /** v0.20.0 — the goal of a task that was just interrupted by a user takeover,
@@ -996,6 +999,7 @@ export class Brain {
       //      was still driving the user's keyboard. Per report 8836f5ec.
       //   3. stopLoop() — stops the proactive timer.
       this.cancelRequested = true;
+      this.turnWaits.abortAll();
       approvalMod.cancelAllApprovals();
       byokMod.abortByokRequests();
       try { abortAllInFlightTools(); } catch (err) {
@@ -1295,6 +1299,7 @@ export class Brain {
     if (this.isExecuting) {
       log.info('User override — cancelling in-flight task', { newMessage: text.substring(0, 80) });
       this.cancelRequested = true;
+      this.turnWaits.abortAll();
       approvalMod.cancelAllApprovals();
       byokMod.abortByokRequests();
       // v0.12.3 — also kill in-flight execFileAbortable children. Per
@@ -1349,6 +1354,7 @@ export class Brain {
         log.warn('Takeover-driven cancel', { reason, idle_sec: detail.idleSec, cursor_delta: detail.cursorDelta });
         this.cancelRequested = true;
         this.cancelReason = reason;
+        this.turnWaits.abortAll();
         approvalMod.cancelAllApprovals();
         byokMod.abortByokRequests();
         try { abortAllInFlightTools(); } catch { /* non-fatal */ }
@@ -1565,11 +1571,12 @@ export class Brain {
         if (this.powerPassActive) this.passTurns++;
         telemetry.taskTurn({ ms: turnMs, provider: isError(resp) ? undefined : resp.provider, finishReason: isError(resp) ? undefined : resp.finish_reason });
 
+        // A cancel (Stop / sleep / override / takeover) aborts the in-flight
+        // request; whatever came back — an error or an answer that crossed
+        // the cancel — is not spoken or acted on. The cancel check at the top
+        // of the loop ends the task.
+        if (this.cancelRequested) continue;
         if (isError(resp)) {
-          // v0.21 — a cancel (sleep / override / takeover) aborts an
-          // in-flight BYOK request; let the cancel check at the top of the
-          // loop handle it instead of showing a "can't reach my brain" error.
-          if (this.cancelRequested) continue;
           log.info('Turn.error', { step: step + 1, error: resp.error, detail: resp.detail, elapsed_ms: turnMs });
           telemetry.taskTurnError(resp.error);
           if (resp.error === 'limit_reached') telemetry.track('upsell_shown', { trigger: 'limit_reached', cta: 'power', pass_available: false });
@@ -3077,6 +3084,8 @@ ${typingLine}`;
     log.info('User pressed Stop — cancelling in-flight task');
     this.cancelRequested = true;
     this.stopRequested = true;
+    // The model request on the wire is dropped now, not when it answers.
+    this.turnWaits.abortAll();
     approvalMod.cancelAllApprovals();
     byokMod.abortByokRequests();
     try { abortAllInFlightTools(); } catch (err) {
@@ -3200,6 +3209,8 @@ ${typingLine}`;
       const result = await this.callTurnOnce(contents, opts);
       // Don't retry non-transient errors
       if (!isError(result)) return result;
+      // Cancelled: no retry (it used to add up to 60 s more).
+      if (result.error === 'cancelled' || this.cancelRequested) return result;
       if (['invalid_key', 'subscription_inactive', 'limit_reached', 'feature_locked', 'parse_error', 'unreachable'].includes(result.error)) {
         return result;
       }
@@ -3207,7 +3218,7 @@ ${typingLine}`;
       if (attempt < MAX_RETRIES) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt);
         log.warn('Turn retry', { attempt: attempt + 1, error: result.error, delay_ms: delay });
-        await new Promise((r) => setTimeout(r, delay));
+        if (!(await abortableDelay(delay, this.turnWaits))) return { error: 'cancelled' };
       } else {
         return result;
       }
@@ -3269,11 +3280,23 @@ ${typingLine}`;
     const licenseKey = getLicenseKey();
     const startTime = Date.now();
 
-    return new Promise((resolve) => {
+    return new Promise((resolveTurn) => {
       const req = net.request({ url: TURN_ENDPOINT, method: 'POST' });
       req.setHeader('Content-Type', 'application/json');
       req.setHeader('Authorization', `Bearer ${licenseKey}`);
       req.setHeader('X-Client-Version', app.getVersion());
+      // Stop / sleep / a new message abort this request the moment they
+      // arrive (turnWaits.abortAll()), instead of waiting for the answer.
+      let aborted = false;
+      const unregister = this.turnWaits.add(() => {
+        aborted = true;
+        clearTimeout(timeout);
+        cancelReach();
+        log.info('Turn aborted by cancel', { elapsed_ms: Date.now() - startTime });
+        try { req.abort(); } catch { /* already closed */ }
+        resolveTurn({ error: 'cancelled' });
+      });
+      const resolve = (r: TurnResponse): void => { unregister(); resolveTurn(r); };
 
       // v0.18.0 — timeout 60s → 40s. Floor chosen against logged
       // Turn.ok elapsed_ms telemetry — 25s killed legitimate slow
@@ -3324,6 +3347,7 @@ ${typingLine}`;
       });
 
       req.on('error', (err) => {
+        if (aborted) return; // our own abort, already answered
         clearTimeout(timeout);
         cancelReach();
         log.error('Turn network error', serializeErr(err));
