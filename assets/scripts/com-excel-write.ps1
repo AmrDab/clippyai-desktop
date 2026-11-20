@@ -25,6 +25,12 @@ if ($path.StartsWith('~')) { $path = $path -replace '^~', $env:USERPROFILE }
 $path = [System.Environment]::ExpandEnvironmentVariables($path)
 $path = $path.Replace('/', '\')
 
+# 0.24.12 - same read guard as read_file / list_files: no UNC path (opening one
+# makes Windows authenticate to the server it names), no credential folders.
+. "$PSScriptRoot\_path-guard.ps1"
+$guard = Test-PathAllowedForRead $path
+if (-not $guard.allowed) { Fail "path not allowed: $($guard.reason)" }
+
 # Parse data — expect [[a,b,c],[d,e,f]] OR a single row [a,b,c]
 try {
     $arr = $data | ConvertFrom-Json
@@ -80,6 +86,10 @@ try {
     $excel = New-Object -ComObject Excel.Application -ErrorAction Stop
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
+    # 3 = msoAutomationSecurityForceDisable: a workbook or document opened by
+    # Clippy never runs its macros (Workbook_Open / AutoOpen), whatever the
+    # user's own macro setting is.
+    $excel.AutomationSecurity = 3
 
     if (Test-Path $path) {
         $wb = $excel.Workbooks.Open($path)
