@@ -135,6 +135,12 @@ function sanitizeClassOverrides(
       log.warn('Dropped classOverride with invalid ClassDecision value', { source, key, value });
       continue;
     }
+    // Real money is the one hard floor: no message over IPC can switch the
+    // purchase prompt off. ('approve' and 'block' are still accepted.)
+    if (source === 'ipc' && key === 'destructive_purchase' && value === 'allow') {
+      log.warn('Refused classOverride: purchases cannot be set to allow over IPC');
+      continue;
+    }
     clean[key as ActionClass] = value as ClassDecision;
   }
   return clean;
