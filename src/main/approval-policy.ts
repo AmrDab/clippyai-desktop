@@ -13,8 +13,10 @@
  * or the task did not come from the user, or the user picked Cautious / an
  * explicit "approve" for the class. The hard blocklist (shell-guard.ts) still
  * refuses at execution whatever this says. Skill installs, purchases, sends,
- * payments, http_request, clawd_task and every governor-escalated click keep
- * asking exactly as before.
+ * payments, http_request and clawd_task keep asking exactly as before. A
+ * governor-escalated click or key asks too, with one exception: the user's
+ * own message asked for a send or a delete and the control is a Send-type or
+ * Delete-type one (isRequestedEscalation). A purchase always asks.
  *
  * One deliberate exception besides shell_exec (owner report: "force quit
  * designcenter" asked three times, then failed): quitting THE APP THE USER
@@ -43,6 +45,8 @@ export interface ApprovalCtx {
   actionClass: ActionClass;
   /** The governor escalated this call (looks like a purchase / send / delete click). */
   escalated: boolean;
+  /** The governor recognised a Send-type or Delete-type control or key (RiskVerdict.family). */
+  riskFamily?: 'send' | 'delete';
   /** Policy mode; 'cautious' means the user wants to see every action. */
   mode: 'cautious' | 'standard' | 'trusted';
   /** The user explicitly set this class to 'approve' in Settings → Guardrails. */
@@ -249,6 +253,30 @@ export function parseQuitCommand(command: string): string | null {
   return null;
 }
 
+// Verbs in the user's own message that ask for a send or a delete. email /
+// mail / reply / post are also nouns ("what does this email say?"), so they
+// count only when no determiner comes right before them.
+const NOUN_MARK = String.raw`(?<!\b(?:this|that|the|my|a|an|your|his|her|their|our|latest|last|new|unread|every|each|any|some|which|what|these|those)\s+)`;
+const REQUEST_VERBS: Record<'send' | 'delete', RegExp> = {
+  send: new RegExp(String.raw`\b(?:send|sends|sending|submit|submits|submitting|emailing|mailing|replying|posting)\b|${NOUN_MARK}\b(?:email|e-mail|mail|reply|post)\b`, 'i'),
+  delete: new RegExp(String.raw`\b(?:delete|deletes|deleting|remove|removes|removing|empty|emptying)\b|${NOUN_MARK}\btrash\b`, 'i'),
+};
+const FAMILY_CLASS: Record<'send' | 'delete', ActionClass> = { send: 'destructive_send', delete: 'destructive_file' };
+
+/**
+ * An escalated click or key that is exactly what the user asked for: they
+ * wrote "send ..." and the control is a Send button, or "delete ..." and it is
+ * a Delete button. `requestText` must be the user's own message, never page
+ * text, a tool result or model text. Purchases, credential fields,
+ * destructive_exec and a control of the other family are never requested.
+ */
+export function isRequestedEscalation(ctx: ApprovalCtx): boolean {
+  const family = ctx.riskFamily;
+  if (!ctx.escalated || !family || !ctx.requestText) return false;
+  if (ctx.actionClass !== FAMILY_CLASS[family]) return false;
+  return REQUEST_VERBS[family].test(ctx.requestText);
+}
+
 /**
  * True when the user must be asked. Anything that is not an eligible
  * user-started shell command or named-app quit defers to permission-policy's
@@ -258,10 +286,11 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   if (ctx.decision === 'allow') return false;
   if (ctx.decision === 'block') return true;
   // decision === 'approve' from here: ask unless every relaxation condition holds.
-  if (ctx.escalated) return true;                 // purchase / send / delete click: never loosened
   if (ctx.origin !== 'user') return true;         // remote agent or proactive tip
   if (ctx.injectionSeen) return true;             // untrusted content in play
   if (ctx.mode === 'cautious' || ctx.classForcedApprove) return true; // the user asked to see everything
+  // A purchase / send / delete click asks, unless it is the send or delete the user asked for.
+  if (ctx.escalated) return !isRequestedEscalation(ctx);
   if (ctx.actionClass !== 'destructive_exec') return true;
   if (tool === 'kill_process') {
     // An empty or failed resolve asks (fail closed): what runs could differ from what was resolved.

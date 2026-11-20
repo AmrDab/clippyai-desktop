@@ -64,6 +64,10 @@ export interface RiskInput {
 export interface RiskVerdict {
   class: ActionClass;
   reason: string;
+  /** Set only when a Send-type or Delete-type control or key was recognised
+   *  (not a credential field, a checkout, or a click judged by its window).
+   *  approval-policy uses it: "send the email" + a Send button runs unasked. */
+  family?: 'send' | 'delete';
 }
 
 /** Tools the governor looks at. Anything else returns null immediately. */
@@ -188,7 +192,10 @@ export function classifyLabel(label: string): RiskVerdict | null {
   if (LABEL_EXCLUSIONS.some((re) => re.test(norm))) return null;
   for (const rule of LABEL_RULES) {
     const m = rule.re.exec(norm);
-    if (m) return { class: rule.cls, reason: `Looks like a ${rule.what} button: ${q(norm)}` };
+    if (m) {
+      const family = rule.what === 'send' ? 'send' : rule.what === 'delete' ? 'delete' : undefined;
+      return { class: rule.cls, reason: `Looks like a ${rule.what} button: ${q(norm)}`, ...(family ? { family } : {}) };
+    }
   }
   return null;
 }
@@ -222,7 +229,7 @@ export function classifyKeys(keys: string, context?: string, url?: string): Risk
   }
   if (ENTER_KEYS.has(chord)) {
     const v = (url ? classifyUrl(url) : null) ?? (context ? classifyContext(context) : null);
-    if (v) return { class: v.class, reason: `${keys} would probably ${v.class === 'destructive_purchase' ? 'submit the order' : 'send the message'} — ${v.reason}` };
+    if (v) return { class: v.class, reason: `${keys} would probably ${v.class === 'destructive_purchase' ? 'submit the order' : 'send the message'} — ${v.reason}`, ...(v.class === 'destructive_send' ? { family: 'send' as const } : {}) };
   }
   return null;
 }
@@ -262,7 +269,7 @@ export function classifyRisk(input: RiskInput): RiskVerdict | null {
     const v = classifyKeys(keys, input.context, input.url);
     if (v) return v;
     if (MAIL_SEND_CHORDS.has(normalizeChord(keys)) && isMailSurface(input.process, input.context, input.url)) {
-      return { class: 'destructive_send', reason: `${keys} in ${q(input.process ?? 'the mail app')} can send the message` };
+      return { class: 'destructive_send', reason: `${keys} in ${q(input.process ?? 'the mail app')} can send the message`, family: 'send' };
     }
     return null;
   }
@@ -271,7 +278,7 @@ export function classifyRisk(input: RiskInput): RiskVerdict | null {
   if (tool === 'shortcuts_execute') {
     const intent = String(args.intent ?? args.action ?? '');
     return /\bsend\b/i.test(intent)
-      ? { class: 'destructive_send', reason: `The ${q(intent)} shortcut sends the message` }
+      ? { class: 'destructive_send', reason: `The ${q(intent)} shortcut sends the message`, family: 'send' }
       : null;
   }
 

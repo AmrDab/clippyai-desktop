@@ -1847,6 +1847,7 @@ export class Brain {
               decision,
               actionClass,
               escalated: !!risk,
+              riskFamily: risk?.family,
               mode: pol.mode,
               classForcedApprove: pol.classOverrides[actionClass] === 'approve',
               requestText: this.lastUserRequest ?? undefined,
@@ -1904,7 +1905,9 @@ export class Brain {
               responseParts.push({
                 functionResponse: {
                   name: call.name,
-                  response: { content: `(error:user_denied) User declined (${verdict}). Do not retry; ask what they'd like instead.` },
+                  response: { content: verdict === 'timeout'
+                    ? `(error:no_answer) The user didn't answer the approval card in time. Nothing ran. Tell them it is waiting on their OK; do not retry on your own.`
+                    : `(error:user_denied) User declined (${verdict}). Do not retry; ask what they'd like instead.` },
                 },
               });
               continue;
