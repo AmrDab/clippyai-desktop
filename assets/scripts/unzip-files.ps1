@@ -1,13 +1,13 @@
 # unzip-files.ps1
 # v0.12.4 — Decompress a ZIP archive into a destination directory.
 # Args:
-#   -input     (required) .zip path
+#   -zipPath   (required) .zip path
 #   -output    (required) destination directory
 #   -overwrite (optional, "true" to replace existing files at output)
 # Outputs JSON: {ok:true, dir:<path>, items:<n>} or {ok:false, error:<code>}
 
 param(
-    [string]$input = "",
+    [string]$zipPath = "",
     [string]$output = "",
     [string]$overwrite = "false"
 )
@@ -15,21 +15,21 @@ param(
 function Out-Result($obj) { Write-Output ($obj | ConvertTo-Json -Compress -Depth 3) }
 function Fail($code, $msg) { Out-Result @{ ok = $false; error = $code; message = $msg }; exit 1 }
 
-if ([string]::IsNullOrWhiteSpace($input))  { Fail 'missing_input' 'input is required (.zip path)' }
+if ([string]::IsNullOrWhiteSpace($zipPath))  { Fail 'missing_input' 'input is required (.zip path)' }
 if ([string]::IsNullOrWhiteSpace($output)) { Fail 'missing_output' 'output is required (directory)' }
 
 . "$PSScriptRoot\_path-guard.ps1"
-$inGuard = Test-PathAllowedForRead $input
+$inGuard = Test-PathAllowedForRead $zipPath
 if (-not $inGuard.allowed) { Fail 'path_blocked' ("Input blocked: " + $inGuard.reason) }
 $outGuard = Test-PathAllowedForRead $output
 if (-not $outGuard.allowed) { Fail 'path_blocked' ("Output blocked: " + $outGuard.reason) }
 
-$input = $inGuard.resolved
+$zipPath = $inGuard.resolved
 $output = $outGuard.resolved
 
-if (-not (Test-Path $input)) { Fail 'input_not_found' "Input file not found: $input" }
-if ([System.IO.Path]::GetExtension($input).ToLower() -ne '.zip') {
-    Fail 'not_a_zip' "Input must have .zip extension; got: $input"
+if (-not (Test-Path $zipPath)) { Fail 'input_not_found' "Input file not found: $zipPath" }
+if ([System.IO.Path]::GetExtension($zipPath).ToLower() -ne '.zip') {
+    Fail 'not_a_zip' "Input must have .zip extension; got: $zipPath"
 }
 
 if (-not (Test-Path $output)) {
@@ -38,7 +38,7 @@ if (-not (Test-Path $output)) {
 }
 
 try {
-    Expand-Archive -Path $input -DestinationPath $output -Force:($overwrite -eq 'true') -ErrorAction Stop
+    Expand-Archive -Path $zipPath -DestinationPath $output -Force:($overwrite -eq 'true') -ErrorAction Stop
 } catch {
     # Expand-Archive throws on overwrite collision when -Force is false. Surface a clean error.
     if ($_.Exception.Message -match 'already exists') {

@@ -117,7 +117,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // equivalents in v0.20.0 — see src/main/mac-bridge-native.ts. Each of the
   // tools tagged ['win32', 'darwin'] below now routes to the bridge on
   // darwin via the matching tools.ts implementation.
-  read_screen:        { tier: 2, cost: 'medium',    description: 'Read what is currently on screen via the OS accessibility tree (UIA on Windows, AX on macOS)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
+  read_screen:        { tier: 2, cost: 'medium',    description: 'List the controls of the foreground window, one line each (id, role, name, value, state, actions), then the other open windows. Pass find to filter by name', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   smart_read:         { tier: 2, cost: 'medium',    description: 'Alias of read_screen — read the foreground accessibility tree', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   get_active_window:  { tier: 2, cost: 'cheap',     description: 'Identify the foreground window (process name, title, bounds)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   get_windows:        { tier: 2, cost: 'cheap',     description: 'List all top-level windows on the desktop', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
@@ -125,7 +125,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   get_selection:      { tier: 2, cost: 'cheap',     description: 'Read the text the user currently has highlighted/selected (in any app, via Accessibility)', platforms: ['darwin'], actionClass: 'read_only' },
   replace_focused_text:{ tier: 5, cost: 'cheap',    description: 'Replace the text of the currently-focused field in any app (e.g. apply a grammar/clarity rewrite). Reads+writes the focused field via accessibility; falls back to select-all+type if AX write is unsupported', platforms: ['darwin'], actionClass: 'desktop_input' },
   open_app:           { tier: 2, cost: 'medium',    description: 'Launch a desktop application by name (Start-Process on Windows, `open -a` on macOS)', platforms: ['win32', 'darwin'], verifyAfter: 'always', actionClass: 'system_control' },
-  desktop_screenshot: { tier: 2, cost: 'medium',    description: 'Capture a downscaled screenshot of the primary display', actionClass: 'read_only' },
+  desktop_screenshot: { tier: 2, cost: 'medium',    description: 'Capture a screenshot: the foreground window on Windows (region:"screen" for the whole display), the primary display on macOS', actionClass: 'read_only' },
   ocr_read_screen:    { tier: 2, cost: 'expensive', description: 'OCR the current screenshot to read text (Windows.Media.Ocr on Windows, Apple Vision on macOS)', platforms: ['win32', 'darwin'], actionClass: 'read_only' },
   read_clipboard:     { tier: 2, cost: 'cheap',     description: 'Read the current clipboard text', narration: 'Checking the clipboard', actionClass: 'read_only' },
   write_clipboard:    { tier: 2, cost: 'cheap',     description: 'Write text to the clipboard', actionClass: 'desktop_input', narration: 'Copying to clipboard' },

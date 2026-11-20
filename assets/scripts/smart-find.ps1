@@ -24,14 +24,27 @@
                   LegacyIAccessible DoDefaultAction (MSAA, only when the
                   point really is on the target window) -> coordinate click
                   (skipped with -NoCoordinateClick).
+                  v0.24.12: a Win32 / WinForms list item, combo box or menu
+                  item gets a real click and no pattern (classic=true): the
+                  pattern call returns fine there and the app records
+                  nothing (a WinForms combo box kept its old value).
       set-value : ValuePattern.SetValue + read-back; when the element has no
                   writable ValuePattern, falls back to the click cascade and
-                  reports setValue=false so the caller pastes instead.
+                  reports setValue=false so the caller pastes instead. The
+                  edit inside a Win32 combo box (a file dialog's File name)
+                  is clicked and reported comboEdit=true: SetValue reads
+                  back fine but its owner is never told, so it is typed.
       find      : nothing.
+
+    After a click the element's state is read back (before / after:
+    checked|unchecked|mixed, selected, expanded|collapsed, = "value") and
+    what changed around it is listed (changed: windows and popups opened or
+    closed, a new window title, the focused element, the element's state).
 
     Output: one JSON object
       {found, name, controlType, bounds, score, stage, method, pending,
-       setValue, readback, nodesVisited, elapsedMs, timedOut, error}
+       setValue, readback, classic, comboEdit, before, after, gone, changed,
+       nodesVisited, elapsedMs, timedOut, error}
     method is the receipt execution_path: uia-invoke | uia-toggle |
     uia-select | uia-legacy | uia-coords | uia-setvalue.
 #>
@@ -78,6 +91,11 @@ public static class ClippySmartFind {
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
     [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
     [DllImport("oleacc.dll")] static extern int AccessibleObjectFromPoint(POINT p, [MarshalAs(UnmanagedType.Interface)] out Accessibility.IAccessible acc, [MarshalAs(UnmanagedType.Struct)] out object child);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
+    delegate bool EnumProc(IntPtr h, IntPtr l);
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int X; public int Y; }
 
     static readonly ControlType[] Clickable = {
@@ -228,6 +246,125 @@ public static class ClippySmartFind {
         return b.Append('"').ToString();
     }
 
+    // A read that a stuck provider cannot hold: null when it did not answer in time.
+    static string BoundedRead(Func<string> f, int ms) {
+        string res = null;
+        var th = new Thread(() => { PerMonitorV2(); try { res = f(); } catch { } });
+        th.IsBackground = true;
+        th.Start();
+        return th.Join(ms) ? res : null;
+    }
+
+    static string Cut(string s, int max) { return s != null && s.Length > max ? s.Substring(0, max) : s; }
+
+    // The element's own state, as read_screen words it. "" when it has none,
+    // Gone when the element is no longer there, null when it did not answer.
+    const string Gone = "(gone)";
+    static string ElState(AutomationElement el) {
+        return BoundedRead(() => {
+            var parts = new List<string>();
+            object p;
+            bool password = false;
+            try { password = el.Current.IsPassword; } catch (ElementNotAvailableException) { return Gone; }
+            try {
+                if (el.TryGetCurrentPattern(TogglePattern.Pattern, out p)) {
+                    var ts = ((TogglePattern)p).Current.ToggleState;
+                    parts.Add(ts == ToggleState.On ? "checked" : ts == ToggleState.Off ? "unchecked" : "mixed");
+                }
+            } catch { }
+            try {
+                if (el.TryGetCurrentPattern(SelectionItemPattern.Pattern, out p) && ((SelectionItemPattern)p).Current.IsSelected) parts.Add("selected");
+            } catch { }
+            try {
+                if (el.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out p)) {
+                    var es = ((ExpandCollapsePattern)p).Current.ExpandCollapseState;
+                    if (es != ExpandCollapseState.LeafNode) parts.Add(es == ExpandCollapseState.Collapsed ? "collapsed" : "expanded");
+                }
+            } catch { }
+            try {
+                if (!password && el.TryGetCurrentPattern(ValuePattern.Pattern, out p)) {
+                    string v = ((ValuePattern)p).Current.Value;
+                    if (v != null) parts.Add("= \"" + Cut(v, 80) + "\"");
+                }
+            } catch { }
+            return string.Join(" ", parts.ToArray());
+        }, 800);
+    }
+
+    // The element that has the keyboard: Role "Name" = "value" (never a password's value).
+    static string FocusDesc() {
+        return BoundedRead(() => {
+            var f = AutomationElement.FocusedElement;
+            if (f == null) return "";
+            var c = f.Current;
+            string s = c.ControlType.ProgrammaticName.Replace("ControlType.", "");
+            if (!string.IsNullOrEmpty(c.Name)) s += " \"" + Cut(c.Name, 80) + "\"";
+            object p;
+            if (!c.IsPassword && f.TryGetCurrentPattern(ValuePattern.Pattern, out p)) {
+                string v = ((ValuePattern)p).Current.Value;
+                if (!string.IsNullOrEmpty(v)) s += " = \"" + Cut(v, 80) + "\"";
+            }
+            return s;
+        }, 800);
+    }
+
+    // Visible top-level windows (popups and menus included; a cloaked UWP shell is not): handle -> title.
+    static Dictionary<long, string> TopWindows() {
+        var d = new Dictionary<long, string>();
+        EnumWindows(delegate(IntPtr h, IntPtr l) {
+            int cloaked;
+            if (!IsWindowVisible(h) || (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0)) return true;
+            var b = new StringBuilder(256);
+            GetWindowText(h, b, b.Capacity);
+            d[h.ToInt64()] = b.ToString();
+            return true;
+        }, IntPtr.Zero);
+        return d;
+    }
+
+    static string Win(string title) { return title.Trim().Length > 0 ? "window \"" + Cut(title.Trim(), 80) + "\"" : "a popup"; }
+
+    // What is different after the click, at most 6 lines.
+    static List<string> Changes(Dictionary<long, string> w0, Dictionary<long, string> w1, string f0, string f1, string name, string s0, string s1) {
+        var c = new List<string>();
+        foreach (var kv in w1) {
+            string old;
+            if (!w0.TryGetValue(kv.Key, out old)) c.Add(Win(kv.Value) + " opened");
+            else if (old != kv.Value && kv.Value.Trim().Length > 0) c.Add("window title is now \"" + Cut(kv.Value.Trim(), 80) + "\"");
+        }
+        foreach (var kv in w0) if (!w1.ContainsKey(kv.Key)) c.Add(Win(kv.Value) + " closed");
+        if (f1 != null && f0 != null && f1 != f0 && f1.Length > 0) c.Add("focus: " + f1);
+        if (s1 == Gone && s0 != Gone) c.Add("\"" + Cut(name, 60) + "\" is gone");
+        else if (s1 != null && s0 != null && s1 != s0) c.Add("\"" + Cut(name, 60) + "\": " + (s0.Length > 0 ? s0 : "(no state)") + " -> " + (s1.Length > 0 ? s1 : "(no state)"));
+        if (c.Count > 6) c.RemoveRange(6, c.Count - 6);
+        return c;
+    }
+
+    // Windows works a classic (Win32, WinForms) list item, combo box or menu
+    // through real input: the UIA pattern returns fine and the control's
+    // owner is never told (Blob's desk-bridge, Test-NeedsFront).
+    static bool Classic(AutomationElement el, ControlType ct) {
+        if (ct != ControlType.ListItem && ct != ControlType.ComboBox && ct != ControlType.MenuItem && ct != ControlType.Menu) return false;
+        try { string fw = el.Current.FrameworkId; return fw == "Win32" || fw == "WinForm"; } catch { return false; }
+    }
+
+    // The edit inside a Win32 combo box (Blob's Do-Set).
+    static bool ComboEdit(AutomationElement el) {
+        try {
+            var dad = TreeWalker.ControlViewWalker.GetParent(el);
+            return dad != null && dad.Current.ControlType == ControlType.ComboBox && el.Current.NativeWindowHandle != 0;
+        } catch { return false; }
+    }
+
+    static string RealClick(Rect r, bool combo) {
+        // A combo box opens from its arrow, at the right end; its middle is the edit.
+        double x = combo ? r.X + r.Width - Math.Min(r.Height, r.Width) / 2 : r.X + r.Width / 2;
+        SetCursorPos((int)Math.Round(x), (int)Math.Round(r.Y + r.Height / 2));
+        mouse_event(2, 0, 0, 0, 0);
+        mouse_event(4, 0, 0, 0, 0);
+        return "uia-coords";
+    }
+
     static string ClickCascade(AutomationElement el, Rect r, long rootHwnd, bool noCoords, out bool pending) {
         pending = false;
         object p;
@@ -298,10 +435,14 @@ public static class ClippySmartFind {
         long rootHwnd = hwnd;
         if (rootHwnd == 0) { try { var rr = ResolveRoot(0, pid); if (rr != null) rootHwnd = rr.Current.NativeWindowHandle; } catch { } }
         string method = null; bool pending = false; string setValue = "null"; string readback = "none";
+        bool classic = action == "click" && Classic(best.El, best.Type);
+        bool comboEdit = action == "set-value" && ComboEdit(best.El);
+        string s0 = null, f0 = null; Dictionary<long, string> w0 = null;
+        if (action == "click") { s0 = ElState(best.El); f0 = FocusDesc(); w0 = TopWindows(); }
         if (action == "set-value") {
             object p;
             bool done = false;
-            if (best.El.TryGetCurrentPattern(ValuePattern.Pattern, out p)) {
+            if (!comboEdit && best.El.TryGetCurrentPattern(ValuePattern.Pattern, out p)) {
                 var vp = (ValuePattern)p;
                 bool ro = true;
                 try { ro = vp.Current.IsReadOnly; } catch { }
@@ -318,7 +459,21 @@ public static class ClippySmartFind {
             setValue = done ? "true" : "false";
             if (!done) method = ClickCascade(best.El, best.R, rootHwnd, noCoords, out pending);
         } else if (action == "click") {
-            method = ClickCascade(best.El, best.R, rootHwnd, noCoords, out pending);
+            if (classic) method = noCoords ? null : RealClick(best.R, best.Type == ControlType.ComboBox);
+            else method = ClickCascade(best.El, best.R, rootHwnd, noCoords, out pending);
+        }
+        // Read back: the element's state, and what changed around it. Chromium
+        // updates its tree after the call returns, so a toggle or a select
+        // that reads unchanged is read again for up to 500 ms.
+        string s1 = null; List<string> changed = null;
+        if (action == "click" && method != null) {
+            if (!pending) Thread.Sleep(250);
+            s1 = ElState(best.El);
+            if (!pending && (method == "uia-toggle" || method == "uia-select")) {
+                var wait = Stopwatch.StartNew();
+                while (s1 != null && s1 != Gone && s1 == s0 && wait.ElapsedMilliseconds < 500) { Thread.Sleep(50); s1 = ElState(best.El); }
+            }
+            changed = Changes(w0, TopWindows(), f0, FocusDesc(), best.Name, s0, s1);
         }
         o.Append("\"found\":true,\"name\":").Append(Q(best.Name))
          .Append(",\"controlType\":").Append(Q(best.Type.ProgrammaticName.Replace("ControlType.", "")))
@@ -330,6 +485,16 @@ public static class ClippySmartFind {
          .Append(",\"pending\":").Append(pending ? "true" : "false")
          .Append(",\"setValue\":").Append(setValue)
          .Append(",\"readback\":").Append(Q(readback))
+         .Append(",\"classic\":").Append(classic ? "true" : "false")
+         .Append(",\"comboEdit\":").Append(comboEdit ? "true" : "false");
+        if (changed != null) {
+            o.Append(",\"before\":").Append(Q(s0)).Append(",\"after\":").Append(Q(s1))
+             .Append(",\"gone\":").Append(s1 == Gone ? "true" : "false")
+             .Append(",\"changed\":[");
+            for (int i = 0; i < changed.Count; i++) { if (i > 0) o.Append(","); o.Append(Q(changed[i])); }
+            o.Append("]");
+        }
+        o
          .Append(",\"nodesVisited\":").Append(nodes)
          .Append(",\"elapsedMs\":").Append(sw.ElapsedMilliseconds)
          .Append(",\"timedOut\":").Append(timedOut ? "true" : "false");

@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { clearAllSecrets } from './skills/secrets';
+import { classifyValidateResponse, VALIDATE_TIMEOUT_MS } from './license-verdict';
 
 const API_BASE = 'https://api.clippyai.app';
 const GRACE_PERIOD_DAYS = 1; // 24h grace when API is temporarily unreachable
@@ -267,43 +268,43 @@ export async function validateLicenseKey(key: string): Promise<ValidationResult>
       return { state: 'unreachable', plan: '' };
     };
 
+    // v0.24.12 — never hold the launch on a server that does not answer:
+    // after VALIDATE_TIMEOUT_MS the request is aborted and grace applies.
+    let settled = false;
+    const done = (r: ValidationResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const timer = setTimeout(() => {
+      try { req.abort(); } catch { /* already closed */ }
+      done(grantGraceIfPossible());
+    }, VALIDATE_TIMEOUT_MS);
+
     req.on('response', (response) => {
       let data = '';
       response.on('data', (chunk) => { data += chunk.toString(); });
       response.on('end', () => {
-        // HTTP 5xx → server is sick. Don't trust the body, don't revoke.
-        if (response.statusCode && response.statusCode >= 500) {
-          resolve(grantGraceIfPossible());
-          return;
-        }
-        try {
-          const parsed = JSON.parse(data) as { valid?: boolean; plan?: string };
-          if (parsed && parsed.valid === true) {
-            store.set('validated', true);
-            store.set('lastValidated', Date.now());
-            if (parsed.plan) store.set('plan', parsed.plan);
-            resolve({ state: 'valid', plan: parsed.plan || store.get('plan') });
-          } else if (parsed && parsed.valid === false) {
-            // Server explicitly rejected — this is the ONLY path that
-            // clears the license in revalidateIfNeeded(). 4xx with a
-            // proper {valid:false} body counts; HTML error pages don't.
-            resolve({ state: 'invalid', plan: '' });
-          } else {
-            // Body parsed but didn't have `valid` boolean — malformed
-            // response, treat as unreachable so we don't revoke on a
-            // server-side bug we don't control.
-            resolve(grantGraceIfPossible());
-          }
-        } catch {
-          // Body wasn't JSON (HTML 404 page, gateway error page, empty).
-          // Don't revoke — server's having a bad day.
-          resolve(grantGraceIfPossible());
+        // license-verdict.ts: 'invalid' (the only verdict that clears the
+        // license in revalidateIfNeeded()) needs HTTP 200 with {valid:false};
+        // 5xx, a 4xx page, a malformed or non-JSON body are 'unreachable'.
+        const verdict = classifyValidateResponse(response.statusCode, data);
+        if (verdict.kind === 'valid') {
+          store.set('validated', true);
+          store.set('lastValidated', Date.now());
+          if (verdict.plan) store.set('plan', verdict.plan);
+          done({ state: 'valid', plan: verdict.plan || store.get('plan') });
+        } else if (verdict.kind === 'invalid') {
+          done({ state: 'invalid', plan: '' });
+        } else {
+          done(grantGraceIfPossible());
         }
       });
     });
 
     req.on('error', () => {
-      resolve(grantGraceIfPossible());
+      done(grantGraceIfPossible());
     });
 
     req.write(JSON.stringify({ key }));

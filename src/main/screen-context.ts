@@ -100,6 +100,14 @@ export function extractProcessName(windowJson: string): string {
   return '';
 }
 
+/** Window handle from the window JSON (Windows); 0 when there is none. */
+export function extractWindowHandle(windowJson: string): number {
+  try {
+    const h = (JSON.parse(windowJson) as { handle?: unknown }).handle;
+    return typeof h === 'number' && h > 0 ? h : 0;
+  } catch { return 0; }
+}
+
 export type Raced<T> = { timedOut: false; value: T } | { timedOut: true };
 
 /** Resolve with the value, or `{timedOut:true}` after ms. The timer is always cleared. */
@@ -133,7 +141,7 @@ interface DumpNode { name?: unknown; title?: unknown; value?: unknown; children?
  * never reached the model: list the windows, then the UIA names of the focused one.
  */
 export function formatScreenDump(raw: string, maxChars = 800): string {
-  let d: { windows?: unknown; focusedProcessId?: unknown; uiTree?: unknown; error?: unknown; app?: unknown };
+  let d: { windows?: unknown; focusedProcessId?: unknown; uiTree?: unknown; nodes?: unknown; error?: unknown; app?: unknown };
   try { d = JSON.parse(raw); } catch { return raw.slice(0, maxChars); }
   if (!d || typeof d !== 'object') return raw.slice(0, maxChars);
   if (d.error) return '';
@@ -149,7 +157,8 @@ export function formatScreenDump(raw: string, maxChars = 800): string {
 
   const names: string[] = [];
   const seen = new Set<string>();
-  const stack: unknown[] = [d.uiTree];
+  // Windows: `nodes` (flat, v0.24.12); `uiTree` is the older nested shape.
+  const stack: unknown[] = [d.nodes, d.uiTree];
   if (macApp) for (let i = wins.length - 1; i >= 0; i--) stack.push(wins[i].elements);
   let budget = maxChars * 2; // enough to fill the cap; stops a 400-node tree being walked for nothing
   while (stack.length && budget > 0) {

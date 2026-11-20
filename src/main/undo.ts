@@ -23,6 +23,7 @@
 import fs from 'fs';
 import type { InverseAction } from './action-history';
 import { takeClipboard } from './tool-undo';
+import { moveAcrossDevices } from './file-move';
 
 export interface UndoResult {
   ok: boolean;
@@ -36,7 +37,7 @@ export async function applyInverse(inv: InverseAction): Promise<UndoResult> {
         if (!fs.existsSync(inv.trashPath)) {
           return { ok: false, detail: `Trash file not found: ${inv.trashPath}` };
         }
-        fs.renameSync(inv.trashPath, inv.originalPath);
+        moveAcrossDevices(inv.trashPath, inv.originalPath); // the trash may be on another drive
         return { ok: true, detail: `Restored ${inv.originalPath}` };
       } catch (err) {
         return { ok: false, detail: err instanceof Error ? err.message : String(err) };
@@ -49,7 +50,7 @@ export async function applyInverse(inv: InverseAction): Promise<UndoResult> {
         if (!fs.existsSync(inv.from)) {
           return { ok: false, detail: `Source not found: ${inv.from}` };
         }
-        fs.renameSync(inv.from, inv.to);
+        moveAcrossDevices(inv.from, inv.to);
         return { ok: true, detail: `Moved ${inv.from} → ${inv.to}` };
       } catch (err) {
         return { ok: false, detail: err instanceof Error ? err.message : String(err) };

@@ -146,25 +146,22 @@ function layer1() {
     'com-excel-read.ps1',
     'com-excel-write.ps1',
     'com-create-reminder.ps1',
-    'com-read-file.ps1',
-    'com-write-file.ps1',
-    'com-run-powershell.ps1',
-    'com-http-request.ps1',
+    // v0.24.12 — com-read-file / com-write-file / com-run-powershell /
+    // com-http-request / com-search-files / com-list-files / find-element /
+    // invoke-element / interact-element / ocr-recognize had no caller left
+    // (Node fs / fetch, smart-find.ps1 and ocr-screen.ps1 replaced them) and
+    // were deleted; the list below is what the app really runs.
     'com-ping-host.ps1',
     'com-speak-text.ps1',
-    'com-search-files.ps1',
     'com-system-info.ps1',
     'com-list-processes.ps1',
     'com-word-to-pdf.ps1',
     'com-kill-process.ps1',
-    'com-list-files.ps1',
     // minimize_window uses inline PowerShell (not a separate script file)
-    'find-element.ps1',
-    'invoke-element.ps1',
     'get-foreground-window.ps1',
+    'get-screen-context.ps1',
     'get-windows.ps1',
     'focus-window.ps1',
-    'ocr-recognize.ps1',
     'ps-bridge.ps1',               // v0.24 — persistent PowerShell host
     'smart-find.ps1',              // v0.24 — UIA find + pattern cascade
     'ocr-screen.ps1',              // v0.24 — in-memory capture + resident OCR
@@ -852,19 +849,21 @@ function layer1() {
   if (destExpanded) pass('v0.12.3: DESTRUCTIVE_TOOLS includes type_text + key_press + cdp_type + write_clipboard');
   else fail('v0.12.3: DESTRUCTIVE_TOOLS expansion', 'one or more new entries missing');
 
-  // _path-guard.ps1 helper exists + dot-sourced by 3 read tools
+  // _path-guard.ps1 helper exists + dot-sourced by the scripts that take a path
+  // (v0.24.12: the com-*-file read scripts are gone; read_file / list_files /
+  // search_files_content are Node code with their own guards)
   const pathGuardPath = path.join(ROOT, 'assets', 'scripts', '_path-guard.ps1');
   if (fs.existsSync(pathGuardPath)) {
     const pgSrc = fs.readFileSync(pathGuardPath, 'utf8');
     const hasFn = /function Test-PathAllowedForRead/.test(pgSrc);
     const blocksSshAws = /\.ssh|\.aws|\.azure/.test(pgSrc);
     const blocksBrowserCreds = /Login Data|Cookies/.test(pgSrc);
-    const dotSourced = ['com-list-files.ps1', 'com-search-files.ps1', 'com-read-file.ps1'].every((f) => {
+    const dotSourced = ['hash-file.ps1', 'zip-files.ps1', 'unzip-files.ps1', 'ocr-from-image.ps1'].every((f) => {
       const src = fs.readFileSync(path.join(ROOT, 'assets', 'scripts', f), 'utf8');
       return /_path-guard\.ps1/.test(src) && /Test-PathAllowedForRead/.test(src);
     });
     if (hasFn && blocksSshAws && blocksBrowserCreds && dotSourced) {
-      pass('v0.12.3: path-guard wired into list-files + search-files + read-file (blocks .ssh/.aws/browser creds)');
+      pass('v0.12.3: path-guard wired into hash-file + zip-files + unzip-files + ocr-from-image (blocks .ssh/.aws/browser creds)');
     } else {
       fail('v0.12.3: path-guard', `fn=${hasFn}, ssh=${blocksSshAws}, browser=${blocksBrowserCreds}, wired=${dotSourced}`);
     }
@@ -2426,7 +2425,7 @@ function layer1() {
     const metaSrcSec = fs.readFileSync(path.join(ROOT, 'src', 'main', 'tool-meta.ts'), 'utf8');
     const inMap = /^\s+security_sweep:\s*securitySweep/m.test(toolsSrcSec);
     const metaLine = metaSrcSec.match(/^\s+security_sweep:\s*\{[^\n]*\}/m);
-    const inMeta = !!metaLine && /actionClass:\s*'read_only'/.test(metaLine[0]) && /platforms:\s*\['win32'\]/.test(metaLine[0]);
+    const inMeta = !!metaLine && /actionClass:\s*'read_only'/.test(metaLine[0]) && /platforms:\s*\['win32'/.test(metaLine[0]); // + 'darwin' since the Mac port
     const inServer = apiToolsSrc ? /name:\s*'security_sweep'/.test(apiToolsSrc) : true;
     if (inMap && inMeta && inServer) {
       pass(`security_sweep: registered (TOOL_MAP + tool-meta read_only/win32${apiToolsSrc ? ' + server prompt' : ' — server skipped, clippyai-api not cloned'})`);
@@ -2549,20 +2548,7 @@ function layer2() {
     }
   }
 
-  // 2.3 ocr-recognize: skip if script wants an image we don't have
-  // (Ship a fixture later; for now skip cleanly.)
-  if (fs.existsSync(path.join(ROOT, 'scripts', 'test-fixtures', 'ocr-hello.png'))) {
-    try {
-      const out = runPS('ocr-recognize.ps1', ['-ImagePath', path.join(ROOT, 'scripts', 'test-fixtures', 'ocr-hello.png')], 15000);
-      const parsed = JSON.parse(out);
-      if (Array.isArray(parsed.elements)) pass(`ocr-recognize: parsed ${parsed.elements.length} elements`);
-      else fail('ocr-recognize', `no elements array: ${JSON.stringify(parsed).substring(0, 100)}`);
-    } catch (e) {
-      fail('ocr-recognize', e.message.substring(0, 100));
-    }
-  } else {
-    skip('ocr-recognize', 'no test fixture (scripts/test-fixtures/ocr-hello.png)');
-  }
+  // (2.3 ocr-recognize.ps1 was deleted in v0.24.12: ocr-screen.ps1 replaced it.)
 
   // 2.4 com-create-reminder accepts -titleB64/-notesB64 + writes sidecar
   // We pass a datetime in the future and check it doesn't error; we then

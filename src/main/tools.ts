@@ -46,7 +46,7 @@ import { createLogger, serializeErr } from './logger';
 // never emits. Import statically; scripts/check-bundle-requires.js now fails the build.
 import * as skillRegistryMod from './skill-registry';
 import * as followMe from './follow-me'; // static: see task-follow.ts
-import { screenshotHint } from './screenshot-hint';
+import { screenshotHint, windowShotHint } from './screenshot-hint';
 import * as telemetry from './telemetry';
 import { getCdpClient, listTabsRaw, DEFAULT_CDP_PORT } from './cdp-client';
 import { docxFromBlocks } from './skills/generate/docx-from-blocks';
@@ -101,18 +101,16 @@ import { outlookSendArgs } from './outlook-args';
 
 import { runMacSecurityScan, parseMacSections } from './mac-security-scan';
 import { pickForegroundMacWindow, ocrTextInBounds, macTargetPidFor, appNameMatches } from './screen-context';
+import { formatWinScreen, formatMacScreen, type ScreenLines } from './screen-lines';
+import { reportUiaClick, outcomeLine } from './click-report';
+import { parseForegroundSnapshot, pickUserWindow, activeWindowJson } from './foreground-pick';
+import { toSendKeys } from './sendkeys';
+import { moveAcrossDevices } from './file-move';
 
 // ── Input sanitization (prevent PowerShell injection) ─────────────
 function sanitizeAppName(name: string): string {
   // Only allow alphanumeric, spaces, dots, hyphens, underscores
   return name.replace(/[^a-zA-Z0-9\s.\-_]/g, '').substring(0, 50);
-}
-
-function sanitizeForSendKeys(str: string): string {
-  // Only allow known SendKeys tokens
-  const allowed = /^[a-zA-Z0-9\^%+{}\(\)~ ]*$/;
-  if (!allowed.test(str)) return '';
-  return str.substring(0, 50);
 }
 
 function sanitizeNumber(val: unknown): number {
@@ -216,6 +214,8 @@ function getScriptsDir(): string {
 // initTools (unit tests) keep the one-shot spawn.
 setPsScriptsDir(getScriptsDir);
 
+const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
+
 // ── Screen Scale ─────────────────────────────────────────────────
 
 let screenScale = 1;
@@ -245,9 +245,9 @@ async function detectScreenScale(): Promise<void> {
  *
  * Generic — never hardcode other process names. Only our own name is removed.
  */
+const OWN_PROCESS_NAMES: ReadonlySet<string> = new Set(['ClippyAI', 'clippyai']);
 function stripOwnWindowFromScreen(raw: string): string {
   if (!raw) return raw;
-  const OWN_PROCESS_NAMES = new Set(['ClippyAI', 'clippyai']);
   // Try accessibility-tree JSON shape first
   try {
     const parsed = JSON.parse(raw);
@@ -300,8 +300,22 @@ async function macTargetPid(): Promise<number | undefined> {
   } catch { return undefined; }
 }
 
+/** id -> control name from the last read_screen, so smart_click("e7") / smart_type("e7") resolve. */
+let lastScreenIds = new Map<string, string>();
+function resolveScreenId(target: string): string {
+  return /^e\d+$/i.test(target.trim()) ? (lastScreenIds.get(target.trim().toLowerCase()) ?? target) : target;
+}
+
+/**
+ * read_screen / smart_read. Model-facing args: mode ('accessibility' | 'ocr'),
+ * processId, find (list only the controls whose name contains it). Internal:
+ * timeoutMs, and format:'json' (the per-turn screen context parses the JSON).
+ */
 async function readScreen(params: Record<string, unknown>): Promise<ToolResult> {
   const mode = String(params.mode || 'accessibility');
+  const find = typeof params.find === 'string' ? params.find.trim() : '';
+  const asJson = params.format === 'json';
+  const lines = (l: ScreenLines): ToolResult => { lastScreenIds = l.ids; return { text: l.text }; };
 
   // v0.20.0 — darwin path routes through the Swift bridge. AX tree for
   // mode='accessibility' (what the brain calls between tool steps to verify
@@ -316,9 +330,14 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
         return { text: JSON.stringify({ elements: result.elements, fullText: result.fullText }) };
       }
       const target = await macForegroundWindow();
-      const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 6 });
-      const filtered = stripOwnWindowFromScreen(JSON.stringify(tree));
-      return { text: filtered || '(empty screen context)' };
+      if (asJson) {
+        const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 6 });
+        return { text: stripOwnWindowFromScreen(JSON.stringify(tree)) || '(empty screen context)' };
+      }
+      // Layout nodes count toward the bridge's depth, so go deep; the
+      // formatter drops them (screen-lines.ts).
+      const tree = await macBridge.a11yTree({ pid: target.pid, maxDepth: 12 });
+      return lines(formatMacScreen(tree, { find }));
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
         if (err.kind === 'permission') {
@@ -347,12 +366,24 @@ async function readScreen(params: Record<string, unknown>): Promise<ToolResult> 
       // -ProcessId, so the uiTree branch never ran). With no explicit PID
       // the script resolves the real foreground process itself, skipping
       // Clippy's own window.
+      const timeoutMs = scriptTimeoutParam(params, 10000);
+      // The window to read is the one get_active_window picks (no overlays).
+      // windowHandle is internal: the per-turn context already has it.
+      const handle = params.processId ? 0 : (Number(params.windowHandle) || (await foregroundForFind()).handle);
       const { stdout } = await psScript('get-screen-context.ps1', {
         ExcludeProcessId: process.pid,
+        WindowHandle: handle || undefined,
         FocusedProcessId: params.processId ? String(params.processId) : undefined,
-      }, { timeoutMs: scriptTimeoutParam(params, 10000), maxBuffer: 5 * 1024 * 1024, idempotent: true });
-      const filtered = stripOwnWindowFromScreen(stdout.trim());
-      return { text: filtered || '(empty screen context)' };
+        FindB64: find ? b64(find) : undefined,
+        // The walk returns what it has when its budget ends, well inside the
+        // script timeout (the window list and the JSON still have to follow).
+        BudgetMs: Math.max(150, Math.min(3000, Math.floor(timeoutMs * 0.6))),
+      }, { timeoutMs, maxBuffer: 5 * 1024 * 1024, idempotent: true });
+      const raw = stdout.trim();
+      if (asJson) return { text: stripOwnWindowFromScreen(raw) || '(empty screen context)' };
+      const formatted = formatWinScreen(raw, { find, ownProcessNames: OWN_PROCESS_NAMES });
+      if (formatted) return lines(formatted);
+      return { text: raw || '(empty screen context)' };
     } catch (err) {
       return { text: `(read_screen error: ${err instanceof Error ? err.message : String(err)})` };
     }
@@ -446,7 +477,13 @@ async function getActiveWindow(params: Record<string, unknown> = {}): Promise<To
   if (process.platform === 'win32') {
     try {
       const { stdout } = await psScript('get-foreground-window.ps1', { ExcludeProcessId: process.pid }, { timeoutMs: scriptTimeoutParam(params, 5000), idempotent: true });
-      return { text: stdout.trim() || '(no active window)' };
+      const out = stdout.trim();
+      // v0.24.12 — the script lists the windows; the pick (never Clippy's own
+      // window, never an always-on-top overlay) is foreground-pick.ts.
+      const snap = parseForegroundSnapshot(out);
+      if (!snap) return { text: out || '(no active window)' };
+      const picked = pickUserWindow(snap, process.pid);
+      return { text: picked ? activeWindowJson(picked) : '(no active window)' };
     } catch (err) {
       log.warn('get_active_window failed', serializeErr(err));
       return { text: '(could not get active window)' };
@@ -706,6 +743,16 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
  * but reporting "Focused existing" vs "Launched" is useful signal for the
  * model.
  */
+/**
+ * open_app found the app already open and focused that window. The model must
+ * know: in a test it then pressed ctrl+a, ctrl+v in the owner's open Notepad
+ * and replaced his notes with the task's text.
+ */
+function focusedExistingText(name: string, pid: number): string {
+  const newDoc = process.platform === 'darwin' ? 'cmd+n' : 'ctrl+n';
+  return `Focused an existing ${name} window (pid ${pid}); it may hold the user's unsaved work — start a new document (${newDoc}) before typing, and do not select all or replace what is already there`;
+}
+
 async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   const name = sanitizeAppName(String(params.name || ''));
   if (!name) return { text: '(no app name provided)' };
@@ -723,7 +770,7 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
         // v0.23 — pass the focus verdict through instead of assuming it took.
         const focused = await focusWindow({ processName: name });
         if (focused.receipt?.status === 'verified') {
-          return { text: `Focused existing ${name} (pid ${existing})`, receipt: makeReceipt('open_app', 'verified', true, { pid: existing, via: 'focus_window' }) };
+          return { text: focusedExistingText(name, existing), receipt: makeReceipt('open_app', 'verified', true, { pid: existing, via: 'focus_window', existing: true }) };
         }
         return {
           text: `${name} is already running (pid ${existing}) but could not be brought to front: ${focused.text.substring(0, 160)}`,
@@ -758,7 +805,7 @@ async function openApp(params: Record<string, unknown>): Promise<ToolResult> {
   if (existingPid > 0) {
     const focused = await focusWindow({ processName: name });
     if (focused.receipt?.status === 'verified') {
-      return { text: `Focused existing ${name} (pid ${existingPid})`, receipt: makeReceipt('open_app', 'verified', true, { pid: existingPid, via: 'focus_window' }) };
+      return { text: focusedExistingText(name, existingPid), receipt: makeReceipt('open_app', 'verified', true, { pid: existingPid, via: 'focus_window', existing: true }) };
     }
     return {
       text: `${name} is already running (pid ${existingPid}) but could not be confirmed in front: ${focused.text.substring(0, 160)}`,
@@ -958,35 +1005,13 @@ async function keyPress(params: Record<string, unknown>): Promise<ToolResult> {
 
   // win32 — System.Windows.Forms.SendKeys (restored from v0.17.7).
   if (process.platform === 'win32') {
-    const keyMap: Record<string, string> = {
-      'Return': '{ENTER}', 'Enter': '{ENTER}',
-      'Tab': '{TAB}', 'Escape': '{ESCAPE}', 'Backspace': '{BACKSPACE}',
-      'Delete': '{DELETE}', 'Up': '{UP}', 'Down': '{DOWN}',
-      'Left': '{LEFT}', 'Right': '{RIGHT}',
-      'Page_Down': '{PGDN}', 'Page_Up': '{PGUP}',
-      'Home': '{HOME}', 'End': '{END}',
-      'F1': '{F1}', 'F2': '{F2}', 'F3': '{F3}', 'F4': '{F4}', 'F5': '{F5}',
-    };
+    // v0.24.12 — sendkeys.ts: case-insensitive names (ctrl+enter used to
+    // send Ctrl+E then type "nter"), F1-F12 / Space / Insert, and a clear
+    // error for an unknown key or raw SendKeys syntax instead of typing it.
+    const sk = toSendKeys(rawKey);
+    if (!sk.ok) return { text: `(error:INVALID_KEY) key_press: ${sk.error}` };
+    const safeSendKeys = sk.keys;
     try {
-      let sendKeysStr = '';
-      if (rawKey.includes('+')) {
-        // Combo like ctrl+s, alt+tab
-        const parts = rawKey.toLowerCase().split('+');
-        let modifiers = '';
-        const mainKey = parts[parts.length - 1];
-        for (const p of parts.slice(0, -1)) {
-          if (p === 'ctrl' || p === 'control') modifiers += '^';
-          else if (p === 'alt') modifiers += '%';
-          else if (p === 'shift') modifiers += '+';
-          else if (p === 'win' || p === 'meta' || p === 'cmd') modifiers += '^{ESC}'; // approximate
-        }
-        sendKeysStr = `${modifiers}${keyMap[mainKey] || mainKey}`;
-      } else {
-        sendKeysStr = keyMap[rawKey] || rawKey;
-      }
-
-      const safeSendKeys = sanitizeForSendKeys(sendKeysStr);
-      if (!safeSendKeys) return { text: `(invalid key: ${rawKey})` };
       await psCommand(
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${safeSendKeys}')`,
         { timeoutMs: 5000 });
@@ -1283,7 +1308,11 @@ async function mouseScroll(params: Record<string, unknown>): Promise<ToolResult>
  * coordinate clicks against OCR locally instead of asking the model to
  * pixel-locate from a screenshot — a documented LLM weakness.
  */
-async function captureAndOcr(region: 'foreground' | 'screen' = 'screen', timeoutMs = 15000): Promise<OcrLayout | null> {
+async function captureAndOcr(
+  region: 'foreground' | 'screen' = 'screen',
+  timeoutMs = 15000,
+  fgBounds?: { x: number; y: number; width: number; height: number },
+): Promise<OcrLayout | null> {
   // win32-only pipeline — see docstring. On darwin the bridge Vision path
   // handles OCR; reaching here means the bridge is unavailable, in which
   // case the PowerShell spawn would just ENOENT.
@@ -1295,7 +1324,11 @@ async function captureAndOcr(region: 'foreground' | 'screen' = 'screen', timeout
   // failure mode is still logged (v0.11.25, report ccd4d6f4).
   let stdout: string;
   try {
-    const r = await psScript('ocr-screen.ps1', { Region: region, ExcludeProcessId: process.pid }, {
+    // 'foreground' = the frame of the window get_active_window picks; the
+    // script's own Z-order walk (which can land on an overlay) is the fallback.
+    const b = region === 'foreground' ? (fgBounds ?? (await foregroundForFind()).bounds) : undefined;
+    const frame = b && b.width > 0 && b.height > 0 ? { X: b.x, Y: b.y, Width: b.width, Height: b.height } : {};
+    const r = await psScript('ocr-screen.ps1', { Region: region, ExcludeProcessId: process.pid, ...frame }, {
       timeoutMs, maxBuffer: 5 * 1024 * 1024, idempotent: true,
     });
     stdout = r.stdout;
@@ -1382,8 +1415,12 @@ async function clickPhysical(x: number, y: number): Promise<void> {
   if (!r.ok) throw new Error(r.error ?? r.stderr.trim() ?? 'click failed');
 }
 
+const NOT_FOUND_LINE = outcomeLine('failed', 'UI_NOT_FOUND', 'read_screen with find to get the exact name, or desktop_screenshot then mouse_click');
+const TIMEOUT_LINE = outcomeLine('failed', 'TIMEOUT', 'it may or may not have clicked; read_screen before trying again');
+const OCR_CLICK_LINE = outcomeLine('unverified', undefined, 'clicked by position from OCR; read_screen to check');
+
 async function smartClick(params: Record<string, unknown>): Promise<ToolResult> {
-  const target = String(params.target || '');
+  const target = resolveScreenId(String(params.target || ''));
   if (!target) return { text: '(no target provided)' };
   // v0.21 — every exit carries a receipt (receipt.ts). A click is never
   // 'verified' here: we know it was dispatched, not what it did.
@@ -1411,7 +1448,7 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
         const m = ax.matches[0];
         try {
           await macBridge.a11yPress({ pid: m.pid, path: m.path });
-          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})`, receipt: clicked('ax', { label: m.title || target, role: m.role }) };
+          return { text: `Clicked "${m.title || target}" via AX (role=${m.role})\n${outcomeLine('unverified', undefined, 'read_screen to check')}`, receipt: clicked('ax', { label: m.title || target, role: m.role }) };
         } catch (pressErr) {
           // AX-press failed (element gone, role doesn't expose AXPress, etc).
           // Fall through to OCR. Log so we see how often AX-find→AX-press
@@ -1439,9 +1476,9 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
         const cy = Math.round(match.element.y + match.element.height / 2);
         await macBridge.click({ x: cx, y: cy });
         const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
+        return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}\n${OCR_CLICK_LINE}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, coords: { x: cx, y: cy } }) };
       }
-      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"`, receipt: notRun('not found via AX or OCR') };
+      return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via AX or OCR. Visible text snippet: "${ocrRes.fullText.substring(0, 200)}…"\n${NOT_FOUND_LINE}`, receipt: notRun('not found via AX or OCR') };
     } catch (err) {
       if (err instanceof macBridge.BridgeError) {
         if (err.kind === 'permission') {
@@ -1490,21 +1527,27 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       const sf = await windowsSmartFind(target, 'click', fg);
       if (sf.kind === 'acted') {
         const r = sf.result;
+        // The script read the control back and listed what changed: say so,
+        // and end with the outcome line (click-report.ts).
+        const rep = reportUiaClick(target, r);
+        const evidence = { label: r.name, controlType: r.controlType, score: r.score, stage: r.stage, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs, bounds: r.bounds, fgPid: fg.pid, pending: r.pending, classic: !!r.classic, before: r.before, after: r.after, changed: r.changed };
         return {
-          text: `Clicked "${target}" via UIA ${UIA_METHOD_LABEL[r.method] ?? r.method} (${r.controlType} "${r.name}")${r.pending ? ' — the app is still handling it (a dialog may have opened)' : ''}`,
-          receipt: clicked(r.method, { label: r.name, controlType: r.controlType, score: r.score, stage: r.stage, nodesVisited: r.nodesVisited, elapsedMs: r.elapsedMs, bounds: r.bounds, fgPid: fg.pid, pending: r.pending }),
+          text: rep.text,
+          receipt: rep.status === 'error'
+            ? makeReceipt('smart_click', 'error', true, { target, reason: rep.code, ...evidence }, r.method)
+            : makeReceipt('smart_click', rep.status, true, { target, ...evidence }, r.method),
         };
       }
       if (sf.kind === 'unknown') {
         // The host gave up mid-call: the click may or may not have landed —
         // never click a second time via OCR.
-        return { text: `(error:TIMEOUT) smart_click "${target}" — UIA call timed out: ${sf.reason}`, receipt: notRun(sf.reason, null) };
+        return { text: `(error:TIMEOUT) smart_click "${target}" — UIA call timed out: ${sf.reason}\n${TIMEOUT_LINE}`, receipt: notRun(sf.reason, null) };
       }
       log.info('smart_click: UIA miss, falling back to OCR', { target, fgPid: fg.pid, reason: sf.reason });
     }
 
     // Tier 2 — OCR fallback. The big win for WebViews and custom-rendered UIs.
-    let ocr = await captureAndOcr('foreground');
+    let ocr = await captureAndOcr('foreground', 15000, fgBounds);
     let match = ocr ? matchOcrTarget(target, ocr.elements, fgBounds) : null;
     if (!match && ocr?.region?.source !== 'screen') {
       // The label may sit in a popup / dialog outside the foreground frame.
@@ -1519,16 +1562,16 @@ async function smartClick(params: Record<string, unknown>): Promise<ToolResult> 
       const cy = Math.round(match.element.y + match.element.height / 2);
       await clickPhysical(cx, cy);
       const inFg = fgBounds ? '' : ' (no foreground bounds — match may be outside focus)';
-      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, kind: match.kind, coords: { x: cx, y: cy }, region: ocr.region?.source }) };
+      return { text: `Clicked "${target}" at (${cx},${cy}) via OCR (matched "${match.element.text}", score ${match.score.toFixed(2)})${inFg}\n${OCR_CLICK_LINE}`, receipt: clicked('ocr', { label: match.element.text, score: match.score, kind: match.kind, coords: { x: cx, y: cy }, region: ocr.region?.source }) };
     }
-    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"`, receipt: notRun('not found via UIA or OCR') };
+    return { text: `(error:UI_NOT_FOUND) smart_click "${target}" — not found via UIA or OCR. Visible text snippet: "${ocr.fullText.substring(0, 200)}…"\n${NOT_FOUND_LINE}`, receipt: notRun('not found via UIA or OCR') };
   } catch (err) {
     // v0.12.5 — classify timeouts as TIMEOUT (fallback-eligible) instead of
     // forcing them to UI_NOT_FOUND. Per code audit finding #2.
     const msg = err instanceof Error ? err.message : String(err);
     if (/ETIMEDOUT|timed out|timeout/i.test(msg)) {
       // Timed out after dispatch — we can't tell whether the click landed.
-      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}`, receipt: notRun(msg, null) };
+      return { text: `(error:TIMEOUT) smart_click "${target}" — PSBridge/UIA call timed out: ${msg}\n${TIMEOUT_LINE}`, receipt: notRun(msg, null) };
     }
     return { text: `(error:UI_NOT_FOUND) smart_click "${target}" threw: ${msg}`, receipt: notRun(msg) };
   }
@@ -1547,23 +1590,25 @@ interface SmartFindResult {
   pending: boolean;
   setValue: boolean | null;
   readback: 'match' | 'mismatch' | 'none';
+  /** v0.24.12 — see smart-find.ps1: real click on a classic control, read-back, what changed. */
+  classic?: boolean;
+  comboEdit?: boolean;
+  before?: string | null;
+  after?: string | null;
+  gone?: boolean;
+  changed?: string[];
   nodesVisited: number;
   elapsedMs: number;
   timedOut: boolean;
   error?: string;
 }
 
-const UIA_METHOD_LABEL: Record<string, string> = {
-  'uia-invoke': 'Invoke', 'uia-toggle': 'Toggle', 'uia-select': 'Select',
-  'uia-legacy': 'default action', 'uia-coords': 'click at the element centre', 'uia-setvalue': 'ValuePattern',
-};
-
 type SmartFindOutcome =
   | { kind: 'acted'; result: SmartFindResult }
   | { kind: 'miss'; reason: string; result?: SmartFindResult }
   | { kind: 'unknown'; reason: string };
 
-interface FindTarget { pid: number; handle: number; bounds?: { x: number; y: number; width: number; height: number } }
+interface FindTarget { pid: number; handle: number; bounds?: { x: number; y: number; width: number; height: number }; title?: string; processName?: string }
 
 async function foregroundForFind(): Promise<FindTarget> {
   try {
@@ -1574,13 +1619,13 @@ async function foregroundForFind(): Promise<FindTarget> {
       handle: typeof parsed.handle === 'number' ? parsed.handle : 0,
     };
     if (parsed.bounds && typeof parsed.bounds.x === 'number') out.bounds = parsed.bounds;
+    if (typeof parsed.title === 'string') out.title = parsed.title;
+    if (typeof parsed.processName === 'string') out.processName = parsed.processName;
     // Never search Clippy's own bubble.
     if (out.pid === process.pid) return { pid: 0, handle: 0 };
     return out;
   } catch { return { pid: 0, handle: 0 }; }
 }
-
-const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64');
 
 async function windowsSmartFind(
   target: string,
@@ -1617,7 +1662,7 @@ async function windowsSmartFind(
 }
 
 async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
-  const target = String(params.target || '');
+  const target = resolveScreenId(String(params.target || ''));
   const text = String(params.text || '');
   if (!target || !text) return { text: '(missing target or text)' };
 
@@ -1682,6 +1727,10 @@ async function smartType(params: Record<string, unknown>): Promise<ToolResult> {
     }
     if (sf.kind === 'acted') {
       await new Promise(r => setTimeout(r, 300));
+      // The edit inside a Win32 combo box (a file dialog's File name) is
+      // typed, not set: select what is there so the typing replaces it, as
+      // SetValue would have.
+      if (sf.result.comboEdit) await keyPress({ key: 'ctrl+a' });
       return typeText({ text });
     }
     if (sf.kind === 'unknown') {
@@ -1773,7 +1822,12 @@ async function navigateBrowser(params: Record<string, unknown>): Promise<ToolRes
 const TARGET_SCREENSHOT_WIDTH = 1024;
 const SCREENSHOT_DOWNSCALE_THRESHOLD = 1280;
 
-async function desktopScreenshot(): Promise<ToolResult> {
+/**
+ * desktop_screenshot. Model-facing arg: region ('window', the default: the
+ * foreground window; 'screen': the whole primary screen). win32 only for now:
+ * macOS still captures the screen.
+ */
+async function desktopScreenshot(params: Record<string, unknown> = {}): Promise<ToolResult> {
   // win32 — GDI CopyFromScreen + in-PowerShell downscale (restored from
   // v0.17.7). captureScreen()/screenshot-helper below is macOS-only and
   // throws HelperError('missing') on Windows.
@@ -1781,9 +1835,20 @@ async function desktopScreenshot(): Promise<ToolResult> {
     try {
       // v0.11.26 abortable so sleep can kill an in-flight 10s capture
       // (v0.24: abortPsWork covers both the host and one-shot spawns).
+      // v0.24.12 — the foreground window (the one get_active_window picks),
+      // not the whole screen: a small dialog on a 3840x2400 screen shrunk to
+      // 1024 wide was unreadable. region:'screen', or no usable window,
+      // captures the primary screen as before. The frame is clipped to the
+      // virtual screen; the header reports what was really captured.
+      const fg = params.region === 'screen' ? null : await foregroundForFind();
+      const win = fg?.bounds && fg.bounds.width >= 80 && fg.bounds.height >= 80 ? fg : null;
+      const wb = win?.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
       const { stdout } = await psCommand(
         `${PS_WIN32}Add-Type -AssemblyName System.Windows.Forms,System.Drawing; ` +
         `$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; ` +
+        `$win = New-Object System.Drawing.Rectangle(${Math.round(wb.x)},${Math.round(wb.y)},${Math.round(wb.width)},${Math.round(wb.height)}); ` +
+        `$win.Intersect([System.Windows.Forms.SystemInformation]::VirtualScreen); ` +
+        `$isWin = 0; if ($win.Width -ge 80 -and $win.Height -ge 80) { $isWin = 1; $b = $win } ` +
         `$nw = $b.Width; $nh = $b.Height; ` +
         `$bmp = New-Object System.Drawing.Bitmap($nw,$nh); ` +
         `$g = [System.Drawing.Graphics]::FromImage($bmp); ` +
@@ -1803,7 +1868,7 @@ async function desktopScreenshot(): Promise<ToolResult> {
         `$ms = New-Object System.IO.MemoryStream; ` +
         `$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); ` +
         `$bmp.Dispose(); ` +
-        `Write-Output ("$nw $nh $fw $fh"); ` +
+        `Write-Output ("$nw $nh $fw $fh $($b.X) $($b.Y) $isWin"); ` +
         `Write-Output ([Convert]::ToBase64String($ms.ToArray()))`,
         { timeoutMs: 10000, maxBuffer: 20 * 1024 * 1024, idempotent: true });
 
@@ -1814,13 +1879,16 @@ async function desktopScreenshot(): Promise<ToolResult> {
       const finalW = parseInt(headerParts[2] || '0', 10);
       const finalH = parseInt(headerParts[3] || '0', 10);
       const base64 = (lines.slice(1).join('') || '').trim();
-      const downscaled = nativeW > 0 && finalW > 0 && finalW < nativeW;
-      const scale = downscaled ? nativeW / finalW : 1;
-      const text = downscaled
-        ? `Screenshot captured at ${finalW}x${finalH} (downscaled from native ${nativeW}x${nativeH}, scale ${scale.toFixed(3)}x). ` +
-          `If you click on a pixel you see in this screenshot at (sx,sy), call mouse_click(round(sx*${scale.toFixed(3)}), round(sy*${scale.toFixed(3)})) to convert to native coordinates. ` +
-          `Coordinates from read_screen / ocr_read_screen / smart_click are already in native pixels — do NOT rescale those.`
-        : `Screenshot captured at ${finalW}x${finalH} (native — no downscale). Coordinates here ARE native pixels; pass directly to mouse_click.`;
+      // Origin of the captured area on the screen, and whether it is the
+      // window (absent from an older header: the whole screen at 0,0).
+      const originX = parseInt(headerParts[4] || '0', 10) || 0;
+      const originY = parseInt(headerParts[5] || '0', 10) || 0;
+      const isWindow = headerParts[6] === '1' && !!win;
+      const text = windowShotHint({
+        region: { x: originX, y: originY, width: nativeW, height: nativeH },
+        finalW, finalH,
+        window: isWindow ? `"${(win!.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)}" (${win!.processName || '?'})` : undefined,
+      });
       return { text, image: { data: base64, mimeType: 'image/png' } };
     } catch (err) {
       return { text: `(screenshot error: ${err instanceof Error ? err.message : ''})` };
@@ -1939,8 +2007,15 @@ async function ocrReadScreen(): Promise<ToolResult> {
 
 async function waitTool(params: Record<string, unknown>): Promise<ToolResult> {
   const seconds = Math.min(30, Math.max(0.1, Number(params.seconds || 1)));
-  await new Promise(r => setTimeout(r, seconds * 1000));
-  return { text: `Waited ${seconds}s` };
+  // Stop / sleep / a new message end the wait at once (abortAllInFlightTools).
+  const ac = new AbortController();
+  activeAborts.add(ac);
+  const full = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(true), seconds * 1000);
+    ac.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(false); }, { once: true });
+  });
+  activeAborts.delete(ac);
+  return { text: full ? `Waited ${seconds}s` : '(wait cancelled)' };
 }
 
 // ── Clipboard ────────────────────────────────────────────────────
@@ -2041,9 +2116,37 @@ export function cleanClippyTrash(): void {
   }
 }
 
+/**
+ * delete_file / move_file / rename_file share write_file's guards: no `..`
+ * segment in the path as given, and no OS-owned location (isProtectedPath),
+ * for the source as well as the destination. Returns the refusal, or null.
+ */
+function fileOpRefusal(tool: string, rawPaths: string[]): ToolResult | null {
+  for (const raw of rawPaths) {
+    if (raw.split(/[\\/]/).some((seg) => seg === '..')) {
+      return { text: `(error:PROTECTED_PATH) path traversal (..) is not permitted in ${tool}.` };
+    }
+    const abs = expandHome(raw);
+    if (isProtectedPath(abs)) return { text: `(error:PROTECTED_PATH) ${tool} refuses to touch system path: ${abs}` };
+  }
+  return null;
+}
+
+/** Move `filePath` into ~/.clippy-trash (restorable for 7 days). Returns where it went. */
+function moveToClippyTrash(filePath: string): string {
+  fs.mkdirSync(CLIPPY_TRASH_DIR, { recursive: true });
+  const trashPath = path.join(CLIPPY_TRASH_DIR, `${Date.now()}-${path.basename(filePath)}`);
+  // The trash is under the home folder: a file on another drive is copied, then removed.
+  moveAcrossDevices(filePath, trashPath);
+  return trashPath;
+}
+
 async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const filePath = String(params.path || '');
-  if (!filePath) return { text: 'Error: path is required' };
+  const rawPath = String(params.path || '');
+  if (!rawPath) return { text: 'Error: path is required' };
+  const refusal = fileOpRefusal('delete_file', [rawPath]);
+  if (refusal) return refusal;
+  const filePath = expandHome(rawPath);
   try {
     if (!fs.existsSync(filePath)) {
       return { text: `(error:FILE_NOT_FOUND) File does not exist: ${filePath}` };
@@ -2051,12 +2154,11 @@ async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> 
     // Move to ~/.clippy-trash/ instead of hard-delete so the undo inverse
     // can restore it. The trash path is smuggled back via params for the
     // undo factory in tool-undo.ts.
-    fs.mkdirSync(CLIPPY_TRASH_DIR, { recursive: true });
-    const trashName = `${Date.now()}-${path.basename(filePath)}`;
-    const trashPath = path.join(CLIPPY_TRASH_DIR, trashName);
-    fs.renameSync(filePath, trashPath);
-    // Smuggle the trash path so TOOL_UNDO[delete_file] can build the inverse.
+    const trashPath = moveToClippyTrash(filePath);
+    // Smuggle the trash path so TOOL_UNDO[delete_file] can build the inverse
+    // (and the expanded path, so Undo restores to the real location).
     (params as Record<string, unknown>)._clippyTrashPath = trashPath;
+    (params as Record<string, unknown>).path = filePath;
     log.info('deleteFile → trash', { filePath, trashPath });
     return { text: `Trashed ${filePath} (restorable via Undo within 7 days)` };
   } catch (err) {
@@ -2064,37 +2166,51 @@ async function deleteFile(params: Record<string, unknown>): Promise<ToolResult> 
   }
 }
 
-async function renameFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const fromPath = String(params.from || '');
-  const toPath = String(params.to || '');
-  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
+/**
+ * rename_file and move_file. v0.24.12: works across drives; refuses to
+ * replace an existing destination unless overwrite:true (the file that was
+ * there then goes to the Clippy trash, not away for good); same path guards
+ * as write_file.
+ */
+async function relocateFile(tool: 'rename_file' | 'move_file', params: Record<string, unknown>): Promise<ToolResult> {
+  const rawFrom = String(params.from || '');
+  const rawTo = String(params.to || '');
+  if (!rawFrom || !rawTo) return { text: 'Error: from and to paths are required' };
+  const refusal = fileOpRefusal(tool, [rawFrom, rawTo]);
+  if (refusal) return refusal;
+  const fromPath = expandHome(rawFrom);
+  const toPath = expandHome(rawTo);
+  const overwrite = params.overwrite === true || params.overwrite === 'true';
+  const FAILED = tool === 'rename_file' ? 'RENAME_FILE_FAILED' : 'MOVE_FILE_FAILED';
   try {
     if (!fs.existsSync(fromPath)) {
       return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
     }
-    fs.renameSync(fromPath, toPath);
-    log.info('renameFile', { from: fromPath, to: toPath });
-    return { text: `Renamed: ${fromPath} → ${toPath}` };
+    let replaced = '';
+    // Same file under another spelling (a case-only rename on Windows / macOS) is not "exists".
+    const sameFile = path.resolve(fromPath).toLowerCase() === path.resolve(toPath).toLowerCase();
+    if (!sameFile && fs.existsSync(toPath)) {
+      if (fs.statSync(toPath).isDirectory()) {
+        return { text: `(error:DEST_EXISTS) ${toPath} is an existing folder. Give the full new path, including the file name.` };
+      }
+      if (!overwrite) {
+        return { text: `(error:DEST_EXISTS) ${toPath} already exists and was left alone. Choose another name, or pass overwrite:true if the user asked to replace it.` };
+      }
+      replaced = moveToClippyTrash(toPath);
+    }
+    moveAcrossDevices(fromPath, toPath);
+    // The expanded paths, so Undo (which swaps from/to) acts on the real files.
+    (params as Record<string, unknown>).from = fromPath;
+    (params as Record<string, unknown>).to = toPath;
+    log.info(tool === 'rename_file' ? 'renameFile' : 'moveFile', { from: fromPath, to: toPath, replaced: !!replaced });
+    return { text: `${tool === 'rename_file' ? 'Renamed' : 'Moved'}: ${fromPath} → ${toPath}${replaced ? ` (the file that was there is in the Clippy trash: ${replaced})` : ''}` };
   } catch (err) {
-    return { text: `(error:RENAME_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
+    return { text: `(error:${FAILED}) ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-async function moveFile(params: Record<string, unknown>): Promise<ToolResult> {
-  const fromPath = String(params.from || '');
-  const toPath = String(params.to || '');
-  if (!fromPath || !toPath) return { text: 'Error: from and to paths are required' };
-  try {
-    if (!fs.existsSync(fromPath)) {
-      return { text: `(error:FILE_NOT_FOUND) Source does not exist: ${fromPath}` };
-    }
-    fs.renameSync(fromPath, toPath);
-    log.info('moveFile', { from: fromPath, to: toPath });
-    return { text: `Moved: ${fromPath} → ${toPath}` };
-  } catch (err) {
-    return { text: `(error:MOVE_FILE_FAILED) ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
+const renameFile = (params: Record<string, unknown>): Promise<ToolResult> => relocateFile('rename_file', params);
+const moveFile = (params: Record<string, unknown>): Promise<ToolResult> => relocateFile('move_file', params);
 
 // ── Mouse variants ───────────────────────────────────────────────
 
@@ -2877,9 +2993,8 @@ async function writeFile(params: Record<string, unknown>): Promise<ToolResult> {
 // and the blocklist wouldn't catch it. Every legitimate use case is already
 // covered by purpose-built tools (outlook_send_email, read_file, write_file,
 // create_reminder, system_info, list_processes, http_request, ping_host,
-// excel_read, word_to_pdf, etc.). The com-run-powershell.ps1 script is
-// kept on disk for emergency manual debugging but is NOT registered in
-// TOOL_MAP; the model has no way to call it.
+// excel_read, word_to_pdf, etc.). The com-run-powershell.ps1 script itself
+// was deleted in v0.24.12 (it shipped in the installer with no caller).
 
 // ── Agent loop tools ────────────────────────────────────────────
 
@@ -3410,125 +3525,6 @@ async function shellExec(params: Record<string, unknown>): Promise<ToolResult> {
   });
 }
 
-// ── macOS native mail (Apple Mail / Outlook for Mac) ─────────────
-//
-// Both clients expose an AppleScript dictionary. The shape differs slightly
-// (Mail uses "outgoing message", Outlook for Mac uses "new outgoing message"
-// under the "Microsoft Outlook" application) but the lifecycle is the same:
-// create → set properties → make recipients/attachments → send. Errors are
-// returned as structured ComResult-shaped values so the dispatcher above can
-// fall through cleanly.
-
-interface MacMailArgs {
-  to: string;
-  cc: string;
-  subject: string;
-  body: string;
-  attachments: string;
-}
-
-interface MacMailResult {
-  ok: boolean;
-  message: string;
-}
-
-function splitAddresses(s: string): string[] {
-  return s.split(/[;,]/).map((a) => a.trim()).filter(Boolean);
-}
-
-function splitAttachments(s: string): string[] {
-  return s.split(/[;,]/).map((a) => a.trim()).filter(Boolean);
-}
-
-async function sendViaAppleMail(args: MacMailArgs): Promise<MacMailResult> {
-  if (process.platform !== 'darwin') return { ok: false, message: '(error:PLATFORM_UNSUPPORTED) Apple Mail is macOS-only' };
-  const toList = splitAddresses(args.to);
-  const ccList = splitAddresses(args.cc);
-  const attachments = splitAttachments(args.attachments);
-  if (toList.length === 0) return { ok: false, message: '(error:NO_RECIPIENT) Apple Mail send requires at least one "to" address' };
-
-  // AppleScript: build the message, add recipients, optionally attach files, send.
-  // We pass subject + body via stdin to avoid quoting hell with arbitrary text.
-  // Recipients and attachments are constructed by literal string concat into
-  // the script — we sanitize them at the JS layer with splitAddresses (which
-  // strips quotes and surrounding whitespace) before composing the snippet.
-  const subjEsc = args.subject.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const bodyEsc = args.body.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  let recips = '';
-  for (const addr of toList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new to recipient at end of to recipients with properties {address:"${a}"}\n`;
-  }
-  for (const addr of ccList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new cc recipient at end of cc recipients with properties {address:"${a}"}\n`;
-  }
-  let attach = '';
-  for (const p of attachments) {
-    const posix = p.replace(/"/g, '');
-    attach += `make new attachment with properties {file name:(POSIX file "${posix}")} at after the last paragraph\n`;
-  }
-
-  const script = `
-    tell application "Mail"
-      activate
-      set newMsg to make new outgoing message with properties {subject:"${subjEsc}", content:"${bodyEsc}", visible:false}
-      tell newMsg
-        ${recips}
-        ${attach}
-        send
-      end tell
-      return "ok"
-    end tell
-  `;
-  const r = await runApplescript(script, { timeoutMs: 20_000 });
-  if (!r.ok) {
-    return { ok: false, message: `(error:APPLE_MAIL_FAILED) Apple Mail send failed: ${r.error ?? r.stderr.trim()}` };
-  }
-  return { ok: true, message: `Sent via Apple Mail to ${toList.join(', ')}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}` };
-}
-
-async function sendViaOutlookMac(args: MacMailArgs): Promise<MacMailResult> {
-  if (process.platform !== 'darwin') return { ok: false, message: '(error:PLATFORM_UNSUPPORTED) Outlook for Mac is macOS-only' };
-  const toList = splitAddresses(args.to);
-  const ccList = splitAddresses(args.cc);
-  const attachments = splitAttachments(args.attachments);
-  if (toList.length === 0) return { ok: false, message: '(error:NO_RECIPIENT) Outlook for Mac send requires at least one "to" address' };
-
-  const subjEsc = args.subject.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const bodyEsc = args.body.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  let recips = '';
-  for (const addr of toList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new to recipient at end of to recipients of newMsg with properties {email address:{address:"${a}"}}\n`;
-  }
-  for (const addr of ccList) {
-    const a = addr.replace(/"/g, '');
-    recips += `make new cc recipient at end of cc recipients of newMsg with properties {email address:{address:"${a}"}}\n`;
-  }
-  let attach = '';
-  for (const p of attachments) {
-    const posix = p.replace(/"/g, '');
-    attach += `make new attachment of newMsg with properties {file:(POSIX file "${posix}")}\n`;
-  }
-
-  const script = `
-    tell application "Microsoft Outlook"
-      activate
-      set newMsg to make new outgoing message with properties {subject:"${subjEsc}", content:"${bodyEsc}"}
-      ${recips}
-      ${attach}
-      send newMsg
-      return "ok"
-    end tell
-  `;
-  const r = await runApplescript(script, { timeoutMs: 20_000 });
-  if (!r.ok) {
-    return { ok: false, message: `(error:OUTLOOK_MAC_FAILED) Outlook for Mac send failed: ${r.error ?? r.stderr.trim()}` };
-  }
-  return { ok: true, message: `Sent via Outlook for Mac to ${toList.join(', ')}${attachments.length ? ` with ${attachments.length} attachment(s)` : ''}` };
-}
-
 // ── Mail dispatcher ──────────────────────────────────────────────
 
 async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolResult> {
@@ -3614,23 +3610,9 @@ async function outlookSendEmail(params: Record<string, unknown>): Promise<ToolRe
     }
   }
 
-  // L1a — Outlook for Mac via AppleScript dictionary. Composes + sends in
-  // one shot. Attachments path uses `make new attachment` with POSIX file.
-  if (env?.outlook_mac_installed) {
-    tried.push('outlook-mac');
-    const r = await sendViaOutlookMac({ to, cc: params.cc ? String(params.cc) : '', subject, body, attachments: params.attachments ? String(params.attachments) : '' });
-    if (r.ok) return { text: r.message };
-    log.info('outlook-mac send failed', { err: r.message });
-  }
-
-  // L1b — Apple Mail via AppleScript. Same flow; AppleMail's dictionary
-  // is similar but `make new outgoing message` lives under `application "Mail"`.
-  if (env?.apple_mail_installed) {
-    tried.push('apple-mail');
-    const r = await sendViaAppleMail({ to, cc: params.cc ? String(params.cc) : '', subject, body, attachments: params.attachments ? String(params.attachments) : '' });
-    if (r.ok) return { text: r.message };
-    log.info('apple-mail send failed', { err: r.message });
-  }
+  // (The Outlook for Mac / Apple Mail AppleScript tiers that sat here were
+  // removed in v0.24.12: this tool is win32-only (tool-meta platforms), so
+  // they never ran. macOS sends go through apple_mail_send_email.)
 
   // v0.15.0 — L1.5: mcp-chrome with user's REAL signed-in browser. Tries
   // outlook.live.com using the user's actual logged-in tab. Much higher
@@ -4411,7 +4393,7 @@ async function unzipFiles(params: Record<string, unknown>): Promise<ToolResult> 
   const output = String(params.output || '');
   if (!input) return { text: '(error:MISSING_INPUT) input is required (.zip path)' };
   if (!output) return { text: '(error:MISSING_OUTPUT) output is required (directory)' };
-  const args = ['-input', input, '-output', output];
+  const args = ['-zipPath', input, '-output', output];
   if (params.overwrite === true || params.overwrite === 'true') args.push('-overwrite', 'true');
   return await runComScript('unzip-files.ps1', args, 60_000);
 }
@@ -5136,12 +5118,34 @@ async function probeCdpPort(port: number): Promise<boolean> {
   });
 }
 
+type WebviewWinInfo = { processName?: string; app?: string; title?: string; processId?: number };
+type WebviewMatch = { name: string; processName: string; title: string; flag: string };
+
+/**
+ * Windows whose process is a known WebView app. The window list carries the
+ * process as `processName` on Windows and as `app` from the macOS bridge
+ * (which was not read, so nothing was ever detected on a Mac).
+ */
+export function matchWebviewApps(windows: WebviewWinInfo[]): WebviewMatch[] {
+  const matches: WebviewMatch[] = [];
+  for (const w of windows) {
+    const procName = w.processName || w.app || '';
+    const pn = procName.toLowerCase();
+    for (const fp of KNOWN_WEBVIEW_APPS) {
+      if (fp.procPrefixes.some((p) => pn.startsWith(p))) {
+        matches.push({ name: fp.name, processName: procName, title: w.title || '', flag: fp.flag });
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
 async function detectWebviewApps(_params: Record<string, unknown>): Promise<ToolResult> {
   try {
     // Reuse get_windows to enumerate processes (PowerShell-backed).
     const winResult = await getWindows();
-    type WinInfo = { processName?: string; title?: string; processId?: number };
-    let windows: WinInfo[] = [];
+    let windows: WebviewWinInfo[] = [];
     try {
       const parsed = JSON.parse(winResult.text);
       windows = Array.isArray(parsed) ? parsed : (parsed.windows || []);
@@ -5149,16 +5153,7 @@ async function detectWebviewApps(_params: Record<string, unknown>): Promise<Tool
       return { text: '(detect_webview_apps: could not parse window list)' };
     }
     const cdpPort = (await probeCdpPort(9223)) ? 9223 : (await probeCdpPort(9222)) ? 9222 : null;
-    const matches: Array<{ name: string; processName: string; title: string; flag: string }> = [];
-    for (const w of windows) {
-      const pn = (w.processName || '').toLowerCase();
-      for (const fp of KNOWN_WEBVIEW_APPS) {
-        if (fp.procPrefixes.some((p) => pn.startsWith(p))) {
-          matches.push({ name: fp.name, processName: w.processName || '', title: w.title || '', flag: fp.flag });
-          break;
-        }
-      }
-    }
+    const matches = matchWebviewApps(windows);
     if (matches.length === 0) {
       return { text: cdpPort ? `No known WebView apps in window list. CDP IS live on port ${cdpPort} — call cdp_connect.` : 'No known WebView apps detected, no live CDP endpoint.' };
     }

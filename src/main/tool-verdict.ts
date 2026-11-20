@@ -88,3 +88,41 @@ export function shouldRecordWorkflow(i: RecordWorkflowInput): boolean {
     && i.verifiedSteps >= 1
     && !i.destructiveAttempts.some((a) => a.failed);
 }
+
+// ── v0.24.12: action receipts in the conversation history ───────────────
+// History keeps only what Clippy SAID. After a task that sent an email
+// (verified in Sent Items), the next turn's model saw just "Sent!", found no
+// tool call behind it, and "confessed" it had lied. A task that ends with
+// verified actions now leaves a short note next to its reply:
+//   [done: outlook_send_email → verified in Sent Items; write_file ×2 → verified]
+// Tool names and receipt status only: no arguments, no recipients, no paths.
+
+const RECEIPT_NOTE_START = '[done: ';
+/** Where the proof came from, for the tools whose receipt says more than "verified". */
+const VERIFIED_HOW: Record<string, string> = { outlook_send_email: 'verified in Sent Items' };
+const MAX_NOTE_TOOLS = 6;
+
+/** The note for a task's verified actions (tool names, in order); '' when there are none. */
+export function actionReceiptNote(verifiedTools: readonly string[]): string {
+  const counts = new Map<string, number>();
+  for (const t of verifiedTools) {
+    if (/^[a-z0-9_]{1,60}$/i.test(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  if (counts.size === 0) return '';
+  const items = [...counts].slice(0, MAX_NOTE_TOOLS)
+    .map(([tool, n]) => `${tool}${n > 1 ? ` ×${n}` : ''} → ${VERIFIED_HOW[tool] ?? 'verified'}`);
+  if (counts.size > MAX_NOTE_TOOLS) items.push(`+${counts.size - MAX_NOTE_TOOLS} more`);
+  return `${RECEIPT_NOTE_START}${items.join('; ')}]`;
+}
+
+/** The reply as history stores it: the note goes on its own last line of the same text. */
+export function withReceiptNote(reply: string, verifiedTools: readonly string[]): string {
+  const note = actionReceiptNote(verifiedTools);
+  return note ? `${reply}\n${note}` : reply;
+}
+
+/** The reply as the user saw it: without the note (the bubble's history panel shows this). */
+export function stripReceiptNote(text: string): string {
+  const i = text.lastIndexOf(`\n${RECEIPT_NOTE_START}`);
+  return i >= 0 && text.trimEnd().endsWith(']') && !text.slice(i + 1).trimEnd().includes('\n') ? text.slice(0, i) : text;
+}
