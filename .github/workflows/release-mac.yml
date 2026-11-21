@@ -88,6 +88,23 @@ jobs:
       # there is one. 2.0.0 is the version in the Windows build tree's vendor/.
       - run: npm install -g --ignore-scripts clawdcursor@2.0.0
 
+      # electron-builder's own downloader got HTTP 403 from GitHub for the x64
+      # zip on a runner. Fetch both zips into its cache with retries, checked
+      # against Electron's published SHA-256 list.
+      - name: Pre-fetch Electron (arm64 + x64)
+        run: |
+          EV="$(node -p "require('electron/package.json').version")"
+          CACHE="$HOME/Library/Caches/electron"
+          BASE="https://github.com/electron/electron/releases/download/v$EV"
+          mkdir -p "$CACHE" && cd "$CACHE"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o SHASUMS256.txt "$BASE/SHASUMS256.txt"
+          for a in arm64 x64; do
+            f="electron-v$EV-darwin-$a.zip"
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$f" "$BASE/$f"
+            grep " \*\{0,1\}$f\$" SHASUMS256.txt | sed 's/ \*/  /' | shasum -a 256 -c -
+          done
+          rm SHASUMS256.txt
+
       - name: Build (unsigned)
         if: env.SIGN != 'true'
         env:
