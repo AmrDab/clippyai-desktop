@@ -70,7 +70,7 @@ import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
-import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
+import { checkReadPath, judgeResolvedPath, canonicalGuardEnv, describePathBlock, type PathGuardEnv } from './security/path-guard';
 import { isPingableHost, httpUrlOrNull } from './security/net-guard';
 import { noteToolRan, taskReadSensitive, taskReadTexts, taskUserMessage, pendingTypedLine } from './security/task-taint';
 import { carriedReadContent } from './security/read-leak';
@@ -2696,8 +2696,14 @@ function readGuardEnv(): PathGuardEnv {
  */
 async function skipsGuardedBelow(root: string): Promise<(full: string) => boolean> {
   const env = readGuardEnv();
-  if (!(await checkReadPath(root, env)).allowed) return () => false;
-  return (full) => !judgeResolvedPath(full, env).allowed;
+  const check = await checkReadPath(root, env);
+  if (!check.allowed) return () => false;
+  // Entries are judged under the root's real path against the real guarded
+  // roots: the walk's own `root` may be an alias of it (8.3 name, a link).
+  const canonical = await canonicalGuardEnv(env);
+  const realRoot = check.resolved || root;
+  return (full) => !judgeResolvedPath(full.startsWith(root) ? realRoot + full.slice(root.length) : full, canonical).allowed
+    || !judgeResolvedPath(full, env).allowed;
 }
 
 /**
