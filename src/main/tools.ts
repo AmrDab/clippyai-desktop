@@ -3063,12 +3063,26 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
   return { text: `${header}\n${matches.join('\n')}` };
 }
 
+/**
+ * Argument checks that do not depend on the platform. executeTool runs them
+ * before the platform gate, so a bad value gets the same refusal on every OS
+ * instead of PLATFORM_UNSUPPORTED on some and INVALID_ARGS on others.
+ */
+function invalidArgs(tool: string, params: Record<string, unknown>): string | null {
+  if (tool === 'ping_host') {
+    const host = String(params.host || '').trim();
+    // A hostname or an IP only: anything else (a URL, a long encoded label)
+    // could carry data out in the DNS lookup.
+    if (host && !isPingableHost(host)) return '(error:INVALID_ARGS) host must be a plain hostname or an IP address';
+  }
+  return null;
+}
+
 async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
   const host = String(params.host || '').trim();
   if (!host) return { text: 'Error: host is required' };
-  // A hostname or an IP only: anything else (a URL, a long encoded label) could
-  // carry data out in the DNS lookup.
-  if (!isPingableHost(host)) return { text: '(error:INVALID_ARGS) host must be a plain hostname or an IP address' };
+  const problem = invalidArgs('ping_host', params);
+  if (problem) return { text: problem };
   const count = String(Number(params.count) || 4);
   // Note: -hostName in script (host is a reserved-ish param name in some PS contexts)
   const result = await runComScript('com-ping-host.ps1', ['-hostName', host, '-count', count], 15000);
@@ -5497,6 +5511,10 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     log.warn(`Unknown tool: ${tool}`);
     return { text: `(error:UNKNOWN_TOOL) unknown tool: ${tool}` };
   }
+
+  // Platform-independent argument checks first (see invalidArgs).
+  const badArgs = invalidArgs(tool, params);
+  if (badArgs) return { text: badArgs };
 
   // v0.20.0 — platform-gate at the dispatcher. buildToolTiers should have
   // already filtered the tool out of the model's catalog, but server-side

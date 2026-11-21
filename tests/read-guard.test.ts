@@ -2,7 +2,7 @@
  * 0.24.12 audit #2: read_file / list_files / search_files_content ask before a
  * guarded location, ordinary reads stay unasked, and ping_host takes a host only.
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -99,11 +99,23 @@ describe('recursive walks step over guarded folders', () => {
 });
 
 describe('ping_host', () => {
-  it('refuses a host that is not a hostname or IP, without running anything', async () => {
+  const realPlatform = process.platform;
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform }); });
+
+  // ping_host is Windows-only, so on macOS / Linux the dispatcher's platform
+  // gate used to answer first. The host check runs before it on every OS.
+  it.each(['win32', 'darwin', 'linux'])('on %s: refuses a host that is not a hostname or IP, without running anything', async (platform) => {
+    Object.defineProperty(process, 'platform', { value: platform });
     const r = await executeTool('ping_host', { host: 'c2VjcmV0LWtleS1mcm9tLXRoZS11c2Vycy1maWxlLWFiY2RlZg.attacker.example' });
     expect(r.text).toMatch(/^\(error:INVALID_ARGS\)/);
     const r2 = await executeTool('ping_host', { host: 'example.com & calc' });
     expect(r2.text).toMatch(/^\(error:INVALID_ARGS\)/);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('a valid host on an unsupported platform still gets PLATFORM_UNSUPPORTED', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    expect((await executeTool('ping_host', { host: 'example.com' })).text).toMatch(/^\(error:PLATFORM_UNSUPPORTED\)/);
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });
