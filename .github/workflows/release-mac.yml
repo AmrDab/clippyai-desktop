@@ -1,0 +1,263 @@
+name: Release (macOS)
+
+# Builds the macOS app (arm64 + x64 DMG/ZIP) and, on the signed path, signs,
+# notarizes, verifies and publishes it (GitHub release + R2).
+#
+#   push tag v*        -> signed build, then publish
+#   workflow_dispatch  -> inputs choose: sign (default true), publish (default true)
+#
+# Never runs on pull_request: the signed path reads the `release` environment's
+# secrets. An unsigned run (sign=false) uses no environment and no secrets.
+on:
+  push:
+    tags: ['v*']
+    # TEMPORARY (testing only): unsigned, unpublished build on this branch.
+    branches: [ci/mac-release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build, e.g. v0.24.11 (empty = the ref the run was started from)
+        type: string
+        default: ''
+      sign:
+        description: Sign + notarize (needs approval for the "release" environment)
+        type: boolean
+        default: true
+      publish:
+        description: Publish to the GitHub release and R2 (signed builds only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mac-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  # A tag push always signs; a manual run follows its input; a branch push never signs.
+  SIGN: ${{ (github.event_name == 'workflow_dispatch' && inputs.sign) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
+  # The tag being released ('' on a branch run: nothing to compare the version with).
+  TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+
+jobs:
+  build:
+    name: Build${{ ((github.event_name == 'workflow_dispatch' && inputs.sign) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) && ' (signed)' || ' (unsigned)' }}
+    runs-on: macos-14
+    timeout-minutes: 60
+    # Signed path only: the environment holds the secrets and the owner's
+    # approval gate. '' = no environment, so an unsigned run can read no secrets.
+    environment: ${{ ((github.event_name == 'workflow_dispatch' && inputs.sign) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) && 'release' || '' }}
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check the tag name
+        if: env.TAG != ''
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::not a release tag: $TAG"; exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG != '' && format('refs/tags/{0}', env.TAG) || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # npm 11 wrote package-lock.json; npm 10 (Node 22) rejects it.
+          node-version: 24
+
+      - name: Version (package.json must match the tag)
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ -n "$TAG" && "v$VERSION" != "$TAG" ]]; then
+            echo "::error::package.json is $VERSION but the tag is $TAG"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      # scripts/vendor-clawdcursor-mac.js copies a global clawdcursor install if
+      # there is one. 2.0.0 is the version in the Windows build tree's vendor/.
+      - run: npm install -g --ignore-scripts clawdcursor@2.0.0
+
+      - name: Build (unsigned)
+        if: env.SIGN != 'true'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:mac -- --publish never
+
+      - name: Write the notarization key
+        if: env.SIGN == 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          umask 077
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Build, sign and notarize
+        if: env.SIGN == 'true'
+        env:
+          # electron-builder imports the base64 .p12 into its own temp keychain.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [[ -z "${!v}" ]]; then echo "::error::secret for $v is not set in the release environment"; exit 1; fi
+          done
+          if [[ ! -s "$RUNNER_TEMP/AuthKey.p8" ]]; then echo "::error::APPLE_API_KEY_P8 is empty"; exit 1; fi
+          export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
+          npm run dist:mac -- --publish never
+
+      - name: Delete the notarization key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Check the 9 release files
+        run: |
+          cd release
+          for f in \
+            "ClippyAI-$VERSION-arm64.dmg" "ClippyAI-$VERSION-arm64.dmg.blockmap" \
+            "ClippyAI-$VERSION-arm64.zip" "ClippyAI-$VERSION-arm64.zip.blockmap" \
+            "ClippyAI-$VERSION-x64.dmg" "ClippyAI-$VERSION-x64.dmg.blockmap" \
+            "ClippyAI-$VERSION-x64.zip" "ClippyAI-$VERSION-x64.zip.blockmap" \
+            latest-mac.yml; do
+            if [[ ! -s "$f" ]]; then echo "::error::missing $f"; exit 1; fi
+            echo "OK $(du -h "$f" | cut -f1)  $f"
+          done
+          YML_VERSION="$(grep -E '^version:' latest-mac.yml | awk '{print $2}')"
+          if [[ "$YML_VERSION" != "$VERSION" ]]; then
+            echo "::error::latest-mac.yml says $YML_VERSION, expected $VERSION"; exit 1
+          fi
+          lipo -archs mac-arm64/ClippyAI.app/Contents/MacOS/ClippyAI | grep -qx arm64
+          lipo -archs mac/ClippyAI.app/Contents/MacOS/ClippyAI | grep -qx x86_64
+
+      - name: Verify signature, Gatekeeper and staples
+        if: env.SIGN == 'true'
+        run: |
+          for app in release/mac-arm64/ClippyAI.app release/mac/ClippyAI.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl -a -t exec -vv "$app"
+            xcrun stapler validate "$app"
+          done
+          for dmg in "release/ClippyAI-$VERSION-arm64.dmg" "release/ClippyAI-$VERSION-x64.dmg"; do
+            xcrun stapler validate "$dmg"
+          done
+
+      # Unsigned: the build to inspect. Signed: handed to the publish job, or
+      # (publish off) the dry-run DMGs to test on a Mac. Kept for one day.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ClippyAI-mac-${{ env.VERSION }}-${{ env.SIGN == 'true' && 'signed' || 'unsigned' }}
+          path: |
+            release/ClippyAI-${{ env.VERSION }}-*.dmg
+            release/ClippyAI-${{ env.VERSION }}-*.zip
+            release/ClippyAI-${{ env.VERSION }}-*.blockmap
+            release/latest-mac.yml
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publish (GitHub release + R2)
+    needs: build
+    # Signed builds of a tag only. Same file list, order and URLs as the mac
+    # branch of scripts/publish-release.sh.
+    if: >-
+      ((github.event_name == 'workflow_dispatch' && inputs.sign && inputs.publish)
+      || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      REPO: ${{ github.repository }}
+      R2_BUCKET: clippyai-downloads
+    steps:
+      - name: Refuse to publish without a tag
+        run: |
+          if [[ -z "$TAG" || "$TAG" != "v$VERSION" ]]; then
+            echo "::error::publish needs a tag that matches the version (tag '$TAG', version $VERSION)"; exit 1
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ClippyAI-mac-${{ env.VERSION }}-signed
+          path: release
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release
+          # --latest=false: Windows updaters resolve /releases/latest and need
+          # latest.yml there; the Windows publish sets "latest". An existing
+          # release keeps whatever flag it has.
+          if ! gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --repo "$REPO" --verify-tag --latest=false \
+              --title "ClippyAI v$VERSION" --notes "ClippyAI v$VERSION"
+          fi
+          gh release upload "v$VERSION" --repo "$REPO" --clobber \
+            "ClippyAI-$VERSION-arm64.dmg" "ClippyAI-$VERSION-arm64.dmg.blockmap" \
+            "ClippyAI-$VERSION-arm64.zip" "ClippyAI-$VERSION-arm64.zip.blockmap" \
+            "ClippyAI-$VERSION-x64.dmg" "ClippyAI-$VERSION-x64.dmg.blockmap" \
+            "ClippyAI-$VERSION-x64.zip" "ClippyAI-$VERSION-x64.zip.blockmap" \
+            latest-mac.yml
+
+      - name: Upload to R2 (latest-mac.yml last)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          cd release
+          put() { # put <object key> <file> <content type>
+            echo "R2 PUT: $1"
+            npx --yes wrangler@4.164.0 r2 object put "$R2_BUCKET/$1" --file "$2" --content-type "$3" --remote
+          }
+          DMG_CT=application/x-apple-diskimage
+          for a in arm64 x64; do put "ClippyAI-$VERSION-$a.dmg" "ClippyAI-$VERSION-$a.dmg" "$DMG_CT"; done
+          for a in arm64 x64; do put "ClippyAI-$VERSION-$a.zip" "ClippyAI-$VERSION-$a.zip" application/zip; done
+          for a in arm64 x64; do
+            put "ClippyAI-$VERSION-$a.dmg.blockmap" "ClippyAI-$VERSION-$a.dmg.blockmap" application/octet-stream
+            put "ClippyAI-$VERSION-$a.zip.blockmap" "ClippyAI-$VERSION-$a.zip.blockmap" application/octet-stream
+          done
+          # What download.clippyai.app serves to new users.
+          for a in arm64 x64; do put "ClippyAI-latest-$a.dmg" "ClippyAI-$VERSION-$a.dmg" "$DMG_CT"; done
+          # The updater feed goes last, so it never points at files that are not there yet.
+          put latest-mac.yml latest-mac.yml text/yaml
+
+      - name: Check the public URLs
+        run: |
+          fail=0
+          for url in \
+            "https://download.clippyai.app/ClippyAI-$VERSION-arm64.zip" \
+            "https://download.clippyai.app/ClippyAI-$VERSION-x64.zip" \
+            "https://download.clippyai.app/ClippyAI-$VERSION-arm64.dmg" \
+            "https://download.clippyai.app/ClippyAI-$VERSION-x64.dmg" \
+            "https://download.clippyai.app/ClippyAI-latest-arm64.dmg" \
+            "https://download.clippyai.app/ClippyAI-latest-x64.dmg" \
+            "https://download.clippyai.app/latest-mac.yml" \
+            "https://github.com/$REPO/releases/download/v$VERSION/ClippyAI-$VERSION-arm64.dmg" \
+            "https://github.com/$REPO/releases/download/v$VERSION/latest-mac.yml"; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -I -L "$url" || echo 000)"
+            echo "HTTP $code  $url"
+            [[ "$code" == 200 ]] || fail=1
+          done
+          LIVE="$(curl -fsSL "https://download.clippyai.app/latest-mac.yml" | grep -E '^version:' | awk '{print $2}')"
+          echo "latest-mac.yml on R2 says: $LIVE"
+          [[ "$LIVE" == "$VERSION" ]] || { echo "::error::R2 feed says $LIVE, expected $VERSION (cache?)"; fail=1; }
+          exit $fail
