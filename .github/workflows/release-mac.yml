@@ -11,8 +11,6 @@ name: Release (macOS)
 on:
   push:
     tags: ['v*']
-    # TEMPORARY (testing only): unsigned, unpublished build on this branch.
-    branches: [ci/mac-release]
   workflow_dispatch:
     inputs:
       tag:
@@ -36,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # A tag push always signs; a manual run follows its input; a branch push never signs.
+  # A tag push always signs; a manual run follows its input.
   SIGN: ${{ (github.event_name == 'workflow_dispatch' && inputs.sign) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
   # The tag being released ('' on a branch run: nothing to compare the version with).
   TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
