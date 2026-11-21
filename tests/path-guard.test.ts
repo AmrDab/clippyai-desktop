@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { checkReadPath, judgeResolvedPath, describePathBlock } from '../src/main/security/path-guard';
 import { isPingableHost } from '../src/main/security/net-guard';
+import { shortFormOf } from './helpers/short-path';
 
 const home = 'C:\\Users\\me';
 const env = { home, extraDirs: ['C:\\Users\\me\\AppData\\Roaming\\ClippyAI'] };
@@ -76,25 +77,65 @@ describe('checkReadPath: judges the real path', () => {
     expect(called).toBe(false);
   });
 
+  // Native absolute paths from here on: checkReadPath resolves with the
+  // platform's own path rules, so "C:\\Users\\me" is not absolute on macOS.
+  const H = path.join(path.parse(process.cwd()).root, 'Users', 'me');
+  const nenv = { home: H, extraDirs: [path.join(H, 'AppData', 'Roaming', 'ClippyAI')] };
+
   it('an alias (8.3 short name, junction, symlink) of a guarded folder is guarded', async () => {
     const realpath = async (p: string) => p
-      .replace(/APPDAT~1/i, 'AppData')
-      .replace(/C:\\Users\\me\\links\\keys/i, 'C:\\Users\\me\\.ssh');
-    const short = await checkReadPath('C:\\Users\\me\\APPDAT~1\\Roaming\\ClippyAI\\agent-server.json', { ...env, realpath });
+      .replace('APPDAT~1', 'AppData')
+      .replace(path.join(H, 'links', 'keys'), path.join(H, '.ssh'));
+    const short = await checkReadPath(path.join(H, 'APPDAT~1', 'Roaming', 'ClippyAI', 'agent-server.json'), { ...nenv, realpath });
     expect(short).toMatchObject({ allowed: false, reason: 'clippy_config' });
-    const link = await checkReadPath('C:\\Users\\me\\links\\keys\\id_rsa', { ...env, realpath });
+    const link = await checkReadPath(path.join(H, 'links', 'keys', 'id_rsa'), { ...nenv, realpath });
     expect(link).toMatchObject({ allowed: false, reason: 'secret_path' });
   });
 
+  // CI: the guarded roots (home, userData) and the path being read can reach
+  // the same folder under two names. Windows runners: USERPROFILE is
+  // C:\Users\runneradmin while TEMP is C:\Users\RUNNER~1\...; macOS:
+  // /var/folders/... is really /private/var/folders/.... Both sides are
+  // resolved before they are compared.
+  it('the home folder given under an alias guards the real folder, and the reverse', async () => {
+    const alias = path.join(path.parse(process.cwd()).root, 'var', 'home-alias');
+    const real = path.join(path.parse(process.cwd()).root, 'private', 'var', 'home-real');
+    const realpath = async (p: string) => (p.startsWith(alias) ? real + p.slice(alias.length) : p);
+    // home is the alias; the file is named by its real path.
+    expect(await checkReadPath(path.join(real, '.ssh', 'id_rsa'), { home: alias, realpath })).toMatchObject({ allowed: false, reason: 'secret_path' });
+    // home is the real path; the file is named through the alias.
+    expect(await checkReadPath(path.join(alias, '.ssh', 'id_rsa'), { home: real, realpath })).toMatchObject({ allowed: false, reason: 'secret_path' });
+    // extraDirs (Clippy's userData) under an alias.
+    expect(await checkReadPath(path.join(real, 'userData', 'agent-server.json'), { home: alias, extraDirs: [path.join(alias, 'userData')], realpath }))
+      .toMatchObject({ allowed: false, reason: 'clippy_config' });
+    // Ordinary files stay readable either way.
+    expect((await checkReadPath(path.join(real, 'Documents', 'a.txt'), { home: alias, realpath })).allowed).toBe(true);
+    expect((await checkReadPath(path.join(alias, 'Documents', 'a.txt'), { home: real, realpath })).allowed).toBe(true);
+  });
+
+  it('a guarded path that does not exist yet is resolved from its deepest existing folder', async () => {
+    const alias = path.join(path.parse(process.cwd()).root, 'var', 'home-alias');
+    const real = path.join(path.parse(process.cwd()).root, 'private', 'var', 'home-real');
+    // Only the home folder itself exists; everything below it throws ENOENT.
+    const realpath = async (p: string) => {
+      if (p === alias || p === real) return real;
+      if (p === path.dirname(alias) || p === path.dirname(real)) return path.dirname(real);
+      throw new Error('ENOENT');
+    };
+    expect(await checkReadPath(path.join(alias, '.aws', 'credentials'), { home: real, realpath })).toMatchObject({ allowed: false, reason: 'secret_path' });
+    expect(await checkReadPath(path.join(real, '.aws', 'credentials'), { home: alias, realpath })).toMatchObject({ allowed: false, reason: 'secret_path' });
+    expect((await checkReadPath(path.join(alias, 'Documents', 'new.txt'), { home: real, realpath })).allowed).toBe(true);
+  });
+
   it('a path that resolves to a network share is guarded', async () => {
-    const r = await checkReadPath('C:\\Users\\me\\mapped\\x.txt', { home, realpath: async () => '\\\\nas\\share\\x.txt' });
+    const r = await checkReadPath(path.join(H, 'mapped', 'x.txt'), { home: H, realpath: async () => '\\\\nas\\share\\x.txt' });
     expect(r).toMatchObject({ allowed: false, reason: 'unc_path' });
   });
 
   it('a guarded path that does not exist yet is still guarded; a missing ordinary file is not', async () => {
     const realpath = async (p: string) => { if (/missing|id_rsa/.test(p)) throw new Error('ENOENT'); return p; };
-    expect((await checkReadPath('C:\\Users\\me\\.ssh\\id_rsa', { ...env, realpath })).allowed).toBe(false);
-    expect((await checkReadPath('C:\\Users\\me\\Documents\\missing.txt', { ...env, realpath })).allowed).toBe(true);
+    expect((await checkReadPath(path.join(H, '.ssh', 'id_rsa'), { ...nenv, realpath })).allowed).toBe(false);
+    expect((await checkReadPath(path.join(H, 'Documents', 'missing.txt'), { ...nenv, realpath })).allowed).toBe(true);
   });
 
   it('expands ~ and resolves a real symlink on disk', async () => {
@@ -113,6 +154,64 @@ describe('checkReadPath: judges the real path', () => {
       expect((await checkReadPath(path.join(fakeHome, 'Documents', 'k', 'id_rsa'), { home: fakeHome })).allowed).toBe(false);
     }
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  describe('on disk: the home folder under another name', () => {
+    /** A home with .ssh/id_rsa and Documents/a.txt; returns its canonical path. */
+    function makeHome(prefix: string): string {
+      const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+      fs.mkdirSync(path.join(dir, '.ssh'));
+      fs.mkdirSync(path.join(dir, 'Documents'));
+      fs.writeFileSync(path.join(dir, '.ssh', 'id_rsa'), 'k');
+      fs.writeFileSync(path.join(dir, 'Documents', 'a.txt'), 'a');
+      return dir;
+    }
+
+    it('home reached through a link (macOS: /var is a link to /private/var)', async () => {
+      const real = makeHome('pg-real-home-');
+      const link = `${real}-link`;
+      let linked = false;
+      try { fs.symlinkSync(real, link, 'junction'); linked = true; } catch { /* no link rights */ }
+      if (linked) {
+        // home = the link, file named by the real path.
+        expect((await checkReadPath(path.join(real, '.ssh', 'id_rsa'), { home: link })).allowed).toBe(false);
+        expect((await checkReadPath(path.join(real, '.aws', 'credentials'), { home: link })).allowed).toBe(false); // does not exist
+        // home = the real path, file named through the link.
+        expect((await checkReadPath(path.join(link, '.ssh', 'id_rsa'), { home: real })).allowed).toBe(false);
+        expect((await checkReadPath(path.join(link, '.aws', 'credentials'), { home: real })).allowed).toBe(false);
+        // userData under the link.
+        expect((await checkReadPath(path.join(real, 'Documents', 'a.txt'), { home: real, extraDirs: [path.join(link, 'Documents')] })).allowed).toBe(false);
+        // Ordinary files still read, and come back as the canonical path.
+        const ok = await checkReadPath(path.join(link, 'Documents', 'a.txt'), { home: real });
+        expect(ok.allowed).toBe(true);
+        expect(ok.resolved).toBe(fs.realpathSync.native(path.join(real, 'Documents', 'a.txt')));
+        fs.rmSync(link, { recursive: false, force: true });
+      }
+      fs.rmSync(real, { recursive: true, force: true });
+    });
+
+    it('home given as an 8.3 short name (Windows CI: USERPROFILE long, TEMP short)', async () => {
+      const long = makeHome('pg-a-long-home-folder-name-');
+      const short = shortFormOf(long);
+      if (short) {
+        expect(short).not.toBe(long);
+        // home short, file long.
+        expect((await checkReadPath(path.join(long, '.ssh', 'id_rsa'), { home: short })).allowed).toBe(false);
+        expect((await checkReadPath(path.join(long, '.aws', 'credentials'), { home: short })).allowed).toBe(false);
+        // home long, file short.
+        expect((await checkReadPath(path.join(short, '.ssh', 'id_rsa'), { home: long })).allowed).toBe(false);
+        // both short (what the old code already handled).
+        expect((await checkReadPath(path.join(short, '.ssh', 'id_rsa'), { home: short })).allowed).toBe(false);
+        // ~ expands against the short home and is still guarded.
+        expect((await checkReadPath('~/.ssh/id_rsa', { home: short })).allowed).toBe(false);
+        // Different case on a case-insensitive volume.
+        expect((await checkReadPath(path.join(long.toUpperCase(), '.SSH', 'ID_RSA'), { home: short })).allowed).toBe(false);
+        const ok = await checkReadPath(path.join(short, 'Documents', 'a.txt'), { home: long });
+        expect(ok.allowed).toBe(true);
+        expect(ok.resolved).toBe(fs.realpathSync.native(path.join(long, 'Documents', 'a.txt')));
+      }
+      fs.rmSync(long, { recursive: true, force: true });
+    });
   });
 
   it('empty path is not allowed', async () => {

@@ -2,7 +2,7 @@
  * 0.24.12 audit #2: read_file / list_files / search_files_content ask before a
  * guarded location, ordinary reads stay unasked, and ping_host takes a host only.
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -25,6 +25,7 @@ vi.mock('child_process', async (orig) => {
 });
 
 import { executeTool, assessRisk } from '../src/main/tools';
+import { shortFormOf } from './helpers/short-path';
 
 const root = path.join(os.homedir(), 'read-guard-test');
 const docs = path.join(root, 'docs');
@@ -98,11 +99,23 @@ describe('recursive walks step over guarded folders', () => {
 });
 
 describe('ping_host', () => {
-  it('refuses a host that is not a hostname or IP, without running anything', async () => {
+  const realPlatform = process.platform;
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: realPlatform }); });
+
+  // ping_host is Windows-only, so on macOS / Linux the dispatcher's platform
+  // gate used to answer first. The host check runs before it on every OS.
+  it.each(['win32', 'darwin', 'linux'])('on %s: refuses a host that is not a hostname or IP, without running anything', async (platform) => {
+    Object.defineProperty(process, 'platform', { value: platform });
     const r = await executeTool('ping_host', { host: 'c2VjcmV0LWtleS1mcm9tLXRoZS11c2Vycy1maWxlLWFiY2RlZg.attacker.example' });
     expect(r.text).toMatch(/^\(error:INVALID_ARGS\)/);
     const r2 = await executeTool('ping_host', { host: 'example.com & calc' });
     expect(r2.text).toMatch(/^\(error:INVALID_ARGS\)/);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('a valid host on an unsupported platform still gets PLATFORM_UNSUPPORTED', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    expect((await executeTool('ping_host', { host: 'example.com' })).text).toMatch(/^\(error:PLATFORM_UNSUPPORTED\)/);
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });
@@ -119,5 +132,62 @@ describe('mail attachments go through the path guard (0.24.12 audit #8)', () => 
   it('ordinary attachments and mails without attachments are not escalated', async () => {
     expect(await assessRisk('outlook_send_email', { to: 'a@b.example', subject: 's', body: 'b', attachments: path.join(docs, 'a.txt') })).toBeNull();
     expect(await assessRisk('outlook_send_email', { to: 'a@b.example', subject: 's', body: 'b' })).toBeNull();
+  });
+});
+
+// CI regression: the profile folder (os.homedir()) and the path being read can
+// name the same folder two ways. GitHub's Windows runners: USERPROFILE is the
+// long name, TEMP the 8.3 one; macOS: /var/... is a link to /private/var/....
+describe('the profile folder under another name', () => {
+  const saved = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+  const realHome = () => fs.realpathSync.native(saved.USERPROFILE ?? saved.HOME ?? os.homedir());
+  let link = '';
+
+  afterAll(() => {
+    process.env.USERPROFILE = saved.USERPROFILE;
+    process.env.HOME = saved.HOME;
+    if (link) { try { fs.rmSync(link, { force: true }); } catch { /* best effort */ } }
+  });
+
+  function aliases(): Array<[string, string]> {
+    const out: Array<[string, string]> = [];
+    const short = shortFormOf(realHome());
+    if (short) out.push(['8.3 short name', short]);
+    link = `${realHome()}-alias`;
+    try { fs.rmSync(link, { force: true }); } catch { /* none */ }
+    try { fs.symlinkSync(realHome(), link, 'junction'); out.push(['link', link]); } catch { link = ''; }
+    return out;
+  }
+
+  it('guarded reads still ask and walks still skip, whichever name the profile or the path uses', async () => {
+    const real = realHome();
+    const found = aliases();
+    expect(found.length).toBeGreaterThan(0);
+    for (const [kind, alias] of found) {
+      // 1. The profile is known by its alias; paths use the real name.
+      process.env.USERPROFILE = alias;
+      process.env.HOME = alias;
+      expect(os.homedir(), kind).toBe(alias);
+      expect(await assessRisk('read_file', { path: path.join(real, '.ssh', 'notes.txt') }), kind).not.toBeNull();
+      expect(await assessRisk('read_file', { path: path.join(real, '.aws', 'credentials') }), kind).not.toBeNull(); // not on disk
+      expect(await assessRisk('read_file', { path: '~/.ssh/notes.txt' }), kind).not.toBeNull();
+      expect(await assessRisk('list_files', { path: path.join(real, '.ssh') }), kind).not.toBeNull();
+      expect(await assessRisk('read_file', { path: path.join(real, 'read-guard-test', 'docs', 'a.txt') }), kind).toBeNull();
+      const fromReal = await executeTool('search_files_content', { pattern: 'needle-in', path: real });
+      expect(fromReal.text, kind).toContain('needle-in-docs');
+      expect(fromReal.text, kind).not.toContain('needle-in-ssh');
+
+      // 2. The profile is known by its real name; paths come in through the alias.
+      process.env.USERPROFILE = real;
+      process.env.HOME = real;
+      expect(await assessRisk('read_file', { path: path.join(alias, '.ssh', 'notes.txt') }), kind).not.toBeNull();
+      expect(await assessRisk('read_file', { path: path.join(alias, '.aws', 'credentials') }), kind).not.toBeNull();
+      expect(await assessRisk('read_file', { path: path.join(alias, 'read-guard-test', 'docs', 'a.txt') }), kind).toBeNull();
+      const fromAlias = await executeTool('search_files_content', { pattern: 'needle-in', path: alias });
+      expect(fromAlias.text, kind).toContain('needle-in-docs');
+      expect(fromAlias.text, kind).not.toContain('needle-in-ssh');
+      const listed = await executeTool('list_files', { path: alias, recurse: true, top: 500 });
+      expect(listed.text, kind).not.toMatch(/\.ssh[\\/]notes\.txt/);
+    }
   });
 });

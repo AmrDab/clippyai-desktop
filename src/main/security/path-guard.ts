@@ -10,7 +10,8 @@
  *
  * The check runs on the REAL path: symlinks, junctions and Windows 8.3 short
  * names (C:\Users\me\APPDAT~1) are resolved first, so an alias of a guarded
- * folder is guarded too. UNC paths are guarded: opening one makes Windows
+ * folder is guarded too. The guarded roots (home, userData) are resolved the
+ * same way, and the comparison ignores case. UNC paths are guarded: opening one makes Windows
  * authenticate to a server the path names.
  */
 
@@ -141,19 +142,50 @@ async function realPathOf(abs: string, realpath: (p: string) => Promise<string>)
   }
 }
 
+/**
+ * The guard env with its roots (home, extraDirs) resolved the same way a
+ * candidate path is: links followed, 8.3 names expanded, a folder that does
+ * not exist yet resolved from its deepest existing ancestor.
+ *
+ * Both sides must be canonical or they do not match: on a Windows CI runner
+ * the profile is C:\Users\runneradmin while TEMP is C:\Users\RUNNER~1\...,
+ * and on macOS /var/folders/... is really /private/var/folders/....
+ */
+export async function canonicalGuardEnv(env: PathGuardEnv = {}): Promise<PathGuardEnv> {
+  const realpath = env.realpath ?? ((p: string) => fs.promises.realpath(p));
+  const canon = async (p: string): Promise<string> => {
+    if (!p || isUnc(p)) return p; // never touch a network path
+    try { return await realPathOf(path.resolve(stripDevicePrefix(p)), realpath); } catch { return p; }
+  };
+  return {
+    ...env,
+    home: await canon(env.home ?? os.homedir()),
+    extraDirs: await Promise.all((env.extraDirs ?? []).map(canon)),
+  };
+}
+
 /** Resolve `rawPath` to its real location and judge it. Never throws. */
 export async function checkReadPath(rawPath: string, env: PathGuardEnv = {}): Promise<PathCheck> {
   const raw = String(rawPath ?? '').trim();
   if (!raw) return { allowed: false, resolved: '', reason: 'empty_path' };
   // Before any filesystem call: resolving a UNC path already contacts the server.
   if (isUnc(raw)) return { allowed: false, resolved: raw, reason: 'unc_path' };
-  const abs = path.resolve(expandHomePath(stripDevicePrefix(raw), env.home ?? os.homedir()));
+  const home = env.home ?? os.homedir();
+  const abs = path.resolve(expandHomePath(stripDevicePrefix(raw), home));
+  const written: PathGuardEnv = { ...env, home };
   // Judge the path as written too: a guarded name must not pass because the
   // lookup failed.
-  const asWritten = judgeResolvedPath(abs, env);
+  const asWritten = judgeResolvedPath(abs, written);
   if (!asWritten.allowed) return asWritten;
   const real = await realPathOf(abs, env.realpath ?? ((p) => fs.promises.realpath(p)));
-  return judgeResolvedPath(real, env);
+  // Real path against the real roots, and each against the other form, so an
+  // alias on either side (or both) cannot slip between them.
+  const canonical = await canonicalGuardEnv(written);
+  for (const [p, e] of [[real, canonical], [real, written], [abs, canonical]] as const) {
+    const verdict = judgeResolvedPath(p, e);
+    if (!verdict.allowed) return verdict;
+  }
+  return { allowed: true, resolved: stripDevicePrefix(real), reason: 'ok' };
 }
 
 const REASON_TEXT: Record<string, string> = {

@@ -70,7 +70,7 @@ import { gmailApiSend } from './api-routes';
 import { getCachedMailEnvironment, probeMailEnvironment } from './mail-env';
 import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from './clawhub';
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
-import { checkReadPath, judgeResolvedPath, describePathBlock, type PathGuardEnv } from './security/path-guard';
+import { checkReadPath, judgeResolvedPath, canonicalGuardEnv, describePathBlock, type PathGuardEnv } from './security/path-guard';
 import { isPingableHost, httpUrlOrNull } from './security/net-guard';
 import { noteToolRan, taskReadSensitive, taskReadTexts, taskUserMessage, pendingTypedLine } from './security/task-taint';
 import { carriedReadContent } from './security/read-leak';
@@ -2812,8 +2812,14 @@ function readGuardEnv(): PathGuardEnv {
  */
 async function skipsGuardedBelow(root: string): Promise<(full: string) => boolean> {
   const env = readGuardEnv();
-  if (!(await checkReadPath(root, env)).allowed) return () => false;
-  return (full) => !judgeResolvedPath(full, env).allowed;
+  const check = await checkReadPath(root, env);
+  if (!check.allowed) return () => false;
+  // Entries are judged under the root's real path against the real guarded
+  // roots: the walk's own `root` may be an alias of it (8.3 name, a link).
+  const canonical = await canonicalGuardEnv(env);
+  const realRoot = check.resolved || root;
+  return (full) => !judgeResolvedPath(full.startsWith(root) ? realRoot + full.slice(root.length) : full, canonical).allowed
+    || !judgeResolvedPath(full, env).allowed;
 }
 
 /**
@@ -3172,12 +3178,26 @@ async function searchFilesContent(params: Record<string, unknown>): Promise<Tool
   return { text: `${header}\n${matches.join('\n')}` };
 }
 
+/**
+ * Argument checks that do not depend on the platform. executeTool runs them
+ * before the platform gate, so a bad value gets the same refusal on every OS
+ * instead of PLATFORM_UNSUPPORTED on some and INVALID_ARGS on others.
+ */
+function invalidArgs(tool: string, params: Record<string, unknown>): string | null {
+  if (tool === 'ping_host') {
+    const host = String(params.host || '').trim();
+    // A hostname or an IP only: anything else (a URL, a long encoded label)
+    // could carry data out in the DNS lookup.
+    if (host && !isPingableHost(host)) return '(error:INVALID_ARGS) host must be a plain hostname or an IP address';
+  }
+  return null;
+}
+
 async function pingHost(params: Record<string, unknown>): Promise<ToolResult> {
   const host = String(params.host || '').trim();
   if (!host) return { text: 'Error: host is required' };
-  // A hostname or an IP only: anything else (a URL, a long encoded label) could
-  // carry data out in the DNS lookup.
-  if (!isPingableHost(host)) return { text: '(error:INVALID_ARGS) host must be a plain hostname or an IP address' };
+  const problem = invalidArgs('ping_host', params);
+  if (problem) return { text: problem };
   const count = String(Number(params.count) || 4);
   // Note: -hostName in script (host is a reserved-ish param name in some PS contexts)
   const result = await runComScript('com-ping-host.ps1', ['-hostName', host, '-count', count], 15000);
@@ -5486,6 +5506,10 @@ export async function executeTool(tool: string, params: Record<string, unknown> 
     log.warn(`Unknown tool: ${tool}`);
     return { text: `(error:UNKNOWN_TOOL) unknown tool: ${tool}` };
   }
+
+  // Platform-independent argument checks first (see invalidArgs).
+  const badArgs = invalidArgs(tool, params);
+  if (badArgs) return { text: badArgs };
 
   // v0.20.0 — platform-gate at the dispatcher. buildToolTiers should have
   // already filtered the tool out of the model's catalog, but server-side
