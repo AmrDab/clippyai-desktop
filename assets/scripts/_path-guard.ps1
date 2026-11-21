@@ -122,30 +122,42 @@ function Test-PathAllowedForRead {
     # explicit deny).
     $userHome = $env:USERPROFILE
     if ([string]::IsNullOrWhiteSpace($userHome)) { $userHome = [Environment]::GetFolderPath('UserProfile') }
-    $userHome = $userHome.TrimEnd('')
-    $blockedUserPaths = @(
-        "$userHome\.ssh",
-        "$userHome\.aws",
-        "$userHome\.azure",
-        "$userHome\.config\gh",
-        "$userHome\.config\gcloud",
-        "$userHome\.gnupg",
-        "$userHome\.kube",
-        "$userHome\.git-credentials",
-        "$userHome\.netrc",
-        "$userHome\.docker\config.json",
-        "$userHome\AppData\Local\Microsoft\Credentials",
-        "$userHome\AppData\Roaming\Microsoft\Credentials",
-        "$userHome\AppData\Local\Microsoft\Vault",
-        "$userHome\AppData\Roaming\Microsoft\Vault",
-        "$userHome\AppData\Roaming\Microsoft\Protect",
-        "$userHome\AppData\Roaming\Mozilla\Firefox\Profiles",
-        "$userHome\AppData\Roaming\Opera Software",
-        "$userHome\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations",
-        "$userHome\AppData\Roaming\ClippyAI",
-        "$userHome\.clawdcursor",
-        "$userHome\.clippyai"
+    $userHome = $userHome.TrimEnd('\')
+    # The profile folder is resolved the same way as the path (long name, link
+    # target) and both forms are guarded. Otherwise the two sides can name the
+    # same folder differently and never match: on a CI runner USERPROFILE is
+    # C:\Users\runneradmin while TEMP is C:\Users\RUNNER~1\..., and GetFullPath
+    # above already expands a short name when the path exists.
+    $homes = @($userHome)
+    try {
+        $realHome = (Resolve-RealPath ([System.IO.Path]::GetFullPath($userHome))).TrimEnd('\')
+        if ($realHome -and -not $realHome.Equals($userHome, [System.StringComparison]::OrdinalIgnoreCase)) { $homes += $realHome }
+    } catch { }
+    $userSecretRel = @(
+        '.ssh',
+        '.aws',
+        '.azure',
+        '.config\gh',
+        '.config\gcloud',
+        '.gnupg',
+        '.kube',
+        '.git-credentials',
+        '.netrc',
+        '.docker\config.json',
+        'AppData\Local\Microsoft\Credentials',
+        'AppData\Roaming\Microsoft\Credentials',
+        'AppData\Local\Microsoft\Vault',
+        'AppData\Roaming\Microsoft\Vault',
+        'AppData\Roaming\Microsoft\Protect',
+        'AppData\Roaming\Mozilla\Firefox\Profiles',
+        'AppData\Roaming\Opera Software',
+        'AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations',
+        'AppData\Roaming\ClippyAI',
+        '.clawdcursor',
+        '.clippyai'
     )
+    $blockedUserPaths = @()
+    foreach ($h in $homes) { foreach ($rel in $userSecretRel) { $blockedUserPaths += ($h + '\' + $rel) } }
 
     foreach ($c in $candidates) {
         foreach ($p in $blockedSystemPrefixes) {
