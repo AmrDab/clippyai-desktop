@@ -115,7 +115,7 @@ describe('install', () => {
     expect(uv.env.PATH).toBeUndefined();
     // Every program by absolute path, no shell, and no argument that is a command line.
     for (const c of t.calls) {
-      expect(path.isAbsolute(c.file)).toBe(true);
+      expect(path.win32.isAbsolute(c.file) || path.posix.isAbsolute(c.file)).toBe(true); // the test fakes win32, also on a Mac runner
       expect(/^(cmd|powershell|pwsh|sh|bash)(\.exe)?$/i.test(path.basename(c.file))).toBe(false);
       for (const a of c.args) expect(/[|&;`]|\biex\b|\birm\b/.test(a)).toBe(false);
     }
