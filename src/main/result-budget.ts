@@ -16,6 +16,7 @@ const READ_TOOLS = new Set([
   'read_screen', 'smart_read', 'read_file', 'cdp_read_text', 'browser_read_text',
   'outlook_read_inbox', 'excel_read', 'shell_exec', 'read_clipboard', 'get_windows',
   'get_selection', 'ocr_read_screen', 'list_files', 'search_files_content',
+  'reach_read', 'reach_search',
 ]);
 
 export function resultBudget(tool: string): number {

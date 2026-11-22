@@ -159,6 +159,11 @@ export const TOOL_META: Record<string, ToolMeta> = {
   // See tools.ts `shellExec` header for the screen-text-RCE history that
   // shaped this design and the system-prompt rule that pairs with it.
   shell_exec:         { tier: 2, cost: 'medium',    description: 'Run a shell command (zsh on mac/linux, cmd.exe on windows). Use for ad-hoc CLI tasks (df, git, brew, npm, python -c, curl, lsof). Output capped at 32 KB, 30s default timeout (120s max). destructive_exec — prompts the user in cautious/standard mode.', actionClass: 'destructive_exec', narration: 'Running a shell command' },
+  // Agent Reach (reach.ts): sites the web tools can't read. No `platforms`: on Linux the tool itself says "not available yet".
+  reach_read:         { tier: 2, cost: 'expensive', description: 'Read a link the web tools cannot: a YouTube video (its transcript), a GitHub repo / issue / PR, a Reddit, X, LinkedIn or Bilibili link', actionClass: 'read_only' },
+  reach_search:       { tier: 2, cost: 'expensive', description: 'Search inside one site (youtube, github, …) and return the top results', actionClass: 'read_only' },
+  // Asks on every call, in every mode (tools.ts assessRisk → reach.ts loginRisk).
+  reach_add_login:    { tier: 2, cost: 'expensive', description: "Turn on a login site (Reddit, X, …) for reading by copying the user's login for that site from Chrome", actionClass: 'destructive_web' },
   web_search:         { tier: 2, cost: 'cheap',     description: 'Search the web via DuckDuckGo and return the top results (title, URL, snippet). Use for "what is the latest X", "find a tutorial for Y", or any question that needs fresh info from the open internet.', actionClass: 'read_only' },
   // TODO(track2-phase3): speak_text dispatches com-speak-text.ps1 (no darwin
   // path / bridge verb). Gated win32-only; macOS `say` would be the native

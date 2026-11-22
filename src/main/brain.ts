@@ -3300,7 +3300,7 @@ ${typingLine}`;
       const cf = clawdFallbackMod;
       const mb = macBridgeMod;
       const m = mcpChromeMod;
-      return { clawd: cf.isClawdReady(), bridge: mb.isBridgeAvailable(), mcp_chrome: !!m.getMcpChromeStatus()?.ready };
+      return { clawd: cf.isClawdReady(), bridge: mb.isBridgeAvailable(), mcp_chrome: !!m.getMcpChromeStatus()?.ready, reach: process.platform === 'win32' || process.platform === 'darwin' };
     } catch { return {}; }
   }
 
@@ -3445,6 +3445,8 @@ ${typingLine}`;
           clawd: cf.isClawdReady(),
           bridge: mb.isBridgeAvailable(),
           mcp_chrome: !!(mcp_chrome as { ready?: boolean } | undefined)?.ready,
+          // Agent Reach tools (reach.ts): older apps do not have them, so the server offers them only on this flag.
+          reach: process.platform === 'win32' || process.platform === 'darwin',
         };
       } catch { /* non-fatal — omit caps; worker keeps full catalog (no regression) */ }
       // v0.18.1 — prune stale screenshots from history before serialize.

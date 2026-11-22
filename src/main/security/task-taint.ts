@@ -21,6 +21,8 @@ const READS_KEPT = 5;
 const READ_MAX_CHARS = 100_000;
 let readTexts: string[] = [];
 let userMessage = '';
+// Counts tasks, so a tool can tell "the same task" from "a later one".
+let taskSeq = 0;
 
 // The line being typed into the focused window, across type_text calls, until
 // it is submitted. assessRisk reads it when Enter is pressed in a terminal:
@@ -33,6 +35,12 @@ export function resetTaskTaint(message = ''): void {
   typedLine = '';
   readTexts = [];
   userMessage = String(message ?? '');
+  taskSeq += 1;
+}
+
+/** A number that changes when a new task starts. */
+export function taskId(): number {
+  return taskSeq;
 }
 
 /** Results of the task's recent reads, newest last. */

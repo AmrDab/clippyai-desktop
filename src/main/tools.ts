@@ -72,7 +72,8 @@ import { searchSkills, getSkillScan, installSkill, classifySkillSafety } from '.
 import { shellBlockReason, isProtectedShellCwd } from './shell-guard';
 import { checkReadPath, judgeResolvedPath, canonicalGuardEnv, describePathBlock, type PathGuardEnv } from './security/path-guard';
 import { isPingableHost, httpUrlOrNull } from './security/net-guard';
-import { noteToolRan, taskReadSensitive, taskReadTexts, taskUserMessage, pendingTypedLine } from './security/task-taint';
+import { noteToolRan, taskReadSensitive, taskReadTexts, taskUserMessage, pendingTypedLine, taskId } from './security/task-taint';
+import { createReach, runFile, httpsDownload, lookupAll, loginRisk } from './reach';
 import { carriedReadContent } from './security/read-leak';
 import { plainOpenUrl, classifyShellCommand } from './approval-policy';
 import { refreshSkillRegistry, isSkillTool, executeSkillTool, slugToToolName } from './skill-registry';
@@ -2869,7 +2870,7 @@ function assessSendAfterRead(tool: string, params: Record<string, unknown>): Ris
   if (!read) return null;
   let target = '';
   let extra = '';
-  if (tool === 'navigate_browser' || tool === 'browser_navigate' || tool === 'open_url' || tool === 'http_request') {
+  if (tool === 'navigate_browser' || tool === 'browser_navigate' || tool === 'open_url' || tool === 'http_request' || tool === 'reach_read') {
     target = String(params.url ?? '');
     if (tool === 'http_request') {
       const body = params.body;
@@ -2892,6 +2893,25 @@ function assessSendAfterRead(tool: string, params: Record<string, unknown>): Ris
   if (!carried) return null;
   return { class: 'destructive_web', reason: `This sends ${carried} read from ${read} earlier in this task to ${(host || target).slice(0, 60)}` };
 }
+
+// Agent Reach (reach.ts): YouTube transcripts, GitHub, and login sites on request.
+// The install card is asked here; reach_add_login's card comes from the approval gate.
+const reach = createReach({
+  platform: process.platform,
+  arch: process.arch,
+  home: os.homedir(),
+  env: process.env,
+  exec: runFile,
+  download: httpsDownload,
+  resolve: lookupAll,
+  ask: async (summary, reason) => (await approval.requestApproval(getMainWindow(), { tool: 'reach_install', summary, reason, actionClass: 'destructive_exec' })) === 'approved',
+  say: (text) => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('clippy-speak', { text, animate: 'Processing' });
+  },
+  userMessage: taskUserMessage,
+  taskId,
+});
 
 /** Cheap binary detector — NUL byte in the first 4 KB is the standard heuristic. */
 function looksBinary(buf: Buffer): boolean {
@@ -5333,6 +5353,9 @@ const TOOL_MAP: Record<string, (params: Record<string, unknown>) => Promise<Tool
   // 'destructive_exec' so cautious/standard modes prompt before each call.
   shell_exec: shellExec,
   web_search: webSearch,
+  reach_read: reach.read,
+  reach_search: reach.search,
+  reach_add_login: reach.addLogin,
   // Office COM
   outlook_send_email: outlookSendEmail,
   apple_mail_send_email: appleMailSendEmail,
@@ -5642,6 +5665,8 @@ export async function assessRisk(tool: string, params: Record<string, unknown> =
   if (attached) return attached;
   const sendAfterRead = assessSendAfterRead(tool, params);
   if (sendAfterRead) return sendAfterRead;
+  // Copying a site login asks every time, in every mode (no card when the tool will only refuse).
+  if (tool === 'reach_add_login') return loginRisk(params, taskUserMessage());
   if (!GOVERNED_TOOLS.has(tool)) return null;
   const direct = classifyRisk({ tool, args: params });
   if (direct) return direct;

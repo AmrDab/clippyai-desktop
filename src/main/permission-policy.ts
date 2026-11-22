@@ -39,6 +39,8 @@ import path from 'path';
 import type { ActionClass } from './tool-meta';
 import { TOOL_META } from './tool-meta';
 import { createLogger } from './logger';
+import { loginRisk } from './reach';
+import { taskUserMessage } from './security/task-taint';
 
 const log = createLogger('Policy');
 
@@ -244,6 +246,8 @@ export function classFor(toolName: string, args?: Record<string, unknown>, escal
   if (escalate) return escalate;
   if (toolName.startsWith('skill__')) return 'destructive_exec';
   if (toolName === 'windows_service_control' && String(args?.action ?? 'status') === 'status') return 'read_only';
+  // A login the user did not ask for is only refused by the tool: no card for it.
+  if (toolName === 'reach_add_login' && !loginRisk(args ?? {}, taskUserMessage())) return 'read_only';
   const cls = TOOL_META[toolName]?.actionClass;
   if (cls) return cls;
   if (!warnedUnclassed.has(toolName)) {

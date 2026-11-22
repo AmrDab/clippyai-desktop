@@ -13,6 +13,7 @@ import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'crypto';
 import { createLogger, redactArgs } from './logger';
 import { TOOL_META, type ActionClass } from './tool-meta';
+import { loginCard, siteName } from './reach';
 
 const log = createLogger('Approval');
 
@@ -228,6 +229,10 @@ const LABELS: Record<string, Label> = {
   }),
   shell_exec: R('command', (a) => `Run \`${s(a.command, 240)}\``),
   web_search: R('query', (a) => `Search the web for ${q(a.query)}`),
+  reach_read: R('url', (a) => `Read ${s(a.url, 100)}`),
+  reach_search: R('site query', (a) => `Search ${s(a.site, 30)} for ${q(a.query)}`),
+  // The whole warning: its second half is the card's reason line (reach.ts loginRisk).
+  reach_add_login: (a) => loginCard(siteName(a.site))?.summary ?? 'Turn on a login site for reading',
   speak_text: (a) => `Say ${textPhrase(a.text)} out loud`,
   play_animation: (a) => (has(a.animation ?? a.name) ? `Play the ${s(a.animation ?? a.name, 30)} animation` : 'Play an animation'),
   wait: (a) => `Wait ${plural(Number(a.seconds) || 1, 'second')}`,

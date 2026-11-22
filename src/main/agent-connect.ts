@@ -51,9 +51,12 @@ export function skillPath(): string {
     : path.join(app.getAppPath(), 'assets', 'agent-skill', 'clippy', 'SKILL.md');
 }
 
-/** Tools an agent may run: everything in TOOL_META that works on this OS. */
+/**
+ * Tools an agent may run: everything in TOOL_META that works on this OS.
+ * Not reach_add_login: it runs only on the user's own request to Clippy.
+ */
 export function allowedAgentTools(): string[] {
-  return Object.keys(TOOL_META).filter((n) => isToolSupportedOnPlatform(TOOL_META[n])).sort();
+  return Object.keys(TOOL_META).filter((n) => n !== 'reach_add_login' && isToolSupportedOnPlatform(TOOL_META[n])).sort();
 }
 
 function liveWindow(): BrowserWindow | null {
