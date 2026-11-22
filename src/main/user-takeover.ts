@@ -146,6 +146,17 @@ export function isDispatchingInput(): boolean {
   return Date.now() - lastClippyInputAt < GRACE_WINDOW_MS;
 }
 
+/**
+ * Clippy is about to send input that may land at any point in the next `ms`
+ * (a helper script that presses Alt to win the foreground can take seconds):
+ * keep the grace window open until then. noteClippyInput() after it finishes
+ * starts the normal grace window again.
+ */
+export function noteClippyInputFor(toolName: string, ms: number): void {
+  lastClippyInputAt = Math.max(lastClippyInputAt, Date.now() + Math.max(0, ms - GRACE_WINDOW_MS));
+  if (monitorActive) log.debug('Clippy input expected', { tool: toolName, ms });
+}
+
 export function noteClippyInput(toolName: string): void {
   lastClippyInputAt = Date.now();
   if (monitorActive) {

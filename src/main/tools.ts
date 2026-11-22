@@ -622,7 +622,11 @@ async function focusWindow(params: Record<string, unknown>): Promise<ToolResult>
       } else if (processId) {
         args.ProcessId = String(processId);
       }
+      // The script presses Alt to win the foreground: mark it as Clippy's own input
+      // before and after, wherever focusWindow is called from (takeover monitor).
+      try { userTakeover.noteClippyInputFor('focus_window', 5000); } catch { /* no task running */ }
       const { stdout } = await psScript('focus-window.ps1', args, { timeoutMs: 5000 });
+      try { userTakeover.noteClippyInput('focus_window'); } catch { /* no task running */ }
       // v0.23 — honest result (plan §1.1): the script compares the
       // foreground PID/HWND with the target after its settle wait and
       // reports success only when the switch really took.
