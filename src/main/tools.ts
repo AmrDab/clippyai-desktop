@@ -1597,6 +1597,7 @@ interface SmartFindResult {
   /** v0.24.12 — see smart-find.ps1: real click on a classic control, read-back, what changed. */
   classic?: boolean;
   comboEdit?: boolean;
+  comboValue?: string | null;
   before?: string | null;
   after?: string | null;
   gone?: boolean;

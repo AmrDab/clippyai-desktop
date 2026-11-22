@@ -356,6 +356,23 @@ public static class ClippySmartFind {
         } catch { return false; }
     }
 
+    // The combo box a classic list item belongs to (its list may sit one or two levels down).
+    static AutomationElement ComboOf(AutomationElement el) {
+        try {
+            var cur = TreeWalker.ControlViewWalker.GetParent(el);
+            for (int i = 0; i < 3 && cur != null; i++) {
+                if (cur.Current.ControlType == ControlType.ComboBox) return cur;
+                cur = TreeWalker.ControlViewWalker.GetParent(cur);
+            }
+        } catch { }
+        return null;
+    }
+
+    static string ComboValue(AutomationElement combo) {
+        try { object p; if (combo.TryGetCurrentPattern(ValuePattern.Pattern, out p)) return ((ValuePattern)p).Current.Value; } catch { }
+        try { return combo.Current.Name; } catch { return null; }
+    }
+
     static string RealClick(Rect r, bool combo) {
         // A combo box opens from its arrow, at the right end; its middle is the edit.
         double x = combo ? r.X + r.Width - Math.Min(r.Height, r.Width) / 2 : r.X + r.Width / 2;
@@ -436,6 +453,7 @@ public static class ClippySmartFind {
         if (rootHwnd == 0) { try { var rr = ResolveRoot(0, pid); if (rr != null) rootHwnd = rr.Current.NativeWindowHandle; } catch { } }
         string method = null; bool pending = false; string setValue = "null"; string readback = "none";
         bool classic = action == "click" && Classic(best.El, best.Type);
+        AutomationElement combo = null; string comboValue = null;
         bool comboEdit = action == "set-value" && ComboEdit(best.El);
         string s0 = null, f0 = null; Dictionary<long, string> w0 = null;
         if (action == "click") { s0 = ElState(best.El); f0 = FocusDesc(); w0 = TopWindows(); }
@@ -459,7 +477,21 @@ public static class ClippySmartFind {
             setValue = done ? "true" : "false";
             if (!done) method = ClickCascade(best.El, best.R, rootHwnd, noCoords, out pending);
         } else if (action == "click") {
-            if (classic) method = noCoords ? null : RealClick(best.R, best.Type == ControlType.ComboBox);
+            if (classic && !noCoords && best.Type == ControlType.ListItem && (combo = ComboOf(best.El)) != null) {
+                // A closed combo's items have off-screen bounds: open it from its arrow first,
+                // then click the item where it now is, then read the combo's value back.
+                try {
+                    object ec; bool collapsed = true;
+                    if (combo.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out ec)) collapsed = ((ExpandCollapsePattern)ec).Current.ExpandCollapseState != ExpandCollapseState.Expanded;
+                    if (collapsed) { RealClick(combo.Current.BoundingRectangle, true); Thread.Sleep(350); }
+                } catch { }
+                Rect now = best.R;
+                try { now = best.El.Current.BoundingRectangle; } catch { }
+                method = (now.IsEmpty || now.Width <= 0) ? null : RealClick(now, false);
+                Thread.Sleep(250);
+                comboValue = ComboValue(combo);
+            }
+            else if (classic) method = noCoords ? null : RealClick(best.R, best.Type == ControlType.ComboBox);
             else method = ClickCascade(best.El, best.R, rootHwnd, noCoords, out pending);
         }
         // Read back: the element's state, and what changed around it. Chromium
@@ -487,6 +519,7 @@ public static class ClippySmartFind {
          .Append(",\"readback\":").Append(Q(readback))
          .Append(",\"classic\":").Append(classic ? "true" : "false")
          .Append(",\"comboEdit\":").Append(comboEdit ? "true" : "false");
+        if (combo != null) o.Append(",\"comboValue\":").Append(comboValue == null ? "null" : Q(comboValue));
         if (changed != null) {
             o.Append(",\"before\":").Append(Q(s0)).Append(",\"after\":").Append(Q(s1))
              .Append(",\"gone\":").Append(s1 == Gone ? "true" : "false")

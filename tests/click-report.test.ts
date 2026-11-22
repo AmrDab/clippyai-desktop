@@ -68,3 +68,22 @@ describe('reportUiaClick', () => {
       .toBe('Clicked "Send" via UIA Invoke (Button "Send")\n[unverified · read_screen to check]');
   });
 });
+
+describe('classic combo box: the value is read back (benchmark 2026-11-22: High did not stick)', () => {
+  const base = { name: 'High', controlType: 'ListItem', method: 'uia-coords', classic: true, changed: ['focus: ListItem "High"'] };
+  it('confirmed when the combo now shows the item', () => {
+    const r = reportUiaClick('High', { ...base, comboValue: 'High' });
+    expect(r.status).toBe('verified');
+    expect(r.text).toMatch(/\[confirmed\]$/);
+  });
+  it('failed with a keyboard hint when the combo still shows another value', () => {
+    const r = reportUiaClick('High', { ...base, comboValue: 'Normal' });
+    expect(r.status).toBe('error');
+    expect(r.code).toBe('DID_NOTHING');
+    expect(r.text).toContain('still shows "Normal"');
+    expect(r.text).toMatch(/type the first letters of "High"/);
+  });
+  it('an unreadable combo value stays unverified', () => {
+    expect(reportUiaClick('High', { ...base, comboValue: null }).status).toBe('unverified');
+  });
+});

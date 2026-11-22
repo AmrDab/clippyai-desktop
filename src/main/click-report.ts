@@ -35,6 +35,8 @@ export interface UiaClick {
   gone?: boolean;
   /** Windows opened/closed, new focus, the control's own change. Absent from an old script. */
   changed?: string[];
+  /** A classic combo box's list item: the combo's value read back after the click (null = unreadable). */
+  comboValue?: string | null;
 }
 
 export interface ClickReport {
@@ -74,6 +76,16 @@ export function reportUiaClick(target: string, r: UiaClick): ClickReport {
     if (/\bselected\b/.test(r.after ?? '')) return done(': now selected', 'verified', outcomeLine('confirmed'));
     return done(', but it is still not selected', 'error',
       outcomeLine('failed', 'DID_NOTHING', 'the control did not change; click it with mouse_click'), 'DID_NOTHING');
+  }
+  if (r.classic && r.comboValue !== undefined) {
+    const norm = (v: string | null | undefined) => (v ?? '').trim().toLowerCase();
+    if (r.comboValue !== null && norm(r.comboValue) === norm(r.name)) {
+      return done(`: the list now shows "${r.comboValue}"`, 'verified', outcomeLine('confirmed'));
+    }
+    if (r.comboValue !== null) {
+      return done(`, but the list still shows "${r.comboValue}"`, 'error',
+        outcomeLine('failed', 'DID_NOTHING', `focus the list box, type the first letters of "${r.name}" and press enter, then read_screen`), 'DID_NOTHING');
+    }
   }
   if (changed.length) return done('', 'unverified', outcomeLine('unverified', undefined, 'the screen changed as listed; read_screen if the result matters'));
   if (r.changed) return done('', 'unverified', outcomeLine('unverified', 'NO_VISIBLE_CHANGE', 'nothing visible changed; read_screen to check before going on'));
