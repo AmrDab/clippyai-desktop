@@ -126,3 +126,24 @@ export function stripReceiptNote(text: string): string {
   const i = text.lastIndexOf(`\n${RECEIPT_NOTE_START}`);
   return i >= 0 && text.trimEnd().endsWith(']') && !text.slice(i + 1).trimEnd().includes('\n') ? text.slice(0, i) : text;
 }
+
+// ── A desktop action claimed with no tool call behind it ─────────────────
+// Benchmark 2026-11-22 (DeepSeek): "force quit Velvet Viewer" got "Velvet
+// Viewer is force-quit. The process is gone." in one step with no tool call;
+// the app was still running. Only fires when the user's own message asks for a
+// desktop action AND the reply says it is done AND no tool ran in the task.
+
+/** The honest reply when a done-claim had nothing behind it. */
+export const NOTHING_RAN_COPY =
+  "I haven't actually done that yet: nothing ran on your computer. Want me to do it now?";
+
+const ACTION_REQUEST_RE = /\b(send|e-?mail|post|submit|delete|remove|erase|trash|save|publish|book|schedule|quit|force[- ]?quit|close|kill|end|stop|open|launch|start|type|click|press|move|rename|copy|install|uninstall|set|change|turn (?:on|off)|create|make|fill)\b/i;
+const QUESTION_RE = /^\s*(how|what|why|when|where|which|who|can you explain|is it|are there|do i|does)\b/i;
+const DONE_CLAIM_RE = /\b(sent|posted|submitted|deleted|removed|erased|trashed|saved|published|booked|scheduled|force[- ]?quit|quit|closed|killed|ended|stopped|opened|launched|started|typed|clicked|pressed|moved|renamed|copied|installed|uninstalled|created|filled)\b|\b(is|are) (now )?(gone|closed|open|done|set|off|on)\b|\bdone\b/i;
+const NOT_DONE_RE = /\b(will|going to|let me|i'll|i’ll|about to|can't|cannot|couldn't|could not|didn't|did not|haven't|have not|not yet|want me to|shall i|should i|would you like)\b/i;
+
+export function claimsActionWithoutTools(userText: string, reply: string): boolean {
+  if (!userText || !reply) return false;
+  if (QUESTION_RE.test(userText) || !ACTION_REQUEST_RE.test(userText)) return false;
+  return DONE_CLAIM_RE.test(reply) && !NOT_DONE_RE.test(reply);
+}

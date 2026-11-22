@@ -102,7 +102,7 @@ import * as lumiereSeen from './proactive/seen-context';
 import * as permissionPolicyMod from './permission-policy';
 import * as actionHistoryMod from './action-history';
 import { blockedReceipt, type ReceiptStatus } from './receipt';
-import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY, withReceiptNote, stripReceiptNote } from './tool-verdict';
+import { toolVerdict, isPlainDone, shouldRecordWorkflow, UNCONFIRMED_COPY, withReceiptNote, stripReceiptNote, claimsActionWithoutTools, NOTHING_RAN_COPY } from './tool-verdict';
 // Phase 3 guardrails — in-bubble Approve/Deny prompt for 'approve' decisions.
 import * as approvalMod from './approval';
 import * as toolUndoMod from './tool-undo';
@@ -1397,6 +1397,9 @@ export class Brain {
       // workflow on task completion. Only the model-emitted Tool.call args
       // — populated below in the loop.
       const successfulActions: Array<{ name: string; args: Record<string, unknown> }> = [];
+      // Every tool the model called this task (sentinels excluded): a claimed
+      // action with none at all is not believed (claimsActionWithoutTools).
+      let toolCallsThisTask = 0;
       // v0.11.25 — destructive-action ledger for the hallucination guard.
       // Each entry records whether the destructive call genuinely
       // succeeded (per the tool's own result text). Used at task-end to
@@ -1680,9 +1683,9 @@ export class Brain {
         // === SENTINEL: task_complete ===
         const completeCall = calls.find((c) => c.name === 'task_complete');
         if (completeCall) {
-          const summary = String(
+          const summary = sanitizeReply(String(
             (completeCall.args as { summary?: string }).summary || 'Done!',
-          );
+          )).text || 'Done!';
           // v0.14.2 — if the model ALREADY spoke a reply this step, suppress
           // the task_complete summary's TTS+bubble emission. We still log it
           // for telemetry. Per support report 45e25158: model produced both
@@ -1799,6 +1802,7 @@ export class Brain {
         // Several calls in one turn: the later ones assume the earlier ones
         // worked. After the first failure the rest are not run, and say so.
         let failedInTurn: string | null = null;
+        toolCallsThisTask += calls.filter((c) => c.name !== 'task_complete' && c.name !== 'task_failed').length;
         for (const call of calls) {
           if (failedInTurn) {
             log.info('Tool.not_run', { step: step + 1, tool: call.name, after: failedInTurn });
@@ -2275,6 +2279,16 @@ export class Brain {
           finalSpoken = honest;
           unconfirmed = true;
         }
+      }
+
+      // A desktop action the user asked for, claimed as done when no tool ran at
+      // all in this task (benchmark 2026-11-22, DeepSeek: "Velvet Viewer is
+      // force-quit. The process is gone." with zero tool calls; it was running).
+      if (!unconfirmed && toolCallsThisTask === 0 && claimsActionWithoutTools(text, finalSpoken)) {
+        log.warn('Task.hallucinatedSuccess', { claimed: finalSpoken.substring(0, 200), noTools: true });
+        this.emit('clippy-speak', { text: NOTHING_RAN_COPY, animate: 'Alert', tint: 'warning' });
+        finalSpoken = NOTHING_RAN_COPY;
+        unconfirmed = true;
       }
 
       // v0.23 — a bare "Done" after a last desktop-changing step whose

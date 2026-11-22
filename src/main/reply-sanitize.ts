@@ -50,6 +50,10 @@ export function sanitizeReply(raw: string): SanitizedReply {
     .replace(/play_animation\s*[\n:>-]*\s*(?:animation\s*[:=]\s*)?[A-Za-z]+/gi, '')
     // a standalone "Animation: <Name>" line
     .replace(/(?:^|\n)\s*Animation\s*[:=]\s*[A-Za-z]+\s*(?=$|\n)/gi, '')
+    // A "[done: …]" receipt is written by Clippy after verified actions, never
+    // by the model: one copied from history is a fake proof (benchmark
+    // 2026-11-22: "force-quit … [done: kill_process → ok]" with no tool call).
+    .replace(/\[done:[^\]\n]*\]/gi, '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{2,}/g, '\n')
     .trim();
