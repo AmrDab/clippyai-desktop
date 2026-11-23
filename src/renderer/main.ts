@@ -251,7 +251,7 @@ async function init(): Promise<void> {
   // Deny. TTS says only the generic line — never the args.
   // A countdown under the buttons shows main's auto-deny timeout
   // (approval.ts APPROVAL_TIMEOUT_MS); at zero the prompt closes as Deny.
-  window.clippy.onApprovalRequest?.(({ id, summary, reason, timeoutMs }) => {
+  window.clippy.onApprovalRequest?.(({ id, summary, reason, detail, detailHiddenChars, timeoutMs }) => {
     let answered = false;
     let tick: ReturnType<typeof setInterval> | null = null;
     const answer = (approved: boolean) => {
@@ -267,6 +267,26 @@ async function init(): Promise<void> {
       { label: 'Approve', variant: 'primary', onClick: () => { answer(true); bubbleCtrl.showThinking(); } },
       { label: 'Deny', variant: 'ghost', onClick: () => { answer(false); bubbleCtrl.hide(); } },
     ], { sticky: true, onDismiss: () => answer(false) });
+    // The whole command / script in a scrollable monospace block: the summary
+    // line cuts long text, and a hidden tail is what a bad command would use.
+    // textContent only — the text is never parsed as markup.
+    if (detail) {
+      const block = document.createElement('div');
+      block.className = 'approval-detail';
+      const pre = document.createElement('pre');
+      pre.textContent = detail;
+      pre.tabIndex = 0; // scrollable from the keyboard
+      pre.setAttribute('aria-label', 'Full text of what will run');
+      block.appendChild(pre);
+      const hidden = typeof detailHiddenChars === 'number' ? detailHiddenChars : 0;
+      if (hidden > 0) {
+        const note = document.createElement('span');
+        note.className = 'approval-detail-note';
+        note.textContent = `Cut off: ${hidden.toLocaleString()} more characters are not shown. Deny unless you expected a command this long.`;
+        block.appendChild(note);
+      }
+      document.getElementById('bubble-actions')?.prepend(block);
+    }
     const total = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 60_000;
     const deadline = Date.now() + total;
     const countdown = document.createElement('span');

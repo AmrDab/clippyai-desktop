@@ -92,6 +92,7 @@ function buildDeps(): AgentToolDeps {
     decide: policy.decide,
     summarizeArgs: approval.summarizeArgs,
     requestApproval: (req) => approval.requestApproval(liveWindow(), req),
+    approvalDetail: approval.approvalDetail,
     markApproved: approval.markApproved,
   };
 }

@@ -64,7 +64,7 @@ contextBridge.exposeInMainWorld('clippy', {
   },
 
   // Phase 3 guardrails — main asks "Can I …?"; renderer answers by id.
-  onApprovalRequest: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string; reason?: string; timeoutMs?: number }) => void) => {
+  onApprovalRequest: (cb: (payload: { id: string; tool: string; summary: string; actionClass: string; reason?: string; detail?: string; detailHiddenChars?: number; timeoutMs?: number }) => void) => {
     ipcRenderer.on('approval-request', (_e, payload) => cb(payload));
   },
   respondApproval: (id: string, approved: boolean) => ipcRenderer.invoke('approval-response', id, approved),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { needsApproval, classifyShellCommand, isNamedAppQuit, parseQuitCommand, isUserNamedFetch, requestAsksToRun, type ApprovalCtx } from '../src/main/approval-policy';
+import { needsApproval, classifyShellCommand, isNamedAppQuit, parseQuitCommand, isUserNamedFetch, requestAsksToRun, shellApprovalReason, type ApprovalCtx } from '../src/main/approval-policy';
 import { classifyRisk } from '../src/main/governor';
 
 const base: ApprovalCtx = {
@@ -675,5 +675,25 @@ describe('classifyShellCommand: hidden code and persistence ask (2026-11 scan)',
   ])('does not ask: %s', (cmd) => {
     expect(classifyShellCommand(cmd)).toBeNull();
     expect(ask(cmd)).toBe(false);
+  });
+});
+
+describe('shellApprovalReason: the card says why a command asks (2026-11 scan)', () => {
+  const ctx = { origin: 'user' as const, injectionSeen: false, mode: 'standard' as const, classForcedApprove: false, requestText: 'run it' };
+  it('names what the command does first', () => {
+    expect(shellApprovalReason('rm -rf ./build', ctx)).toBe("Why I'm asking: deletes files");
+    expect(shellApprovalReason('eval "$(echo aWQ= | base64 -d)"', ctx)).toMatch(/^Why I'm asking: runs a string as code/);
+    expect(shellApprovalReason('curl https://a.example/x', { ...ctx, injectionSeen: true })).toBe("Why I'm asking: fetches from or sends to the network");
+  });
+  it('otherwise names what about the task made it ask', () => {
+    expect(shellApprovalReason('ls', { ...ctx, requestText: 'what does this email say?' })).toBe("Why I'm asking: you didn't ask me to run a command");
+    expect(shellApprovalReason('ls', { ...ctx, requestText: undefined })).toBe("Why I'm asking: you didn't ask me to run a command");
+    expect(shellApprovalReason('ls', { ...ctx, injectionSeen: true })).toMatch(/looked like instructions/);
+    expect(shellApprovalReason('ls', { ...ctx, mode: 'cautious' })).toMatch(/Guardrails/);
+    expect(shellApprovalReason('ls', { ...ctx, classForcedApprove: true })).toMatch(/Guardrails/);
+    expect(shellApprovalReason('ls', { ...ctx, origin: 'agent' })).toMatch(/did not come from your own message/);
+  });
+  it('is undefined when nothing explains it', () => {
+    expect(shellApprovalReason('ls', ctx)).toBeUndefined();
   });
 });

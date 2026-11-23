@@ -782,6 +782,41 @@ body.clippy-window {
   animation: approval-drain linear forwards;
 }
 .approval-countdown, .approval-countdown-bar i { transition: color var(--dur-base) ease, background-color var(--dur-base) ease; }
+/* The whole command / script on an approval card (renderer/main.ts), above
+   the countdown and the buttons. Scrolls inside a fixed height so the
+   buttons stay on screen; wraps anywhere so a long token cannot run off. */
+.approval-detail {
+  flex-basis: 100%;
+  order: -2;
+  min-width: 0;
+  margin-top: -6px;
+}
+.approval-detail pre {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, "Menlo", "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--bubble-ink);
+  background: var(--bubble-subtle);
+  border: 1px solid var(--bubble-hairline);
+  border-radius: 6px;
+  user-select: text;
+  cursor: text;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bubble-scroll) transparent;
+  -webkit-app-region: no-drag;
+}
+.approval-detail-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--tint-error-accent);
+}
 /* The last ten seconds: the line and the bar turn red and stay that way. */
 .approval-countdown[data-urgent] { color: var(--tint-error-accent); }
 .approval-countdown[data-urgent] .approval-countdown-bar i { background-color: var(--tint-error-accent); }

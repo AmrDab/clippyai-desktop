@@ -449,3 +449,21 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   // A fetch from a site (or a repo / package) the user named in their own message.
   return !isUserNamedFetch(command, ctx.requestText);
 }
+
+/**
+ * The approval card's reason line for a shell_exec that asks: what in the
+ * command needs a yes (classifyShellCommand), or else what about the task
+ * made it ask. Undefined when nothing explains it.
+ */
+export function shellApprovalReason(
+  command: string,
+  ctx: Pick<ApprovalCtx, 'origin' | 'injectionSeen' | 'mode' | 'classForcedApprove' | 'requestText'>,
+): string | undefined {
+  const why = classifyShellCommand(command);
+  if (why) return `Why I'm asking: ${why}`;
+  if (ctx.origin !== 'user') return "Why I'm asking: this task did not come from your own message";
+  if (ctx.injectionSeen) return "Why I'm asking: something read in this task looked like instructions aimed at me";
+  if (ctx.mode === 'cautious' || ctx.classForcedApprove) return "Why I'm asking: your Guardrails settings ask before every command";
+  if (!requestAsksToRun(ctx.requestText)) return "Why I'm asking: you didn't ask me to run a command";
+  return undefined;
+}

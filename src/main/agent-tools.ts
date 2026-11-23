@@ -61,7 +61,9 @@ export interface AgentToolDeps {
   /** v0.21 — governor.ts: escalated class + reason for risky clicks/keys, else null. */
   assessRisk?: (name: string, args: Record<string, unknown>) => Promise<{ class: ActionClass; reason: string } | null>;
   summarizeArgs: (name: string, args: Record<string, unknown>) => string;
-  requestApproval: (req: { tool: string; summary: string; actionClass: ActionClass }) => Promise<ApprovalResult>;
+  requestApproval: (req: { tool: string; summary: string; actionClass: ActionClass; detail?: string }) => Promise<ApprovalResult>;
+  /** The full command / script a card for this tool shows (approval.ts approvalDetail). */
+  approvalDetail?: (name: string, args: Record<string, unknown>) => string | undefined;
   markApproved: (name: string, args: Record<string, unknown>) => void;
   /** Test seam for the glide timer. */
   glideMs?: number;
@@ -276,7 +278,8 @@ export function createAgentToolHandlers(deps: AgentToolDeps) {
       if (decision === 'approve') {
         const base = deps.summarizeArgs(a.name, args);
         const summary = risk ? `${risk.reason} — ${base}` : base;
-        const verdict = await deps.requestApproval({ tool: a.name, summary, actionClass });
+        const detail = deps.approvalDetail?.(a.name, args);
+        const verdict = await deps.requestApproval({ tool: a.name, summary, actionClass, ...(detail ? { detail } : {}) });
         if (verdict !== 'approved') {
           return fail(`(error:user_denied) The user did not approve "${summary}" (${verdict}). Do not retry; ask them what they want instead.`);
         }

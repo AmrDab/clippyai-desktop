@@ -25,9 +25,40 @@ export interface ApprovalRequest {
   actionClass: ActionClass;
   /** Why a governed click/key asks (governor.ts), shown under the question. */
   reason?: string;
+  /**
+   * The full text of what will run (a shell command, page JavaScript),
+   * shown verbatim in a scrollable monospace block under the question. The
+   * one-line summary cuts long text; this is where its tail is visible.
+   * Capped at APPROVAL_DETAIL_MAX characters, with the cut called out.
+   */
+  detail?: string;
 }
 
 export const APPROVAL_TIMEOUT_MS = 60_000;
+
+/** Longest detail block sent to the card; anything past it is reported as cut. */
+export const APPROVAL_DETAIL_MAX = 4000;
+
+// Characters that change how the rest of the text is drawn (bidi overrides,
+// zero-width joiners) or draw nothing (control characters): shown as
+// \u{…} so a command cannot look different from what runs.
+const INVISIBLE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F؜​-‏‪-‮⁠-⁩﻿]/g;
+
+/** The detail as the card shows it: line breaks kept, invisible characters made visible, capped. */
+export function capDetail(text: string): { detail: string; hiddenChars: number } {
+  const visible = String(text ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(INVISIBLE, (c) => `\\u{${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}}`);
+  if (visible.length <= APPROVAL_DETAIL_MAX) return { detail: visible, hiddenChars: 0 };
+  return { detail: visible.slice(0, APPROVAL_DETAIL_MAX), hiddenChars: visible.length - APPROVAL_DETAIL_MAX };
+}
+
+/** The text a card for `tool` should show in full, when the tool runs code. */
+export function approvalDetail(tool: string, args: Record<string, unknown> = {}): string | undefined {
+  const a = args && typeof args === 'object' ? args : {};
+  const text = tool === 'shell_exec' ? a.command : tool === 'cdp_evaluate' ? a.javascript : undefined;
+  return typeof text === 'string' && text.trim() !== '' ? text : undefined;
+}
 
 const pending = new Map<string, { resolve: (r: ApprovalResult) => void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -78,7 +109,11 @@ export function requestApproval(win: BrowserWindow | null, req: ApprovalRequest)
     log.info('Approval.request', { id, tool: req.tool, class: req.actionClass });
     // The reason can quote a label or path from the screen: one clean line too.
     const reason = req.reason === undefined ? undefined : cleanLine(req.reason);
-    win.webContents.send('approval-request', { id, ...req, reason, timeoutMs: APPROVAL_TIMEOUT_MS });
+    // The renderer shows the detail as plain text (textContent), never markup.
+    const shown = req.detail === undefined ? undefined : capDetail(req.detail);
+    win.webContents.send('approval-request', {
+      id, ...req, reason, detail: shown?.detail, detailHiddenChars: shown?.hiddenChars ?? 0, timeoutMs: APPROVAL_TIMEOUT_MS,
+    });
   });
 }
 
