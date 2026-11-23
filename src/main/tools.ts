@@ -3417,10 +3417,12 @@ function sanitizeShellEnv(): NodeJS.ProcessEnv {
 //   1. Permission gate. shell_exec is registered with actionClass
 //      'destructive_exec' in TOOL_META, and approval-policy.needsApproval
 //      decides whether the user sees the command BEFORE it runs. In a task
-//      the user started, plain commands (Get-Process, dir, git status) run
+//      the user started whose own message asks to run something ("run
+//      git status"), plain commands (Get-Process, dir, git status) run
 //      unasked; anything classifyShellCommand flags asks: deletes, installs,
 //      uploads, any URL or network fetch, script hosts (mshta, rundll32,
-//      wscript...), iex / -EncodedCommand, a file run out of Downloads/Temp/
+//      wscript...), iex / -EncodedCommand, eval / base64 / script blocks /
+//      a nested shell, login persistence, a file run out of Downloads/Temp/
 //      AppData, a secret location. Cautious mode, a remote agent, a
 //      proactive tip or a prompt-injection hit ask for every command. This
 //      is the primary defense — the blocklist below is a last-resort safety

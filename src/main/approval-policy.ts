@@ -5,13 +5,22 @@
  * Owner report: "asking for too much permission, if the user asked you to do
  * it, then dont ask for permission to run scripts". Every shell_exec is class
  * destructive_exec, so even `ls`, `open -a Claude` and an AppleScript
- * `activate` prompted. Policy: in a task the USER started, a shell command
- * that is part of the request runs without asking UNLESS it can delete, close,
- * install, upload, send, change security/system settings, run opaque code,
- * fetch from the network, run through a script host, run a file out of
- * Downloads/Temp/AppData or touch a secret store (classifyShellCommand), or something in the task looks like prompt injection,
- * or the task did not come from the user, or the user picked Cautious / an
- * explicit "approve" for the class. The hard blocklist (shell-guard.ts) still
+ * `activate` prompted. Policy: in a task the USER started, whose own message
+ * asks to run something ("run ls in my Downloads", "execute this in
+ * PowerShell": requestAsksToRun), a shell command runs without asking UNLESS
+ * it can delete, close, install, upload, send, change security/system
+ * settings, run opaque or run-time-built code (eval, base64, script blocks, a
+ * second shell), set up something that starts at login, fetch from the
+ * network, run through a script host, run a file out of Downloads/Temp/AppData
+ * or touch a secret store (classifyShellCommand), or something in the task
+ * looks like prompt injection, or the task did not come from the user, or the
+ * user picked Cautious / an explicit "approve" for the class.
+ *
+ * Why the request must ask to run something (2026-11 scan): screen text (the
+ * accessibility tree, OCR) goes to the model on every turn, so a web page or
+ * an email on screen can ask for a command that the deny-list does not know.
+ * A user who asked "what does this email say?" never asked for a command, so
+ * whatever the model runs then is shown first. The hard blocklist (shell-guard.ts) still
  * refuses at execution whatever this says. Skill installs, purchases, sends,
  * payments, http_request and clawd_task keep asking exactly as before. A
  * governor-escalated click or key asks too, with one exception: the user's
@@ -130,6 +139,34 @@ const REMOTE_OR_SECRET: Rule[] = [
   { why: 'reads a secret location', re: rx(String.raw`(?:^|[\s\\/"'=])\.env(?:\.[\w-]+)*(?=$|[\s"'|;&)])`) },
 ];
 
+// ── Hidden code and persistence (2026-11 scan) ──
+// Each of these hides what really runs from every rule above (a base64 blob,
+// a string turned into code, a second shell parsing a command line of its
+// own) or makes something run again at every login. Verified bypasses before
+// these rules: `eval "$(echo … | base64 -D)"`, `powershell -c
+// "&([scriptblock]::Create(…FromBase64String('…')))"` and `powershell -c
+// "[IO.File]::WriteAllText([Environment]::GetFolderPath('Startup')+…)"`.
+//
+// A second shell is "nested" when it is not the command's own first word: a
+// top-level `powershell -NoProfile -Command "Get-Process"` or `cmd /c dir` is
+// just how the command is written, and its quoted text is checked by every
+// rule here anyway. One started from inside another command line asks.
+const NESTED_AT = String.raw`(?:[;&|({"'` + BT + String.raw`\s]|\$\()\s*(?:[\w:.~%$\\/-]*[\\/])?`;
+const PS_COMMAND = String.raw`(?:powershell|pwsh)(?:\.exe)?["']?(?:\s+["']?-\w+["']?(?:\s+(?!-)[^\s"',]+)?)*?\s+["']?-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?(?![\w-])`;
+const CMD_COMMAND = String.raw`cmd(?:\.exe)?["']?(?:\s+/[a-z](?::\w+)?)*?\s+/[ckr](?![\w-])`;
+const SH_COMMAND = String.raw`(?:ba|z|da|k|fi)?sh(?:\.exe)?["']?(?:\s+--?[a-z][\w-]*|\s+[+-]o\s+\w+)*?\s+-[a-z]*c[a-z]*(?![\w-])`;
+
+const HIDDEN_OR_PERSISTENT: Rule[] = [
+  { why: 'runs a string as code (eval / exec)', re: rx(String.raw`(?:^|[\s;&|({"'` + BT + String.raw`]|\$\()(?:builtin\s+|command\s+)?(?:eval|exec)(?=\s|$|["'(])`) },
+  { why: 'decodes hidden (base64) content', re: rx(String.raw`\bbase64\b[^\r\n|;&]*\s(?:-[a-z]*d[a-z]*|--decode)(?![\w-])|\bcertutil(?:\.exe)?\b[^\r\n]*\s[-/]decode(?:hex)?\b|frombase64string|\bopenssl\b[^\r\n]*\s(?:base64|enc)\b[^\r\n]*\s-d\b|\bb64decode\b|\batob\s*\(`) },
+  { why: 'builds and runs a script block', re: rx(String.raw`\[\s*(?:system\.management\.automation\.)?scriptblock\s*\]|\binvoke-command\b|(?:^|[\s;|{(])icm(?![\w-])|\.invokecommand\b|\.invokescript\b|\bnewscriptblock\b|(?:^|[^\w&])&\s*[($]|(?:^|[\s;|{(])\.\s*[($]`) },
+  { why: 'runs a second shell with its own command line', re: rx(NESTED_AT + String.raw`(?:${PS_COMMAND}|${CMD_COMMAND}|${SH_COMMAND})`) },
+  { why: 'runs a command line built at run time', re: rx(String.raw`\b(?:ba|z|da|k|fi)?sh(?:\.exe)?["']?(?:\s+--?[a-z][\w-]*)*?\s+-[a-z]*c[a-z]*\s+["']?(?:\$\(|` + BT + String.raw`)`) },
+  { why: 'obfuscated shell syntax', re: rx(String.raw`\$\{?IFS\b|\$'[^']*\\(?:x[0-9a-f]{2}|[0-7]{3}|u[0-9a-f]{4})|\b(?:printf|echo\s+-e)\b[^\r\n]*\\(?:x[0-9a-f]{2}|[0-7]{3})`) },
+  { why: 'writes or deletes files through .NET', re: rx(String.raw`\[(?:system\.)?io\.(?:file|directory)\]::(?:write|append|delete|move|copy|replace|create|open|set)\w*|\bio\.(?:streamwriter|filestream)\b|\b(?:new-item|ni)\b[^\r\n]*\s-value\b`) },
+  { why: 'sets something to start at login (persistence)', re: rx(String.raw`launchagents|launchdaemons|[\\/]startupitems\b|getfolderpath\s*\(\s*["']?(?:common)?startup|specialfolder\]::(?:common)?startup|shell:(?:common\s*)?startup|[\\/]startup(?![\w-])|\bcrontab\b|[\\/]etc[\\/](?:cron|periodic)|[\\/]var[\\/](?:spool[\\/])?cron|currentversion[\\/]+(?:run|runonce|runservices(?:once)?|winlogon)(?![\w-])|currentversion[\\/]+policies[\\/]+explorer[\\/]+run(?![\w-])|image file execution options|\b(?:register|new)-scheduledtask\b|__eventfilter|commandlineeventconsumer|\.config[\\/]autostart`) },
+];
+
 // The one URL form that stays unasked: the whole command opens one http(s)
 // page in the browser ("open youtube"). No second statement, no variable.
 const URL_ARG = String.raw`(?:"https?://[^"'\s` + BT + String.raw`$%^<>]+"|'https?://[^"'\s` + BT + String.raw`$%^<>]+'|https?://[^"'\s` + BT + String.raw`$%^<>|&;()]+)`;
@@ -151,7 +188,7 @@ function classify(command: string, skipNet: boolean): string | null {
   const hard = shellBlockReason(cmd);
   if (hard) return `blocklist: ${hard}`;
   const norm = cmd.replace(/\^/g, '');
-  for (const rule of [...REMOTE_OR_SECRET, ...RISKY]) {
+  for (const rule of [...REMOTE_OR_SECRET, ...HIDDEN_OR_PERSISTENT, ...RISKY]) {
     if (skipNet && rule.net) continue;
     if (rule.re.test(cmd) || rule.re.test(norm)) return rule.why;
   }
@@ -356,6 +393,16 @@ const REQUEST_VERBS: Record<'send' | 'delete' | 'terminal', RegExp> = {
 const FAMILY_CLASS: Record<'send' | 'delete' | 'terminal', ActionClass> = { send: 'destructive_send', delete: 'destructive_file', terminal: 'destructive_exec' };
 
 /**
+ * The user's own message asks to run something: "run ls -la in my Downloads",
+ * "execute this in PowerShell", "type dir in cmd". The same test as a line
+ * typed into a terminal (REQUEST_VERBS.terminal). `requestText` must be the
+ * user's own message, never page text, a tool result or model text.
+ */
+export function requestAsksToRun(requestText: string | undefined): boolean {
+  return !!requestText && REQUEST_VERBS.terminal.test(requestText);
+}
+
+/**
  * An escalated click or key that is exactly what the user asked for: they
  * wrote "send ..." and the control is a Send button, or "delete ..." and it is
  * a Delete button; or they asked to run something in a terminal and the line
@@ -395,7 +442,10 @@ export function needsApproval(tool: string, args: Record<string, unknown> | unde
   const command = String(args?.command ?? '');
   const app = parseQuitCommand(command);
   if (app && !shellBlockReason(command) && shellQuitNamed(ctx.requestText, app)) return false;
-  if (classifyShellCommand(command) === null) return false;
+  // Nothing in the command asks, but screen text reaches the model on every
+  // turn: a plain-looking command runs unasked only when the user's own
+  // message asked to run something.
+  if (classifyShellCommand(command) === null) return !requestAsksToRun(ctx.requestText);
   // A fetch from a site (or a repo / package) the user named in their own message.
   return !isUserNamedFetch(command, ctx.requestText);
 }
