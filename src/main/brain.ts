@@ -1865,6 +1865,8 @@ export class Brain {
           if (risk && decision === 'allow') decision = 'approve';
           // A script/command the user asked for no longer asks (approval-policy.ts);
           // purchases, sends, installs, uploads, deletes, injection-tainted tasks do.
+          // Why a shell command asks, for the card when there is no governor reason.
+          let shellReason: string | undefined;
           if (decision === 'approve') {
             const pol = policy.getPolicy();
             // Quitting the app the user named runs unasked; what the call
@@ -1872,7 +1874,7 @@ export class Brain {
             const killTargets = call.name === 'kill_process'
               ? await resolveKillTargets(call.args ?? {}).catch(() => null)
               : undefined;
-            const ask = approvalPolicy.needsApproval(call.name, call.args, {
+            const approvalCtx: approvalPolicy.ApprovalCtx = {
               origin: 'user', // brain only runs user chat messages; agent-connect has its own gate (agent-tools.ts)
               injectionSeen: this.injectionFiredInTask,
               decision,
@@ -1883,7 +1885,11 @@ export class Brain {
               classForcedApprove: pol.classOverrides[actionClass] === 'approve',
               requestText: this.lastUserRequest ?? undefined,
               killTargets,
-            });
+            };
+            const ask = approvalPolicy.needsApproval(call.name, call.args, approvalCtx);
+            if (ask && call.name === 'shell_exec') {
+              shellReason = approvalPolicy.shellApprovalReason(String(call.args?.command ?? ''), approvalCtx);
+            }
             if (!ask) {
               log.info('Tool.auto_approved', { step: step + 1, tool: call.name, class: actionClass, reason: 'user_task' });
               decision = 'allow';
@@ -1918,7 +1924,12 @@ export class Brain {
             try { userTakeover.pauseDetection(); } catch { /* non-fatal */ }
             let verdict: approvalMod.ApprovalResult;
             try {
-              verdict = await approvalMod.requestApproval(this.win, { tool: call.name, summary, actionClass, reason: risk?.reason });
+              verdict = await approvalMod.requestApproval(this.win, {
+                tool: call.name, summary, actionClass,
+                reason: risk?.reason ?? shellReason,
+                // The whole command / script, so a long one cannot hide its tail.
+                detail: approvalMod.approvalDetail(call.name, call.args ?? {}),
+              });
             } finally {
               try { userTakeover.resumeDetection(); } catch { /* non-fatal */ }
             }

@@ -7,7 +7,7 @@ vi.mock('electron', () => ({ app: { isPackaged: false } }));
 
 import {
   requestApproval, resolveApproval, cancelAllApprovals, summarizeArgs, cleanLine, afterApprovals,
-  markApproved, wasApproved, APPROVAL_TIMEOUT_MS,
+  markApproved, wasApproved, APPROVAL_TIMEOUT_MS, APPROVAL_DETAIL_MAX, approvalDetail, capDetail,
 } from '../src/main/approval';
 import { TOOL_META } from '../src/main/tool-meta';
 
@@ -317,5 +317,69 @@ describe('approval card: zip_files shows an overwrite (audit #16)', () => {
   it('a plain zip reads as before', () => {
     expect(summarizeArgs('zip_files', { inputs: 'C:\\a\\x.txt', output: 'C:\\a\\out.zip' })).toBe('Zip 1 item into C:\\a\\out.zip');
     expect(summarizeArgs('zip_files', { inputs: ['a', 'b', 'c'], output: 'o.zip', overwrite: false })).toBe('Zip 3 items into o.zip');
+  });
+});
+
+describe('approval card: the whole command is shown, and a cut is called out (2026-11 scan)', () => {
+  afterEach(() => { cancelAllApprovals(); });
+
+  it('shell_exec and cdp_evaluate cards carry the full text; other tools carry none', () => {
+    const command = 'echo harmless '.repeat(20) + '&& del /s /q C:\\Users';
+    expect(approvalDetail('shell_exec', { command })).toBe(command);
+    expect(approvalDetail('cdp_evaluate', { javascript: 'fetch(x)' })).toBe('fetch(x)');
+    expect(approvalDetail('shell_exec', { command: '  ' })).toBeUndefined();
+    expect(approvalDetail('smart_click', { target: 'Send' })).toBeUndefined();
+    expect(approvalDetail('write_file', { path: 'x', content: 'y' })).toBeUndefined();
+  });
+
+  it('the tail past the one-line summary reaches the card verbatim', async () => {
+    const command = 'echo harmless '.repeat(20) + '&& del /s /q C:\\Users';
+    const { win, send } = fakeWin();
+    const p = requestApproval(win, { ...req, summary: summarizeArgs('shell_exec', { command }), detail: approvalDetail('shell_exec', { command }) });
+    const [, payload] = send.mock.calls.at(-1)!;
+    expect((payload as { detail: string }).detail).toBe(command);
+    expect((payload as { detail: string }).detail).toContain('&& del /s /q C:\\Users');
+    expect((payload as { detailHiddenChars: number }).detailHiddenChars).toBe(0);
+    cancelAllApprovals();
+    await p;
+  });
+
+  it('keeps line breaks (the block is plain text) but caps the length and reports the cut', async () => {
+    expect(capDetail('a\r\nb\nc').detail).toBe('a\nb\nc');
+    const long = 'x'.repeat(APPROVAL_DETAIL_MAX + 1234);
+    expect(capDetail(long)).toEqual({ detail: 'x'.repeat(APPROVAL_DETAIL_MAX), hiddenChars: 1234 });
+    const { win, send } = fakeWin();
+    const p = requestApproval(win, { ...req, detail: long });
+    const [, payload] = send.mock.calls.at(-1)!;
+    expect((payload as { detail: string }).detail).toHaveLength(APPROVAL_DETAIL_MAX);
+    expect((payload as { detailHiddenChars: number }).detailHiddenChars).toBe(1234);
+    cancelAllApprovals();
+    await p;
+  });
+
+  it('shows invisible and direction-changing characters instead of drawing them', () => {
+    // U+202E flips the rest of the line; U+200B draws nothing; ESC can drive a terminal.
+    expect(capDetail('echo safe\u202E fdr- mr').detail).toBe('echo safe\\u{202E} fdr- mr');
+    expect(capDetail('r\u200Bm -rf x').detail).toBe('r\\u{200B}m -rf x');
+    expect(capDetail('a\u001b[2Jb\tc').detail).toBe('a\\u{001B}[2Jb\tc');
+  });
+
+  it('a request without detail sends none', async () => {
+    const { win, send } = fakeWin();
+    const p = requestApproval(win, req);
+    const [, payload] = send.mock.calls.at(-1)!;
+    expect((payload as { detail?: string }).detail).toBeUndefined();
+    expect((payload as { detailHiddenChars: number }).detailHiddenChars).toBe(0);
+    cancelAllApprovals();
+    await p;
+  });
+
+  it('the renderer draws the detail with textContent, never as markup', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'main.ts'), 'utf8');
+    const start = src.indexOf('onApprovalRequest');
+    const body = src.slice(start, src.indexOf("tts.speak('Can I go ahead?')", start));
+    expect(body).toMatch(/pre\.textContent = detail;/);
+    expect(body).not.toMatch(/innerHTML\s*=[^;]*detail/);
+    expect(body).toMatch(/detailHiddenChars/);
   });
 });

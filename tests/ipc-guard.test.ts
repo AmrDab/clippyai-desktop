@@ -10,7 +10,8 @@ import path from 'path';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clippy-ipc-guard-'));
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmp } }));
 
-import { senderIsWindow } from '../src/main/ipc-guard';
+import { senderIsWindow, isAllowedExternalUrl } from '../src/main/ipc-guard';
+import { isSafeCheckoutUrl } from '../src/main/account-api';
 import { setPolicy, getPolicy, decide } from '../src/main/permission-policy';
 
 describe('senderIsWindow', () => {
@@ -49,6 +50,63 @@ describe('ipc.ts wires the sender checks', () => {
     '%s checks for the Settings window', (channel) => {
       expect(handler(channel)).toMatch(/fromSettings\(event\)/);
     });
+});
+
+describe('ipc.ts: sender checks on the license, skills, agent and first-win channels (2026-11 scan)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc.ts'), 'utf8');
+  const handler = (channel: string) => {
+    const start = src.indexOf(`ipcMain.handle('${channel}'`);
+    expect(start).toBeGreaterThan(-1);
+    return src.slice(start, start + 400);
+  };
+  it.each(['skills-install', 'agent:status', 'agent:set-enabled', 'agent:regenerate-token'])('%s checks for the Settings window first', (channel) => {
+    expect(handler(channel)).toMatch(/async \(event[,)][^\n]*\n\s+if \(!fromSettings\(event\)\) return /);
+  });
+  it('save-license only from the onboarding window', () => {
+    expect(handler('save-license')).toMatch(/if \(!senderIsWindow\(event, getOnboardingWindow\(\)\)\) return false;\n\s+saveLicense\(/);
+  });
+  it('first-win-chip only from the onboarding window or the bubble', () => {
+    expect(handler('first-win-chip')).toMatch(/if \(!senderIsWindow\(event, getOnboardingWindow\(\)\) && !senderIsWindow\(event, mainWindow\)\) return false;/);
+  });
+  it('open-external-url opens only what isAllowedExternalUrl / isSafeInboxUrl accept', () => {
+    expect(handler('open-external-url')).toMatch(/isSafeInboxUrl\(url\) \|\| isAllowedExternalUrl\(url\)/);
+  });
+  it('open-subscription-portal checks the server\'s URL like the checkout link', () => {
+    const start = src.indexOf("ipcMain.handle('open-subscription-portal'");
+    const body = src.slice(start, src.indexOf('shell.openExternal(url)', start));
+    expect(body).toMatch(/if \(!url \|\| !isSafeCheckoutUrl\(url\)\)/);
+  });
+});
+
+describe('isAllowedExternalUrl (open-external-url)', () => {
+  it.each([
+    'https://clippyai.app',
+    'https://clippyai.app/privacy',
+    'https://api.clippyai.app/x',
+    'https://github.com/AmrDab/clippyai-desktop/issues',
+    'mailto:hello@clippyai.app',
+  ])('opens %s', (url) => expect(isAllowedExternalUrl(url)).toBe(true));
+  it.each([
+    'http://clippyai.app/',
+    'http://github.com/x',
+    'ftp://github.com/x',
+    'file://github.com/C:/Windows/System32/calc.exe',
+    'smb://github.com/share',
+    'ms-msdt://github.com/x',
+    'javascript://github.com/%0aalert(1)',
+    'https://user:pw@github.com/',
+    'https://github.com.attacker.example/',
+    'https://example.com/',
+    'not a url',
+    '',
+    42,
+    undefined,
+  ])('refuses %s', (url) => expect(isAllowedExternalUrl(url)).toBe(false));
+});
+
+describe('isSafeCheckoutUrl (open-subscription-portal)', () => {
+  it.each(['https://billing.stripe.com/p/session/x', 'https://checkout.stripe.com/c/pay/x'])('opens %s', (url) => expect(isSafeCheckoutUrl(url)).toBe(true));
+  it.each(['http://billing.stripe.com/p/session/x', 'https://billing.stripe.com.attacker.example/', 'file:///C:/x.exe', 'javascript:alert(1)'])('refuses %s', (url) => expect(isSafeCheckoutUrl(url)).toBe(false));
 });
 
 describe('setPolicy over IPC', () => {

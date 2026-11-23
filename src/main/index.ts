@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, globalShortcut, crashReporter, powerMonitor, shell } from 'electron';
 import { installNavigationGuards } from './nav-guard';
+import { rendererDevUrl } from './dev-url';
 import fs from 'fs';
 import path from 'path';
 
@@ -353,7 +354,7 @@ process.on('unhandledRejection', (reason) => {
 // Every window carries the preload bridge: none of them may be navigated to
 // a web page or open an in-app child window (nav-guard.ts).
 installNavigationGuards(app, (url) => shell.openExternal(url), {
-  devUrl: process.env.ELECTRON_RENDERER_URL,
+  devUrl: rendererDevUrl(), // never in a packaged build (dev-url.ts)
   rendererDir: path.join(__dirname, '../renderer'),
 }, (kind, target) => {
   // Only the origin: a full address can carry tokens or document text.

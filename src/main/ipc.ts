@@ -57,7 +57,8 @@ import * as profileMod from './profile';
 // to keep Rollup from tree-shaking it. See memory: feedback-clippy-bundle-anchors.
 import * as windowFollowMod from './window-follow';
 import { noteOnboardingStep, setClickThrough, createSettingsWindow, createOnboardingWindow, getOnboardingWindow, getSettingsWindow, createLogWindow, hideWritingBadge, takeRecovered } from './window';
-import { senderIsWindow } from './ipc-guard';
+import { senderIsWindow, isAllowedExternalUrl } from './ipc-guard';
+import { isSafeCheckoutUrl } from './account-api';
 import { takeWhatsNew, claimFirstRunScript, claimNamePrompt } from './whats-new';
 import { wakeScript } from './first-run';
 import { isOnboardingStep } from './onboarding-track';
@@ -278,8 +279,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
   });
 
-  // Save license data from onboarding
-  ipcMain.handle('save-license', async (_event, key: string, plan: string, buddyName: string, ttsVoice: string) => {
+  // Save license data from onboarding. Only the onboarding window's page may
+  // replace the license (and persona): every window shares the preload.
+  ipcMain.handle('save-license', async (event, key: string, plan: string, buddyName: string, ttsVoice: string) => {
+    if (!senderIsWindow(event, getOnboardingWindow())) return false;
     saveLicense(key, plan, buddyName, ttsVoice);
     telemetry.track('onboarding_step', { step: 'license_saved' });
     return true;
@@ -564,26 +567,15 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     createSettingsWindow();
   });
 
-  // Open external URL (whitelisted protocols + domains)
-  ipcMain.handle('open-external-url', async (_event, url: string) => {
+  // Open external URL: mailto:, the two inbox shortcuts, or https:// on our
+  // own hosts (ipc-guard.ts isAllowedExternalUrl checks the scheme too).
+  ipcMain.handle('open-external-url', async (_event, url: unknown) => {
     try {
-      const parsed = new URL(url);
-      // mailto: links go to the user's default mail client. No hostname,
-      // safe to allow unconditionally — every Settings → About → Support
-      // click was silently failing the hostname check.
-      if (parsed.protocol === 'mailto:') {
+      if (typeof url === 'string' && (isSafeInboxUrl(url) || isAllowedExternalUrl(url))) {
         await shell.openExternal(url);
         return true;
       }
-      if (isSafeInboxUrl(url)) {
-        await shell.openExternal(url);
-        return true;
-      }
-      if (parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app' || parsed.hostname === 'github.com') {
-        await shell.openExternal(url);
-        return true;
-      }
-    } catch { /* invalid URL */ }
+    } catch { /* openExternal failed */ }
     return false;
   });
 
@@ -742,7 +734,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // route a "user-message"; this IPC just unifies the entry point so we
   // can fire the same flow from EITHER the onboarding window (which closes
   // itself) OR the main window's overlay.
-  ipcMain.handle('first-win-chip', async (_event, text: unknown) => {
+  ipcMain.handle('first-win-chip', async (event, text: unknown) => {
+    // The chip becomes a user message: only the onboarding window or the
+    // bubble may send one (same rule as user-message).
+    if (!senderIsWindow(event, getOnboardingWindow()) && !senderIsWindow(event, mainWindow)) return false;
     if (typeof text !== 'string') return false;
     const trimmed = text.trim().substring(0, 4096);
     if (!trimmed || !mainWindow || mainWindow.isDestroyed()) return false;
@@ -879,7 +874,9 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     }
   });
 
-  ipcMain.handle('skills-install', async (_event, slug: string, version?: string) => {
+  // Installing a skill runs third-party code later: Settings window only.
+  ipcMain.handle('skills-install', async (event, slug: string, version?: string) => {
+    if (!fromSettings(event)) return { ok: false, error: 'Not available from this window.' };
     try {
       const ch = await import('./clawhub');
       const reg = await import('./skill-registry');
@@ -1195,7 +1192,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
         req.write('{}');
         req.end();
       });
-      if (!url) return false;
+      // Same rule as the checkout link (account.ts): only https on Stripe
+      // or our own site, whatever the server answered.
+      if (!url || !isSafeCheckoutUrl(url)) {
+        if (url) log.warn('Portal.unsafeUrl');
+        return false;
+      }
       await shell.openExternal(url);
       return true;
     } catch { return false; }
@@ -1300,16 +1302,21 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
   // v0.21 — "Connect an agent" (Settings) + the bubble's answer to
   // clippy_ask_user. Only the main window may answer an ask.
-  ipcMain.handle('agent:status', async () => {
+  // The status carries the agent's bearer token (the setup snippets), and
+  // turning the server on lets an outside agent drive Clippy: Settings only.
+  ipcMain.handle('agent:status', async (event) => {
+    if (!fromSettings(event)) return null;
     const m = await import('./agent-connect');
     return m.getAgentConnectStatus();
   });
-  ipcMain.handle('agent:set-enabled', async (_event, enabled: unknown) => {
+  ipcMain.handle('agent:set-enabled', async (event, enabled: unknown) => {
+    if (!fromSettings(event)) return null;
     const m = await import('./agent-connect');
     await m.setAgentEnabled(enabled === true);
     return m.getAgentConnectStatus();
   });
-  ipcMain.handle('agent:regenerate-token', async () => {
+  ipcMain.handle('agent:regenerate-token', async (event) => {
+    if (!fromSettings(event)) return null;
     const m = await import('./agent-connect');
     await m.regenerateAgentToken();
     return m.getAgentConnectStatus();

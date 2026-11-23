@@ -18,6 +18,7 @@
  */
 
 import { BrowserWindow, screen, ipcMain } from 'electron';
+import { rendererDevUrl } from './dev-url';
 import path from 'path';
 import { createLogger } from './logger';
 import * as telemetry from './telemetry';
@@ -186,8 +187,9 @@ function createOverlay(): void {
   _overlay.setAlwaysOnTop(true, 'screen-saver');
   // Click-through everywhere except over the ball (renderer toggles it).
   _overlay.setIgnoreMouseEvents(true, { forward: true });
-  if (process.env.ELECTRON_RENDERER_URL) {
-    _overlay.loadURL(`${process.env.ELECTRON_RENDERER_URL}/game-overlay.html`);
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
+    _overlay.loadURL(`${devUrl}/game-overlay.html`);
   } else {
     _overlay.loadFile(path.join(__dirname, '../renderer/game-overlay.html'));
   }

@@ -12,6 +12,7 @@ import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
 import { clampRectToDisplay, rectNeedsClamp } from './window-geometry';
 import { appIconPath } from './app-icon';
+import { rendererDevUrl } from './dev-url';
 
 const log = createLogger('Window');
 
@@ -168,8 +169,9 @@ export function createWindow(): BrowserWindow {
   // Window is small enough that it only covers Clippy
   win.setIgnoreMouseEvents(false);
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL);
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
+    win.loadURL(devUrl);
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
@@ -478,8 +480,9 @@ export function createSettingsWindow(): BrowserWindow {
   });
   if (process.platform !== 'darwin') settingsWindow.removeMenu();
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    settingsWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/settings.html`);
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
+    settingsWindow.loadURL(`${devUrl}/settings.html`);
   } else {
     settingsWindow.loadFile(path.join(__dirname, '../renderer/settings.html'));
   }
@@ -539,9 +542,10 @@ export function createOnboardingWindow(opts: { lang?: string } = {}): BrowserWin
 
   const query: Record<string, string> = {};
   query.lang = opts.lang ?? uiLang();
-  if (process.env.ELECTRON_RENDERER_URL) {
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
     const qs = new URLSearchParams(query).toString();
-    onboardingWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/onboarding.html${qs ? `?${qs}` : ''}`);
+    onboardingWindow.loadURL(`${devUrl}/onboarding.html${qs ? `?${qs}` : ''}`);
   } else {
     onboardingWindow.loadFile(path.join(__dirname, '../renderer/onboarding.html'), { query });
   }
@@ -589,8 +593,9 @@ export function createLogWindow(openReport = false): BrowserWindow {
     },
   });
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    logWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/logs.html${openReport ? '#report' : ''}`);
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
+    logWindow.loadURL(`${devUrl}/logs.html${openReport ? '#report' : ''}`);
   } else {
     logWindow.loadFile(path.join(__dirname, '../renderer/logs.html'), openReport ? { hash: 'report' } : {});
   }
@@ -647,8 +652,9 @@ export function createWritingCardWindow(
   writingCardWindow.setAlwaysOnTop(true, 'screen-saver');
   pinToAllSpaces(writingCardWindow);
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    writingCardWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}/writing-card.html`);
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
+    writingCardWindow.loadURL(`${devUrl}/writing-card.html`);
   } else {
     writingCardWindow.loadFile(path.join(__dirname, '../renderer/writing-card.html'));
   }
@@ -726,8 +732,9 @@ export function createWritingBadgeWindow(
 
   const w = writingBadgeWindow;
   const onReady = () => { if (!w.isDestroyed()) sendBadgeCount(w, count); };
-  if (process.env.ELECTRON_RENDERER_URL) {
-    w.loadURL(`${process.env.ELECTRON_RENDERER_URL}/writing-badge.html`);
+  const devUrl = rendererDevUrl();
+  if (devUrl) {
+    w.loadURL(`${devUrl}/writing-badge.html`);
   } else {
     w.loadFile(path.join(__dirname, '../renderer/writing-badge.html'));
   }
