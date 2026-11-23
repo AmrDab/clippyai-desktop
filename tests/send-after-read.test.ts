@@ -99,7 +99,9 @@ describe('what counts as reading something private', () => {
   });
 });
 
-const SECRET = 'sk_live_51Hx9QpLm2ZvT8cR4nB7wKd';
+// Obviously fake, and not shaped like a real Stripe key (scanners match sk_live_ + 10+
+// letters/digits); still a 16+ character secret-looking value for read-leak.ts.
+const SECRET = 'sk_live_EXAMPLE_0000_not_a_real_key';
 const NOTES = [
   'Shopping list',
   '1. oat milk and sourdough bread',
