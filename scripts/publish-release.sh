@@ -77,7 +77,7 @@ case "$(uname -s)" in
     fi
 
     # gh is not interactively authed on the dev box; fall back to the GitHub
-    # PAT in Windows Credential Manager (same source docs/ops-runbook.md §9 uses).
+    # PAT in Windows Credential Manager (the ops runbook is kept privately).
     if ! gh auth status >/dev/null 2>&1 && [[ -z "${GH_TOKEN:-}" ]]; then
       GH_TOKEN="$(printf 'protocol=https\nhost=github.com\n' | git credential fill | sed -n 's/^password=//p')"
       export GH_TOKEN
