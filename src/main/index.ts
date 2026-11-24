@@ -117,10 +117,12 @@ import * as windowFollowMod from './window-follow';
 import * as quitState from './quit-state';
 import * as gamesMod from './games';
 import { brainSettingsStore } from './brain';
-// v0.21 — static import (same Rollup bundle-anchor rule as window-follow).
-import * as agentConnect from './agent-connect';
 import * as approvalMod from './approval';
 import * as telemetry from './telemetry';
+import * as dispatchMod from './dispatch';
+import { runUserMessage } from './ipc';
+import { refreshTrayTooltip } from './tray';
+import { getLicenseKey } from './license';
 
 bootLog('IMPORTS_LOADED');
 
@@ -377,6 +379,8 @@ app.whenReady().then(async () => {
 
   initStartup();
   cleanOldLogs();
+  // The removed "Connect an agent" feature kept an access token here: delete it on upgraded installs.
+  try { fs.rmSync(path.join(app.getPath('userData'), 'agent-server.json'), { force: true }); } catch { /* best-effort */ }
 
   // Initialize direct tools (in-process, no server)
   try {
@@ -534,13 +538,47 @@ function wireCloseToSleep(brainRef: Brain, mw: BrowserWindow): void {
   });
 }
 
-/** Something besides a brain task is in use: setup/Settings open, an agent session, a game, an approval prompt. */
+/** Something besides a brain task is in use: setup/Settings open, a game, an approval prompt. */
 function isBusyElsewhere(): boolean {
   return !!getOnboardingWindow() || !!getSettingsWindow()
-    || agentConnect.hasActiveAgentClients()
     || gamesMod.isActive()
     || approvalMod.hasPendingApproval()
     || isBubbleBusy(); // half-typed text, open chat panel, or a prompt waiting for an answer
+}
+
+/**
+ * Clippy Dispatch (phone → PC). The phone's task takes the same path as a
+ * typed message; On / Off / Stop are the tray's "Wake Up", the right-click
+ * menu's "Sleep" and the Stop button. Every mode change, whatever caused it,
+ * reaches the phone (and the tray menu) through brain.onModeChange.
+ */
+function wireDispatch(brainRef: Brain, mw: BrowserWindow): void {
+  const setMode = (mode: 'awake' | 'sleep'): void => {
+    if (brainRef.getMode() === mode) return;
+    brainRef.setMode(mode);
+    if (!mw.isDestroyed()) mw.webContents.send('mode-change', mode);
+  };
+  brainRef.onModeChange = () => { dispatchMod.modeChanged(); refreshTrayTooltip(); };
+  approvalMod.watchApprovals(dispatchMod.approvalEvent);
+  dispatchMod.initDispatch({
+    mode: () => brainRef.getMode(),
+    wake: () => {
+      if (mw.isDestroyed()) return;
+      if (!mw.isVisible()) mw.show();
+      setMode('awake');
+    },
+    sleep: () => setMode('sleep'),
+    stop: () => { brainRef.stopTask(); },
+    run: (text) => runUserMessage(brainRef, mw, text),
+    resolveApproval: approvalMod.resolveApproval,
+    track: (name) => telemetry.track(name),
+    usable: () => !getOnboardingWindow(),
+    licenseKey: getLicenseKey,
+    notify: (status) => {
+      const s = getSettingsWindow();
+      if (s && !s.isDestroyed()) s.webContents.send('dispatch:changed', status);
+    },
+  });
 }
 
 function launchMainApp(): void {
@@ -551,6 +589,7 @@ function launchMainApp(): void {
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
   wireCloseToSleep(brain, mainWindow);
+  wireDispatch(brain, mainWindow);
 
   // v0.16.0 — start the cursor position pump at 1Hz so Clippy can glance
   // toward the user's cursor. Renderer's cursor-look logic throttles
@@ -604,14 +643,6 @@ function launchMainApp(): void {
   //   - linux: suspend = systemd sleep, lock-screen = X/Wayland session-lock
   wirePowerMonitor(brain, mainWindow);
 
-  // v0.21 — "Connect an agent": local MCP server for an outside agent.
-  // OFF by default; only listens when the user enabled it in Settings.
-  try {
-    agentConnect.initAgentConnect(mainWindow, brain);
-  } catch (err) {
-    log.warn('Agent connect init failed (non-fatal)', serializeErr(err));
-  }
-
   initUpdater(mainWindow);
   setTimeout(() => checkForUpdates(), 10_000);
   startPeriodicUpdateChecks(); // re-check every 24h in case app stays running
@@ -649,6 +680,7 @@ function launchWithOnboarding(): void {
   setupTray(mainWindow, brain);
   registerHotkey(mainWindow, brain);
   wireCloseToSleep(brain, mainWindow);
+  wireDispatch(brain, mainWindow);
   gamesMod.setMainWindow(mainWindow);
 
   // Wire updater here too — unlicensed users are the MOST likely to be on
@@ -679,13 +711,12 @@ app.on('child-process-gone', (_e, d) => { if (d.reason !== 'clean-exit') telemet
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopScheduler();
+  dispatchMod.shutdownDispatch();
   // v0.20.0-alpha.11 — stop the focused-window follow loop. Cheap (just a
   // clearInterval) but keeps the process exit clean.
   try {
     windowFollowMod.stopWindowFollow();
   } catch { /* non-fatal */ }
-  // v0.21 — close the agent MCP listener + sessions so the port is freed.
-  agentConnect.shutdownAgentConnect().catch((err) => log.warn('Agent server stop failed', serializeErr(err)));
   // Stop clawdcursor first — SIGTERM is async, so this fires the signal
   // and returns immediately. clawdcursor exits cleanly on SIGTERM thanks
   // to the MCP server lifecycle changes; if it's slow, stopClawd's 2s

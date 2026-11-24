@@ -1554,22 +1554,24 @@ function layer1() {
     fail('packaging: win.files', 'only exclusion patterns — electron-builder will pack the entire repo');
   }
 
-  // v0.21 — "Connect an agent": the stdio bridge + SKILL.md ship as
-  // extraResources (agent-connect.ts reads them under process.resourcesPath).
+  // Clippy Dispatch (phone → PC): dispatch.ts is imported statically (a lazy
+  // require is not found in the packaged app), wired in both launch paths,
+  // closed on quit, and its two runtime packages ship as dependencies.
   {
-    const bridge = path.join(ROOT, 'resources', 'mcp', 'clippy-mcp-bridge.js');
-    const skill = path.join(ROOT, 'assets', 'agent-skill', 'clippy', 'SKILL.md');
-    const bridgeBundled = /from:\s*resources\/mcp\s*\n\s*to:\s*mcp\b/.test(ebSrc);
-    const skillBundled = /from:\s*assets\/agent-skill\s*\n\s*to:\s*agent-skill\b/.test(ebSrc);
-    const skillSrc = fs.existsSync(skill) ? fs.readFileSync(skill, 'utf8') : '';
-    const skillFrontmatter = /^---\nname: clippy\ndescription: .+\n/.test(skillSrc);
-    // Node built-ins only — the bridge runs outside app.asar with no node_modules.
-    const bridgeNoDeps = fs.existsSync(bridge) && !/require\(['"](?!(fs|os|path|http|readline)['"])/.test(fs.readFileSync(bridge, 'utf8'));
-    if (bridgeBundled && skillBundled && skillFrontmatter && bridgeNoDeps) {
-      pass('packaging: v0.21 agent bridge (resources/mcp) + SKILL.md (assets/agent-skill) exist and are extraResources');
-    } else {
-      fail('packaging: v0.21 agent resources', `bridgeBundled=${bridgeBundled} skillBundled=${skillBundled} skillFrontmatter=${skillFrontmatter} bridgeNoDeps=${bridgeNoDeps}`);
-    }
+    const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
+    const indexSrc = read('src', 'main', 'index.ts');
+    const deps = JSON.parse(read('package.json')).dependencies || {};
+    const checks = {
+      module: fs.existsSync(path.join(ROOT, 'src', 'main', 'dispatch.ts')) && fs.existsSync(path.join(ROOT, 'src', 'shared', 'dispatch-crypto.ts')),
+      staticImport: /^import \* as dispatchMod from '\.\/dispatch';/m.test(indexSrc) && /^import \* as dispatchMod from '\.\/dispatch';/m.test(read('src', 'main', 'ipc.ts')),
+      wiredTwice: (indexSrc.match(/^\s+wireDispatch\(brain, mainWindow\);/gm) || []).length === 2,
+      shutdown: /dispatchMod\.shutdownDispatch\(\)/.test(indexSrc),
+      deps: !!deps.ws && !!deps.qrcode,
+      qrImage: /img-src 'self' data:/.test(read('src', 'renderer', 'settings.html')),
+    };
+    const bad = Object.keys(checks).filter((k) => !checks[k]);
+    if (!bad.length) pass('dispatch: module imported statically, wired in both launch paths, closed on quit, ws + qrcode are dependencies');
+    else fail('dispatch: wiring / packaging', `failed: ${bad.join(', ')}`);
   }
 
   // 10. scripts/build-native.js exists and produces a universal binary
@@ -2503,8 +2505,9 @@ function layer2() {
   try {
     const out = runPS('get-foreground-window.ps1', []);
     const parsed = JSON.parse(out);
-    if (typeof parsed.processName === 'string' && typeof parsed.processId === 'number') {
-      pass(`get-foreground-window: valid JSON (${parsed.processName})`);
+    // Since 03300b6 the script reports the foreground handle + visible windows; foreground-pick.ts chooses.
+    if (parsed.success === true && typeof parsed.foreground === 'number' && Array.isArray(parsed.candidates)) {
+      pass(`get-foreground-window: valid JSON (${parsed.candidates.length} windows)`);
     } else {
       fail('get-foreground-window: shape', `keys=${Object.keys(parsed).join(',')}`);
     }

@@ -69,7 +69,6 @@ import { WritingWatcher } from './writing-watch';
 import { formatWorkflowHint, recordWorkflow, isEnabled as memoryEnabled } from './memory';
 import { ToolLoopDetector, exemptFromRunawayGuard, notRunAfterFailure, failureStopsTurn } from './tool-loop-detection';
 import { AbortRegistry, abortableDelay } from './turn-abort';
-import { isAgentBusy } from './agent-tools';
 import * as telemetry from './telemetry';
 import Store from 'electron-store';
 import { createLogger, serializeErr, setCurrentTaskId, redactArgs, resultForLog } from './logger';
@@ -1028,11 +1027,15 @@ export class Brain {
         log.warn('writingWatcher stop failed (non-fatal)', serializeErr(err));
       }
     }
+    try { this.onModeChange?.(mode); } catch (err) { log.warn('onModeChange failed (non-fatal)', serializeErr(err)); }
   }
 
   getMode(): 'awake' | 'sleep' {
     return this.mode;
   }
+
+  /** Called after every mode change, whatever asked for it (menu, tray, hotkey, power monitor, phone). */
+  onModeChange: ((mode: 'awake' | 'sleep') => void) | null = null;
 
   /**
    * v0.20.0-alpha.11 — public read of the in-flight-task flag. Consumed by
@@ -1327,15 +1330,6 @@ export class Brain {
         this.emit('clippy-speak', { text: busy, animate: 'Alert' });
         return busy;
       }
-    }
-    // v0.21 — an outside agent (Settings → Connect an agent) is mid-call:
-    // never run two drivers at once.
-    if (isAgentBusy()) {
-      const msg = "One sec — I'm helping your agent right now. Try again in a moment.";
-      log.info('User.message_deferred_agent_busy', { task_id });
-      this.emit('clippy-speak', { text: msg, animate: 'Alert' });
-      setCurrentTaskId(undefined);
-      return msg;
     }
     this.isExecuting = true;
     this.injectionFiredInTask = false;
@@ -1863,6 +1857,12 @@ export class Brain {
           // A governor-escalated click/key always asks, even in trusted mode —
           // trust covers Clippy's own tools, not a guessed "Send"/"Delete" button.
           if (risk && decision === 'allow') decision = 'approve';
+          // 'bypass' mode: no approval card (escalated clicks included), unless
+          // a page/file Clippy read tried to give him orders — that still asks.
+          if (approvalPolicy.bypassDecision(policy.getPolicy().mode, decision, this.injectionFiredInTask) !== decision) {
+            log.info('Tool.auto_approved', { step: step + 1, tool: call.name, class: actionClass, reason: 'bypass' });
+            decision = 'allow';
+          }
           // A script/command the user asked for no longer asks (approval-policy.ts);
           // purchases, sends, installs, uploads, deletes, injection-tainted tasks do.
           if (decision === 'approve') {
@@ -1873,7 +1873,7 @@ export class Brain {
               ? await resolveKillTargets(call.args ?? {}).catch(() => null)
               : undefined;
             const ask = approvalPolicy.needsApproval(call.name, call.args, {
-              origin: 'user', // brain only runs user chat messages; agent-connect has its own gate (agent-tools.ts)
+              origin: 'user', // brain only runs user chat messages
               injectionSeen: this.injectionFiredInTask,
               decision,
               actionClass,
@@ -2564,7 +2564,6 @@ export class Brain {
       return;
     }
     if (this.isExecuting) { logGated('task_in_flight'); return; }
-    if (isAgentBusy()) { logGated('agent_in_flight'); return; }
     log.info('Proactive.tick', { gate: 'open' });
 
     // v0.19.0-rc.5 — POLICY: proactive ticks MUST stay text-only.

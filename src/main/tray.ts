@@ -10,16 +10,12 @@ import { getPendingUpdateVersion, installUpdate, installOnUserQuit, setOnUpdateS
 import { appIconPath } from './app-icon';
 
 let tray: Tray | null = null;
-// v0.21 — "Connect an agent": name of the MCP client currently driving
-// Clippy (null = none). Shown in the tooltip + a menu status line.
-let agentClient: string | null = null;
 let rebuildMenu: (() => void) | null = null;
 
 function tooltip(): string {
   const parts = ['ClippyAI'];
   // v0.21 — which brain answers: hosted Clippy or the user's own model.
   if (isByokActive()) parts.push(`Brain: ${getBrainLabel()}`);
-  if (agentClient) parts.push(`Agent connected: ${agentClient}`);
   return parts.join(' — ');
 }
 
@@ -28,11 +24,6 @@ export function refreshTrayTooltip(): void {
   if (!tray) return;
   tray.setToolTip(tooltip());
   rebuildMenu?.();
-}
-
-export function setTrayAgentStatus(clientName: string | null): void {
-  agentClient = clientName;
-  refreshTrayTooltip();
 }
 
 function createTrayIcon(_awake: boolean): Electron.NativeImage {
@@ -65,7 +56,6 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
       { type: 'separator' },
       { label: isAwake ? 'Status: Awake' : 'Status: Sleeping', enabled: false },
       ...(isByokActive() ? [{ label: `Brain: ${getBrainLabel()}`, enabled: false }] : []),
-      ...(agentClient ? [{ label: `Agent connected: ${agentClient}`, enabled: false }] : []),
       {
         label: isAwake ? 'Go to Sleep' : 'Wake Up',
         click: () => {
@@ -176,7 +166,6 @@ export function setupTray(win: BrowserWindow, brain: Brain): Tray {
   games.onStateChange(updateMenu);
   setOnUpdateStateChange(updateMenu);
   rebuildMenu = updateMenu;
-  setTrayAgentStatus(agentClient);
 
   tray.on('double-click', () => {
     if (win.isVisible()) {

@@ -729,24 +729,12 @@ export function trackRendererGone(wc: { getURL: () => string }, details: { reaso
   track('renderer_gone', { page, reason: enumish(details?.reason), exit_code: Number(details?.exitCode) });
 }
 
-const seenAgentClients = new Set<string>();
-/** Agent connected — client NAME only (no version, nothing user-typed). */
-export function trackAgentClients(clients: string[]): void {
-  for (const c of clients || []) {
-    const name = String(c).replace(/\s+v?\d[\w.-]*$/, '').replace(/[^\w .-]/g, '').trim().slice(0, 40) || 'unknown';
-    if (seenAgentClients.has(name)) continue;
-    seenAgentClients.add(name);
-    track('agent_connected', { client: name });
-  }
-}
-
 /** Test-only: reset module state. */
 export function __resetForTests(): void {
   state = null;
   queue = [];
   task = null;
   exceptionCounts.clear();
-  seenAgentClients.clear();
   quitHandled = false;
   noQuitHold = false;
   seq = 0;

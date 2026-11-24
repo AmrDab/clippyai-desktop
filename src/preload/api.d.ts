@@ -21,24 +21,11 @@
  *     in the preload is a two-file edit (preload + this).
  */
 
-/** v0.21 — mirrors src/main/agent-connect.ts AgentConnectStatus. */
-interface AgentConnectStatus {
-  enabled: boolean;
-  running: boolean;
-  port: number;
-  clients: string[];
-  snippets: {
-    url: string;
-    claudeCode: string;
-    claudeDesktop: string;
-    claudeDesktopConfigPath: string;
-    codex: string;
-    generic: string;
-  };
-  bridgePath: string;
-  skillPath: string;
-  skillMarkdown: string;
-  configPath: string;
+/** Mirrors src/main/dispatch.ts DispatchStatus. */
+interface DispatchStatus {
+  state: 'none' | 'waiting' | 'paired';
+  phoneOn: boolean;
+  pairedAt: number;
 }
 
 /** v0.21 — mirrors src/main/byok.ts ByokStatus. Never carries the key. */
@@ -134,9 +121,9 @@ interface Window {
 
     // ── Guardrails (v0.17.8)
     guardrails: {
-      getPolicy: () => Promise<{ mode: 'cautious' | 'standard' | 'trusted'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
-      setPolicy: (next: { mode?: 'cautious' | 'standard' | 'trusted'; classOverrides?: Record<string, 'allow' | 'approve' | 'block'> }) =>
-        Promise<{ mode: 'cautious' | 'standard' | 'trusted'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
+      getPolicy: () => Promise<{ mode: 'cautious' | 'standard' | 'trusted' | 'bypass'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
+      setPolicy: (next: { mode?: 'cautious' | 'standard' | 'trusted' | 'bypass'; classOverrides?: Record<string, 'allow' | 'approve' | 'block'> }) =>
+        Promise<{ mode: 'cautious' | 'standard' | 'trusted' | 'bypass'; classOverrides: Record<string, 'allow' | 'approve' | 'block'> }>;
       getHistory: () => Promise<Array<{
         id: string; ts: string; tool: string; tier: number;
         actionClass: string | null; argsSummary: string;
@@ -273,18 +260,17 @@ interface Window {
     /** v0.16.0 — play-tag mode toggle */
     onPlayTagStart?: (cb: () => void) => void;
     onPlayTagStop?: (cb: () => void) => void;
-    /** v0.21 — "Connect an agent": clippy_ask_user bubble + Settings panel. */
-    onAgentAsk?: (cb: (payload: { id: string; question: string; options: string[] }) => void) => void;
-    respondAgentAsk?: (id: string, choice: string) => Promise<boolean>;
-    agentStatus?: () => Promise<AgentConnectStatus>;
-    agentSetEnabled?: (enabled: boolean) => Promise<AgentConnectStatus>;
-    agentRegenerateToken?: () => Promise<AgentConnectStatus>;
-    agentRevealSkill?: () => Promise<boolean>;
     /** v0.21 — "Your own AI model" (BYOK) Settings panel. */
     byokStatus?: () => Promise<ByokStatus>;
     byokSave?: (input: { enabled?: boolean; provider?: string; baseUrl?: string; model?: string; apiKey?: string }) => Promise<{ ok: boolean; error?: string; status: ByokStatus }>;
     byokClearKey?: () => Promise<ByokStatus>;
     byokTest?: () => Promise<{ ok: boolean; message: string }>;
+    /** Clippy Dispatch Settings panel. The link (and its QR) carries the pairing secret. */
+    dispatchStatus?: () => Promise<DispatchStatus | null>;
+    dispatchPair?: () => Promise<{ url: string; qrDataUrl: string } | { error: string } | null>;
+    dispatchQr?: () => Promise<{ url: string; qrDataUrl: string } | null>;
+    dispatchUnpair?: () => Promise<DispatchStatus | null>;
+    onDispatchChanged?: (cb: (status: DispatchStatus) => void) => void;
     /** v0.19.0 — follow-me cursor mode */
     followMeActive?: () => Promise<boolean>;
     followMeStop?: (reason: string) => void;

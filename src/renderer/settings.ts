@@ -1191,77 +1191,70 @@ document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
   });
 });
 
-// v0.21 — Settings → Connect an agent: enable toggle, status, setup snippets.
-let agentStatusCache: AgentConnectStatus | null = null;
-function renderAgentStatus(s: AgentConnectStatus | null): void {
-  agentStatusCache = s;
-  const el = document.getElementById('agent-status');
-  const toggle = document.getElementById('setting-agent-enabled') as HTMLInputElement | null;
-  if (!el || !s) { if (el) el.textContent = 'Status unavailable.'; return; }
-  if (toggle) toggle.checked = s.enabled;
-  if (!s.enabled) {
-    el.className = 's-status';
-    el.textContent = 'Off — no agent can connect.';
-  } else if (!s.running) {
-    el.className = 's-status s-status--error';
-    el.textContent = 'Enabled but the server is not running — see Logs.';
-  } else {
-    const who = s.clients.length ? `Agent connected: ${s.clients.map(escapeHtml).join(', ')}` : 'Waiting for an agent to connect…';
-    el.className = s.clients.length ? 's-status s-status--ok' : 's-status';
-    el.innerHTML = `${who}<br><span style="font-size:11px;">Listening on <code>${escapeHtml(s.snippets.url)}</code> (this computer only)</span>`;
-  }
-  const pathEl = document.getElementById('agent-claude-desktop-path');
-  if (pathEl) pathEl.textContent = s.snippets.claudeDesktopConfigPath;
-  const skillPathEl = document.getElementById('agent-skill-path');
-  if (skillPathEl) skillPathEl.textContent = s.skillMarkdown ? s.skillPath : `${s.skillPath} (missing)`;
-  const preview = document.getElementById('agent-snippet-preview');
-  if (preview) preview.textContent = s.snippets.claudeCode;
+// Settings → Clippy Dispatch: pair one phone that sends tasks to Clippy.
+const dispatchEl = <T extends HTMLElement>(id: string): T | null => document.getElementById(id) as T | null;
+let dispatchState: DispatchStatus['state'] = 'none';
+function showDispatchQr(qr: { url: string; qrDataUrl: string } | null): void {
+  const card = dispatchEl('dispatch-qr-card');
+  if (!card) return;
+  card.hidden = !qr;
+  if (!qr) return;
+  dispatchEl<HTMLImageElement>('dispatch-qr-img')!.src = qr.qrDataUrl;
+  dispatchEl('dispatch-link')!.textContent = qr.url;
 }
-async function loadAgentStatus(): Promise<void> {
-  if (!window.clippy.agentStatus) return;
-  try { renderAgentStatus(await window.clippy.agentStatus()); } catch { renderAgentStatus(null); }
+function showDispatchError(text: string): void {
+  const el = dispatchEl('dispatch-error');
+  if (!el) return;
+  el.textContent = text;
+  el.hidden = !text;
 }
-document.getElementById('setting-agent-enabled')?.addEventListener('change', async (e) => {
-  const enabled = (e.target as HTMLInputElement).checked;
-  try { renderAgentStatus(await window.clippy.agentSetEnabled!(enabled)); } catch { void loadAgentStatus(); }
+function renderDispatch(s: DispatchStatus | null): void {
+  const text = dispatchEl('dispatch-status-text');
+  const dot = dispatchEl('dispatch-dot');
+  if (!text || !dot) return;
+  const was = dispatchState;
+  dispatchState = s?.state ?? 'none';
+  const paired = dispatchState === 'paired';
+  dot.classList.toggle('connected', paired && !!s?.phoneOn);
+  text.textContent = paired
+    ? `Phone paired · ${s!.phoneOn ? 'online' : 'offline'}${s!.pairedAt ? ` · since ${new Date(s!.pairedAt).toLocaleDateString()}` : ''}`
+    : dispatchState === 'waiting' ? 'Waiting for your phone to scan the code…' : 'No phone paired.';
+  dispatchEl('btn-dispatch-pair')!.hidden = false;
+  dispatchEl('btn-dispatch-pair')!.textContent = dispatchState === 'none' ? 'Pair a phone' : paired ? 'Pair a new phone' : 'New code';
+  dispatchEl('btn-dispatch-qr')!.hidden = dispatchState === 'none';
+  dispatchEl('btn-dispatch-unpair')!.hidden = dispatchState === 'none';
+  dispatchEl('btn-dispatch-unpair')!.textContent = paired ? 'Remove phone' : 'Cancel';
+  // The code goes away once the phone has joined, and when the pairing is gone.
+  if (dispatchState === 'none' || (paired && was === 'waiting')) showDispatchQr(null);
+}
+async function loadDispatch(): Promise<void> {
+  try { renderDispatch((await window.clippy.dispatchStatus?.()) ?? null); } catch { renderDispatch(null); }
+}
+dispatchEl('btn-dispatch-pair')?.addEventListener('click', async () => {
+  if (dispatchState === 'paired' && !confirm('This replaces your paired phone.\n\nOnly one phone can send tasks to Clippy. The phone that is paired now will stop working.')) return;
+  showDispatchError('');
+  const r = await window.clippy.dispatchPair?.().catch(() => null);
+  if (!r || 'error' in r) { showDispatchError(r?.error ?? 'Pairing failed. Try again.'); return; }
+  showDispatchQr(r);
+  void loadDispatch();
 });
-document.getElementById('btn-agent-regenerate')?.addEventListener('click', async () => {
-  try { renderAgentStatus(await window.clippy.agentRegenerateToken!()); } catch { void loadAgentStatus(); }
+dispatchEl('btn-dispatch-qr')?.addEventListener('click', async () => {
+  showDispatchQr((await window.clippy.dispatchQr?.().catch(() => null)) ?? null);
 });
-document.querySelectorAll<HTMLButtonElement>('.btn-agent-copy').forEach((btn) => {
-  btn.addEventListener('click', async () => {
-    const key = btn.dataset.snippet as keyof AgentConnectStatus['snippets'];
-    const text = agentStatusCache?.snippets[key];
-    if (!text) return;
-    const preview = document.getElementById('agent-snippet-preview');
-    if (preview) preview.textContent = text;
-    try { await navigator.clipboard.writeText(text); } catch { return; }
-    const label = btn.textContent;
-    btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = label; }, 1500);
-  });
+dispatchEl('btn-dispatch-unpair')?.addEventListener('click', async () => {
+  if (dispatchState === 'paired' && !confirm('Remove the paired phone? It will no longer be able to send tasks to Clippy.')) return;
+  showDispatchError('');
+  renderDispatch((await window.clippy.dispatchUnpair?.().catch(() => null)) ?? null);
 });
-document.getElementById('btn-agent-copy-skill')?.addEventListener('click', async (e) => {
+dispatchEl('btn-dispatch-copy')?.addEventListener('click', async (e) => {
   const btn = e.currentTarget as HTMLButtonElement;
-  if (!agentStatusCache?.skillMarkdown) return;
-  try { await navigator.clipboard.writeText(agentStatusCache.skillMarkdown); } catch { return; }
+  try { await navigator.clipboard.writeText(dispatchEl('dispatch-link')?.textContent ?? ''); } catch { return; }
   btn.textContent = 'Copied';
-  setTimeout(() => { btn.textContent = 'Copy SKILL.md'; }, 1500);
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
 });
-document.getElementById('btn-agent-reveal-skill')?.addEventListener('click', () => {
-  void window.clippy.agentRevealSkill?.();
-});
-let agentPoll: number | null = null;
+window.clippy.onDispatchChanged?.(renderDispatch);
 document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
-  item.addEventListener('click', () => {
-    if (item.dataset.section === 'agent') {
-      void loadAgentStatus();
-      if (agentPoll === null) agentPoll = window.setInterval(() => { void loadAgentStatus(); }, 5000);
-    } else if (agentPoll !== null) {
-      window.clearInterval(agentPoll);
-      agentPoll = null;
-    }
-  });
+  item.addEventListener('click', () => { if (item.dataset.section === 'dispatch') void loadDispatch(); });
 });
 
 // v0.21 — Settings → Your own AI model (BYOK). The key field is write-only:
@@ -1493,20 +1486,29 @@ document.getElementById('btn-clear-history')?.addEventListener('click', async ()
   await refreshHistory();
 });
 
-async function loadGuardrails(): Promise<void> {
+// Check the radio of the saved mode. Runs each time Guardrails is opened:
+// the mode can also change from Clippy's right-click Permissions menu.
+async function syncPolicyRadios(): Promise<void> {
   if (!window.clippy.guardrails) return;
   try {
     const policy = await window.clippy.guardrails.getPolicy();
-    const radios = document.querySelectorAll<HTMLInputElement>('input[name="permission-mode"]');
-    radios.forEach((r) => { r.checked = r.value === policy.mode; });
-    radios.forEach((r) => {
-      r.addEventListener('change', async () => {
-        if (r.checked && window.clippy.guardrails) {
-          await window.clippy.guardrails.setPolicy({ mode: r.value as 'cautious' | 'standard' | 'trusted' });
-        }
-      });
-    });
+    document.querySelectorAll<HTMLInputElement>('input[name="permission-mode"]')
+      .forEach((r) => { r.checked = r.value === policy.mode; });
   } catch { /* non-fatal */ }
+}
+
+function loadGuardrails(): void {
+  if (!window.clippy.guardrails) return;
+  document.querySelectorAll<HTMLInputElement>('input[name="permission-mode"]').forEach((r) => {
+    r.addEventListener('change', async () => {
+      if (r.checked && window.clippy.guardrails) {
+        try {
+          await window.clippy.guardrails.setPolicy({ mode: r.value as 'cautious' | 'standard' | 'trusted' | 'bypass' });
+        } catch { /* non-fatal */ }
+        await syncPolicyRadios(); // Bypass can be cancelled in its confirm dialog
+      }
+    });
+  });
 }
 
 // v0.23 — Brain → Memory card: remembered apps + Forget / Forget all.
@@ -1569,9 +1571,10 @@ let guardrailsLoadedOnce = false;
 document.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
   if (item.dataset.section !== 'guardrails') return;
   item.addEventListener('click', () => {
+    void syncPolicyRadios();
     if (!guardrailsLoadedOnce) {
       guardrailsLoadedOnce = true;
-      void loadGuardrails();
+      loadGuardrails();
       void refreshHistory();
     }
   });

@@ -11,7 +11,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clippy-ipc-guard-'));
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: () => tmp } }));
 
 import { senderIsWindow } from '../src/main/ipc-guard';
-import { setPolicy, getPolicy, decide } from '../src/main/permission-policy';
+import { setPolicy, getPolicy, decide, markBypassConfirmed } from '../src/main/permission-policy';
 
 describe('senderIsWindow', () => {
   const mainWc = { id: 1 };
@@ -67,5 +67,32 @@ describe('setPolicy over IPC', () => {
   });
   it('the mode change in the same message still applies', () => {
     expect(setPolicy({ mode: 'cautious', classOverrides: { destructive_purchase: 'allow' } }).mode).toBe('cautious');
+  });
+});
+
+describe('bypass mode', () => {
+  beforeEach(() => { setPolicy({ mode: 'standard', classOverrides: { destructive_purchase: 'approve', destructive_file: 'approve' } }); });
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(tmp, 'permission-policy.json'), 'utf8'));
+
+  it('is accepted and persisted', () => {
+    expect(setPolicy({ mode: 'bypass' }).mode).toBe('bypass');
+    expect(getPolicy().mode).toBe('bypass');
+    expect(onDisk().mode).toBe('bypass');
+  });
+  it('an unknown mode is still rejected', () => {
+    expect(setPolicy({ mode: 'yolo' as never }).mode).toBe('standard');
+    expect(onDisk().mode).toBe('standard');
+  });
+  it('a block override still blocks; the rest is left for the gate to allow', () => {
+    setPolicy({ mode: 'bypass', classOverrides: { destructive_file: 'block' } });
+    expect(decide('write_file', {})).toBe('block');
+    expect(decide('shell_exec', {})).toBe('approve');
+  });
+  it('the one-time confirm flag is persisted and survives a mode change', () => {
+    expect(getPolicy().bypassConfirmed).toBeFalsy();
+    markBypassConfirmed();
+    setPolicy({ mode: 'trusted' });
+    expect(getPolicy().bypassConfirmed).toBe(true);
+    expect(onDisk().bypassConfirmed).toBe(true);
   });
 });

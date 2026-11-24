@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Clippy">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icon-256.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <title>Clippy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <header>
+      <img class="logo" src="apple-touch-icon.png" alt="" width="44" height="44">
+      <div class="who">
+        <h1>Clippy</h1>
+        <p id="status" role="status">Connecting…</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="power" role="switch" aria-label="Clippy on" disabled>
+        <span></span>
+      </label>
+    </header>
+
+    <!-- no link, or the link was removed -->
+    <section id="notice" hidden>
+      <p id="notice-text"></p>
+    </section>
+
+    <section id="talk">
+      <div id="log">
+        <p id="task" class="you" hidden></p>
+        <p id="reply" hidden></p>
+      </div>
+
+      <div id="ask" class="card" hidden>
+        <p class="label">Clippy wants to</p>
+        <p id="ask-q"></p>
+        <div class="row">
+          <button type="button" id="deny">Deny</button>
+          <button type="button" id="approve" class="primary">Approve</button>
+        </div>
+      </div>
+
+      <form id="form">
+        <textarea id="text" rows="2" placeholder="Ask Clippy to do something…" enterkeyhint="send" autocomplete="off" maxlength="4096"></textarea>
+        <button type="submit" id="send" class="primary">Send</button>
+        <button type="button" id="stop" hidden>Stop</button>
+      </form>
+    </section>
+  </main>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

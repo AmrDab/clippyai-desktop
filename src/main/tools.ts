@@ -5640,7 +5640,7 @@ function typedCommandIsPlain(tool: string, params: Record<string, unknown>): boo
 
 /**
  * v0.21 — risky-action governor front door. Runs BEFORE the permission gate
- * (brain.ts / agent-tools.ts) so a click that looks like "Place order" is
+ * (brain.ts) so a click that looks like "Place order" is
  * judged as destructive_purchase instead of plain desktop_input.
  *
  * Context resolution is deliberately cheap and best-effort:

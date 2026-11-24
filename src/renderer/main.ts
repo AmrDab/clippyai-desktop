@@ -349,25 +349,6 @@ async function init(): Promise<void> {
   window.clippy.onWorkingStart?.(() => { clippyCtrl.startWorkingLoop(); bubbleCtrl.setWorking(true); });
   window.clippy.onWorkingStop?.((p) => { clippyCtrl.stopWorkingLoop(); bubbleCtrl.setWorking(false, p?.outcome); });
 
-  // v0.21 — an outside agent asked the user something (clippy_ask_user) or
-  // wants an OK (clippy_say wait_for_dismiss). Buttons answer by id; hiding
-  // or replacing the bubble counts as "dismissed".
-  window.clippy.onAgentAsk?.(({ id, question, options }) => {
-    let answered = false;
-    const answer = (choice: string) => {
-      if (answered) return;
-      answered = true;
-      void window.clippy.respondAgentAsk?.(id, choice);
-    };
-    bubbleCtrl.speakWithActions(question, options.map((label, i) => ({
-      label,
-      variant: i === 0 ? 'primary' as const : 'ghost' as const,
-      onClick: () => { answer(label); bubbleCtrl.hide(); },
-    })), { sticky: true, onDismiss: () => answer('dismissed') });
-    tts.speak(question);
-    clippyCtrl.playNamed('GetAttention');
-  });
-
   // No step ticker (owner, 2026-11-19: "no pill for when hes working"): the
   // sprite's working loop above is the only busy signal; main's task:step
   // events are not shown.

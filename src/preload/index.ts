@@ -155,22 +155,21 @@ contextBridge.exposeInMainWorld('clippy', {
     ipcRenderer.on('play-animation', (_e, name) => cb(name));
   },
 
-  // v0.21 — "Connect an agent": clippy_ask_user bubble + Settings panel.
-  onAgentAsk: (cb: (payload: { id: string; question: string; options: string[] }) => void) => {
-    ipcRenderer.on('agent-ask', (_e, payload) => cb(payload));
-  },
-  respondAgentAsk: (id: string, choice: string) => ipcRenderer.invoke('agent:ask-response', id, choice),
-  agentStatus: () => ipcRenderer.invoke('agent:status'),
-  agentSetEnabled: (enabled: boolean) => ipcRenderer.invoke('agent:set-enabled', enabled),
-  agentRegenerateToken: () => ipcRenderer.invoke('agent:regenerate-token'),
-  agentRevealSkill: () => ipcRenderer.invoke('agent:reveal-skill'),
-
   // v0.21 — "Your own AI model" (BYOK). The key goes main-ward once via
   // byokSave; status only ever returns a "••••1234" hint.
   byokStatus: () => ipcRenderer.invoke('byok:status'),
   byokSave: (input: { enabled?: boolean; provider?: string; baseUrl?: string; model?: string; apiKey?: string }) => ipcRenderer.invoke('byok:save', input),
   byokClearKey: () => ipcRenderer.invoke('byok:clear-key'),
   byokTest: () => ipcRenderer.invoke('byok:test'),
+
+  // Clippy Dispatch — Settings → Clippy Dispatch (pair a phone that sends tasks).
+  dispatchStatus: () => ipcRenderer.invoke('dispatch:status'),
+  dispatchPair: () => ipcRenderer.invoke('dispatch:pair'),
+  dispatchQr: () => ipcRenderer.invoke('dispatch:qr'),
+  dispatchUnpair: () => ipcRenderer.invoke('dispatch:unpair'),
+  onDispatchChanged: (cb: (status: { state: 'none' | 'waiting' | 'paired'; phoneOn: boolean; pairedAt: number }) => void) => {
+    ipcRenderer.on('dispatch:changed', (_e, status) => cb(status));
+  },
 
   // v0.17.0 — Voice input. Renderer encodes WAV in src/renderer/recorder.ts
   // and calls this to transcribe via bundled whisper.cpp in main.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { needsApproval, classifyShellCommand, isNamedAppQuit, parseQuitCommand, isUserNamedFetch, type ApprovalCtx } from '../src/main/approval-policy';
+import { needsApproval, bypassDecision, classifyShellCommand, isNamedAppQuit, parseQuitCommand, isUserNamedFetch, type ApprovalCtx } from '../src/main/approval-policy';
 import { classifyRisk } from '../src/main/governor';
 
 const base: ApprovalCtx = {
@@ -539,5 +539,25 @@ describe('needsApproval: a plain command typed into a terminal the user asked fo
     expect(term('run it in powershell', { actionClass: 'destructive_send' })).toBe(true);
     // "run" does not unlock a send or delete click either.
     expect(needsApproval('smart_click', { target: 'Send' }, { ...base, escalated: true, actionClass: 'destructive_send', riskFamily: 'send', requestText: 'run the report' })).toBe(true);
+  });
+});
+
+describe('bypassDecision — the Bypass permission level', () => {
+  it('bypass turns an approval into allow', () => {
+    expect(bypassDecision('bypass', 'approve', false)).toBe('allow');
+  });
+  it('bypass still asks when untrusted content tried to give orders', () => {
+    expect(bypassDecision('bypass', 'approve', true)).toBe('approve');
+    expect(needsApproval('shell_exec', { command: 'ls' }, { ...base, mode: 'bypass', injectionSeen: true })).toBe(true);
+  });
+  it('bypass never lifts a block', () => {
+    expect(bypassDecision('bypass', 'block', false)).toBe('block');
+    expect(bypassDecision('bypass', 'allow', true)).toBe('allow');
+  });
+  it.each(['cautious', 'standard', 'trusted'] as const)('%s is unchanged', (mode) => {
+    for (const d of ['allow', 'approve', 'block'] as const) {
+      expect(bypassDecision(mode, d, false)).toBe(d);
+      expect(bypassDecision(mode, d, true)).toBe(d);
+    }
   });
 });

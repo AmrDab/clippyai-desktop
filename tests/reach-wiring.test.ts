@@ -39,7 +39,7 @@ describe('reach_add_login', () => {
     expect(summarizeArgs('reach_add_login', { site: 'reddit' })).toBe('Copy your Reddit login from Chrome into a separate hidden browser');
     expect(classFor('reach_add_login', { site: 'reddit' }, risk!.class)).toBe('destructive_web');
     expect(decide('reach_add_login', { site: 'reddit' }, risk!.class)).toBe('approve');
-    // Trusted mode allows the class; brain.ts and agent-tools.ts still ask because assessRisk returned a verdict.
+    // Trusted mode allows the class; brain.ts still asks because assessRisk returned a verdict.
     setPolicy({ mode: 'trusted' });
     expect(await assessRisk('reach_add_login', { site: 'reddit' })).not.toBeNull();
   });

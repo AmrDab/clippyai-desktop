@@ -11,7 +11,7 @@
  * module makes guardrails a property of the tool's metadata (actionClass)
  * rather than its implementation. One enforcement gate, every tool, forever.
  *
- * Three policy modes:
+ * Four policy modes:
  *   - 'cautious' — REQUIRE_APPROVAL for every actionClass (popup before each
  *                  call). For new users who want to watch every action.
  *   - 'standard' — REQUIRE_APPROVAL for destructive_*  + share_public;
@@ -19,6 +19,11 @@
  *                  desktop_input. The default.
  *   - 'trusted'  — ALLOW everything except actionClasses explicitly blocked
  *                  in `classOverrides`. For power users.
+ *   - 'bypass'   — no approval cards at all. Same table as 'standard'; the
+ *                  gate in brain.ts turns every 'approve' into 'allow'
+ *                  (bypassDecision in approval-policy.ts) unless untrusted
+ *                  content tried to give Clippy orders in this task. An
+ *                  explicit 'block' override still blocks.
  *
  * Per-class overrides take precedence over the mode default. Example:
  *   { mode: 'trusted', classOverrides: { 'destructive_purchase': 'block' } }
@@ -44,7 +49,7 @@ import { taskUserMessage } from './security/task-taint';
 
 const log = createLogger('Policy');
 
-export type Mode = 'cautious' | 'standard' | 'trusted';
+export type Mode = 'cautious' | 'standard' | 'trusted' | 'bypass';
 export type ClassDecision = 'allow' | 'approve' | 'block';
 
 /**
@@ -56,10 +61,19 @@ export type ClassDecision = 'allow' | 'approve' | 'block';
  */
 const VALID_DECISIONS: ReadonlySet<ClassDecision> = new Set<ClassDecision>(['allow', 'approve', 'block']);
 
+/**
+ * Runtime allow-list of valid Mode values (same rule as VALID_DECISIONS:
+ * a member added to the union must be added here too). Rejects an unknown
+ * mode from IPC or a tampered policy file.
+ */
+const VALID_MODES: ReadonlySet<Mode> = new Set<Mode>(['cautious', 'standard', 'trusted', 'bypass']);
+
 export interface PermissionPolicy {
   mode: Mode;
   /** Per-class overrides — only honored when present. */
   classOverrides: Partial<Record<ActionClass, ClassDecision>>;
+  /** The user accepted the one-time "Turn on Bypass" confirm (ipc.ts). */
+  bypassConfirmed?: boolean;
 }
 
 const DEFAULTS: Record<Mode, Record<ActionClass, ClassDecision>> = {
@@ -97,6 +111,20 @@ const DEFAULTS: Record<Mode, Record<ActionClass, ClassDecision>> = {
     destructive_exec:     'allow',
     destructive_web:      'allow',
     share_public:         'allow',
+    system_control:       'allow',
+    browser_navigate:     'allow',
+    desktop_input:        'allow',
+    read_only:            'allow',
+  },
+  // Same as 'standard': the 'approve' entries are what brain.ts turns into
+  // 'allow' — and what still asks when an injection fired in the task.
+  bypass: {
+    destructive_file:     'approve',
+    destructive_send:     'approve',
+    destructive_purchase: 'approve',
+    destructive_exec:     'approve',
+    destructive_web:      'approve',
+    share_public:         'approve',
     system_control:       'allow',
     browser_navigate:     'allow',
     desktop_input:        'allow',
@@ -168,10 +196,11 @@ function load(): PermissionPolicy {
     const raw = fs.readFileSync(policyPath(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<PermissionPolicy>;
     return {
-      mode: (['cautious', 'standard', 'trusted'] as const).includes(parsed.mode as Mode)
+      mode: VALID_MODES.has(parsed.mode as Mode)
         ? (parsed.mode as Mode)
         : FACTORY_DEFAULT.mode,
       classOverrides: sanitizeClassOverrides(parsed.classOverrides, 'disk'),
+      ...(parsed.bypassConfirmed === true ? { bypassConfirmed: true } : {}),
     };
   } catch {
     return { ...FACTORY_DEFAULT };
@@ -202,7 +231,7 @@ export function getPolicy(): PermissionPolicy {
 /** Merge a partial update into the current policy and persist. */
 export function setPolicy(next: Partial<PermissionPolicy>): PermissionPolicy {
   const current = ensureLoaded();
-  if (next.mode && (['cautious', 'standard', 'trusted'] as const).includes(next.mode)) {
+  if (next.mode && VALID_MODES.has(next.mode)) {
     current.mode = next.mode;
   }
   if (next.classOverrides && typeof next.classOverrides === 'object') {
@@ -215,6 +244,13 @@ export function setPolicy(next: Partial<PermissionPolicy>): PermissionPolicy {
   flush(current);
   log.info('Policy updated', { mode: current.mode });
   return getPolicy();
+}
+
+/** Record that the user accepted the one-time Bypass confirm. */
+export function markBypassConfirmed(): void {
+  const current = ensureLoaded();
+  current.bypassConfirmed = true;
+  flush(current);
 }
 
 /**

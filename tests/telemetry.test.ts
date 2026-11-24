@@ -336,13 +336,6 @@ describe('hook helpers', () => {
     expect(sentBodies()[0].data.baseData.properties).toMatchObject({ page: 'game-overlay', reason: 'crashed' });
   });
 
-  it('agent_connected sends the client name only, once', async () => {
-    t.trackAgentClients(['Claude Code 1.2.3']);
-    t.trackAgentClients(['Claude Code 1.2.3', 'cursor v0.9']);
-    await t.flush();
-    expect(sentBodies().map((b) => b.data.baseData.properties.client)).toEqual(['Claude Code', 'cursor']);
-  });
-
   it('counts only new .dmp files', () => {
     const d = fs.mkdtempSync(path.join(os.tmpdir(), 'dumps-'));
     fs.mkdirSync(path.join(d, 'reports'));

@@ -89,6 +89,8 @@ import * as memoryMod from './memory';
 // Phase 3 guardrails — the bubble's Approve/Deny answer lands here.
 import * as approvalMod from './approval';
 import { replyOrSpeak } from './user-message-reply';
+// Clippy Dispatch (phone → PC): Settings panel handlers + the shared message path.
+import * as dispatchMod from './dispatch';
 // v0.20.0 — onboarding permission walkthrough: read macOS permission state,
 // open exact System Preferences panes, surface SR dialog, and restart.
 import { permissions, requestScreenRecording } from './mac-bridge-native';
@@ -105,6 +107,29 @@ const PERMISSION_PANES: Record<string, string> = {
   automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
 };
 
+/**
+ * One user message through the brain: typed in the bubble ('user-message') or
+ * sent from the paired phone (dispatch.ts). `trimmed` is already trimmed and capped.
+ */
+export function runUserMessage(brain: Brain, mainWindow: BrowserWindow, trimmed: string): Promise<string> {
+  // Onboarding v2 — "Try it": tell the wizard the first ask went out, and
+  // celebrate when the answer lands. Self-heals if the window went away.
+  const onboarding = getOnboardingWindow();
+  if (brain.isTutorialActive() && !onboarding) brain.setTutorial(false);
+  const tutorial = brain.isTutorialActive();
+  if (tutorial) onboarding!.webContents.send('onboarding-tutorial', 'started');
+  // The renderer ignores this handler's return value and shows only what is
+  // spoken, so the fallbacks are spoken too (user-message-reply.ts).
+  return replyOrSpeak(async () => {
+    const response = await brain.handleUserMessage(trimmed);
+    if (tutorial) {
+      getOnboardingWindow()?.webContents.send('onboarding-tutorial', 'answered');
+      mainWindow.webContents.send('play-animation', 'Congratulate');
+    }
+    return response;
+  }, (p) => mainWindow.webContents.send('clippy-speak', p), (err) => log.error('handleUserMessage threw', serializeErr(err)));
+}
+
 export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): void {
   // User typed a message in the bubble (with input validation)
   // Only the Settings window's page may read or change guardrails / BYOK.
@@ -116,22 +141,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (typeof text !== 'string') return 'Invalid input.';
     const trimmed = text.trim().substring(0, 4096);
     if (!trimmed) return '';
-    // Onboarding v2 — "Try it": tell the wizard the first ask went out, and
-    // celebrate when the answer lands. Self-heals if the window went away.
-    const onboarding = getOnboardingWindow();
-    if (brain.isTutorialActive() && !onboarding) brain.setTutorial(false);
-    const tutorial = brain.isTutorialActive();
-    if (tutorial) onboarding!.webContents.send('onboarding-tutorial', 'started');
-    // The renderer ignores this handler's return value and shows only what is
-    // spoken, so the fallbacks are spoken too (user-message-reply.ts).
-    return replyOrSpeak(async () => {
-      const response = await brain.handleUserMessage(trimmed);
-      if (tutorial) {
-        getOnboardingWindow()?.webContents.send('onboarding-tutorial', 'answered');
-        mainWindow.webContents.send('play-animation', 'Congratulate');
-      }
-      return response;
-    }, (p) => mainWindow.webContents.send('clippy-speak', p), (err) => log.error('handleUserMessage threw', serializeErr(err)));
+    // The paired phone shows "Working…" for a task typed here too.
+    return dispatchMod.whileWorking(() => runUserMessage(brain, mainWindow, trimmed));
   });
 
   // v0.11.28 — renderer log bridge. Renderer-side errors and warnings get
@@ -1298,34 +1309,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     return approvalMod.resolveApproval(id, approved);
   });
 
-  // v0.21 — "Connect an agent" (Settings) + the bubble's answer to
-  // clippy_ask_user. Only the main window may answer an ask.
-  ipcMain.handle('agent:status', async () => {
-    const m = await import('./agent-connect');
-    return m.getAgentConnectStatus();
-  });
-  ipcMain.handle('agent:set-enabled', async (_event, enabled: unknown) => {
-    const m = await import('./agent-connect');
-    await m.setAgentEnabled(enabled === true);
-    return m.getAgentConnectStatus();
-  });
-  ipcMain.handle('agent:regenerate-token', async () => {
-    const m = await import('./agent-connect');
-    await m.regenerateAgentToken();
-    return m.getAgentConnectStatus();
-  });
-  ipcMain.handle('agent:reveal-skill', async () => {
-    const m = await import('./agent-connect');
-    m.revealSkillFile();
-    return true;
-  });
-  ipcMain.handle('agent:ask-response', async (event, id: unknown, choice: unknown) => {
-    if (BrowserWindow.fromWebContents(event.sender) !== mainWindow) return false;
-    if (typeof id !== 'string' || typeof choice !== 'string') return false;
-    const m = await import('./agent-tools');
-    return m.resolveAgentAsk(id, choice.slice(0, 40));
-  });
-
   // v0.21 — "Your own AI model" (BYOK). The key goes renderer → main once
   // (byok:save) and is encrypted at rest; status only ever carries a
   // "••••1234" hint back. byok:test makes one tiny request to the provider.
@@ -1351,15 +1334,42 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   });
   ipcMain.handle('byok:test', async (event) => (fromSettings(event) ? byokMod.testByokConnection() : null));
 
+  // Clippy Dispatch — Settings → Clippy Dispatch. The pairing link carries the
+  // secret, so only the Settings window's page may ask for it.
+  ipcMain.handle('dispatch:status', async (event) => (fromSettings(event) ? dispatchMod.getStatus() : null));
+  ipcMain.handle('dispatch:pair', async (event) => (fromSettings(event) ? dispatchMod.pairNew() : null));
+  ipcMain.handle('dispatch:qr', async (event) => (fromSettings(event) ? dispatchMod.currentQr() : null));
+  ipcMain.handle('dispatch:unpair', async (event) => (fromSettings(event) ? dispatchMod.unpair() : null));
+
   // v0.17.8 — Guardrails: permission policy + action history IPC handlers.
   // These are the renderer-facing API for Settings → Guardrails.
   ipcMain.handle('guardrails:get-policy', async (event) => {
     if (!fromSettings(event)) return null;
     return permissionPolicyMod.getPolicy();
   });
+  // Bypass asks once, in a native dialog owned by main (the Permissions menu
+  // and Settings → Guardrails both come through here). Cancel = no change.
+  const confirmBypass = async (win: BrowserWindow | null): Promise<boolean> => {
+    if (permissionPolicyMod.getPolicy().bypassConfirmed) return true;
+    const opts = {
+      type: 'warning' as const,
+      buttons: ['Cancel', 'Turn on Bypass'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Bypass',
+      message: "Bypass: Clippy won't ask before sending, deleting, buying or installing. He still asks if a web page or file tries to give him orders.",
+    };
+    const { response } = win && !win.isDestroyed()
+      ? await dialog.showMessageBox(win, opts)
+      : await dialog.showMessageBox(opts);
+    if (response !== 1) return false;
+    permissionPolicyMod.markBypassConfirmed();
+    return true;
+  };
   ipcMain.handle('guardrails:set-policy', async (event, payload: unknown) => {
     if (!fromSettings(event)) return null;
     const p = payload as { mode?: import('./permission-policy').Mode; classOverrides?: Record<string, import('./permission-policy').ClassDecision> };
+    if (p?.mode === 'bypass' && !(await confirmBypass(getSettingsWindow()))) return permissionPolicyMod.getPolicy();
     return permissionPolicyMod.setPolicy({
       mode: p?.mode,
       classOverrides: p?.classOverrides as Partial<Record<import('./tool-meta').ActionClass, import('./permission-policy').ClassDecision>>,
@@ -1435,6 +1445,19 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
 
   ipcMain.on('show-context-menu', (_event, ruleId?: string) => {
     const isAwake = brain.getMode() === 'awake';
+    const permissionMode = permissionPolicyMod.getPolicy().mode;
+    const permissionItem = (label: string, mode: import('./permission-policy').Mode): Electron.MenuItemConstructorOptions => ({
+      label,
+      type: 'radio',
+      checked: permissionMode === mode,
+      click: () => {
+        void (async () => {
+          // Unparented: Clippy's own window is a small transparent sprite.
+          if (mode === 'bypass' && !(await confirmBypass(null))) return;
+          permissionPolicyMod.setPolicy({ mode });
+        })();
+      },
+    });
 
     const menuTemplate: Electron.MenuItemConstructorOptions[] = [
       {
@@ -1512,6 +1535,15 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
           if (!mainWindow.isVisible()) mainWindow.show();
           mainWindow.center();
         },
+      },
+      {
+        label: '🛡️ Permissions',
+        submenu: [
+          permissionItem('Ask every time', 'cautious'),
+          permissionItem('Auto (recommended)', 'standard'),
+          permissionItem('Trusted', 'trusted'),
+          permissionItem('Bypass (never asks)', 'bypass'),
+        ],
       },
       {
         label: '⚙️ Settings',

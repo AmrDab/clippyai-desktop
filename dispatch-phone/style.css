@@ -1,0 +1,62 @@
+/* Clippy Dispatch, the phone page: mobile first, light and dark, big touch targets. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --ink: #14161a; --ink-2: #5c626b; --panel: #f1f2f4; --line: #d9dbe0;
+  --accent: #0a64a8; --on-accent: #ffffff; --ok: #16a34a; --danger: #c62828;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111214; --ink: #f1f2f4; --ink-2: #a2a8b1; --panel: #1d1f23; --line: #33363c; --accent: #4da3e6; --on-accent: #0b0c0e; --ok: #4ade80; --danger: #ef6b6b; }
+}
+
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overscroll-behavior: none;
+  font: 400 17px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+button, textarea { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+
+#app { box-sizing: border-box; height: 100dvh; max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px;
+  padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+
+header { flex: none; display: flex; align-items: center; gap: 12px; }
+.logo { border-radius: 10px; }
+.who { flex: 1; min-width: 0; }
+h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+#status { margin: 0; font-size: 15px; color: var(--ink-2); }
+#app[data-state="ready"] #status, #app[data-state="working"] #status { color: var(--ok); }
+
+/* On / Off */
+.switch { flex: none; position: relative; width: 62px; height: 36px; }
+.switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background .2s ease; pointer-events: none; }
+.switch span::before { content: ""; position: absolute; top: 3px; left: 3px; width: 30px; height: 30px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .3); transition: transform .2s ease; }
+.switch input:checked + span { background: var(--ok); }
+.switch input:checked + span::before { transform: translateX(26px); }
+.switch input:disabled + span { opacity: .45; }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#notice { flex: 1; display: grid; place-items: center; text-align: center; padding: 0 12px; }
+#notice p { margin: 0; font-size: 19px; line-height: 1.45; text-wrap: balance; }
+
+#talk { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+/* the task that was sent, and Clippy's latest reply under it */
+#log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; user-select: text; -webkit-user-select: text; }
+#log p { margin: 0; padding: 12px 14px; border-radius: 16px; overflow-wrap: anywhere; white-space: pre-wrap; }
+#log .you { align-self: flex-end; max-width: 88%; background: var(--accent); color: var(--on-accent); }
+#reply { align-self: flex-start; max-width: 94%; background: var(--panel); }
+
+.card { flex: none; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+.card .label { margin: 0 0 4px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
+#ask-q { margin: 0 0 12px; overflow-wrap: anywhere; }
+.row { display: flex; gap: 10px; }
+.row button { flex: 1; }
+
+button { min-height: 50px; padding: 0 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); font-weight: 600; cursor: pointer; touch-action: manipulation; }
+button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+button:disabled { opacity: .45; cursor: default; }
+#stop { border-color: var(--danger); color: var(--danger); }
+
+form { flex: none; display: flex; gap: 10px; align-items: flex-end; }
+textarea { flex: 1; min-width: 0; box-sizing: border-box; min-height: 50px; max-height: 40dvh; padding: 12px 14px; resize: none;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--panel); font-size: 17px; /* 16px+ : iOS does not zoom */ }
+textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }

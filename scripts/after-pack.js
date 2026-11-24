@@ -10,9 +10,8 @@
  *   EnableNodeOptionsEnvironmentVariable → off (NODE_OPTIONS)
  *
  * Left ON on purpose:
- *   RunAsNode — "Connect an agent" runs `ELECTRON_RUN_AS_NODE=1 <ClippyAI> clippy-mcp-bridge.js`
- *     (agent-config.ts, agent-connect.ts) and ClawHub skills run under process.execPath
- *     (clawhub.ts), because the packaged app ships no separate node. Turning it off breaks both.
+ *   RunAsNode — ClawHub skills run under process.execPath (clawhub.ts), because the
+ *     packaged app ships no separate node. Turning it off breaks them.
  *   Asar integrity / OnlyLoadAppFromAsar — not supported on Windows in Electron 29; revisit on upgrade.
  *
  * History: until v0.24.2 this hook was a no-op. Before v0.11.10 it ran rcedit

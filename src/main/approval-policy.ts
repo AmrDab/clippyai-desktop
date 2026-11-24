@@ -48,7 +48,7 @@ export interface ApprovalCtx {
   /** The governor recognised a Send-type or Delete-type control or key (RiskVerdict.family). */
   riskFamily?: 'send' | 'delete' | 'terminal';
   /** Policy mode; 'cautious' means the user wants to see every action. */
-  mode: 'cautious' | 'standard' | 'trusted';
+  mode: 'cautious' | 'standard' | 'trusted' | 'bypass';
   /** The user explicitly set this class to 'approve' in Settings → Guardrails. */
   classForcedApprove: boolean;
   /** The user's request text for this task (named-app quit exception). */
@@ -370,6 +370,20 @@ export function isRequestedEscalation(ctx: ApprovalCtx): boolean {
   if (!ctx.escalated || !family || !ctx.requestText) return false;
   if (ctx.actionClass !== FAMILY_CLASS[family]) return false;
   return REQUEST_VERBS[family].test(ctx.requestText);
+}
+
+/**
+ * 'bypass' mode (Permissions menu / Settings → Guardrails): no approval card,
+ * so 'approve' becomes 'allow' — unless untrusted content tried to give Clippy
+ * orders in this task; that still asks. 'block' stays 'block'; other modes
+ * are returned unchanged.
+ */
+export function bypassDecision(
+  mode: ApprovalCtx['mode'],
+  decision: ApprovalCtx['decision'],
+  injectionSeen: boolean,
+): ApprovalCtx['decision'] {
+  return mode === 'bypass' && decision === 'approve' && !injectionSeen ? 'allow' : decision;
 }
 
 /**

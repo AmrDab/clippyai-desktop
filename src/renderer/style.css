@@ -2660,6 +2660,7 @@ body.settings-window {
 }
 
 /* ── Buttons (in-card) — quiet primary + ghost ─────────────────────── */
+.s-button[hidden] { display: none; }
 .s-button {
   display: inline-flex;
   align-items: center;
