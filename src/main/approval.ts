@@ -58,7 +58,7 @@ export function afterApprovals(show: () => void): void {
 }
 
 /** A card went up, or was settled (answered, timed out, cancelled). For Clippy Dispatch: the phone shows the same card. */
-export type ApprovalEvent = { type: 'ask'; id: string; summary: string } | { type: 'done'; id: string };
+export type ApprovalEvent = { type: 'ask'; id: string; summary: string; reason?: string } | { type: 'done'; id: string };
 let watcher: ((e: ApprovalEvent) => void) | null = null;
 export function watchApprovals(fn: ((e: ApprovalEvent) => void) | null): void { watcher = fn; }
 function tell(e: ApprovalEvent): void {
@@ -88,7 +88,7 @@ export function requestApproval(win: BrowserWindow | null, req: ApprovalRequest)
     // The reason can quote a label or path from the screen: one clean line too.
     const reason = req.reason === undefined ? undefined : cleanLine(req.reason);
     win.webContents.send('approval-request', { id, ...req, reason, timeoutMs: APPROVAL_TIMEOUT_MS });
-    tell({ type: 'ask', id, summary: cleanLine(req.summary) });
+    tell({ type: 'ask', id, summary: cleanLine(req.summary), reason });
   });
 }
 

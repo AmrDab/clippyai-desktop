@@ -57,5 +57,5 @@ Phone → PC:
 PC → Phone:
 - `{type:'status', state:'asleep'|'ready'|'working', text?}` — sent on connect and on every change.
 - `{type:'answer', text, id?}` — Clippy's reply to a task.
-- `{type:'ask', id, question, choices:['Approve','Deny']}` — an approval card is waiting; re-sent when the phone reconnects.
+- `{type:'ask', id, question, reason?, choices:['Approve','Deny']}` — an approval card is waiting; re-sent when the phone reconnects. `reason` is the card's warning line on the PC (e.g. a login-risk warning) and the phone shows it under the question.
 - `{type:'ask-done', id}` — the card was answered (on either side) or timed out.

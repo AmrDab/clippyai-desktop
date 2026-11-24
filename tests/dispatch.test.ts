@@ -152,6 +152,16 @@ describe('phone message handling (createCore)', () => {
     expect(sent.filter((m) => m.type === 'ask-done')).toHaveLength(1);
   });
 
+  it("ask: the PC card's warning line reaches the phone too, also when it rejoins", () => {
+    const { sent, core } = setup();
+    const warned = { type: 'ask', id: 'a2', question: 'Turn on reading for Reddit', reason: 'Copies your Reddit login', choices: ['Approve', 'Deny'] };
+    core.ask('a2', 'Turn on reading for Reddit', 'Copies your Reddit login');
+    expect(sent.at(-1)).toEqual(warned);
+    sent.length = 0;
+    core.phoneJoined();
+    expect(sent.at(-1)).toEqual(warned);
+  });
+
   it('ignores unknown, malformed and oversized messages', async () => {
     const { deps, sent, core } = setup();
     for (const m of [null, 'req', 42, {}, { type: 'nope' }, { type: 'req', id: 'r', text: 123 }, { type: 'req', id: 'r', text: '   ' },

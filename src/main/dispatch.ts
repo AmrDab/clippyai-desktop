@@ -194,10 +194,11 @@ const okId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 
 
 export function createCore(deps: CoreDeps, send: (m: PcMsg) => void) {
   let working = 0;
-  const asks = new Map<string, string>();   // the approval cards that are open: only these take a reply
+  const asks = new Map<string, { question: string; reason?: string }>();   // the open approval cards: only these take a reply
   const state = (): DispatchState => (deps.mode() === 'sleep' ? 'asleep' : working > 0 ? 'working' : 'ready');
   const status = (): void => send({ type: 'status', state: state() });
-  const sendAsk = (id: string, question: string): void => send({ type: 'ask', id, question, choices: ['Approve', 'Deny'] });
+  const sendAsk = (id: string, a: { question: string; reason?: string }): void =>
+    send({ type: 'ask', id, question: a.question, ...(a.reason ? { reason: a.reason } : {}), choices: ['Approve', 'Deny'] });
 
   /** 'working' while `job` runs (a task from the phone or typed on the PC), then the state after it. */
   async function whileWorking<T>(job: () => Promise<T>): Promise<T> {
@@ -210,9 +211,10 @@ export function createCore(deps: CoreDeps, send: (m: PcMsg) => void) {
     /** The phone (re)joined: where Clippy is, and what is still waiting for an answer. */
     phoneJoined(): void {
       status();
-      for (const [id, q] of asks) sendAsk(id, q);
+      for (const [id, a] of asks) sendAsk(id, a);
     },
-    ask(id: string, question: string): void { asks.set(id, question); sendAsk(id, question); },
+    /** `reason` is the card's warning line on the PC: the phone must show it too before anyone approves there. */
+    ask(id: string, question: string, reason?: string): void { const a = { question, reason }; asks.set(id, a); sendAsk(id, a); },
     askDone(id: string): void { if (asks.delete(id)) send({ type: 'ask-done', id }); },
     /** One decrypted message from the phone. Anything that is not a well-formed message is ignored. */
     async onMsg(raw: unknown): Promise<void> {
@@ -329,8 +331,8 @@ export function whileWorking<T>(job: () => Promise<T>): Promise<T> {
 }
 
 /** approval.ts shows or settles a card: the phone gets the same question. */
-export function approvalEvent(e: { type: 'ask'; id: string; summary: string } | { type: 'done'; id: string }): void {
-  if (e.type === 'ask') core?.ask(e.id, e.summary); else core?.askDone(e.id);
+export function approvalEvent(e: { type: 'ask'; id: string; summary: string; reason?: string } | { type: 'done'; id: string }): void {
+  if (e.type === 'ask') core?.ask(e.id, e.summary, e.reason); else core?.askDone(e.id);
 }
 
 async function qrFor(r: RoomInfo): Promise<{ url: string; qrDataUrl: string }> {

@@ -44,7 +44,7 @@ function start(): void {
   const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
   const app = $('app'), statusEl = $('status'), power = $<HTMLInputElement>('power');
   const notice = $('notice'), noticeText = $('notice-text'), talk = $('talk');
-  const taskEl = $('task'), replyEl = $('reply'), askEl = $('ask'), askQ = $('ask-q');
+  const taskEl = $('task'), replyEl = $('reply'), askEl = $('ask'), askQ = $('ask-q'), askWhy = $('ask-why');
   const form = $<HTMLFormElement>('form'), text = $<HTMLTextAreaElement>('text'), sendBtn = $<HTMLButtonElement>('send'), stopBtn = $<HTMLButtonElement>('stop');
 
   const link = parseLink(location.hash, store.get(KEEP));
@@ -64,7 +64,7 @@ function start(): void {
   let state: DispatchState = 'ready';
   let over = '';                         // why this page can do nothing more
   let elsewhere = false;                 // a newer tab took this phone's place
-  const asks = new Map<string, string>();
+  const asks = new Map<string, { question: string; reason: string }>();
 
   function render(): void {
     const pcOn = !!ch;
@@ -82,7 +82,9 @@ function start(): void {
     sendBtn.disabled = !pcOn;
     const ask = pcOn ? [...asks.entries()][0] : undefined;
     askEl.hidden = !ask;
-    askQ.textContent = ask ? ask[1] : '';
+    askQ.textContent = ask ? ask[1].question : '';
+    askWhy.textContent = ask ? ask[1].reason : '';   // the PC card's warning line
+    askWhy.hidden = !(ask && ask[1].reason);
   }
 
   const send = (msg: PhoneMsg): void => {
@@ -93,7 +95,7 @@ function start(): void {
   function got(m: PcMsg): void {
     if (m.type === 'status') state = m.state;
     else if (m.type === 'answer') { replyEl.textContent = m.text; replyEl.hidden = false; }
-    else if (m.type === 'ask') asks.set(m.id, m.question);
+    else if (m.type === 'ask') asks.set(m.id, { question: m.question, reason: typeof m.reason === 'string' ? m.reason : '' });
     else if (m.type === 'ask-done') asks.delete(m.id);
     render();
   }

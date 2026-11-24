@@ -14,7 +14,7 @@ export type DispatchState = 'asleep' | 'ready' | 'working';
 export type PcMsg =
   | { type: 'status'; state: DispatchState; text?: string }
   | { type: 'answer'; text: string; id?: string }
-  | { type: 'ask'; id: string; question: string; choices: string[] }
+  | { type: 'ask'; id: string; question: string; reason?: string; choices: string[] }
   | { type: 'ask-done'; id: string };
 
 /** What the relay itself says (text frames; ciphertext is binary frames). The last three come just before it closes. */

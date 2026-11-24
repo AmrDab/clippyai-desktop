@@ -48,6 +48,7 @@ h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
 .card { flex: none; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
 .card .label { margin: 0 0 4px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
 #ask-q { margin: 0 0 12px; overflow-wrap: anywhere; }
+#ask-why { margin: -6px 0 12px; font-size: 14px; color: var(--ink-2); overflow-wrap: anywhere; }
 .row { display: flex; gap: 10px; }
 .row button { flex: 1; }
 
