@@ -1,6 +1,7 @@
 /**
  * build-native.js — build all macOS-native Swift helpers shipped inside
- * the ClippyAI .app bundle.
+ * the ClippyAI .app bundle, and on Windows the C# wake-phrase keyboard
+ * monitor (see buildWindowsMonitor below).
  *
  * Packages (universal macOS arm64 + x86_64):
  *   • native/screenshot-helper      — silent CGWindowList screenshot CLI.
@@ -51,6 +52,12 @@ const PKGS = [
   // the spawn-per-call bridge. src/main/input-monitor.ts spawns + controls it.
   { name: 'clippy-input-monitor', dir: path.join(ROOT, 'native', 'clippy-input-monitor') },
 ];
+
+// Windows: the "hey clippy" keyboard monitor, one C# file compiled with the
+// csc.exe that ships with .NET Framework 4.x (no SDK, no new dependency).
+// Output is gitignored (native/**/.build/); electron-builder.yml's win
+// extraResources bundles it and signs it with the app (win.sign).
+const WIN_MONITOR_DIR = path.join(ROOT, 'native', 'clippy-input-monitor-win');
 
 const force = process.argv.includes('--force');
 
@@ -213,14 +220,42 @@ function buildPackage(pkg) {
   verify(pkg);
 }
 
+function buildWindowsMonitor() {
+  const src = path.join(WIN_MONITOR_DIR, 'Monitor.cs');
+  const out = path.join(WIN_MONITOR_DIR, '.build', 'clippy-input-monitor.exe');
+  if (!force && fs.existsSync(out) && fs.statSync(out).mtimeMs > fs.statSync(src).mtimeMs) {
+    log(`(clippy-input-monitor) up to date: ${out} (use --force to rebuild)`);
+    return;
+  }
+  const fw = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319');
+  const csc = path.join(fw, 'csc.exe');
+  if (!fs.existsSync(csc)) fail(`csc.exe not found at ${csc} (ships with .NET Framework 4.x)`);
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  const res = spawnSync(csc, [
+    '/nologo', '/target:winexe', '/optimize+',
+    `/out:${out}`,
+    `/r:${path.join(fw, 'WPF', 'UIAutomationClient.dll')}`,
+    `/r:${path.join(fw, 'WPF', 'UIAutomationTypes.dll')}`,
+    src,
+  ], { stdio: 'inherit' });
+  if (res.error) fail(`csc failed: ${res.error.message}`);
+  if (res.status !== 0) fail(`csc exited with code ${res.status}`);
+  log(`(clippy-input-monitor) built ${out} — ${(fs.statSync(out).size / 1024).toFixed(0)} KiB`);
+}
+
 function main() {
-  if (process.platform !== 'darwin') {
-    log(`skip: not macOS (platform=${process.platform}); native helpers are mac-only`);
+  if (process.env.SKIP_NATIVE_BUILD === '1') {
+    log('skip: SKIP_NATIVE_BUILD=1 set in env');
     return;
   }
 
-  if (process.env.SKIP_NATIVE_BUILD === '1') {
-    log('skip: SKIP_NATIVE_BUILD=1 set in env');
+  if (process.platform === 'win32') {
+    buildWindowsMonitor();
+    return;
+  }
+
+  if (process.platform !== 'darwin') {
+    log(`skip: no native helpers for platform=${process.platform}`);
     return;
   }
 

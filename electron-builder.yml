@@ -81,6 +81,13 @@ win:
       filter:
         - "*.exe"
         - "*.dll"
+    # "hey clippy" wake-phrase keyboard monitor (C#), built by
+    # `npm run build-native` (scripts/build-native.js, .NET Framework csc.exe).
+    # Resolved via process.resourcesPath in src/main/input-monitor.ts. Signed
+    # like whisper-cli.exe: electron-builder passes every .exe it copies
+    # through extraResources to win.sign (build/signing/sign.js).
+    - from: native/clippy-input-monitor-win/.build/clippy-input-monitor.exe
+      to: clippy-input-monitor.exe
 
 mac:
   category: public.app-category.productivity

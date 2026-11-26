@@ -30,6 +30,6 @@ jobs:
       - run: node scripts/smoke.js --layer=1
       - run: npm run build
       # Swift helpers (clippy-mac-bridge, screenshot-helper, clippy-input-monitor),
-      # universal arm64+x86_64. Build only — no signing / notarization in CI.
-      - if: runner.os == 'macOS'
-        run: npm run build-native
+      # universal arm64+x86_64; on Windows the C# clippy-input-monitor.exe.
+      # Build only — no signing / notarization in CI.
+      - run: npm run build-native

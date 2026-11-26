@@ -1,4 +1,4 @@
-import { globalShortcut, BrowserWindow } from 'electron';
+import { globalShortcut, BrowserWindow, app } from 'electron';
 import { Brain, brainSettingsStore as settingsStore } from './brain';
 import { createLogger } from './logger';
 import { triggerWritingAssist } from './writing-assist';
@@ -13,7 +13,27 @@ const log = createLogger('Hotkey');
 // ESC in the renderer (handled by bubble.ts) always cancels.
 let voiceRecording = false;
 
+/**
+ * The "hey clippy" wake phrase. Unlike the summon hotkey this never toggles:
+ * show him if hidden, wake him if asleep, bring him forward, open the chat.
+ */
+export function summonToChat(win: BrowserWindow, brain: Brain): void {
+  if (win.isDestroyed()) return;
+  if (!win.isVisible()) win.show();
+  if (brain.getMode() !== 'awake') {
+    brain.setMode('awake');
+    win.webContents.send('mode-change', 'awake');
+  }
+  // A background app may not take focus on its own: macOS needs steal;
+  // on Windows the foreground lock can still refuse and flash the taskbar.
+  if (process.platform === 'darwin') app.focus({ steal: true });
+  win.focus();
+  win.webContents.send('summon-chat');
+}
+
 export function registerHotkey(win: BrowserWindow, brain: Brain): void {
+  brain.onWakeSummon = () => summonToChat(win, brain);
+
   // Sleep/wake toggle (existing, since v0.1)
   globalShortcut.register(SUMMON_ACCELERATOR, () => {
     // v0.23 — hidden → show + wake (one press after Alt+F4); visible → toggle.

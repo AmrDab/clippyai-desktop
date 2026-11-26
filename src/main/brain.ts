@@ -640,6 +640,10 @@ interface BrainSettings {
    *  is typing into turn context. OFF by default — the helper isn't even
    *  spawned until the user turns this on in Settings. */
   inputAwarenessEnabled: boolean;
+  /** "hey clippy" typed anywhere opens the chat (both platforms, also while
+   *  asleep). ON by default; the helper then sends only a-z, space and a few
+   *  named keys, matched in memory and never stored or sent. */
+  typeToSummonEnabled: boolean;
   /**
    * v0.20.0 "Lumiere" — user-tunable surfacing threshold for the probabilistic
    * proactive scorer (memo §4 item 3). Slider 0.3–0.8, default 0.55. 0 is the
@@ -682,6 +686,7 @@ const settingsStore = new Store<BrainSettings>({
     windowFollowEnabled: true,
     writingAssistEnabled: true, // (Beta) ⌥G writing assistant — on by default, toggleable in Settings
     inputAwarenessEnabled: false, // opt-in only (keyboard monitor)
+    typeToSummonEnabled: true, // "hey clippy" wake phrase — on by default, toggleable in Settings
     // v0.20.0 "Lumiere" — conservative, silence-biased default (memo §7).
     // Read in SHADOW MODE only this milestone.
     proactiveConfidenceThreshold: 0.55,
@@ -894,8 +899,9 @@ export class Brain {
     this.win = win;
     // Input awareness. Constructing spawns nothing: the helper starts on the
     // first enable(), which only happens while awake AND the user has opted
-    // in. Sleep disables the tap and wipes the buffer; the helper exits on
-    // stdin EOF, so app quit needs no extra teardown.
+    // in, or on enableWake() for the "hey clippy" phrase (setting on, awake or
+    // asleep). Sleep disables full capture and wipes the buffer; the helper
+    // exits on stdin EOF, so app quit needs no extra teardown.
     this.inputMonitor = new InputMonitor({
       onSummon: () => {
         // Typed wake-phrase ("hello clippy") while awake → acknowledge.
@@ -904,6 +910,13 @@ export class Brain {
           text: 'You typed my name — here I am! What can I do?',
           animate: 'Greeting',
         });
+      },
+      onWake: () => {
+        // "hey clippy" typed anywhere. Not while onboarding is up, and not
+        // while his own window has focus (the user is typing to him already).
+        if (windowMod.getOnboardingWindow() || this.win.isDestroyed() || this.win.isFocused()) return;
+        log.info('WakePhrase.summon'); // never the typed text
+        this.onWakeSummon?.();
       },
       onSecureChange: (on) => {
         // Secure input (password field): macOS already blanks the tap; also
@@ -936,12 +949,22 @@ export class Brain {
     this.applyInputAwareness();
   }
 
-  /** Capture only on darwin, while awake, with the opt-in on; otherwise
-   *  turn the tap off and terminate the helper. */
+  /** Settings toggle for the "hey clippy" wake phrase — persists and live-applies. */
+  setTypeToSummon(enabled: boolean): void {
+    settingsStore.set('typeToSummonEnabled', enabled);
+    this.applyInputAwareness();
+  }
+
+  /** Full capture only on darwin, while awake, with the opt-in on. Otherwise
+   *  wake-phrase listening alone (any platform, awake or asleep) when that
+   *  setting is on; with both off, turn the tap off and end the helper. */
   private applyInputAwareness(): void {
     try {
+      const wake = settingsStore.get('typeToSummonEnabled') !== false;
       if (process.platform === 'darwin' && this.mode === 'awake' && settingsStore.get('inputAwarenessEnabled') === true) {
-        this.inputMonitor.enable();
+        this.inputMonitor.enable(wake);
+      } else if (wake) {
+        this.inputMonitor.enableWake();
       } else {
         this.inputMonitor.disable();
         this.inputMonitor.stop();
@@ -1005,10 +1028,9 @@ export class Brain {
       try { abortAllInFlightTools(); } catch (err) {
         log.warn('abortAllInFlightTools threw on sleep (non-fatal)', serializeErr(err));
       }
-      // Input awareness: sleep = verifiably blind (tap off + buffer wiped).
-      try { this.inputMonitor.disable(); } catch (err) {
-        log.warn('input-monitor disable failed (non-fatal)', serializeErr(err));
-      }
+      // Input awareness: sleep = typing sense off + buffer wiped. Only the
+      // "hey clippy" listener stays on (if enabled), since waking him is its job.
+      this.applyInputAwareness();
       // v0.19.0 — stop follow-me polling so no orphan interval survives sleep.
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1036,6 +1058,9 @@ export class Brain {
 
   /** Called after every mode change, whatever asked for it (menu, tray, hotkey, power monitor, phone). */
   onModeChange: ((mode: 'awake' | 'sleep') => void) | null = null;
+
+  /** "hey clippy" was typed: hotkey.ts wires this to summonToChat. */
+  onWakeSummon: (() => void) | null = null;
 
   /**
    * v0.20.0-alpha.11 — public read of the in-flight-task flag. Consumed by

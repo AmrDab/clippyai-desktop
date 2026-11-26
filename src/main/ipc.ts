@@ -365,6 +365,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       // v0.20.0-alpha.11 — focused-window follow toggle
       windowFollowEnabled: brainSettingsStore.get('windowFollowEnabled'),
       inputAwarenessEnabled: brainSettingsStore.get('inputAwarenessEnabled') === true,
+      typeToSummonEnabled: brainSettingsStore.get('typeToSummonEnabled') !== false,
       // v0.20.0 (Beta) — ⌥G writing-assistant toggle
       writingAssistEnabled: brainSettingsStore.get('writingAssistEnabled'),
       telemetryEnabled: telemetry.isTelemetryEnabled(),
@@ -516,6 +517,10 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // Typing awareness (macOS, opt-in) — persists + live-applies in Brain.
     if (settings.inputAwarenessEnabled !== undefined) {
       brain.setInputAwareness(Boolean(settings.inputAwarenessEnabled));
+    }
+    // "hey clippy" wake phrase (both platforms, default on).
+    if (settings.typeToSummonEnabled !== undefined) {
+      brain.setTypeToSummon(Boolean(settings.typeToSummonEnabled));
     }
     if (settings.windowFollowEnabled !== undefined) {
       const enabled = Boolean(settings.windowFollowEnabled);

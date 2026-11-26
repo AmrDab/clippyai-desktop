@@ -22,7 +22,7 @@
     "build-native": "node scripts/build-native.js",
     "pack": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder --dir",
     "dist": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder",
-    "dist:win": "npm run vendor && npm run rebuild-natives && npm run build && electron-builder --win",
+    "dist:win": "npm run vendor && npm run rebuild-natives && npm run build-native && npm run build && electron-builder --win",
     "dist:mac": "npm run vendor && npm run rebuild-natives:mac && npm run build-native && npm run build && electron-builder --mac -c.mac.bundleVersion=${npm_package_version%%-*}",
     "postinstall": "node scripts/copy-assets.js",
     "smoke": "node scripts/smoke.js",
