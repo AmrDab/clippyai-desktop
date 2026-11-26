@@ -178,6 +178,8 @@ interface Window {
 
     // ── Mode
     onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => void;
+    /** "hey clippy" typed anywhere — open the chat. */
+    onSummonChat: (cb: () => void) => void;
     onProactiveToggle: (cb: (enabled: boolean) => void) => void;
     /** v0.18.0 — separate channel for interval-only changes */
     onProactiveInterval: (cb: (intervalMs: number) => void) => void;

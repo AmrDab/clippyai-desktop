@@ -255,6 +255,15 @@ async function loadConfig(): Promise<void> {
     });
   }
 
+  // "hey clippy" wake phrase (both platforms) — default ON.
+  const summonEl = document.getElementById('setting-type-to-summon') as HTMLInputElement | null;
+  if (summonEl) {
+    summonEl.checked = config.typeToSummonEnabled !== false;
+    summonEl.addEventListener('change', () => {
+      window.clippy.updateSettings({ typeToSummonEnabled: summonEl.checked });
+    });
+  }
+
   // Typing awareness (macOS) — opt-in, default OFF.
   const iaEl = document.getElementById('setting-input-awareness') as HTMLInputElement | null;
   if (iaEl) {

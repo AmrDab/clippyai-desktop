@@ -5,6 +5,9 @@
 // Privacy: the helper starts DISABLED and emits nothing until enable(). We
 // enable on awake + eyes-open and disable on sleep / eyes-closed; disable()
 // also wipes the in-memory rolling buffer. Raw keystrokes never touch disk.
+// enableWake() is the narrower "hey clippy" mode (both platforms, also while
+// asleep): the helper sends only a-z, space and a few named keys, and they
+// feed the WakeMatcher alone, never the rolling buffer.
 //
 // Bundle-anchor rule: this module MUST be reached via a static
 // `import * as inputMonitorMod from './input-monitor'` from its consumer
@@ -16,7 +19,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { createLogger } from './logger';
-import { TriggerMatcher, RollingBuffer, type Trigger } from './input-triggers';
+import { TriggerMatcher, RollingBuffer, WakeMatcher, type Trigger } from './input-triggers';
 
 const log = createLogger('input-monitor');
 
@@ -25,14 +28,17 @@ let cachedBinPath: string | null | undefined = undefined;
 /**
  * Resolve the clippy-input-monitor binary path (mirrors screenshot-helper).
  *   Production: <App>.app/Contents/Resources/clippy-input-monitor
+ *               (Windows: resources\clippy-input-monitor.exe)
  *   Dev:        <repo>/native/clippy-input-monitor/.build/release/clippy-input-monitor
+ *               (Windows: native/clippy-input-monitor-win/.build/clippy-input-monitor.exe)
  * Returns null if not found so the caller can no-op rather than spawn-fail.
  */
 export function resolveMonitorPath(): string | null {
   if (cachedBinPath !== undefined) return cachedBinPath;
+  const win = process.platform === 'win32';
 
   if (process.resourcesPath) {
-    const bundled = path.join(process.resourcesPath, 'clippy-input-monitor');
+    const bundled = path.join(process.resourcesPath, win ? 'clippy-input-monitor.exe' : 'clippy-input-monitor');
     if (fs.existsSync(bundled)) {
       cachedBinPath = bundled;
       log.info('Using bundled clippy-input-monitor', { path: bundled });
@@ -40,9 +46,12 @@ export function resolveMonitorPath(): string | null {
     }
   }
 
+  const devRel = win
+    ? 'native/clippy-input-monitor-win/.build/clippy-input-monitor.exe'
+    : 'native/clippy-input-monitor/.build/release/clippy-input-monitor';
   const devCandidates = [
-    path.join(__dirname, '../../native/clippy-input-monitor/.build/release/clippy-input-monitor'),
-    path.join(app?.getAppPath?.() || '', 'native/clippy-input-monitor/.build/release/clippy-input-monitor'),
+    path.join(__dirname, '../..', devRel),
+    path.join(app?.getAppPath?.() || '', devRel),
   ];
   for (const c of devCandidates) {
     if (c && fs.existsSync(c)) {
@@ -63,6 +72,8 @@ export function resolveMonitorPath(): string | null {
 export interface InputMonitorCallbacks {
   /** A wake phrase ("hello clippy") was typed while awake. */
   onSummon?: (phrase: string) => void;
+  /** "hey clippy" / "hi clippy" was typed (wake listening on). No text is passed. */
+  onWake?: () => void;
   /** ESC was pressed. */
   onEscape?: () => void;
   /** Secure-input (password field) state changed. */
@@ -80,7 +91,11 @@ export class InputMonitor {
   private stdoutBuf = '';
   private readonly matcher: TriggerMatcher;
   private readonly rolling = new RollingBuffer();
+  private readonly wake = new WakeMatcher();
+  /** Full typing awareness (macOS opt-in). */
   private enabled = false;
+  /** The wake phrase is being matched. */
+  private wakeOn = false;
 
   constructor(
     private readonly cbs: InputMonitorCallbacks = {},
@@ -112,6 +127,7 @@ export class InputMonitor {
       log.info('input-monitor exited', { code });
       this.child = null;
       this.enabled = false;
+      this.wakeOn = false;
     });
     // A helper that cannot be started (ENOENT, EACCES, a quarantined binary)
     // or cannot be signalled reports it as an 'error' event, not a throw: with
@@ -120,6 +136,7 @@ export class InputMonitor {
       log.warn('input-monitor process error; keystroke awareness disabled', { err: String(err) });
       this.child = null;
       this.enabled = false;
+      this.wakeOn = false;
     });
     // Same for a write to a helper that has just died (EPIPE).
     this.child.stdin?.on('error', (err) => log.debug('input-monitor stdin error', { err: String(err) }));
@@ -137,7 +154,7 @@ export class InputMonitor {
   }
 
   private handleEvent(line: string): void {
-    let ev: { t?: string; ch?: string; key?: string; on?: boolean; listen?: boolean };
+    let ev: { t?: string; ch?: string; key?: string; on?: boolean; listen?: boolean; syn?: boolean };
     try {
       ev = JSON.parse(line);
     } catch {
@@ -146,16 +163,27 @@ export class InputMonitor {
     switch (ev.t) {
       case 'key':
         if (typeof ev.ch === 'string') {
-          this.rolling.push(ev.ch);
-          const trig = this.matcher.pushChar(ev.ch);
-          if (trig) this.fire(trig);
+          if (this.enabled) {
+            this.rolling.push(ev.ch);
+            const trig = this.matcher.pushChar(ev.ch);
+            if (trig) this.fire(trig);
+          }
+          // syn: posted by a process (e.g. Clippy typing), not the keyboard.
+          if (this.wakeOn && !ev.syn && this.wake.pushChar(ev.ch)) this.cbs.onWake?.();
         }
         break;
       case 'special':
         if (typeof ev.key === 'string') {
-          const trig = this.matcher.pushSpecial(ev.key);
-          if (trig) this.fire(trig);
+          if (this.enabled) {
+            const trig = this.matcher.pushSpecial(ev.key);
+            if (trig) this.fire(trig);
+          }
+          if (this.wakeOn) this.wake.pushSpecial(ev.key);
         }
+        break;
+      case 'reset':
+        // App / field switch in the helper: the phrase must be typed in one place.
+        this.wake.reset();
         break;
       case 'secure':
         this.cbs.onSecureChange?.(!!ev.on);
@@ -177,19 +205,33 @@ export class InputMonitor {
     else if (t.kind === 'escape') this.cbs.onEscape?.();
   }
 
-  /** Begin capturing — Clippy awake + eyes open. */
-  enable(): void {
+  /** Begin capturing — Clippy awake + eyes open. `wake`: also match the wake phrase. */
+  enable(wake = false): void {
     if (!this.child && !this.start()) return;
     this.send('enable');
     this.enabled = true;
+    this.wakeOn = wake;
+    if (!wake) this.wake.reset();
+  }
+
+  /** Listen for the wake phrase only (any mode, also asleep). Wipes the rolling buffer. */
+  enableWake(): void {
+    if (!this.child && !this.start()) return;
+    this.send('enable-wake');
+    this.enabled = false;
+    this.wakeOn = true;
+    this.rolling.clear();
+    this.matcher.reset();
   }
 
   /** Stop capturing — sleep / eyes-closed. Wipes the rolling buffer. */
   disable(): void {
     this.send('disable');
     this.enabled = false;
+    this.wakeOn = false;
     this.rolling.clear();
     this.matcher.reset();
+    this.wake.reset();
   }
 
   /** Field/app switch: wipe recent context (privacy hygiene), keep capturing. */
@@ -212,6 +254,7 @@ export class InputMonitor {
     this.send('quit');
     this.child = null;
     this.enabled = false;
+    this.wakeOn = false;
   }
 
   private send(cmd: string): void {

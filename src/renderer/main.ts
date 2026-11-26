@@ -308,6 +308,13 @@ async function init(): Promise<void> {
     }
   });
 
+  // "hey clippy" typed anywhere: the same chat a normal click opens, ready to type.
+  window.clippy.onSummonChat(() => {
+    bubbleCtrl.openChat();
+    bubbleCtrl.focusInput();
+    clippyCtrl.wave();
+  });
+
   window.clippy.onTtsToggle((enabled) => tts.setEnabled(enabled));
   window.clippy.onSpeechRate((rate) => tts.setRate(rate));
 

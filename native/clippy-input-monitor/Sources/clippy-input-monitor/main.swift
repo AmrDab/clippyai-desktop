@@ -9,22 +9,27 @@
 //     we double-guard with IsSecureEventInputEnabled() and never emit a
 //     character while secure input is on.
 //   • Listen-only tap: we never modify or block events (.listenOnly).
+//   • `enable-wake` ("hey clippy" listening): only a-z, space and a few named
+//     keys leave this process; nothing posted by another process (Clippy's
+//     own typing) and nothing typed with ⌘/⌃/⌥ held.
 //
 // Protocol
 // ────────
 //   stdout (NDJSON, one object per line):
 //     {"t":"ready","listen":true|false}
-//     {"t":"key","ch":"a"}
+//     {"t":"key","ch":"a"}            ("syn":true when posted by a process)
 //     {"t":"special","key":"escape"}
 //     {"t":"secure","on":true|false}
 //     {"t":"perm","listen":false}
-//   stdin (one command per line): enable | disable | quit
+//     {"t":"reset"}                   (frontmost app changed)
+//   stdin (one command per line): enable | enable-wake | disable | quit
 //
 // Permission: a listen-only CGEventTap needs the Input Monitoring TCC grant.
 // We preflight with CGPreflightListenEventAccess() and, on first `enable`,
 // trigger the system prompt with CGRequestListenEventAccess().
 
 import Foundation
+import AppKit
 import CoreGraphics
 import Carbon
 
@@ -35,6 +40,7 @@ final class Monitor {
     var tap: CFMachPort?
     var runLoopSource: CFRunLoopSource?
     var enabled = false
+    var wakeOnly = false
     var lastSecure = false
 }
 
@@ -44,6 +50,15 @@ let specialKeys: [Int64: String] = [
     36: "return",
     48: "tab",
     51: "delete",
+    123: "left", 124: "right", 125: "down", 126: "up",
+]
+
+// Named keys in wake-only mode: backspace edits the phrase, the rest clear it.
+let wakeSpecialKeys: [Int64: String] = [
+    51: "backspace",
+    53: "escape",
+    36: "return", 76: "return",
+    48: "tab",
     123: "left", 124: "right", 125: "down", 126: "up",
 ]
 
@@ -91,6 +106,9 @@ func eventCallback(
     guard type == .keyDown else { return Unmanaged.passUnretained(event) }
 
     let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+    // Real keyboard events carry source pid 0; events posted by a process
+    // (CGEventPost, e.g. Clippy typing for the user) carry that process's pid.
+    let synthetic = event.getIntegerValueField(.eventSourceUnixProcessID) != 0
 
     // Extract the produced unicode character(s), if any.
     var length: Int = 0
@@ -101,13 +119,33 @@ func eventCallback(
         unicodeString: &chars
     )
 
+    if m.wakeOnly {
+        if synthetic { return Unmanaged.passUnretained(event) }
+        let flags = event.flags
+        if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) {
+            return Unmanaged.passUnretained(event)
+        }
+        if let name = wakeSpecialKeys[keyCode] {
+            emit(["t": "special", "key": name])
+        } else if length == 1 {
+            var v = UInt32(chars[0])
+            if v >= 0x41 && v <= 0x5A { v += 0x20 } // A-Z → a-z
+            if v == 0x20 || (v >= 0x61 && v <= 0x7A), let u = Unicode.Scalar(v) {
+                emit(["t": "key", "ch": String(Character(u))])
+            }
+        }
+        return Unmanaged.passUnretained(event)
+    }
+
     if length > 0 {
         let s = String(utf16CodeUnits: chars, count: length)
         // Only surface printable text (>= U+0020). Control chars produced by
         // modifier combos are ignored here; named special keys handled below.
         let isPrintable = s.unicodeScalars.contains { $0.value >= 0x20 }
         if isPrintable {
-            emit(["t": "key", "ch": s])
+            var ev: [String: Any] = ["t": "key", "ch": s]
+            if synthetic { ev["syn"] = true }
+            emit(ev)
             return Unmanaged.passUnretained(event)
         }
     }
@@ -144,7 +182,7 @@ func createTap() -> Bool {
     return true
 }
 
-func setEnabled(_ on: Bool) {
+func setEnabled(_ on: Bool, wakeOnly: Bool = false) {
     let m = Monitor.shared
     if on && m.tap == nil {
         // First enable without an existing tap: ensure access (prompts once),
@@ -157,6 +195,7 @@ func setEnabled(_ on: Bool) {
     }
     guard let tap = m.tap else { return }
     m.enabled = on
+    m.wakeOnly = wakeOnly
     CGEvent.tapEnable(tap: tap, enable: on)
 }
 
@@ -168,6 +207,7 @@ func startStdinReader() {
             DispatchQueue.main.async {
                 switch cmd {
                 case "enable":  setEnabled(true)
+                case "enable-wake": setEnabled(true, wakeOnly: true)
                 case "disable": setEnabled(false)
                 case "quit":    exit(0)
                 default:        break
@@ -184,4 +224,10 @@ let hasAccess = CGPreflightListenEventAccess()
 createTap() // best-effort; if access not yet granted, (re)built on first enable
 emit(["t": "ready", "listen": hasAccess])
 startStdinReader()
+// The wake phrase must be typed in one app: an app switch clears it.
+_ = NSWorkspace.shared.notificationCenter.addObserver(
+    forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+) { _ in
+    if Monitor.shared.enabled { emit(["t": "reset"]) }
+}
 CFRunLoopRun()

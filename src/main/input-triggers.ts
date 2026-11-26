@@ -62,6 +62,57 @@ export class TriggerMatcher {
   }
 }
 
+/** "hey clippy" / "hi clippy" (space optional) at the end of the buffer, with a
+ *  word boundary on the left so "they clippy" does not count. */
+const WAKE_RE = /(?:^| )h(?:ey|i) ?clippy$/;
+const WAKE_MAX = 12;
+
+/**
+ * The "hey clippy" wake phrase. Separate from TriggerMatcher and RollingBuffer
+ * on purpose: this buffer holds at most 12 lowercase letters/spaces, lives in
+ * memory only, and is never read by anything but the match below, so the wake
+ * stream can never reach a request.
+ */
+export class WakeMatcher {
+  private buf = '';
+  private lastKeyAt = 0;
+  private lastFiredAt = -Infinity;
+
+  constructor(
+    private readonly idleMs = 4_000,
+    private readonly minGapMs = 2_000,
+  ) {}
+
+  /** Feed one typed character. True when the wake phrase was just typed. */
+  pushChar(ch: string, now: number = Date.now()): boolean {
+    if (now - this.lastKeyAt > this.idleMs) this.buf = '';
+    this.lastKeyAt = now;
+    // Backspace (the macOS full stream sends it as DEL).
+    if (ch === '\b' || ch === '\x7f') {
+      this.buf = this.buf.slice(0, -1);
+      return false;
+    }
+    const c = ch.toLowerCase();
+    if (!/^[a-z ]$/.test(c)) return false;
+    this.buf = (this.buf + c).slice(-WAKE_MAX);
+    if (!WAKE_RE.test(this.buf)) return false;
+    this.buf = '';
+    if (now - this.lastFiredAt < this.minGapMs) return false;
+    this.lastFiredAt = now;
+    return true;
+  }
+
+  /** Backspace removes a char; any other named key (arrows, Enter, Tab, Esc) clears. */
+  pushSpecial(key: string): void {
+    if (key === 'backspace' || key === 'delete') this.buf = this.buf.slice(0, -1);
+    else this.buf = '';
+  }
+
+  reset(): void {
+    this.buf = '';
+  }
+}
+
 /**
  * Redact obvious secrets from a text snapshot before it could ever be used as
  * distillation input. Conservative by design — over-redacting a snapshot that

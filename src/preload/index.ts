@@ -72,6 +72,10 @@ contextBridge.exposeInMainWorld('clippy', {
   onModeChange: (cb: (mode: 'awake' | 'sleep') => void) => {
     ipcRenderer.on('mode-change', (_e, mode) => cb(mode));
   },
+  // "hey clippy" typed anywhere: open the chat, as a click on him does.
+  onSummonChat: (cb: () => void) => {
+    ipcRenderer.on('summon-chat', () => cb());
+  },
 
   onTtsToggle: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('tts-toggle', (_e, enabled) => cb(enabled));

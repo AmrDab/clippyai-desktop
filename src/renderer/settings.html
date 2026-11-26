@@ -482,13 +482,31 @@
           </div>
         </div>
 
+        <!-- "hey clippy" wake phrase. Both platforms, default ON, also while he
+             sleeps: input-monitor.ts runs the helper in its wake-only mode
+             (a-z, space, a few named keys), matched in memory only. -->
+        <div class="s-card">
+          <div class="s-row s-row--inline">
+            <div class="s-row__main">
+              <div class="s-row__label">Say hey to summon: type "hey clippy" anywhere</div>
+              <div class="s-row__help">Clippy listens for just that phrase. Nothing you type is saved or sent.<span data-mac> macOS asks for the Input Monitoring permission the first time.</span><span data-win></span></div>
+            </div>
+            <div class="s-row__control">
+              <label class="toggle-switch" for="setting-type-to-summon">
+                <input type="checkbox" id="setting-type-to-summon" checked />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
         <!-- Typing awareness (clippyai-macos#21). Opt-in, default OFF.
              darwin-only: input-monitor.ts drives the clippy-input-monitor
              helper (listen-only CGEventTap); Brain never enables it elsewhere. -->
         <div class="s-card" data-mac-only>
           <div class="s-card__header">
             <h3 class="s-card__title">Typing awareness <span class="s-badge">Beta</span></h3>
-            <p class="s-card__subtitle">While Clippy is awake he notices what you type, so "fix my grammar" or "help with this paragraph" already knows the text, and typing "hello clippy" summons him. A short, redacted summary of recent typing is included with your requests; passwords are never seen and nothing is captured while he sleeps. Needs the Input Monitoring permission.</p>
+            <p class="s-card__subtitle">While Clippy is awake he notices what you type, so "fix my grammar" or "help with this paragraph" already knows the text, and typing "hello clippy" summons him. A short, redacted summary of recent typing is included with your requests; passwords are never seen and none of this runs while he sleeps (only the "hey clippy" listener above does). Needs the Input Monitoring permission.</p>
           </div>
           <div class="s-row">
             <label class="s-row__label" for="setting-input-awareness">Enable typing awareness</label>

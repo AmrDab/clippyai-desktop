@@ -83,10 +83,26 @@ describe('typing awareness is opt-in', () => {
     expect(html).toMatch(/<input type="checkbox" id="setting-input-awareness" \/>/); // no `checked`
   });
 
-  it('the monitor is only enabled behind darwin + awake + the opt-in', () => {
-    const enables = [...brain.matchAll(/this\.inputMonitor\.enable\(\)/g)];
+  it('full capture is only enabled behind darwin + awake + the opt-in', () => {
+    const enables = [...brain.matchAll(/this\.inputMonitor\.enable\(/g)];
     expect(enables).toHaveLength(1);
     const before = brain.slice(Math.max(0, enables[0].index! - 200), enables[0].index!);
     expect(before).toMatch(/process\.platform === 'darwin' && this\.mode === 'awake' && settingsStore\.get\('inputAwarenessEnabled'\) === true/);
+  });
+
+  it('the "hey clippy" listener is gated only by its setting (any platform, awake or asleep), default on', () => {
+    expect(brain).toMatch(/typeToSummonEnabled: true,/);
+    expect(html).toMatch(/<input type="checkbox" id="setting-type-to-summon" checked \/>/);
+    const wakes = [...brain.matchAll(/this\.inputMonitor\.enableWake\(\)/g)];
+    expect(wakes).toHaveLength(1);
+    const before = brain.slice(Math.max(0, wakes[0].index! - 400), wakes[0].index!);
+    expect(before).toMatch(/const wake = settingsStore\.get\('typeToSummonEnabled'\) !== false;/);
+    expect(before).toMatch(/\} else if \(wake\) \{\s*$/);
+  });
+
+  it('sleep keeps the wake listener: the sleep branch re-applies instead of disabling', () => {
+    const sleepBranch = brain.slice(brain.indexOf('// Sleep is a hard stop.'), brain.indexOf('// v0.19.0 — stop follow-me polling'));
+    expect(sleepBranch).toContain('this.applyInputAwareness();');
+    expect(sleepBranch).not.toContain('this.inputMonitor.disable()');
   });
 });
