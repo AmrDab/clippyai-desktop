@@ -5411,6 +5411,8 @@ async function followMeTool(): Promise<ToolResult> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fm = followMe;
     fm.start();
+    // During a task the start is held until the task ends (task-follow).
+    if (!fm.isActive()) return { text: "I'll follow your cursor once this task is done." };
     return { text: 'Started following the cursor. Say "stop following" or press Esc when you want me to stay put.' };
   } catch (err) {
     log.warn('follow_me tool error', serializeErr(err));

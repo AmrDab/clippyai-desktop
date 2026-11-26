@@ -67,6 +67,10 @@ let _easedX = 0;
 let _easedY = 0;
 let _startedAt: number | undefined;
 let _startReason: string | undefined;
+// Set by task-follow. defer() returns true when a task is running and it took the
+// start over (it starts follow-me at task end), so nothing chases the cursor
+// mid-task; cancel() drops that held start when the user stops following.
+let _taskHold: { defer(): boolean; cancel(): void } | null = null;
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
@@ -146,6 +150,11 @@ export function setMainWindow(win: BrowserWindow): void {
   _win = win;
 }
 
+/** Called once by task-follow so a start() during a task waits for the task to end. */
+export function setTaskHold(hold: { defer(): boolean; cancel(): void }): void {
+  _taskHold = hold;
+}
+
 /**
  * Start follow-me mode. Idempotent — if already active, updates options and
  * resets the eased position so the new options take effect immediately.
@@ -161,6 +170,7 @@ export function start(
 ): void {
   if (win) _win = win;
   if (opts) _opts = { ..._opts, ...opts };
+  if (_taskHold?.defer()) return;
 
   // Stop any existing interval before starting fresh.
   if (_timer !== null) {
@@ -183,6 +193,7 @@ export function start(
  */
 export function stop(reason?: string): void {
   void reason; // available for future telemetry
+  _taskHold?.cancel();
   _cleanup();
 }
 

@@ -19,6 +19,9 @@
 // statically), so a lazy require('./follow-me') points at a chunk that is never emitted
 // and threw 'Cannot find module' in the packaged app (Mac live test, 0.24.7).
 import * as followMe from './follow-me';
+// Named, not followMe.setTaskHold(): it runs at import time, and the tool-tiers
+// test bundle stubs follow-me, where only named imports resolve.
+import { setTaskHold } from './follow-me';
 
 export const TASK_FRONT_INTERVAL_MS = 1000;
 
@@ -83,7 +86,26 @@ export function createTaskFollow(deps: TaskFollowDeps) {
     resumeFollowMe = false;
   }
 
-  return { begin, end, raise, isActive: () => timer !== null };
+  /**
+   * A follow-me start while the task runs (the model's follow_me tool, the
+   * tray): don't chase the cursor now, start it at end(). False when no task runs.
+   */
+  function deferFollowMe(): boolean {
+    if (!timer) return false;
+    resumeFollowMe = true;
+    return true;
+  }
+
+  /**
+   * The user stopped following during the task: don't start it at end().
+   * Only while the task runs: begin() itself stops follow-me before the timer
+   * exists, and that stop must keep the resume it just recorded.
+   */
+  function cancelFollowMe(): void {
+    if (timer) resumeFollowMe = false;
+  }
+
+  return { begin, end, raise, deferFollowMe, cancelFollowMe, isActive: () => timer !== null };
 }
 
 // ── Production wiring (follow-me) ────────────────────────────────────────────
@@ -94,3 +116,4 @@ export const taskFollow = createTaskFollow({
   followMeStop: () => followMe.stop('task'),
   followMeResume: (w) => followMe.start(w as unknown as import('electron').BrowserWindow, undefined, 'task-end'),
 });
+setTaskHold({ defer: () => taskFollow.deferFollowMe(), cancel: () => taskFollow.cancelFollowMe() });

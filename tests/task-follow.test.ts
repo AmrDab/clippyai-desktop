@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createTaskFollow, TASK_FRONT_INTERVAL_MS, type TaskFollowWindow } from '../src/main/task-follow';
+import { createTaskFollow, taskFollow, TASK_FRONT_INTERVAL_MS, type TaskFollowWindow } from '../src/main/task-follow';
+import * as followMe from '../src/main/follow-me';
 
 function fakeWin() {
   const calls: string[] = [];
@@ -93,5 +94,48 @@ describe('task-follow: stays in front during a task, never moves', () => {
     w.isDestroyed = () => true;
     vi.advanceTimersByTime(TASK_FRONT_INTERVAL_MS);
     expect(tf.isActive()).toBe(false);
+  });
+});
+
+describe('task-follow: a follow_me start during a task waits for the task to end', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => { taskFollow.end(); followMe.stop(); vi.useRealTimers(); });
+
+  it('does not start the cursor chase mid-task, then starts it at end()', () => {
+    taskFollow.begin(fakeWin() as unknown as TaskFollowWindow);
+    followMe.start();
+    expect(followMe.isActive()).toBe(false);
+    taskFollow.end();
+    expect(followMe.isActive()).toBe(true);
+  });
+
+  it('a stop during the task drops the held start', () => {
+    taskFollow.begin(fakeWin() as unknown as TaskFollowWindow);
+    followMe.start();
+    followMe.stop('voice');
+    taskFollow.end();
+    expect(followMe.isActive()).toBe(false);
+  });
+
+  it('a stop during the task also drops the resume of follow-me that was on at begin()', () => {
+    followMe.start(fakeWin() as unknown as import('electron').BrowserWindow);
+    taskFollow.begin(fakeWin() as unknown as TaskFollowWindow);
+    expect(followMe.isActive()).toBe(false);
+    followMe.stop('voice');
+    taskFollow.end();
+    expect(followMe.isActive()).toBe(false);
+  });
+
+  it('follow-me that was on at begin() still resumes at end()', () => {
+    followMe.start(fakeWin() as unknown as import('electron').BrowserWindow);
+    taskFollow.begin(fakeWin() as unknown as TaskFollowWindow);
+    expect(followMe.isActive()).toBe(false);
+    taskFollow.end();
+    expect(followMe.isActive()).toBe(true);
+  });
+
+  it('starts at once when no task runs', () => {
+    followMe.start(fakeWin() as unknown as import('electron').BrowserWindow);
+    expect(followMe.isActive()).toBe(true);
   });
 });

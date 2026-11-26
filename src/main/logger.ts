@@ -484,6 +484,32 @@ export function getLogDir(): string {
 }
 
 /**
+ * The log "Report a problem" shows. The file name is the UTC date at first
+ * write and only changes on a 5 MB rotation, so a Clippy left running for days
+ * still writes to the file named after its start day: read that file, not
+ * today's. Falls back to the newest clippy-*.log when this run has none yet.
+ */
+export function readCurrentLog(): string | null {
+  try {
+    flushBuffer();
+    if (currentLogPath && fs.existsSync(currentLogPath)) {
+      return fs.readFileSync(currentLogPath, 'utf-8');
+    }
+    let newest = '';
+    let newestMs = -1;
+    for (const file of fs.readdirSync(LOG_DIR)) {
+      if (!file.startsWith('clippy-') || !file.endsWith('.log')) continue;
+      const fullPath = path.join(LOG_DIR, file);
+      try {
+        const mtimeMs = fs.statSync(fullPath).mtimeMs;
+        if (mtimeMs > newestMs) { newest = fullPath; newestMs = mtimeMs; }
+      } catch { /* skip files we can't stat */ }
+    }
+    return newest ? fs.readFileSync(newest, 'utf-8') : null;
+  } catch { return null; }
+}
+
+/**
  * Delete log files older than 24 hours. Call at app startup.
  */
 export function cleanOldLogs(): void {

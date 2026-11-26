@@ -2,7 +2,7 @@ import { ipcMain, BrowserWindow, Menu, app, shell, dialog } from 'electron';
 import { Brain, brainSettingsStore } from './brain';
 import { executeTool } from './tools';
 import { checkForUpdates, downloadUpdate, installUpdate, initUpdater, startPeriodicUpdateChecks, openManualUpdatePage, snoozeUpdate, installOnUserQuit } from './updater';
-import { createLogger, serializeErr, ingestRendererLog } from './logger';
+import { createLogger, serializeErr, ingestRendererLog, readCurrentLog } from './logger';
 import * as telemetry from './telemetry';
 import * as accountMod from './account';
 import { setBubbleBusy } from './ui-busy';
@@ -813,22 +813,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
   // Log file operations
   const logDir = path.join(app.getPath('home'), '.clippyai', 'logs');
 
-  ipcMain.handle('read-log-file', async () => {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const logFile = path.join(logDir, `clippy-${today}.log`);
-      if (fs.existsSync(logFile)) {
-        return fs.readFileSync(logFile, 'utf-8');
-      }
-      // Try yesterday's if today's doesn't exist yet
-      const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-      const yesterdayFile = path.join(logDir, `clippy-${yesterday}.log`);
-      if (fs.existsSync(yesterdayFile)) {
-        return fs.readFileSync(yesterdayFile, 'utf-8');
-      }
-      return null;
-    } catch { return null; }
-  });
+  ipcMain.handle('read-log-file', async () => readCurrentLog());
 
   // v0.12.5 — manual proactive trigger. Bypasses the interval timer +
   // screen_unchanged guard so the user can validate Brain settings without
