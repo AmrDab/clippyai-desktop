@@ -107,7 +107,8 @@ describe('scrubbing', () => {
       expect(out, leak).not.toContain(leak);
     }
     expect(out).not.toContain(HOME);
-    if (os.userInfo().username.length > 2) expect(out).not.toContain(os.userInfo().username);
+    // Same rule as logger.ts: names under 4 letters are not scrubbed (too many false hits in normal text).
+    if (os.userInfo().username.length >= 4) expect(out).not.toContain(os.userInfo().username);
     expect(out).toContain('<email>');
     expect(out).toContain('CLIPPY-****');
     expect(out).toContain('<url>');
