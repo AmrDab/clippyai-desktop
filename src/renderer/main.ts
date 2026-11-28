@@ -314,11 +314,14 @@ async function init(): Promise<void> {
     }
   });
 
-  // "hey clippy" typed anywhere: the same chat a normal click opens, ready to type.
+  // "hey clippy" typed anywhere: he answers the call out loud, ready to type.
+  // (A wake from sleep says "I'm awake" first; this line supersedes it.)
   window.clippy.onSummonChat(() => {
-    bubbleCtrl.openChat();
+    const line = 'You summoned me? Here I am. What can I do?';
+    bubbleCtrl.speak(line, { autoState: 'standard' });
     bubbleCtrl.focusInput();
-    clippyCtrl.wave();
+    clippyCtrl.playNamed('Greeting');
+    tts.speak(line);
   });
 
   window.clippy.onTtsToggle((enabled) => { ttsWanted = enabled; tts.setEnabled(enabled); });
