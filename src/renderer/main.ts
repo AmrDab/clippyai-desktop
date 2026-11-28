@@ -37,6 +37,10 @@ function installRendererLogBridge(component: string): void {
 
 async function init(): Promise<void> {
   installRendererLogBridge('Renderer.main');
+  // 'hidden' while main logs the window as shown = Chromium stopped drawing him.
+  document.addEventListener('visibilitychange', () => {
+    try { window.clippy.log?.('INFO', 'Renderer.main', 'Visibility', { state: document.visibilityState }); } catch { /* bridge unavailable */ }
+  });
   console.log('[Main] Initializing ClippyAI renderer...');
 
   // v0.19.0 PR-6 — set data-platform so the Liquid Glass theme picks up

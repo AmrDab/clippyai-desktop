@@ -367,6 +367,15 @@ export function createWindow(): BrowserWindow {
     win.hide();
   });
 
+  // Clippy sometimes vanished from screen while Electron still called the
+  // window visible (2026-11-28). Log every state change so the next report
+  // shows whether he was hidden, minimized or just not drawn.
+  for (const ev of ['show', 'hide', 'minimize', 'restore'] as const) {
+    win.on(ev as 'show', () => {
+      if (!win.isDestroyed()) log.info(`Window.${ev}`, { bounds: win.getBounds() });
+    });
+  }
+
   // v0.23 — keep Clippy on a live display (plan §1.5). Unplugging the monitor
   // he sat on, or a DPI / resolution change, used to leave him off-screen
   // with tray → Center on Screen as the only rescue.

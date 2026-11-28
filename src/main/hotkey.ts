@@ -37,6 +37,9 @@ export function registerHotkey(win: BrowserWindow, brain: Brain): void {
   // Sleep/wake toggle (existing, since v0.1)
   globalShortcut.register(SUMMON_ACCELERATOR, () => {
     // v0.23 — hidden → show + wake (one press after Alt+F4); visible → toggle.
+    log.info('Summon hotkey', {
+      mode: brain.getMode(), visible: win.isVisible(), minimized: win.isMinimized(), bounds: win.getBounds(),
+    });
     const next = summonTransition(brain.getMode(), win.isVisible());
     if (next.mode !== brain.getMode()) brain.setMode(next.mode);
 
