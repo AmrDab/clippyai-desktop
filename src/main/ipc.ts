@@ -107,6 +107,17 @@ const PERMISSION_PANES: Record<string, string> = {
   automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
 };
 
+// Extra https hosts open-external-url allows: exactly the ones Settings links to.
+const SETTINGS_LINK_HOSTS = [
+  'platform.openai.com', // OpenAI voice key + OpenAI own-model key
+  'clawhub.ai',
+  'console.anthropic.com',
+  'aistudio.google.com',
+  'platform.deepseek.com',
+  'openrouter.ai',
+  'console.groq.com',
+];
+
 /**
  * One user message through the brain: typed in the bubble ('user-message') or
  * sent from the paired phone (dispatch.ts). `trimmed` is already trimmed and capped.
@@ -353,9 +364,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       // Voice INPUT engine: 'apple' = on-device Speech via the Swift bridge
       // (free/offline, default); 'openai' = cloud transcribe (key, opt-in).
       sttEngine: getSttEngine(),
-      // v0.17.2 — wake-word preference (UI works now, runtime stub until
-      // we ship the on-device wake-word model)
-      wakeWordEnabled: licenseStore.get('wakeWordEnabled', false),
       launchOnStartup: app.getLoginItemSettings().openAtLogin,
       appVersion: app.getVersion(),
       // v0.19.0 — follow-me cursor mode settings
@@ -407,6 +415,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       proactiveChanged = true;
       // v0.18.0 — same shape as tray.ts:74 sends on this channel.
       mainWindow.webContents.send('proactive-toggle', enabled);
+      refreshTrayTooltip(); // rebuilds the tray menu so its Proactive Mode checkbox matches
     }
     // v0.12.3 — proactive cooldown after speaking. 0 = no cooldown.
     if (settings.proactiveCooldownMs !== undefined) {
@@ -466,7 +475,8 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
       mainWindow.webContents.send('speech-pitch', pitch);
     }
     if (settings.speechVolume !== undefined) {
-      const vol = Math.max(0, Math.min(1, Number(settings.speechVolume) || 0.9));
+      const volIn = Number(settings.speechVolume);
+      const vol = Math.max(0, Math.min(1, Number.isFinite(volIn) ? volIn : 0.9));
       licenseStore.set('speechVolume', vol);
       mainWindow.webContents.send('speech-volume', vol);
     }
@@ -474,12 +484,6 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     if (settings.voiceEnabled !== undefined) {
       licenseStore.set('voiceEnabled', Boolean(settings.voiceEnabled));
       mainWindow.webContents.send('voice-toggle', Boolean(settings.voiceEnabled));
-    }
-    // v0.17.2 — wake-word preference. Persisted but not yet honored at
-    // runtime; saving here so when the on-device wake-word model ships,
-    // existing-user preferences carry over without a fresh prompt.
-    if (settings.wakeWordEnabled !== undefined) {
-      licenseStore.set('wakeWordEnabled', Boolean(settings.wakeWordEnabled));
     }
     // v0.19.0 — Clippy energy level for the contextual-suggestion rule engine.
     if (settings.clippyEnergy !== undefined) {
@@ -491,14 +495,16 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
     // v0.19.0 — follow-me cursor mode options. Live-update setOptions() so
     // changes in the Settings slider take effect without a restart.
     if (settings.followOffsetX !== undefined) {
-      const offX = Math.max(-400, Math.min(400, Number(settings.followOffsetX) || 220));
+      const offXIn = Number(settings.followOffsetX);
+      const offX = Math.max(-400, Math.min(400, Number.isFinite(offXIn) ? offXIn : 220));
       brainSettingsStore.set('followOffsetX', offX);
       try {
         followMeMod.setOptions({ offsetX: offX });
       } catch { /* non-fatal */ }
     }
     if (settings.followOffsetY !== undefined) {
-      const offY = Math.max(-300, Math.min(300, Number(settings.followOffsetY) || 120));
+      const offYIn = Number(settings.followOffsetY);
+      const offY = Math.max(-300, Math.min(300, Number.isFinite(offYIn) ? offYIn : 120));
       brainSettingsStore.set('followOffsetY', offY);
       try {
         followMeMod.setOptions({ offsetY: offY });
@@ -596,6 +602,12 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
         return true;
       }
       if (parsed.hostname === 'clippyai.app' || parsed.hostname === 'api.clippyai.app' || parsed.hostname === 'github.com') {
+        await shell.openExternal(url);
+        return true;
+      }
+      // Settings links: the OpenAI voice key, ClawHub, and each own-model
+      // provider's "Get one at" key page (byok/presets.ts keyUrl).
+      if (parsed.protocol === 'https:' && SETTINGS_LINK_HOSTS.includes(parsed.hostname)) {
         await shell.openExternal(url);
         return true;
       }
@@ -1471,6 +1483,7 @@ export function registerIpcHandlers(brain: Brain, mainWindow: BrowserWindow): vo
             brainSettingsStore.set('suggestionDenylist', [...current, ruleId]);
             telemetry.noteProactive('muted');
             log.info('Suggestion.denied', { rule_id: ruleId, source: 'context_menu' });
+            brain.rebuildSuggestionCaches();
           }
         },
       });

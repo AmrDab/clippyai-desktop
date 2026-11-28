@@ -603,6 +603,12 @@ function launchMainApp(): void {
   // callers (tools, IPC) don't need to pass it explicitly.
   import('./follow-me').then((fm) => {
     if (mainWindow) fm.setMainWindow(mainWindow);
+    // Saved Follow Mode sliders (Settings → Brain) apply from the first start.
+    fm.setOptions({
+      offsetX: brainSettingsStore.get('followOffsetX'),
+      offsetY: brainSettingsStore.get('followOffsetY'),
+      easing: brainSettingsStore.get('followEasing'),
+    });
   }).catch((err: Error) => log.warn('follow-me module load failed (non-fatal)', err.message));
   // v0.21 — local mini-games: inject the window + register their IPC.
   gamesMod.setMainWindow(mainWindow);

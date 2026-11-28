@@ -1150,6 +1150,7 @@ export class Brain {
   async fireProactiveTipManually(): Promise<{ ok: boolean; reason?: string }> {
     if (this.mode !== 'awake') return { ok: false, reason: 'sleeping' };
     if (this.isExecuting) return { ok: false, reason: 'user_task_in_flight' };
+    if (!settingsStore.get('proactiveEnabled')) return { ok: false, reason: 'disabled' };
     log.info('Proactive.manual.trigger', { source: 'settings_ui' });
     try {
       await this.proactiveCheck(true);

@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
 import type { Brain } from './brain';
+import { brainSettingsStore } from './brain';
 import { createLogger } from './logger';
 import { afterApprovals } from './approval';
 
@@ -72,6 +73,7 @@ function fire(
 function tick(win: BrowserWindow, brain: Brain): void {
   if (win.isDestroyed()) return;
   if (brain.getMode() !== 'awake') return; // never wake-up to greet a sleeping Clippy
+  if (!brainSettingsStore.get('proactiveEnabled')) return; // Proactive Mode off = no unprompted pings
 
   const now = new Date();
   const hour = now.getHours();

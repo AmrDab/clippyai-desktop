@@ -4,13 +4,15 @@
  */
 
 import { getSecret } from './secrets';
+import { getApiToken } from '../api-routes';
 import { createLogger } from '../logger';
 import type { ToolResult } from '../types/tool-result';
 
 const log = createLogger('GitHub');
 
 async function getOctokit() {
-  const pat = await getSecret('clippy.github', 'pat');
+  // Settings → Apps saves the token as clippyai-api/github; clippy.github/pat is the older key.
+  const pat = (await getApiToken('github')) ?? (await getSecret('clippy.github', 'pat'));
   if (!pat) return null;
 
   try {

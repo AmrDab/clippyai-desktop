@@ -100,7 +100,7 @@ async function loadConfig(): Promise<void> {
   proactiveIntervalValue.textContent = `${intervalSec}s`;
 
   // v0.12.3 — load cooldown + bubble auto-hide
-  const cooldownMin = Math.round(((config.proactiveCooldownMs as number) || 600000) / 60000);
+  const cooldownMin = Math.round(((config.proactiveCooldownMs as number) ?? 600000) / 60000);
   const cdRange = document.getElementById('setting-proactive-cooldown') as HTMLInputElement | null;
   const cdLabel = document.getElementById('proactive-cooldown-value');
   if (cdRange && cdLabel) {
@@ -152,19 +152,6 @@ async function loadConfig(): Promise<void> {
     voiceEl.checked = config.voiceEnabled !== false; // default true
     voiceEl.addEventListener('change', () => {
       window.clippy.updateSettings({ voiceEnabled: voiceEl.checked });
-    });
-  }
-  // v0.17.2 — wake-word preference. Pre-v0.17.2 the toggle was `disabled`
-  // and stuck off, which made it look broken. Now it's interactive — the
-  // preference is persisted to licenseStore, and once the on-device
-  // wake-word model ships in a later patch, it'll start respecting the
-  // saved value automatically. Honest "it works, just not implemented
-  // yet" beats "looks broken".
-  const wakeEl = document.getElementById('setting-wake-word') as HTMLInputElement | null;
-  if (wakeEl) {
-    wakeEl.checked = config.wakeWordEnabled === true; // default off
-    wakeEl.addEventListener('change', () => {
-      window.clippy.updateSettings({ wakeWordEnabled: wakeEl.checked });
     });
   }
   // Probe STT availability and surface a status banner. If whisper-cli
@@ -406,10 +393,15 @@ function maskKey(key: string): string {
 
 // Save on change with debounce
 let saveTimeout: number | null = null;
+let pendingSave: Record<string, unknown> = {};
 function debounceSave(settings: Record<string, unknown>): void {
+  Object.assign(pendingSave, settings);
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = window.setTimeout(() => {
-    window.clippy.updateSettings(settings);
+    const toSave = pendingSave;
+    pendingSave = {};
+    saveTimeout = null;
+    window.clippy.updateSettings(toSave);
   }, 500);
 }
 
@@ -457,11 +449,6 @@ if (volumeRange && volumeValue) {
     debounceSave({ speechVolume: Number(volumeRange.value) });
   });
 }
-const voicesFeedbackLink = document.getElementById('link-voices-feedback');
-if (voicesFeedbackLink) voicesFeedbackLink.addEventListener('click', (e) => {
-  e.preventDefault();
-  window.clippy.openExternalUrl('https://clippyai.app');
-});
 
 // TTS Enable toggle — this IS the "AI voice toggle" the user sees in Voice tab
 const ttsToggle = document.getElementById('setting-tts-enabled') as HTMLInputElement;
@@ -658,7 +645,9 @@ if (fireTipBtn) {
       clearTimeout(watchdog);
       finishUi((res && (res as { ok?: boolean }).ok)
         ? 'Triggered — check the bubble'
-        : 'No tip fired (model returned silent, or in cooldown).');
+        : (res && (res as { reason?: string }).reason === 'disabled')
+          ? 'Proactive mode is off — turn it on first.'
+          : 'No tip fired (model returned silent, or in cooldown).');
     } catch (err) {
       clearTimeout(watchdog);
       finishUi(`Error: ${err instanceof Error ? err.message : String(err)}`);

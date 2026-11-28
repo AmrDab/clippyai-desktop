@@ -82,6 +82,8 @@ async function init(): Promise<void> {
   const canvas = document.getElementById('clippy-canvas') as HTMLCanvasElement;
   const clippyCtrl = new ClippyController(canvas, spriteDataUri, agentData, hdSprite);
   const tts = new TTS();
+  // Saved Text-to-speech setting (or mute): what waking up restores.
+  let ttsWanted = true;
 
   // UI language for first-run surfaces (chosen once in main from the Windows display languages).
   let LANG: Lang = 'en';
@@ -92,7 +94,7 @@ async function init(): Promise<void> {
     if (isLang(config.lang)) { LANG = config.lang; tts.setUiLang(LANG); }
     if (config.ttsVoice) tts.setPreferredVoice(config.ttsVoice as string);
     if (config.speechRate) tts.setRate(config.speechRate as number);
-    if (config.ttsEnabled === false) tts.setEnabled(false);
+    if (config.ttsEnabled === false) { ttsWanted = false; tts.setEnabled(false); }
     // v0.20.0 (voice v1) — apply persisted TTS engine (System default /
     // OpenAI premium). If OpenAI fails at speak-time, tts.ts falls back.
     if (config.ttsEngine === 'openai') tts.setEngine('openai');
@@ -301,7 +303,7 @@ async function init(): Promise<void> {
       clippyCtrl.sleep();
       tts.setEnabled(false);
     } else {
-      tts.setEnabled(true);
+      tts.setEnabled(ttsWanted);
       clippyCtrl.wake();
       bubbleCtrl.speak("I'm awake and ready to help!");
       tts.speak("I'm awake and ready to help!");
@@ -315,7 +317,7 @@ async function init(): Promise<void> {
     clippyCtrl.wave();
   });
 
-  window.clippy.onTtsToggle((enabled) => tts.setEnabled(enabled));
+  window.clippy.onTtsToggle((enabled) => { ttsWanted = enabled; tts.setEnabled(enabled); });
   window.clippy.onSpeechRate((rate) => tts.setRate(rate));
 
   // v0.16.0 — load pitch + volume on launch + listen for live updates.

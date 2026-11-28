@@ -201,7 +201,7 @@
               <option value="piper" disabled>Piper TTS (neural) — coming soon</option>
               <option value="elevenlabs" disabled>ElevenLabs (cloud) — coming soon</option>
             </select>
-            <p class="s-row__help">System voice runs entirely on <span data-mac>your Mac</span><span data-win>this PC</span>. <strong>OpenAI sends the text Clippy speaks to OpenAI</strong> for higher-quality audio (~$0.015/min) and needs your own API key below. If OpenAI is unavailable, Clippy automatically falls back to the system voice. Vote on more voices at <a href="#" id="link-voices-feedback" class="s-link">clippyai.app/voices</a>.</p>
+            <p class="s-row__help">System voice runs entirely on <span data-mac>your Mac</span><span data-win>this PC</span>. <strong>OpenAI sends the text Clippy speaks to OpenAI</strong> for higher-quality audio (~$0.015/min) and needs your own API key below. If OpenAI is unavailable, Clippy automatically falls back to the system voice.</p>
           </div>
 
           <!-- v0.20.0 (voice v1) — user-provided OpenAI key. Write-only:
@@ -268,19 +268,6 @@
             <p class="s-row__help">Press once to start, again to stop. <kbd>Esc</kbd> cancels.</p>
           </div>
 
-          <div class="s-row s-row--inline">
-            <div class="s-row__main">
-              <div class="s-row__label">Wake word — "Hey Clippy" <span class="s-badge">coming soon</span></div>
-              <div class="s-row__help">Your pick is saved now; on-device wake-word model ships in a future patch. Runs locally — no audio uploaded.</div>
-            </div>
-            <div class="s-row__control">
-              <label class="toggle-switch" for="setting-wake-word">
-                <input type="checkbox" id="setting-wake-word" aria-label="Enable wake word (coming soon)" />
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-          </div>
-
           <div class="s-row">
             <div id="stt-status" class="s-status">Checking STT availability…</div>
           </div>
@@ -345,21 +332,21 @@
                 <input type="radio" name="clippy-energy" value="subtle" id="energy-subtle" />
                 <div class="s-radio-card__body">
                   <div class="s-radio-card__title">Subtle</div>
-                  <div class="s-radio-card__help">Only the most obvious suggestions. Longer cooldown between tips.</div>
+                  <div class="s-radio-card__help">Only the core suggestions (email, writing, Slack, Notion). Skips the code-error, long-PDF and cluttered-folder tips.</div>
                 </div>
               </label>
               <label class="s-radio-card">
                 <input type="radio" name="clippy-energy" value="default" id="energy-default" checked />
                 <div class="s-radio-card__body">
                   <div class="s-radio-card__title">Default <span class="s-badge">recommended</span></div>
-                  <div class="s-radio-card__help">Balanced — common suggestions at a moderate cadence.</div>
+                  <div class="s-radio-card__help">Adds the code-error, long-PDF and cluttered-folder tips.</div>
                 </div>
               </label>
               <label class="s-radio-card">
                 <input type="radio" name="clippy-energy" value="lively" id="energy-lively" />
                 <div class="s-radio-card__body">
                   <div class="s-radio-card__title">Lively</div>
-                  <div class="s-radio-card__help">Every relevant suggestion, shorter cooldown. Great for power users.</div>
+                  <div class="s-radio-card__help">Everything in Default, plus a morning stand-up prompt.</div>
                 </div>
               </label>
             </div>
